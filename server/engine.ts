@@ -24,6 +24,7 @@ import {
   workerOf,
 } from "./events";
 import { briefOf } from "./frontmatter";
+import { describePermission, type PermissionLike } from "./permissions";
 import { type Paseo, startRun } from "./runs";
 import { type StoredWork, WorkStore } from "./store";
 import { toWire } from "./wire";
@@ -412,21 +413,19 @@ export class Engine {
     });
   }
 
-  async onPermissionRequested(
-    agent: HookAgent,
-    request: { id: string; name: string; title?: string; description?: string },
-  ): Promise<void> {
+  async onPermissionRequested(agent: HookAgent, request: PermissionLike & { id: string }): Promise<void> {
     await this.route(agent.id, async (item, store) => {
       await store.mutate(item.contract.id, (fresh) => {
         if (pendingPermission(fresh.events)?.requestId === request.id) return null;
+        const { title, detail } = describePermission(request, workerOf(fresh.events)?.cwd ?? null);
         const asked: WorkEvent = {
           ts: this.stamp(),
           type: "permission.asked",
           actor: "agent",
           agentId: agent.id,
           requestId: request.id,
-          title: request.title ?? request.name,
-          detail: request.description ?? null,
+          title,
+          detail,
         };
         if (fresh.contract.state !== "running") return { events: [asked] };
         return { to: "review", actor: "agent", reason: "Asked for permission", events: [asked] };

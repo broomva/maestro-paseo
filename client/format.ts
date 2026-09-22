@@ -29,7 +29,12 @@ export function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+/** The handler's own sentence, without the RPC transport's wrapping. */
 export function errorText(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return typeof error === "string" ? error : "Something went wrong.";
+  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  const clean = raw
+    .replace(/^Request failed:\s*/, "")
+    .replace(/\s+requestType=\S+(\s+code=\S+)?\s*$/, "")
+    .trim();
+  return clean || "Something went wrong.";
 }
