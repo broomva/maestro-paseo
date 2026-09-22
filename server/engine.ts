@@ -95,18 +95,22 @@ export function isDuplicateEnd(events: readonly WorkEvent[], turnId: string | nu
   events.forEach((event, index) => {
     if (event.type === "state" && event.to === "running") lastRun = index;
   });
-  let lastEnd = -1;
+  let lastEnd: Extract<WorkEvent, { type: "turn.ended" }> | null = null;
+  let lastEndIndex = -1;
   let lastStart = -1;
-  let sameTurn = false;
-  events.forEach((event, index) => {
-    if (index <= lastRun) return;
-    if (event.type === "turn.started") lastStart = index;
-    if (event.type === "turn.ended") {
-      lastEnd = index;
-      if (turnId && event.turnId === turnId) sameTurn = true;
+  for (let index = lastRun + 1; index < events.length; index += 1) {
+    const event = events[index];
+    if (event?.type === "turn.started") lastStart = index;
+    else if (event?.type === "turn.ended") {
+      if (turnId && event.turnId === turnId) return true;
+      lastEnd = event;
+      lastEndIndex = index;
     }
-  });
-  return sameTurn || (lastEnd > lastRun && lastEnd > lastStart);
+  }
+  if (!lastEnd || lastEndIndex < lastStart) return false;
+  // Both carry ids and they differ: a new turn whose start hook was missed, not a repeat.
+  if (turnId && lastEnd.turnId) return false;
+  return true;
 }
 
 const QUEUE_MS = 120_000;
@@ -143,6 +147,7 @@ export class Engine {
   private readonly agentDirs = new Map<string, Map<string, string>>();
   private readonly indexedAt = new Map<string, number>();
   private readonly draining = new Set<string>();
+  private readonly chains = new Map<string, Promise<void>>();
   private readonly abort = new AbortController();
   private lastReconcile = 0;
 
@@ -342,7 +347,8 @@ export class Engine {
           .archive()
           .then(() => true)
           .catch(() => false);
-        const workspaceId = worker.workspaceId;
+        // Only a workspace this dispatch created is ours to archive; in directory mode it is the user's own.
+        const workspaceId = worker.branch ? worker.workspaceId : null;
         if (workspaceId) {
           // Best effort: a failed cleanup must never replace the error that caused it.
           await Promise.resolve()
@@ -591,7 +597,24 @@ export class Engine {
    * event never overtakes one still waiting, and a queue is drained as soon as
    * its agent is bound or no dispatch is left that could bind it.
    */
+  /**
+   * One ordered chain per agent: an event waits for the previous event of the
+   * same agent to finish, so a slow lookup can never let a turn end overtake
+   * its own turn start.
+   */
   private async route(agentId: string, run: ItemChange): Promise<void> {
+    const previous = this.chains.get(agentId) ?? Promise.resolve();
+    const current = previous.then(() => this.routeNow(agentId, run));
+    const settled = current.catch(() => undefined);
+    this.chains.set(agentId, settled);
+    try {
+      await current;
+    } finally {
+      if (this.chains.get(agentId) === settled) this.chains.delete(agentId);
+    }
+  }
+
+  private async routeNow(agentId: string, run: ItemChange): Promise<void> {
     this.prune();
     const waiting = this.queues.get(agentId);
     if (waiting) {
@@ -716,7 +739,29 @@ export class Engine {
           summary: latestOutputText(timeline),
           turnId: options.turnId ?? null,
         };
-        if (fresh.contract.state !== "running") return { events: [ended] };
+        const state = fresh.contract.state;
+        if (state !== "running") {
+          // The session worked again after landing (its turn start was missed): the gate must show that turn.
+          if (state === "review" && !pendingPermission(fresh.events)) {
+            if (outcome.kind === "failed") {
+              return { at, to: "blocked", reason: outcome.error.message, events: [ended] };
+            }
+            if (outcome.kind === "canceled") {
+              return { at, to: "blocked", reason: "Stopped before finishing", events: [ended] };
+            }
+            if (fresh.contract.checks.length > 0) {
+              token = `${agentId}:${ended.ts}`;
+              return {
+                stateFirst: true,
+                to: "running",
+                actor: "agent",
+                reason: "The session kept working; checking again",
+                events: [ended, { ts: this.stamp(), type: "checks.started", actor: "maestro", token }],
+              };
+            }
+          }
+          return { events: [ended] };
+        }
         if (outcome.kind === "failed") return { at, to: "blocked", reason: outcome.error.message, events: [ended] };
         if (outcome.kind === "canceled") {
           return { at, to: "blocked", reason: "Stopped before finishing", events: [ended] };
@@ -812,6 +857,12 @@ export class Engine {
           const startedEvent = fresh.events[started];
           const recovered = startedEvent?.type === "checks.started" && startedEvent.recovered === true;
           const endedAt = startedEvent?.type === "checks.started" ? startedEvent.endedAt : undefined;
+          // Use the recovered stop time only if nothing moved the work since; a later move would make it negative.
+          const lastState = lastOf(fresh.events, "state");
+          const stamp =
+            recovered && endedAt && (!lastState || Date.parse(endedAt) >= Date.parse(lastState.ts))
+              ? endedAt
+              : undefined;
           const newerTurn = fresh.events.slice(started + 1).some((event) => event.type === "turn.started");
           if (fresh.contract.state !== "running" || newerTurn) return { events: [finished] };
           const outcome = cwd ? checkOutcome(results) : "none";
@@ -819,14 +870,14 @@ export class Engine {
           // An end reconcile inferred closes nothing by itself, and its running time ends when the agent stopped.
           if (recovered && target === "done") {
             return {
-              at: endedAt,
+              at: stamp,
               to: "review",
               reason: "Recovered after a missed event; the checks passed",
               events: [finished],
             };
           }
           return {
-            at: recovered ? endedAt : undefined,
+            at: stamp,
             to: target,
             reason: outcome === "failed" ? "Checks failed" : null,
             ctx: { checksPassed: outcome === "passed" },

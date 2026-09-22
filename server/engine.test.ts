@@ -796,3 +796,111 @@ test("only an error that ends the turn fails it", async () => {
     error: { message: "rate limit" },
   });
 });
+
+describe("round 3: ownership, missed starts, ordering", () => {
+  test("in directory mode a failed bind never archives the user's own workspace", async () => {
+    const { engine, fake, repo, store } = await setup({ isolation: "directory" });
+    const draft = await engine.create(fake.paseo, {
+      title: "Directory race",
+      brief: "",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "",
+      dispatch: false,
+    });
+    const original = fake.paseo.workspaces.open;
+    fake.paseo.workspaces.open = (async (cwd: string) => {
+      const workspace = await original(cwd);
+      await store.mutate(draft.id, () => ({ to: "canceled", actor: "human" }));
+      return workspace;
+    }) as typeof original;
+    await expect(engine.dispatch(fake.paseo, draft.id)).rejects.toThrow("changed while the run was starting");
+    expect(fake.archived).toEqual(["agent-1"]);
+    expect(fake.archivedWorkspaces).toEqual([]);
+  });
+
+  test("a new turn whose start was missed updates the gate, and a failed one is Stuck", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    const idle = fake.agents.get("agent-1");
+    if (idle) idle.status = "idle";
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [
+        { type: "user_message", text: "go" },
+        { type: "assistant_message", text: "## Decided\n- first pass\n## Ask\nok?" },
+      ],
+      "turn-1",
+    );
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [
+        { type: "user_message", text: "more" },
+        { type: "assistant_message", text: "## Decided\n- force-pushed main\n## Ask\nfine?" },
+      ],
+      "turn-2",
+    );
+    expect((await engine.get(item.id)).item.look?.decided).toEqual(["force-pushed main"]);
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "push rejected" } }, [], "turn-3");
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "blocked", reason: "push rejected" });
+  });
+
+  test("with checks, a later turn at the gate runs the checks again", async () => {
+    const { create, engine, fake } = await setup({});
+    const item = await create({ check: "true" });
+    const idle = fake.agents.get("agent-1");
+    if (idle) idle.status = "idle";
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");
+    await settle(engine, item.id, "review");
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-2");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await settle(engine, item.id, "review");
+    expect((await engine.get(item.id)).events.filter((e) => e.type === "checks.finished")).toHaveLength(2);
+  });
+
+  test("a slow turn start delivered after its own end does not reopen the gate", async () => {
+    const { engine, fake, repo } = await setup();
+    const draft = await engine.create(fake.paseo, {
+      title: "Reorder",
+      brief: "",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "",
+      dispatch: false,
+    });
+    let early!: Promise<void>;
+    let releaseEarly!: () => void;
+    const original = fake.paseo.workspaces.create;
+    fake.paseo.workspaces.create = (async (options: Parameters<typeof original>[0]) => {
+      const workspace = await original(options);
+      const create = workspace.agents.create;
+      return {
+        ...workspace,
+        agents: {
+          create: async (o: Parameters<typeof create>[0]) => {
+            const agent = await create(o);
+            const hold = holdNextScan();
+            early = engine.onTurnStarted({ id: agent.id });
+            await hold.read;
+            hold.restore();
+            releaseEarly = hold.release;
+            return agent;
+          },
+        },
+      };
+    }) as typeof original;
+    await engine.dispatch(fake.paseo, draft.id);
+    const idle = fake.agents.get("agent-1");
+    if (idle) idle.status = "idle";
+    const ended = engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "t1");
+    releaseEarly();
+    await Promise.all([early, ended]);
+    const { item, events } = await engine.get(draft.id);
+    expect(item.state).toBe("review");
+    expect(events.some((e) => e.detail === "You continued the session")).toBe(false);
+  });
+});

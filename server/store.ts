@@ -103,6 +103,8 @@ async function writeAtomic(path: string, content: string): Promise<void> {
 }
 
 export interface Mutation {
+  /** Record the state change before `events` rather than after them. */
+  stateFirst?: boolean;
   /** When the change happened, if not now: a recovered event keeps the time it really occurred. */
   at?: string;
   to?: OrchState;
@@ -265,14 +267,16 @@ export class WorkStore {
       if (change.to && change.to !== item.contract.state) {
         transition(item.contract.state, change.to, { gate: item.contract.gate, ...(change.ctx ?? {}) });
         patch.state = change.to;
-        events.push({
+        const moved: WorkEvent = {
           ts: change.at ?? at.toISOString(),
           type: "state",
           actor: change.actor ?? "maestro",
           from: item.contract.state,
           to: change.to,
           reason: change.reason ?? null,
-        });
+        };
+        if (change.stateFirst) events.unshift(moved);
+        else events.push(moved);
       }
       if (Object.keys(patch).length > 0) {
         patch.updated = at.toISOString().slice(0, 10);
