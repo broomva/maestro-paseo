@@ -8,7 +8,7 @@
 // recovers anything missed while the plugin was stopped.
 
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
-import type { MaestroConfig, WorkEventWire, WorkItem } from "../shared/contracts";
+import type { MaestroConfig, WorkItem } from "../shared/contracts";
 import { GROUP_ORDER, isDispatchable, isTerminal, landingState, type Verdict } from "../shared/states";
 import { runChecks } from "./checks";
 import { loadConfig } from "./config";
@@ -19,7 +19,7 @@ import {
   pendingPermission,
   phaseOf,
   scoreboard,
-  toWireEvent,
+  toWireEvents,
   type WorkEvent,
   workerOf,
 } from "./events";
@@ -147,7 +147,7 @@ export class Engine {
     return {
       item: toWire(item, this.now().getTime()),
       brief: briefOf(item.work.body),
-      events: item.events.map(toWireEvent).filter((event): event is WorkEventWire => event !== null),
+      events: toWireEvents(item.events),
       checkResults: latestChecks(item.events),
     };
   }

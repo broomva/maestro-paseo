@@ -158,3 +158,23 @@ describe("unsupervised hours", () => {
 test("bullets drop list markers and bold emphasis", () => {
   expect(bullets("- **File content**: exact\n2. plain")).toEqual(["File content: exact", "plain"]);
 });
+
+describe("receipts a person reads", () => {
+  test("a state change right after its cause is folded in", async () => {
+    const { toWireEvents } = await import("./events");
+    const events: WorkEvent[] = [
+      { ts: at(1), type: "permission.resolved", actor: "human", agentId: "a1", requestId: "p1" },
+      { ts: at(1), type: "state", actor: "human", from: "review", to: "running", reason: "Permission answered" },
+      { ts: at(2), type: "checks.finished", actor: "maestro", token: "t", results: [] },
+      { ts: at(2), type: "state", actor: "maestro", from: "running", to: "blocked", reason: "Checks failed" },
+    ];
+    expect(toWireEvents(events).map((e) => e.text)).toEqual(["Permission answered", "Checks passed", "Stuck"]);
+  });
+
+  test("turn summaries drop the Decided and Ask sections and Markdown markers", async () => {
+    const { plainSummary } = await import("./events");
+    expect(plainSummary("Created `LICENSE.txt` with **care**.\n\n## Decided\n- x\n## Ask\ny")).toBe(
+      "Created LICENSE.txt with care.",
+    );
+  });
+});

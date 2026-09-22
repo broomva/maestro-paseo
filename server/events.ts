@@ -258,6 +258,42 @@ function shorten(text: string, max = 280): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+/** The message before its Decided/Ask sections, without Markdown markers. */
+export function plainSummary(summary: string): string {
+  const cut = summary.search(/^#{1,4}\s*(Decided|Ask)\b/im);
+  return (cut >= 0 ? summary.slice(0, cut) : summary)
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .trim();
+}
+
+/** Events whose own receipt already says why the state that follows them changed. */
+const CAUSES = new Set<WorkEventType>([
+  "dispatched",
+  "adopted",
+  "gate",
+  "unblocked",
+  "permission.asked",
+  "permission.resolved",
+]);
+
+/**
+ * The receipts a person reads. A state change right after the event that
+ * caused it adds nothing ("Permission answered", then "Running: Permission
+ * answered"), so it is folded into its cause.
+ */
+export function toWireEvents(events: readonly WorkEvent[]): WorkEventWire[] {
+  const out: WorkEventWire[] = [];
+  events.forEach((event, index) => {
+    const previous = events[index - 1];
+    if (event.type === "state" && previous && CAUSES.has(previous.type)) return;
+    const wire = toWireEvent(event);
+    if (wire) out.push(wire);
+  });
+  return out;
+}
+
 export function toWireEvent(event: WorkEvent): WorkEventWire | null {
   const base = { ts: event.ts, actor: event.actor };
   switch (event.type) {
@@ -280,7 +316,7 @@ export function toWireEvent(event: WorkEvent): WorkEventWire | null {
         type: event.type,
         text:
           event.outcome === "completed" ? "Turn finished" : event.outcome === "failed" ? "Turn failed" : "Turn stopped",
-        detail: event.error ?? (event.summary ? shorten(event.summary) : null),
+        detail: event.error ?? (event.summary ? shorten(plainSummary(event.summary)) : null),
       };
     case "permission.asked":
       return { ...base, type: event.type, text: "Asked for permission", detail: event.title };

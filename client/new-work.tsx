@@ -267,7 +267,7 @@ function Segment({
   return (
     <Pressable
       accessibilityRole="radio"
-      accessibilityState={{ selected, disabled }}
+      accessibilityState={{ checked: selected, disabled }}
       accessibilityLabel={label}
       disabled={disabled}
       onPress={onPress}

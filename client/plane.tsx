@@ -240,10 +240,7 @@ function ScoreboardCard({ theme, board }: { theme: PluginTheme; board: Scoreboar
   const label = `Unsupervised ${duration(board.unsupervisedMs)} today, ${plural(runs, "stretch", "stretches")}, ${plural(board.looks, "look")}`;
   return (
     <Card theme={theme}>
-      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", gap: space[2] }}>
-        <Text style={text.label}>Unsupervised today</Text>
-        <Text style={text.small}>each mark is a time you stepped in</Text>
-      </View>
+      <Text style={text.label}>Unsupervised today</Text>
       <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[3], flexWrap: "wrap" }}>
         <Text style={[text.heading, text.tabular]}>{duration(board.unsupervisedMs)}</Text>
         <Text style={[text.muted, text.tabular]}>
@@ -251,7 +248,7 @@ function ScoreboardCard({ theme, board }: { theme: PluginTheme; board: Scoreboar
         </Text>
       </View>
       <View accessible accessibilityLabel={label} style={{ height: 16, justifyContent: "center" }}>
-        <View style={{ height: 6, borderRadius: 3, backgroundColor: theme.colors.surface2, overflow: "hidden" }}>
+        <View style={{ height: 6, borderRadius: 3, backgroundColor: theme.colors.border, overflow: "hidden" }}>
           {board.segments.map((segment) => (
             <View
               key={`${segment.start}`}
@@ -282,6 +279,7 @@ function ScoreboardCard({ theme, board }: { theme: PluginTheme; board: Scoreboar
           />
         ))}
       </View>
+      <Text style={text.small}>Bars are runs on their own. Each mark is a time you stepped in.</Text>
       <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
         {["00:00", "06:00", "12:00", "18:00", "24:00"].map((mark) => (
           <Text key={mark} style={[text.small, text.tabular]}>
