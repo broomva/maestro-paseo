@@ -153,7 +153,10 @@ It is pinned to 0.8.0 so one build serves 0.8 and 0.9 hosts.
 ## Limits
 
 - Hook events are live and best effort. Every list reconciles bound work against the agent's real
-  status, so a turn end missed while the plugin was stopped is recovered on the next look.
+  status, so a turn end missed while the plugin was stopped is recovered on the next look. A
+  recovered end reads the session's timeline for its real outcome, is stamped when the agent
+  actually stopped, and always lands at your gate: work never closes itself on an end Maestro did
+  not see. A correction is dropped if anything was recorded after reconcile looked.
 - The scoreboard counts from state changes in the event log; a run started before the plugin was
   installed does not appear until it is tracked.
 - Cancel does not stop or archive the Paseo session. Stop it from the session if it is still
