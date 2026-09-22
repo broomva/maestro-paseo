@@ -4,7 +4,7 @@
 // validates the transition, writes the contract, then appends the events.
 
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, join, relative, sep } from "node:path";
 import { type GateMode, type Kind, type OrchState, type TransitionContext, transition } from "../shared/states";
 import { parseEvents, type WorkEvent } from "./events";
@@ -30,6 +30,8 @@ export interface StoredWork {
   contract: Contract;
   title: string;
   events: WorkEvent[];
+  /** Lines of `_events.jsonl` that did not parse; surfaced as a warning, never dropped quietly. */
+  badLines: number;
   mtime: string;
 }
 
@@ -77,6 +79,23 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+async function endsWithNewline(path: string): Promise<boolean> {
+  let handle: import("node:fs/promises").FileHandle | undefined;
+  try {
+    handle = await open(path, "r");
+    const { size } = await handle.stat();
+    if (size === 0) return true;
+    const byte = Buffer.alloc(1);
+    await handle.read(byte, 0, 1, size - 1);
+    return byte[0] === 0x0a;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
 async function writeAtomic(path: string, content: string): Promise<void> {
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(tmp, content, "utf8");
@@ -103,8 +122,9 @@ export class WorkStore {
     const work = parseWorkDoc(source);
     const contract = readContract(work);
     let events: WorkEvent[] = [];
+    let badLines = 0;
     try {
-      events = parseEvents(await readFile(join(dir, EVENTS_FILE), "utf8")).events;
+      ({ events, bad: badLines } = parseEvents(await readFile(join(dir, EVENTS_FILE), "utf8")));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -116,6 +136,7 @@ export class WorkStore {
       contract,
       title: titleOf(work.body, basename(dir)),
       events,
+      badLines,
       mtime: info.mtime.toISOString(),
     };
   }
@@ -135,7 +156,11 @@ export class WorkStore {
       }
       if (depth > 0 && entries.some((entry) => entry.isFile() && entry.name === WORK_FILE)) {
         try {
-          items.push(await this.load(dir));
+          const item = await this.load(dir);
+          items.push(item);
+          if (item.badLines > 0) {
+            warnings.push(`${item.rel}/${EVENTS_FILE}: ${item.badLines} unreadable line(s) skipped`);
+          }
         } catch (error) {
           warnings.push(`${relative(this.root, dir) || dir}/${WORK_FILE}: ${(error as Error).message}`);
         }
@@ -163,18 +188,13 @@ export class WorkStore {
     return found;
   }
 
-  /** The work whose most recent run is this agent. */
-  async findByAgent(agentId: string): Promise<StoredWork | null> {
-    const { items } = await this.scan();
-    return (
-      items.find((item) => {
-        for (let i = item.events.length - 1; i >= 0; i -= 1) {
-          const event = item.events[i];
-          if (event?.type === "dispatched" || event?.type === "adopted") return event.agentId === agentId;
-        }
-        return false;
-      }) ?? null
-    );
+  /** Re-read one item: from its known folder when it still holds that id, otherwise by scanning. */
+  async fresh(id: string, dir?: string): Promise<StoredWork> {
+    if (dir) {
+      const item = await this.load(dir).catch(() => null);
+      if (item?.contract.id === id) return item;
+    }
+    return this.findById(id);
   }
 
   async create(input: {
@@ -217,7 +237,11 @@ export class WorkStore {
 
   async append(dir: string, events: readonly WorkEvent[]): Promise<void> {
     if (events.length === 0) return;
-    await appendFile(join(dir, EVENTS_FILE), events.map((event) => `${JSON.stringify(event)}\n`).join(""), "utf8");
+    const path = join(dir, EVENTS_FILE);
+    const lines = events.map((event) => `${JSON.stringify(event)}\n`).join("");
+    // A torn last line (a crash mid-write) must not swallow the next event.
+    const lead = (await endsWithNewline(path)) ? "" : "\n";
+    await appendFile(path, lead + lines, "utf8");
   }
 
   /**
@@ -227,9 +251,10 @@ export class WorkStore {
   async mutate(
     id: string,
     decide: (item: StoredWork) => Mutation | null | Promise<Mutation | null>,
+    dir?: string,
   ): Promise<StoredWork> {
     return withLock(id, async () => {
-      const item = await this.findById(id);
+      const item = await this.fresh(id, dir);
       const change = await decide(item);
       if (!change) return item;
       const events = [...(change.events ?? [])];

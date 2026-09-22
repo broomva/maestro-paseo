@@ -50,3 +50,15 @@ describe("checks", async () => {
     expect(results.map((r) => r.exit)).toEqual([1, 2]);
   });
 });
+
+test("a check that leaves a detached child holding its output still settles", async () => {
+  const { mkdtemp } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const cwd = await mkdtemp(join(tmpdir(), "maestro-detach-"));
+  const started = Date.now();
+  const result = await runCheck(check("(sleep 30 &) ; echo spawned"), cwd);
+  expect(Date.now() - started).toBeLessThan(3000);
+  expect(result).toMatchObject({ ok: true, exit: 0, timedOut: false });
+  expect(result.tail).toContain("spawned");
+});

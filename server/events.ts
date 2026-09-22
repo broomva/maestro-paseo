@@ -42,7 +42,7 @@ export type WorkEvent = Base &
         detail: string | null;
       }
     | { type: "permission.resolved"; actor: "human"; agentId: string; requestId: string }
-    | { type: "checks.started"; actor: "maestro"; token: string }
+    | { type: "checks.started"; actor: "maestro"; token: string; recovered?: boolean }
     | { type: "checks.finished"; actor: "maestro"; token: string; results: CheckResult[] }
     | { type: "state"; actor: Actor; from: OrchState; to: OrchState; reason: string | null }
     | { type: "gate"; actor: "human"; verdict: Verdict; note: string }

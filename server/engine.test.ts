@@ -10,7 +10,7 @@ import { EVENTS_FILE, WORK_FILE, WorkStore } from "./store";
 interface FakeAgent {
   id: string;
   cwd: string;
-  status: "idle" | "running" | "error";
+  status: "idle" | "running" | "error" | "closed";
   workspaceId: string;
   provider: string;
   title: string | null;
@@ -24,6 +24,8 @@ function fakePaseo() {
   const agents = new Map<string, FakeAgent>();
   const sent: Array<{ agentId: string; text: string }> = [];
   const created: Array<Record<string, unknown>> = [];
+  const archived: string[] = [];
+  const timelines = new Map<string, unknown[]>();
   let failSend = false;
   let n = 0;
   const makeWorkspace = (directory: string) => ({
@@ -70,6 +72,15 @@ function fakePaseo() {
           if (failSend) throw new Error("socket closed");
           sent.push({ agentId: id, text });
         },
+        archive: async () => {
+          archived.push(id);
+          const agent = agents.get(id);
+          if (agent) agent.archivedAt = new Date().toISOString();
+          return { archivedAt: new Date().toISOString() };
+        },
+        timeline: {
+          refetch: async () => ({ entries: (timelines.get(id) ?? []).map((item) => ({ item })) }),
+        },
       }),
     },
   } as unknown as Paseo;
@@ -78,10 +89,24 @@ function fakePaseo() {
     agents,
     sent,
     created,
+    archived,
+    timelines,
     failNextSends: () => {
       failSend = true;
     },
   };
+}
+
+/** A real agent is idle once its turn ends; the fixture has to say so too. */
+async function endTurn(
+  engine: Engine,
+  fake: ReturnType<typeof fakePaseo>,
+  timeline: Parameters<Engine["onTurnEnded"]>[2] = [],
+  agentId = "agent-1",
+) {
+  const agent = fake.agents.get(agentId);
+  if (agent) agent.status = "idle";
+  await engine.onTurnEnded({ id: agentId }, { kind: "completed" }, timeline);
 }
 
 let clock = Date.parse("2026-09-22T09:00:00.000Z");
@@ -219,9 +244,9 @@ describe("the gate", () => {
   });
 
   test("approve closes it; the file and the log both say so", async () => {
-    const { create, engine, config } = await setup();
+    const { create, engine, config, fake } = await setup();
     const item = await create();
-    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, []);
+    await endTurn(engine, fake);
     const done = await engine.verdict(null as unknown as Paseo, item.id, "approve", "");
     expect(done.state).toBe("done");
     expect(done.verdict).toBe("You approved");
@@ -233,7 +258,7 @@ describe("the gate", () => {
   test("send back needs a note, wakes the same session, and returns to running", async () => {
     const { create, engine, fake } = await setup();
     const item = await create();
-    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, []);
+    await endTurn(engine, fake);
     await expect(engine.verdict(fake.paseo, item.id, "revise", "  ")).rejects.toThrow("Say what should change");
     const back = await engine.verdict(fake.paseo, item.id, "revise", "Add a replay test");
     expect(back.state).toBe("running");
@@ -244,7 +269,7 @@ describe("the gate", () => {
   test("a send back that cannot reach the session parks as stuck with the reason", async () => {
     const { create, engine, fake } = await setup();
     const item = await create();
-    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, []);
+    await endTurn(engine, fake);
     fake.failNextSends();
     const stuck = await engine.verdict(fake.paseo, item.id, "revise", "Again");
     expect(stuck.state).toBe("blocked");
@@ -260,25 +285,25 @@ describe("the gate", () => {
 
 describe("checks", () => {
   test("gate:auto with a passing check closes itself", async () => {
-    const { create, engine } = await setup();
+    const { create, engine, fake } = await setup();
     const item = await create({ gate: "auto", check: "true" });
-    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, []);
+    await endTurn(engine, fake);
     const done = await settle(engine, item.id, "done");
     expect(done.verdict).toBe("Check passed");
   });
 
   test("gate:auto with a failing check is stuck, with the reason", async () => {
-    const { create, engine } = await setup();
+    const { create, engine, fake } = await setup();
     const item = await create({ gate: "auto", check: "exit 1" });
-    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, []);
+    await endTurn(engine, fake);
     const stuck = await settle(engine, item.id, "blocked");
     expect(stuck.reason).toBe("Checks failed");
   });
 
   test("gate:human still waits for you when checks pass", async () => {
-    const { create, engine } = await setup();
+    const { create, engine, fake } = await setup();
     const item = await create({ check: "true" });
-    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, []);
+    await endTurn(engine, fake);
     const landed = await settle(engine, item.id, "review");
     expect(landed.verdict).toBe("Check passed");
   });
@@ -349,7 +374,10 @@ describe("reconcile", () => {
     fake.agents.delete("agent-1");
     tick(1);
     await engine.list(fake.paseo);
-    expect((await engine.get(item.id)).item).toMatchObject({ state: "blocked", reason: "The session is gone" });
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "blocked",
+      reason: "The session ended before the run finished",
+    });
   });
 
   test("adopting an idle session puts it at the gate", async () => {
@@ -376,7 +404,7 @@ test("list orders attention first and reports broken files as warnings", async (
   const { create, engine, fake, config } = await setup();
   const running = await create();
   const other = await create({ dispatch: false });
-  await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, []);
+  await endTurn(engine, fake);
   await mkdir(join(config.workRoot, "broken"), { recursive: true });
   await Bun.write(join(config.workRoot, "broken", WORK_FILE), "no frontmatter");
   const { items, warnings } = await engine.list(fake.paseo);
@@ -397,4 +425,156 @@ test("separate assistant messages keep a paragraph break, so a final heading sti
   ]);
   expect(text).toBe("Let me verify the checks:\n\n## Decided\n- **Content**: exact line\n## Ask\nShip it");
   expect(section(text, "Decided")).toBe("- **Content**: exact line");
+});
+
+describe("recovery acts only on what it saw", () => {
+  test("M1: a real turn end that lands first wins; reconcile does not wipe its summary", async () => {
+    const { create, engine, fake, store } = await setup();
+    const item = await create();
+    tick(5);
+    const stale = (await store.scan()).items;
+    await endTurn(engine, fake, [
+      { type: "user_message", text: "go" },
+      { type: "assistant_message", text: "Done.\n## Decided\n- kept it small\n## Ask\nShip it?" },
+    ]);
+    await engine.reconcile(fake.paseo, stale);
+    const { item: landed, events } = await engine.get(item.id);
+    expect(landed.state).toBe("review");
+    expect(landed.look?.decided).toEqual(["kept it small"]);
+    expect(events.filter((e) => e.type === "turn.ended")).toHaveLength(1);
+  });
+
+  test("M2: a missed end is read from the timeline, and a failure is not called a success", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create({ gate: "auto", check: "true" });
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    fake.timelines.set("agent-1", [
+      { type: "user_message", text: "go" },
+      { type: "error", message: "Provider rate limit" },
+    ]);
+    tick(5);
+    await engine.list(fake.paseo);
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "blocked", reason: "Provider rate limit" });
+  });
+
+  test("M2: a recovered completion never closes itself, even when the checks pass", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create({ gate: "auto", check: "true" });
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    fake.timelines.set("agent-1", [
+      { type: "user_message", text: "go" },
+      { type: "assistant_message", text: "Finished." },
+    ]);
+    tick(5);
+    await engine.list(fake.paseo);
+    const landed = await settle(engine, item.id, "review");
+    expect(landed.verdict).toBe("Check passed");
+    const { events } = await engine.get(item.id);
+    expect(events.at(-1)).toMatchObject({
+      text: "Waiting on you",
+      detail: "Recovered after a missed event; the checks passed",
+    });
+  });
+
+  test("m2: a closed session is stuck, not running forever", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "closed";
+    tick(1);
+    await engine.list(fake.paseo);
+    expect((await engine.get(item.id)).item.state).toBe("blocked");
+  });
+
+  test("m3: a session archived while asking leaves stuck work, not an unanswerable question", async () => {
+    const { create, engine } = await setup();
+    const item = await create();
+    await engine.onPermissionRequested({ id: "agent-1" }, { id: "p1", name: "Bash", input: { command: "ls" } });
+    await engine.onArchived({ id: "agent-1" });
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "blocked",
+      reason: "The session was archived while it was asking",
+    });
+  });
+
+  test("m5: approve is refused while the session is working again", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "running";
+    await expect(engine.verdict(fake.paseo, item.id, "approve", "")).rejects.toThrow("working again");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+  });
+});
+
+describe("dispatch and dead ends", () => {
+  test("M4: work canceled while its run starts archives the new session and records it", async () => {
+    const { engine, fake, repo, store } = await setup();
+    const draft = await engine.create(fake.paseo, {
+      title: "Race",
+      brief: "",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "",
+      dispatch: false,
+    });
+    const original = fake.paseo.workspaces.create;
+    fake.paseo.workspaces.create = (async (options: Parameters<typeof original>[0]) => {
+      const workspace = await original(options);
+      await store.mutate(draft.id, () => ({ to: "canceled", actor: "human" }));
+      return workspace;
+    }) as typeof original;
+    await expect(engine.dispatch(fake.paseo, draft.id)).rejects.toThrow("changed while the run was starting");
+    expect(fake.archived).toEqual(["agent-1"]);
+    const { item, events } = await engine.get(draft.id);
+    expect(item.state).toBe("canceled");
+    expect(events.at(-1)?.text).toContain("Archived session agent-1");
+  });
+
+  test("M5: running work with no recorded session gets a way out", async () => {
+    const { engine, fake, config } = await setup();
+    const dir = join(config.workRoot, "orphan");
+    await mkdir(dir, { recursive: true });
+    await Bun.write(
+      join(dir, WORK_FILE),
+      "---\nid: orphan-1\nkind: task\nstate: running\ngate: human\ncreated: 2026-09-22\nupdated: 2026-09-22\n---\n\n# Orphan\n",
+    );
+    await engine.list(fake.paseo);
+    expect((await engine.get("orphan-1")).item).toMatchObject({
+      state: "blocked",
+      reason: "No session is recorded for this run",
+    });
+    expect((await engine.cancel("orphan-1")).state).toBe("canceled");
+  });
+
+  test("m4: a torn event line is reported, and the next event is not swallowed", async () => {
+    const { create, engine, fake, config } = await setup();
+    const item = await create({ dispatch: false });
+    const events = join(config.workRoot, "hawthorne", "persist-run-transcripts", EVENTS_FILE);
+    const { appendFile } = await import("node:fs/promises");
+    await appendFile(events, '{"ts":"2026-09-22T09:00:00.000Z","type":"no');
+    await engine.dispatch(fake.paseo, item.id);
+    const { warnings } = await engine.list(fake.paseo);
+    expect(warnings.some((w) => w.includes("1 unreadable line"))).toBe(true);
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "running", worker: { agentId: "agent-1" } });
+  });
+
+  test("relative repository paths are refused", async () => {
+    const { engine, fake } = await setup();
+    await expect(
+      engine.create(fake.paseo, {
+        title: "x",
+        brief: "",
+        repo: "code/project",
+        gate: "human",
+        check: "",
+        initiative: "",
+        dispatch: false,
+      }),
+    ).rejects.toThrow("absolute path");
+  });
 });

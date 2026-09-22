@@ -14,6 +14,8 @@
 //   2. cancel from proposed, triggered or blocked. Maestro routes this through
 //      an audited human override; here it is the "Cancel work" verb, recorded
 //      in the event log as a human action.
+//   3. review -> blocked, only when the session behind a pending question is
+//      gone: nobody is left to answer, so the work is stuck, not waiting.
 // The invariant that matters is kept exactly: under gate:human nothing reaches
 // done without an approve verdict.
 
@@ -103,7 +105,7 @@ const LEGAL: Record<OrchState, readonly OrchState[]> = {
   triggered: ["running", "canceled"],
   running: ["review", "blocked", "done"],
   blocked: ["running", "triggered", "canceled"],
-  review: ["done", "running", "canceled"],
+  review: ["done", "running", "canceled", "blocked"],
   done: [],
   canceled: [],
 };

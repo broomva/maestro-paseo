@@ -35,3 +35,8 @@ test("provider wording wins when it exists, and unknown tools keep their name", 
 test("paths outside the run stay absolute", () => {
   expect(describePermission({ name: "Read", input: { file_path: "/etc/hosts" } }, cwd).detail).toBe("/etc/hosts");
 });
+
+test("tool names never resolve to object prototype members", () => {
+  expect(describePermission({ name: "constructor" }, null).title).toBe("constructor");
+  expect(describePermission({ name: "toString" }, null).title).toBe("toString");
+});

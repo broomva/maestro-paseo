@@ -21,12 +21,23 @@ export function checkEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.Proces
   return env;
 }
 
+/** How long output may keep draining after the shell exits. */
+const DRAIN_MS = 250;
+/** Extra time after a timeout kill before giving up on the process entirely. */
+const KILL_GRACE_MS = 2000;
+
+/**
+ * Runs one check. It settles on the shell's exit, not on its pipes closing: a
+ * command that leaves a detached child holding stdout would otherwise keep the
+ * check open forever. A hard deadline settles it even if the kill does not.
+ */
 export function runCheck(check: CheckRun, cwd: string, signal?: AbortSignal): Promise<CheckResult> {
   const started = Date.now();
   return new Promise((resolve) => {
     let output = "";
     let timedOut = false;
     let settled = false;
+    const timers: ReturnType<typeof setTimeout>[] = [];
     const child = spawn("/bin/sh", ["-c", check.run], {
       cwd,
       env: checkEnv(),
@@ -46,17 +57,13 @@ export function runCheck(check: CheckRun, cwd: string, signal?: AbortSignal): Pr
         child.kill("SIGKILL");
       }
     };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      kill();
-    }, check.timeoutS * 1000);
-    const onAbort = () => kill();
-    signal?.addEventListener("abort", onAbort, { once: true });
     const finish = (exit: number | null, extra = "") => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      for (const timer of timers) clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
       resolve({
         name: check.name,
         run: check.run,
@@ -68,7 +75,19 @@ export function runCheck(check: CheckRun, cwd: string, signal?: AbortSignal): Pr
         tail: (output + extra).slice(-TAIL_CHARS),
       });
     };
+    const onAbort = () => kill();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    timers.push(
+      setTimeout(() => {
+        timedOut = true;
+        kill();
+        timers.push(setTimeout(() => finish(null, "\nThe check did not stop after it timed out."), KILL_GRACE_MS));
+      }, check.timeoutS * 1000),
+    );
     child.on("error", (error) => finish(null, `\n${error.message}`));
+    child.on("exit", (code) => {
+      timers.push(setTimeout(() => finish(code), DRAIN_MS));
+    });
     child.on("close", (code) => finish(code));
   });
 }
