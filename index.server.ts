@@ -35,7 +35,9 @@ export default function contribute(server: PluginServerContext) {
   server.handle(setConfig, (input) => saveConfig(input));
 
   server.on("agent.turn_started", (event) => engine.onTurnStarted(event.agent));
-  server.on("agent.turn_ended", (event) => engine.onTurnEnded(event.agent, event.outcome, event.timeline));
+  server.on("agent.turn_ended", (event) =>
+    engine.onTurnEnded(event.agent, event.outcome, event.timeline, event.turnId),
+  );
   server.on("agent.permission_requested", (event) => engine.onPermissionRequested(event.agent, event.request));
   server.on("agent.permission_resolved", (event) => engine.onPermissionResolved(event.agent, event.requestId));
   server.on("agent.archived", (event) => engine.onArchived(event.agent));

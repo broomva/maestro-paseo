@@ -68,6 +68,9 @@ interface HookAgent {
   id: string;
 }
 
+/** A change applied to one work item, given its store. */
+type ItemChange = (store: WorkStore, item: StoredWork) => Promise<void>;
+
 type Outcome =
   | { kind: "completed" }
   | { kind: "failed"; error: { message: string } }
@@ -75,12 +78,27 @@ type Outcome =
 
 /** The outcome a timeline shows for its latest turn: an error item after the last prompt means it failed. */
 export function outcomeOf(timeline: readonly AgentTimelineItem[]): Outcome {
-  let failure: string | null = null;
-  for (const item of timeline) {
-    if (item.type === "user_message") failure = null;
-    else if (item.type === "error") failure = item.message;
-  }
-  return failure ? { kind: "failed", error: { message: failure } } : { kind: "completed" };
+  // Only an error that ends the turn fails it; one the agent recovered from does not.
+  const last = timeline.at(-1);
+  return last?.type === "error" ? { kind: "failed", error: { message: last.message } } : { kind: "completed" };
+}
+
+/**
+ * Whether a turn end repeats one already recorded: the same provider turn id,
+ * or an end already recorded for this running stretch with no turn start after
+ * it. A late hook after a recovered end is the case this catches.
+ */
+export function isDuplicateEnd(events: readonly WorkEvent[], turnId: string | null): boolean {
+  if (turnId && events.some((event) => event.type === "turn.ended" && event.turnId === turnId)) return true;
+  let lastEnd = -1;
+  let lastRun = -1;
+  let lastStart = -1;
+  events.forEach((event, index) => {
+    if (event.type === "turn.ended") lastEnd = index;
+    else if (event.type === "turn.started") lastStart = index;
+    else if (event.type === "state" && event.to === "running") lastRun = index;
+  });
+  return lastEnd > lastRun && lastEnd > lastStart;
 }
 
 const QUEUE_MS = 120_000;
@@ -108,10 +126,15 @@ export class Engine {
   private readonly activeChecks = new Set<string>();
   /** Hook events for an agent that is not bound yet, in arrival order. */
   private readonly queues = new Map<string, { at: number; runs: Array<() => Promise<unknown>> }>();
-  /** Agent id to work folder, from the latest scan plus every binding made since. */
-  private readonly agentDirs = new Map<string, string>();
-  private indexedRoot = "";
-  private indexedAt = 0;
+  /**
+   * Per work root, agent id to work folder: every scan and every binding adds
+   * to it and nothing clears it, so a scan that started before a binding was
+   * written can never erase that binding. An entry is dropped only when its
+   * folder turns out to hold a different session.
+   */
+  private readonly agentDirs = new Map<string, Map<string, string>>();
+  private readonly indexedAt = new Map<string, number>();
+  private readonly draining = new Set<string>();
   private readonly abort = new AbortController();
   private lastReconcile = 0;
 
@@ -140,14 +163,34 @@ export class Engine {
 
   // ── The agent index ────────────────────────────────────────────────────────
 
+  private dirs(root: string): Map<string, string> {
+    let dirs = this.agentDirs.get(root);
+    if (!dirs) {
+      dirs = new Map();
+      this.agentDirs.set(root, dirs);
+    }
+    return dirs;
+  }
+
+  private knows(agentId: string): boolean {
+    for (const dirs of this.agentDirs.values()) if (dirs.has(agentId)) return true;
+    return false;
+  }
+
   private index(store: WorkStore, items: readonly StoredWork[]): void {
-    this.agentDirs.clear();
+    const dirs = this.dirs(store.root);
     for (const item of items) {
       const worker = workerOf(item.events);
-      if (worker) this.agentDirs.set(worker.agentId, item.dir);
+      if (worker) dirs.set(worker.agentId, item.dir);
     }
-    this.indexedRoot = store.root;
-    this.indexedAt = Date.now();
+    this.indexedAt.set(store.root, Date.now());
+  }
+
+  /** The item in `dir`, read now, if its current session is this agent. */
+  private async loadBound(store: WorkStore, dir: string, agentId: string): Promise<StoredWork | null> {
+    const item = await store.load(dir).catch(() => null);
+    if (item && workerOf(item.events)?.agentId === agentId) return item;
+    return null;
   }
 
   /**
@@ -156,18 +199,19 @@ export class Engine {
    * from agents Maestro does not track stay cheap.
    */
   private async findByAgent(store: WorkStore, agentId: string): Promise<StoredWork | null> {
-    if (this.indexedRoot !== store.root) this.agentDirs.clear();
-    const dir = this.agentDirs.get(agentId);
+    const dirs = this.dirs(store.root);
+    const dir = dirs.get(agentId);
     if (dir) {
-      const item = await store.load(dir).catch(() => null);
-      if (item && workerOf(item.events)?.agentId === agentId) return item;
+      const item = await this.loadBound(store, dir, agentId);
+      if (item) return item;
+      if (dirs.get(agentId) === dir) dirs.delete(agentId);
     }
-    const fresh = this.indexedRoot === store.root && Date.now() - this.indexedAt < INDEX_MS;
+    const fresh = Date.now() - (this.indexedAt.get(store.root) ?? 0) < INDEX_MS;
     if (fresh && this.dispatching.size === 0) return null;
     const { items } = await store.scan();
     this.index(store, items);
-    const found = this.agentDirs.get(agentId);
-    return found ? (items.find((item) => item.dir === found) ?? null) : null;
+    const found = dirs.get(agentId);
+    return found ? this.loadBound(store, found, agentId) : null;
   }
 
   // ── Reads ──────────────────────────────────────────────────────────────────
@@ -290,6 +334,13 @@ export class Engine {
           .archive()
           .then(() => true)
           .catch(() => false);
+        const workspaceId = worker.workspaceId;
+        if (workspaceId) {
+          // Best effort: a failed cleanup must never replace the error that caused it.
+          await Promise.resolve()
+            .then(() => paseo.workspaces.archive(workspaceId))
+            .catch(() => undefined);
+        }
         await store
           .mutate(
             id,
@@ -305,11 +356,15 @@ export class Engine {
           .catch(() => undefined);
         throw error instanceof UserError ? error : new UserError((error as Error).message);
       }
-      this.agentDirs.set(worker.agentId, bound.dir);
+      this.dirs(store.root).set(worker.agentId, bound.dir);
       await this.flush(worker.agentId);
       return toWire(await store.fresh(id, bound.dir), this.now().getTime());
     } finally {
       this.dispatching.delete(id);
+      // With no dispatch left in flight nothing else can bind a queued agent: settle every queue now.
+      if (this.dispatching.size === 0) {
+        for (const agentId of [...this.queues.keys()]) await this.flush(agentId);
+      }
     }
   }
 
@@ -434,7 +489,9 @@ export class Engine {
   /** Track a session that was started by hand, so its end lands at the gate. */
   async adopt(paseo: Paseo, agentId: string, title: string): Promise<WorkItem> {
     const { store } = await this.store();
-    const existing = await this.findByAgent(store, agentId);
+    const { items } = await store.scan();
+    this.index(store, items);
+    const existing = items.find((item) => workerOf(item.events)?.agentId === agentId);
     if (existing) return toWire(existing, this.now().getTime());
     const snapshot = await paseo.agents.ref(agentId).refresh();
     if (!snapshot) throw new UserError("That session no longer exists.");
@@ -469,7 +526,7 @@ export class Engine {
       }),
       created.dir,
     );
-    this.agentDirs.set(agentId, running.dir);
+    this.dirs(store.root).set(agentId, running.dir);
     if (agent.status === "running") return toWire(running, this.now().getTime());
     const landed = await store.mutate(
       id,
@@ -498,19 +555,23 @@ export class Engine {
   }
 
   // ── Lifecycle hooks ────────────────────────────────────────────────────────
+  //
+  // Each hook resolves the work bound to its agent, then applies an item-level
+  // change. Reconcile applies the same item-level changes to the item it read,
+  // never by looking the agent up again.
 
   private prune(): void {
     for (const [agentId, entry] of this.queues) {
-      if (Date.now() - entry.at > QUEUE_MS) this.queues.delete(agentId);
+      if (Date.now() - entry.at > QUEUE_MS && !this.draining.has(agentId)) this.queues.delete(agentId);
     }
   }
 
   /** Runs `run` against the work bound to this agent; false when no work is. */
-  private async deliver(agentId: string, run: (item: StoredWork, store: WorkStore) => Promise<void>): Promise<boolean> {
+  private async deliver(agentId: string, run: ItemChange): Promise<boolean> {
     const { store } = await this.store();
     const item = await this.findByAgent(store, agentId);
     if (!item) return false;
-    await run(item, store);
+    await run(store, item);
     return true;
   }
 
@@ -519,13 +580,15 @@ export class Engine {
    * Paseo returns the agent, and the first turn can start before that, so
    * events for an unknown agent wait in a queue while a dispatch is in
    * flight. Anything that arrives while a queue exists joins it, so a live
-   * event can never overtake one that is still waiting.
+   * event never overtakes one still waiting, and a queue is drained as soon as
+   * its agent is bound or no dispatch is left that could bind it.
    */
-  private async route(agentId: string, run: (item: StoredWork, store: WorkStore) => Promise<void>): Promise<void> {
+  private async route(agentId: string, run: ItemChange): Promise<void> {
     this.prune();
     const waiting = this.queues.get(agentId);
     if (waiting) {
       waiting.runs.push(() => this.deliver(agentId, run));
+      if (this.knows(agentId) || this.dispatching.size === 0) await this.flush(agentId);
       return;
     }
     if (await this.deliver(agentId, run)) return;
@@ -534,144 +597,52 @@ export class Engine {
     entry.runs.push(() => this.deliver(agentId, run));
     this.queues.set(agentId, entry);
     // The binding may have landed while this event looked for it; drain now.
-    if (this.agentDirs.has(agentId)) await this.flush(agentId);
+    if (this.knows(agentId)) await this.flush(agentId);
   }
 
+  /** Drains one agent's queue in order. One drain per agent: a second caller leaves new events to it. */
   private async flush(agentId: string): Promise<void> {
+    if (this.draining.has(agentId)) return;
     const entry = this.queues.get(agentId);
     if (!entry) return;
-    for (let next = entry.runs.shift(); next; next = entry.runs.shift()) {
-      await next().catch((error) => this.log(`replay failed for ${agentId}: ${(error as Error).message}`));
+    this.draining.add(agentId);
+    try {
+      for (let next = entry.runs.shift(); next; next = entry.runs.shift()) {
+        await next().catch((error) => this.log(`replay failed for ${agentId}: ${(error as Error).message}`));
+      }
+      this.queues.delete(agentId);
+    } finally {
+      this.draining.delete(agentId);
     }
-    this.queues.delete(agentId);
   }
 
   async onTurnStarted(agent: HookAgent): Promise<void> {
-    await this.route(agent.id, async (item, store) => {
-      await store.mutate(
-        item.contract.id,
-        (fresh) => {
-          const event: WorkEvent = { ts: this.stamp(), type: "turn.started", actor: "agent", agentId: agent.id };
-          const state = fresh.contract.state;
-          if (state === "running") return { events: [event] };
-          if (state === "review" && !pendingPermission(fresh.events)) {
-            return { to: "running", actor: "human", reason: "You continued the session", events: [event] };
-          }
-          if (state === "blocked") {
-            return { to: "running", actor: "human", reason: "Resumed in the session", events: [event] };
-          }
-          return null;
-        },
-        item.dir,
-      );
-    });
+    await this.route(agent.id, (store, item) => this.startTurn(store, item, agent.id));
   }
 
-  /**
-   * A turn ended. `recovered` marks an end reconcile inferred rather than
-   * observed; `seen` is the event count reconcile read, and the change is
-   * dropped if anything was recorded since.
-   */
   async onTurnEnded(
     agent: HookAgent,
     outcome: Outcome,
     timeline: readonly AgentTimelineItem[],
-    options: { recovered?: boolean; seen?: number; endedAt?: string } = {},
+    turnId: string | null = null,
   ): Promise<void> {
-    await this.route(agent.id, async (item, store) => {
-      let token: string | null = null;
-      const updated = await store.mutate(
-        item.contract.id,
-        (fresh): Mutation | null => {
-          if (options.seen !== undefined && fresh.events.length !== options.seen) return null;
-          const at = options.endedAt ?? this.stamp();
-          const ended: WorkEvent = {
-            ts: at,
-            type: "turn.ended",
-            actor: "agent",
-            agentId: agent.id,
-            outcome: outcome.kind,
-            error: outcome.kind === "failed" ? outcome.error.message : null,
-            summary: latestOutputText(timeline),
-          };
-          if (fresh.contract.state !== "running") return { events: [ended] };
-          if (outcome.kind === "failed") return { at, to: "blocked", reason: outcome.error.message, events: [ended] };
-          if (outcome.kind === "canceled") {
-            return { at, to: "blocked", reason: "Stopped before finishing", events: [ended] };
-          }
-          if (fresh.contract.checks.length > 0) {
-            token = `${agent.id}:${ended.ts}`;
-            const started: WorkEvent = {
-              ts: this.stamp(),
-              type: "checks.started",
-              actor: "maestro",
-              token,
-              ...(options.recovered ? { recovered: true } : {}),
-            };
-            return { events: [ended, started] };
-          }
-          const reason = options.recovered ? "Recovered after a missed event" : null;
-          return { at, to: landingState(fresh.contract.gate, "none"), reason, events: [ended] };
-        },
-        item.dir,
-      );
-      if (token) void this.runChecksFor(store, updated, token);
-    });
+    await this.route(agent.id, (store, item) => this.endTurn(store, item, agent.id, outcome, timeline, { turnId }));
   }
 
   async onPermissionRequested(agent: HookAgent, request: PermissionLike & { id: string }): Promise<void> {
-    await this.route(agent.id, async (item, store) => {
-      await store.mutate(
-        item.contract.id,
-        (fresh) => {
-          if (pendingPermission(fresh.events)?.requestId === request.id) return null;
-          const { title, detail } = describePermission(request, workerOf(fresh.events)?.cwd ?? null);
-          const asked: WorkEvent = {
-            ts: this.stamp(),
-            type: "permission.asked",
-            actor: "agent",
-            agentId: agent.id,
-            requestId: request.id,
-            title,
-            detail,
-          };
-          if (fresh.contract.state !== "running") return { events: [asked] };
-          return { to: "review", actor: "agent", reason: "Asked for permission", events: [asked] };
-        },
-        item.dir,
-      );
-    });
+    await this.route(agent.id, (store, item) => this.askPermission(store, item, agent.id, request));
   }
 
   async onPermissionResolved(agent: HookAgent, requestId: string): Promise<void> {
-    await this.route(agent.id, async (item, store) => {
-      await store.mutate(
-        item.contract.id,
-        (fresh) => {
-          const pending = pendingPermission(fresh.events);
-          const resolved: WorkEvent = {
-            ts: this.stamp(),
-            type: "permission.resolved",
-            actor: "human",
-            agentId: agent.id,
-            requestId,
-          };
-          if (pending?.requestId !== requestId) return null;
-          if (fresh.contract.state === "review") {
-            return { to: "running", actor: "human", reason: "Permission answered", events: [resolved] };
-          }
-          return { events: [resolved] };
-        },
-        item.dir,
-      );
-    });
+    await this.route(agent.id, (store, item) => this.resolvePermission(store, item, agent.id, requestId));
   }
 
   async onArchived(agent: HookAgent): Promise<void> {
-    await this.route(agent.id, async (item, store) => {
+    await this.route(agent.id, async (store, item) => {
       await store.mutate(
         item.contract.id,
         (fresh) => {
+          if (workerOf(fresh.events)?.agentId !== agent.id) return null;
           const state = fresh.contract.state;
           if (state === "running") return { to: "blocked", reason: "The session was archived before it finished" };
           if (state === "review" && pendingPermission(fresh.events)) {
@@ -683,6 +654,136 @@ export class Engine {
         item.dir,
       );
     });
+  }
+
+  private async startTurn(store: WorkStore, item: StoredWork, agentId: string): Promise<void> {
+    await store.mutate(
+      item.contract.id,
+      (fresh) => {
+        if (workerOf(fresh.events)?.agentId !== agentId) return null;
+        const event: WorkEvent = { ts: this.stamp(), type: "turn.started", actor: "agent", agentId };
+        const state = fresh.contract.state;
+        if (state === "running") return { events: [event] };
+        if (state === "review" && !pendingPermission(fresh.events)) {
+          return { to: "running", actor: "human", reason: "You continued the session", events: [event] };
+        }
+        if (state === "blocked") {
+          return { to: "running", actor: "human", reason: "Resumed in the session", events: [event] };
+        }
+        return null;
+      },
+      item.dir,
+    );
+  }
+
+  /**
+   * A turn ended. `recovered` marks an end reconcile inferred rather than
+   * observed; `seen` is the event count reconcile read, and the change is
+   * dropped if anything was recorded since. A repeat of an end already
+   * recorded (a late hook after recovery) changes nothing.
+   */
+  private async endTurn(
+    store: WorkStore,
+    item: StoredWork,
+    agentId: string,
+    outcome: Outcome,
+    timeline: readonly AgentTimelineItem[],
+    options: { recovered?: boolean; seen?: number; endedAt?: string; turnId?: string | null },
+  ): Promise<void> {
+    let token: string | null = null;
+    const updated = await store.mutate(
+      item.contract.id,
+      (fresh): Mutation | null => {
+        if (options.seen !== undefined && fresh.events.length !== options.seen) return null;
+        if (workerOf(fresh.events)?.agentId !== agentId) return null;
+        if (isDuplicateEnd(fresh.events, options.turnId ?? null)) return null;
+        const at = options.endedAt ?? this.stamp();
+        const ended: WorkEvent = {
+          ts: at,
+          type: "turn.ended",
+          actor: "agent",
+          agentId,
+          outcome: outcome.kind,
+          error: outcome.kind === "failed" ? outcome.error.message : null,
+          summary: latestOutputText(timeline),
+          turnId: options.turnId ?? null,
+        };
+        if (fresh.contract.state !== "running") return { events: [ended] };
+        if (outcome.kind === "failed") return { at, to: "blocked", reason: outcome.error.message, events: [ended] };
+        if (outcome.kind === "canceled") {
+          return { at, to: "blocked", reason: "Stopped before finishing", events: [ended] };
+        }
+        if (fresh.contract.checks.length > 0) {
+          token = `${agentId}:${ended.ts}`;
+          const started: WorkEvent = {
+            ts: this.stamp(),
+            type: "checks.started",
+            actor: "maestro",
+            token,
+            ...(options.recovered ? { recovered: true, endedAt: at } : {}),
+          };
+          return { events: [ended, started] };
+        }
+        const reason = options.recovered ? "Recovered after a missed event" : null;
+        return { at, to: landingState(fresh.contract.gate, "none"), reason, events: [ended] };
+      },
+      item.dir,
+    );
+    if (token) void this.runChecksFor(store, updated, token);
+  }
+
+  private async askPermission(
+    store: WorkStore,
+    item: StoredWork,
+    agentId: string,
+    request: PermissionLike & { id: string },
+  ): Promise<void> {
+    await store.mutate(
+      item.contract.id,
+      (fresh) => {
+        if (workerOf(fresh.events)?.agentId !== agentId) return null;
+        if (pendingPermission(fresh.events)?.requestId === request.id) return null;
+        const { title, detail } = describePermission(request, workerOf(fresh.events)?.cwd ?? null);
+        const asked: WorkEvent = {
+          ts: this.stamp(),
+          type: "permission.asked",
+          actor: "agent",
+          agentId,
+          requestId: request.id,
+          title,
+          detail,
+        };
+        if (fresh.contract.state !== "running") return { events: [asked] };
+        return { to: "review", actor: "agent", reason: "Asked for permission", events: [asked] };
+      },
+      item.dir,
+    );
+  }
+
+  private async resolvePermission(
+    store: WorkStore,
+    item: StoredWork,
+    agentId: string,
+    requestId: string,
+  ): Promise<void> {
+    await store.mutate(
+      item.contract.id,
+      (fresh) => {
+        if (pendingPermission(fresh.events)?.requestId !== requestId) return null;
+        const resolved: WorkEvent = {
+          ts: this.stamp(),
+          type: "permission.resolved",
+          actor: "human",
+          agentId,
+          requestId,
+        };
+        if (fresh.contract.state === "review") {
+          return { to: "running", actor: "human", reason: "Permission answered", events: [resolved] };
+        }
+        return { events: [resolved] };
+      },
+      item.dir,
+    );
   }
 
   // ── Checks ─────────────────────────────────────────────────────────────────
@@ -702,15 +803,22 @@ export class Engine {
           const started = fresh.events.findIndex((event) => event.type === "checks.started" && event.token === token);
           const startedEvent = fresh.events[started];
           const recovered = startedEvent?.type === "checks.started" && startedEvent.recovered === true;
+          const endedAt = startedEvent?.type === "checks.started" ? startedEvent.endedAt : undefined;
           const newerTurn = fresh.events.slice(started + 1).some((event) => event.type === "turn.started");
           if (fresh.contract.state !== "running" || newerTurn) return { events: [finished] };
           const outcome = cwd ? checkOutcome(results) : "none";
           const target = landingState(fresh.contract.gate, outcome);
-          // An end reconcile inferred may close nothing by itself: it lands at the gate instead.
+          // An end reconcile inferred closes nothing by itself, and its running time ends when the agent stopped.
           if (recovered && target === "done") {
-            return { to: "review", reason: "Recovered after a missed event; the checks passed", events: [finished] };
+            return {
+              at: endedAt,
+              to: "review",
+              reason: "Recovered after a missed event; the checks passed",
+              events: [finished],
+            };
           }
           return {
+            at: recovered ? endedAt : undefined,
             to: target,
             reason: outcome === "failed" ? "Checks failed" : null,
             ctx: { checksPassed: outcome === "passed" },
@@ -785,7 +893,7 @@ export class Engine {
     }
     if (state === "review") {
       if (permission && !agent.pendingPermissions.some((p) => p.id === permission.requestId)) {
-        await this.onPermissionResolved({ id: agent.id }, permission.requestId);
+        await this.resolvePermission(store, item, agent.id, permission.requestId);
         return true;
       }
       if (!permission && agent.status === "running") {
@@ -795,7 +903,7 @@ export class Engine {
     }
     const first = agent.pendingPermissions[0];
     if (first) {
-      await this.onPermissionRequested({ id: agent.id }, first);
+      await this.askPermission(store, item, agent.id, first);
       return true;
     }
     if (agent.status === "error") {
@@ -805,18 +913,24 @@ export class Engine {
     const last = lastOf(item.events, "dispatched", "adopted", "state", "turn.started");
     const since = last ? this.now().getTime() - Date.parse(last.ts) : Number.POSITIVE_INFINITY;
     if (since <= MISSED_END_MS) return false;
-    // The end was missed. Read what happened instead of assuming it went well.
+    // The end was missed. Read what happened instead of assuming it went well; if it cannot be read, try later.
     const page = await paseo.agents
       .ref(agent.id)
       .timeline.refetch({ direction: "tail", limit: 60 })
       .catch(() => null);
-    const entries = page?.entries ?? [];
-    const timeline = entries.map((entry) => entry.item);
+    if (!page) return false;
+    const timeline = page.entries.map((entry) => entry.item);
     // Stamp the recovered end when the agent really stopped, so unsupervised time is not inflated.
-    const endedAt = entries.at(-1)?.timestamp;
+    const tail = page.entries.at(-1);
     const lastSeen = last ? Date.parse(last.ts) : 0;
-    const usable = endedAt && Date.parse(endedAt) >= lastSeen ? new Date(endedAt).toISOString() : undefined;
-    await this.onTurnEnded({ id: agent.id }, outcomeOf(timeline), timeline, { recovered: true, seen, endedAt: usable });
+    const endedAt =
+      tail?.timestamp && Date.parse(tail.timestamp) >= lastSeen ? new Date(tail.timestamp).toISOString() : undefined;
+    await this.endTurn(store, item, agent.id, outcomeOf(timeline), timeline, {
+      recovered: true,
+      seen,
+      endedAt,
+      turnId: tail?.turnId ?? null,
+    });
     return true;
   }
 }

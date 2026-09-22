@@ -62,3 +62,15 @@ test("a check that leaves a detached child holding its output still settles", as
   expect(result).toMatchObject({ ok: true, exit: 0, timedOut: false });
   expect(result.tail).toContain("spawned");
 });
+
+test("processes a check leaves behind are stopped when it settles", async () => {
+  const { mkdtemp, readFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const cwd = await mkdtemp(join(tmpdir(), "maestro-orphan-"));
+  const result = await runCheck(check("sleep 30 & echo $! > child.pid; exit 0"), cwd);
+  expect(result.ok).toBe(true);
+  const pid = Number((await readFile(join(cwd, "child.pid"), "utf8")).trim());
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(() => process.kill(pid, 0)).toThrow();
+});

@@ -61,6 +61,8 @@ export function runCheck(check: CheckRun, cwd: string, signal?: AbortSignal): Pr
       if (settled) return;
       settled = true;
       for (const timer of timers) clearTimeout(timer);
+      // Anything the check left running in its process group goes with it.
+      kill();
       signal?.removeEventListener("abort", onAbort);
       child.stdout?.destroy();
       child.stderr?.destroy();

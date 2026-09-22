@@ -25,6 +25,7 @@ function fakePaseo() {
   const sent: Array<{ agentId: string; text: string }> = [];
   const created: Array<Record<string, unknown>> = [];
   const archived: string[] = [];
+  const archivedWorkspaces: string[] = [];
   const timelines = new Map<string, unknown[]>();
   const timelineEnd = new Map<string, string>();
   let failSend = false;
@@ -62,6 +63,10 @@ function fakePaseo() {
         return makeWorkspace(directory);
       },
       open: async (cwd: string) => makeWorkspace(cwd),
+      archive: async (workspaceId: string) => {
+        archivedWorkspaces.push(workspaceId);
+        return { workspaceId, archivedAt: new Date().toISOString(), error: null };
+      },
     },
     agents: {
       ref: (id: string) => ({
@@ -93,6 +98,7 @@ function fakePaseo() {
     sent,
     created,
     archived,
+    archivedWorkspaces,
     timelines,
     timelineEnd,
     failNextSends: () => {
@@ -534,6 +540,7 @@ describe("dispatch and dead ends", () => {
     }) as typeof original;
     await expect(engine.dispatch(fake.paseo, draft.id)).rejects.toThrow("changed while the run was starting");
     expect(fake.archived).toEqual(["agent-1"]);
+    expect(fake.archivedWorkspaces).toEqual(["ws-1"]);
     const { item, events } = await engine.get(draft.id);
     expect(item.state).toBe("canceled");
     expect(events.at(-1)?.text).toContain("Archived session agent-1");
@@ -598,4 +605,191 @@ test("a recovered end is stamped when the agent really stopped, not when it was 
   const { item: landed } = await engine.get(item.id);
   expect(landed.state).toBe("review");
   expect(landed.look?.ran).toBe("1m unsupervised · 1 turn · ran to the gate");
+});
+
+/** Holds the next store scan open after it has read the tree, so a test can land a write in between. */
+function holdNextScan() {
+  const original = WorkStore.prototype.scan;
+  let readDone!: () => void;
+  let release!: () => void;
+  const read = new Promise<void>((resolve) => {
+    readDone = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let armed = true;
+  WorkStore.prototype.scan = async function (this: WorkStore) {
+    const result = await original.call(this);
+    if (armed) {
+      armed = false;
+      readDone();
+      await released;
+    }
+    return result;
+  };
+  return { read, release, restore: () => (WorkStore.prototype.scan = original) };
+}
+
+describe("round 2: lookups and duplicates", () => {
+  test("a list whose scan overlaps a dispatch does not make the bound agent unknown", async () => {
+    const { engine, fake, repo } = await setup();
+    const draft = await engine.create(fake.paseo, {
+      title: "Stale index",
+      brief: "",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "",
+      dispatch: false,
+    });
+    const hold = holdNextScan();
+    try {
+      const listing = engine.list();
+      await hold.read;
+      hold.restore();
+      await engine.dispatch(fake.paseo, draft.id);
+      hold.release();
+      await listing;
+    } finally {
+      hold.restore();
+    }
+    await engine.onPermissionRequested({ id: "agent-1" }, { id: "p1", name: "Bash", input: { command: "ls" } });
+    expect((await engine.get(draft.id)).item).toMatchObject({ state: "review", phase: "asking" });
+    // Tracking the same session again finds the item instead of making a second one.
+    expect((await engine.adopt(fake.paseo, "agent-1", "")).id).toBe(draft.id);
+    expect((await engine.list()).items).toHaveLength(1);
+  });
+
+  test("an event queued for an agent that got bound meanwhile is delivered, not stranded", async () => {
+    const { engine, fake, repo } = await setup();
+    const make = (title: string) =>
+      engine.create(fake.paseo, { title, brief: "", repo, gate: "human", check: "", initiative: "", dispatch: false });
+    const first = await make("First");
+    const second = await make("Second");
+    let releaseSecond!: () => void;
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    let early!: Promise<void>;
+    let secondDispatch!: Promise<unknown>;
+    let releaseEarly!: () => void;
+    const original = fake.paseo.workspaces.create;
+    let calls = 0;
+    fake.paseo.workspaces.create = (async (options: Parameters<typeof original>[0]) => {
+      calls += 1;
+      if (calls === 2) await secondGate;
+      const workspace = await original(options);
+      if (calls !== 1) return workspace;
+      const create = workspace.agents.create;
+      return {
+        ...workspace,
+        agents: {
+          create: async (o: Parameters<typeof create>[0]) => {
+            const agent = await create(o);
+            const hold = holdNextScan();
+            early = engine.onTurnStarted({ id: agent.id });
+            await hold.read;
+            hold.restore();
+            releaseEarly = hold.release;
+            secondDispatch = engine.dispatch(fake.paseo, second.id).catch(() => undefined);
+            return agent;
+          },
+        },
+      };
+    }) as typeof original;
+    await engine.dispatch(fake.paseo, first.id);
+    releaseEarly();
+    await early;
+    await engine.onPermissionRequested({ id: "agent-1" }, { id: "p2", name: "Bash", input: { command: "git push" } });
+    expect((await engine.get(first.id)).item).toMatchObject({ state: "review", phase: "asking" });
+    releaseSecond();
+    await secondDispatch;
+  });
+
+  test("a late real hook after a recovered end does not run the checks twice", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create({ check: "sleep 0.3" });
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    fake.timelines.set("agent-1", [
+      { type: "user_message", text: "go" },
+      { type: "assistant_message", text: "Done." },
+    ]);
+    tick(5);
+    await engine.list(fake.paseo);
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], null);
+    await settle(engine, item.id, "review");
+    const { events } = await engine.get(item.id);
+    expect(events.filter((e) => e.type === "turn.ended")).toHaveLength(1);
+    expect(events.filter((e) => e.type === "checks.started")).toHaveLength(1);
+  });
+
+  test("the same provider turn id is one turn end, even after a send back", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    const idle = fake.agents.get("agent-1");
+    if (idle) idle.status = "idle";
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");
+    await engine.verdict(fake.paseo, item.id, "revise", "one more thing");
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");
+    expect((await engine.get(item.id)).item.state).toBe("running");
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-2");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+  });
+
+  test("a recovered end with checks is still stamped when the agent stopped", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create({ check: "true" });
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    fake.timelines.set("agent-1", [
+      { type: "user_message", text: "go" },
+      { type: "assistant_message", text: "Done." },
+    ]);
+    fake.timelineEnd.set("agent-1", new Date(clock + 60_000).toISOString());
+    tick(30);
+    await engine.list(fake.paseo);
+    const landed = await settle(engine, item.id, "review");
+    expect(landed.look?.ran).toBe("1m unsupervised · 1 turn · ran to the gate");
+  });
+
+  test("a timeline that cannot be read leaves the run alone until the next look", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    const ref = fake.paseo.agents.ref;
+    fake.paseo.agents.ref = ((id: string) => ({
+      ...ref(id),
+      timeline: {
+        refetch: async () => {
+          throw new Error("socket closed");
+        },
+      },
+    })) as unknown as typeof ref;
+    tick(5);
+    await engine.list(fake.paseo);
+    expect((await engine.get(item.id)).item.state).toBe("running");
+  });
+});
+
+test("only an error that ends the turn fails it", async () => {
+  const { outcomeOf } = await import("./engine");
+  expect(
+    outcomeOf([
+      { type: "user_message", text: "go" },
+      { type: "error", message: "tool hiccup" },
+      { type: "assistant_message", text: "recovered, done" },
+    ]).kind,
+  ).toBe("completed");
+  expect(
+    outcomeOf([
+      { type: "user_message", text: "go" },
+      { type: "error", message: "rate limit" },
+    ]),
+  ).toEqual({
+    kind: "failed",
+    error: { message: "rate limit" },
+  });
 });
