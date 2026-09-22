@@ -103,6 +103,8 @@ async function writeAtomic(path: string, content: string): Promise<void> {
 }
 
 export interface Mutation {
+  /** When the change happened, if not now: a recovered event keeps the time it really occurred. */
+  at?: string;
   to?: OrchState;
   reason?: string | null;
   actor?: WorkEvent["actor"];
@@ -264,7 +266,7 @@ export class WorkStore {
         transition(item.contract.state, change.to, { gate: item.contract.gate, ...(change.ctx ?? {}) });
         patch.state = change.to;
         events.push({
-          ts: at.toISOString(),
+          ts: change.at ?? at.toISOString(),
           type: "state",
           actor: change.actor ?? "maestro",
           from: item.contract.state,

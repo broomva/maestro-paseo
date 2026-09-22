@@ -26,6 +26,7 @@ function fakePaseo() {
   const created: Array<Record<string, unknown>> = [];
   const archived: string[] = [];
   const timelines = new Map<string, unknown[]>();
+  const timelineEnd = new Map<string, string>();
   let failSend = false;
   let n = 0;
   const makeWorkspace = (directory: string) => ({
@@ -79,7 +80,9 @@ function fakePaseo() {
           return { archivedAt: new Date().toISOString() };
         },
         timeline: {
-          refetch: async () => ({ entries: (timelines.get(id) ?? []).map((item) => ({ item })) }),
+          refetch: async () => ({
+            entries: (timelines.get(id) ?? []).map((item) => ({ item, timestamp: timelineEnd.get(id) ?? "" })),
+          }),
         },
       }),
     },
@@ -91,6 +94,7 @@ function fakePaseo() {
     created,
     archived,
     timelines,
+    timelineEnd,
     failNextSends: () => {
       failSend = true;
     },
@@ -577,4 +581,21 @@ describe("dispatch and dead ends", () => {
       }),
     ).rejects.toThrow("absolute path");
   });
+});
+
+test("a recovered end is stamped when the agent really stopped, not when it was noticed", async () => {
+  const { create, engine, fake } = await setup();
+  const item = await create();
+  const agent = fake.agents.get("agent-1");
+  if (agent) agent.status = "idle";
+  fake.timelines.set("agent-1", [
+    { type: "user_message", text: "go" },
+    { type: "assistant_message", text: "Done." },
+  ]);
+  fake.timelineEnd.set("agent-1", new Date(clock + 60_000).toISOString());
+  tick(30);
+  await engine.list(fake.paseo);
+  const { item: landed } = await engine.get(item.id);
+  expect(landed.state).toBe("review");
+  expect(landed.look?.ran).toBe("1m unsupervised · 1 turn · ran to the gate");
 });

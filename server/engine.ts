@@ -576,7 +576,7 @@ export class Engine {
     agent: HookAgent,
     outcome: Outcome,
     timeline: readonly AgentTimelineItem[],
-    options: { recovered?: boolean; seen?: number } = {},
+    options: { recovered?: boolean; seen?: number; endedAt?: string } = {},
   ): Promise<void> {
     await this.route(agent.id, async (item, store) => {
       let token: string | null = null;
@@ -584,8 +584,9 @@ export class Engine {
         item.contract.id,
         (fresh): Mutation | null => {
           if (options.seen !== undefined && fresh.events.length !== options.seen) return null;
+          const at = options.endedAt ?? this.stamp();
           const ended: WorkEvent = {
-            ts: this.stamp(),
+            ts: at,
             type: "turn.ended",
             actor: "agent",
             agentId: agent.id,
@@ -594,9 +595,10 @@ export class Engine {
             summary: latestOutputText(timeline),
           };
           if (fresh.contract.state !== "running") return { events: [ended] };
-          if (outcome.kind === "failed") return { to: "blocked", reason: outcome.error.message, events: [ended] };
-          if (outcome.kind === "canceled")
-            return { to: "blocked", reason: "Stopped before finishing", events: [ended] };
+          if (outcome.kind === "failed") return { at, to: "blocked", reason: outcome.error.message, events: [ended] };
+          if (outcome.kind === "canceled") {
+            return { at, to: "blocked", reason: "Stopped before finishing", events: [ended] };
+          }
           if (fresh.contract.checks.length > 0) {
             token = `${agent.id}:${ended.ts}`;
             const started: WorkEvent = {
@@ -609,7 +611,7 @@ export class Engine {
             return { events: [ended, started] };
           }
           const reason = options.recovered ? "Recovered after a missed event" : null;
-          return { to: landingState(fresh.contract.gate, "none"), reason, events: [ended] };
+          return { at, to: landingState(fresh.contract.gate, "none"), reason, events: [ended] };
         },
         item.dir,
       );
@@ -808,8 +810,13 @@ export class Engine {
       .ref(agent.id)
       .timeline.refetch({ direction: "tail", limit: 60 })
       .catch(() => null);
-    const timeline = page?.entries.map((entry) => entry.item) ?? [];
-    await this.onTurnEnded({ id: agent.id }, outcomeOf(timeline), timeline, { recovered: true, seen });
+    const entries = page?.entries ?? [];
+    const timeline = entries.map((entry) => entry.item);
+    // Stamp the recovered end when the agent really stopped, so unsupervised time is not inflated.
+    const endedAt = entries.at(-1)?.timestamp;
+    const lastSeen = last ? Date.parse(last.ts) : 0;
+    const usable = endedAt && Date.parse(endedAt) >= lastSeen ? new Date(endedAt).toISOString() : undefined;
+    await this.onTurnEnded({ id: agent.id }, outcomeOf(timeline), timeline, { recovered: true, seen, endedAt: usable });
     return true;
   }
 }
