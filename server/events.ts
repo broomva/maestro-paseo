@@ -1,0 +1,368 @@
+// The per-item event log (`_events.jsonl`) and everything derived from it.
+// The log is the receipt: every state change, run, check and human decision
+// is one line. Nothing here is a percentage, and nothing is stored twice:
+// the worker, the look at the gate and the scoreboard are all computed.
+
+import type { CheckResult, Look, Permission, Scoreboard, WorkEventWire, Worker } from "../shared/contracts";
+import type { OrchState, Verdict } from "../shared/states";
+
+export type Actor = "human" | "agent" | "maestro";
+
+interface Base {
+  ts: string;
+}
+
+export type WorkEvent = Base &
+  (
+    | { type: "created"; actor: "human" }
+    | {
+        type: "dispatched" | "adopted";
+        actor: "human";
+        agentId: string;
+        workspaceId: string | null;
+        provider: string;
+        branch: string | null;
+        cwd: string | null;
+      }
+    | { type: "turn.started"; actor: "agent"; agentId: string }
+    | {
+        type: "turn.ended";
+        actor: "agent";
+        agentId: string;
+        outcome: "completed" | "failed" | "canceled";
+        error: string | null;
+        summary: string;
+      }
+    | {
+        type: "permission.asked";
+        actor: "agent";
+        agentId: string;
+        requestId: string;
+        title: string;
+        detail: string | null;
+      }
+    | { type: "permission.resolved"; actor: "human"; agentId: string; requestId: string }
+    | { type: "checks.started"; actor: "maestro"; token: string }
+    | { type: "checks.finished"; actor: "maestro"; token: string; results: CheckResult[] }
+    | { type: "state"; actor: Actor; from: OrchState; to: OrchState; reason: string | null }
+    | { type: "gate"; actor: "human"; verdict: Verdict; note: string }
+    | { type: "unblocked"; actor: "human"; note: string }
+    | { type: "note"; actor: Actor; text: string }
+  );
+
+export type WorkEventType = WorkEvent["type"];
+
+export function parseEvents(source: string): { events: WorkEvent[]; bad: number } {
+  const events: WorkEvent[] = [];
+  let bad = 0;
+  for (const line of source.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const value = JSON.parse(line) as WorkEvent;
+      if (typeof value?.ts === "string" && typeof value?.type === "string") events.push(value);
+      else bad += 1;
+    } catch {
+      bad += 1;
+    }
+  }
+  return { events, bad };
+}
+
+export function lastOf<T extends WorkEventType>(
+  events: readonly WorkEvent[],
+  ...types: T[]
+): Extract<WorkEvent, { type: T }> | null {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event && (types as string[]).includes(event.type)) return event as Extract<WorkEvent, { type: T }>;
+  }
+  return null;
+}
+
+function indexOfEvent(events: readonly WorkEvent[], event: WorkEvent | null): number {
+  return event ? events.lastIndexOf(event) : -1;
+}
+
+/** The session currently (or most recently) bound to this work. */
+export function workerOf(events: readonly WorkEvent[]): Worker | null {
+  const bind = lastOf(events, "dispatched", "adopted");
+  if (!bind) return null;
+  return {
+    agentId: bind.agentId,
+    workspaceId: bind.workspaceId,
+    provider: bind.provider,
+    branch: bind.branch,
+    cwd: bind.cwd,
+  };
+}
+
+/** A permission the bound agent asked for that nothing has answered yet. */
+export function pendingPermission(events: readonly WorkEvent[]): Permission | null {
+  const asked = lastOf(events, "permission.asked");
+  if (!asked) return null;
+  const after = events.slice(indexOfEvent(events, asked) + 1);
+  const answered = after.some(
+    (event) =>
+      (event.type === "permission.resolved" && event.requestId === asked.requestId) ||
+      event.type === "turn.ended" ||
+      event.type === "dispatched",
+  );
+  return answered ? null : { requestId: asked.requestId, title: asked.title, detail: asked.detail };
+}
+
+/** A checks run that started and has not reported. */
+export function pendingChecks(events: readonly WorkEvent[]): string | null {
+  const started = lastOf(events, "checks.started");
+  if (!started) return null;
+  const finished = events
+    .slice(indexOfEvent(events, started) + 1)
+    .some((event) => event.type === "checks.finished" && event.token === started.token);
+  return finished ? null : started.token;
+}
+
+export function phaseOf(state: OrchState, events: readonly WorkEvent[]): "working" | "checking" | "asking" | null {
+  if (state === "running") return pendingChecks(events) ? "checking" : "working";
+  if (state === "review" && pendingPermission(events)) return "asking";
+  return null;
+}
+
+export function latestChecks(events: readonly WorkEvent[]): CheckResult[] {
+  return lastOf(events, "checks.finished")?.results ?? [];
+}
+
+export function checkOutcome(results: readonly CheckResult[]): "passed" | "failed" | "none" {
+  const required = results.filter((result) => result.required);
+  if (required.length === 0) return "none";
+  return required.every((result) => result.ok) ? "passed" : "failed";
+}
+
+export function reasonOf(state: OrchState, events: readonly WorkEvent[]): string | null {
+  if (state !== "blocked") return null;
+  const moved = [...events].reverse().find((event) => event.type === "state" && event.to === "blocked");
+  return moved && moved.type === "state" ? moved.reason : null;
+}
+
+export function verdictOf(state: OrchState, events: readonly WorkEvent[]): string | null {
+  const results = latestChecks(events);
+  const failed = results.filter((result) => !result.ok).length;
+  const checks =
+    results.length === 0
+      ? null
+      : failed === 0
+        ? `${results.length === 1 ? "Check" : `All ${results.length} checks`} passed`
+        : `${failed} of ${results.length} ${results.length === 1 ? "check" : "checks"} failed`;
+  if (state === "done") {
+    const gate = lastOf(events, "gate");
+    return gate?.verdict === "approve" ? (checks ? `${checks} · you approved` : "You approved") : checks;
+  }
+  if (state === "canceled") return "You canceled it";
+  return checks;
+}
+
+// ── Durations ────────────────────────────────────────────────────────────────
+
+export function formatDuration(ms: number): string {
+  const minutes = Math.max(0, Math.round(ms / 60000));
+  if (minutes < 1) return "under a minute";
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours === 0) return `${minutes}m`;
+  return rest === 0 ? `${hours}h` : `${hours}h ${rest}m`;
+}
+
+function ms(ts: string): number {
+  return Date.parse(ts);
+}
+
+/** Periods this work spent running, from its state changes. */
+export function runningIntervals(events: readonly WorkEvent[], now: number): Array<[number, number]> {
+  const intervals: Array<[number, number]> = [];
+  let open: number | null = null;
+  for (const event of events) {
+    if (event.type !== "state") continue;
+    if (event.to === "running" && open === null) open = ms(event.ts);
+    else if (event.to !== "running" && open !== null) {
+      intervals.push([open, ms(event.ts)]);
+      open = null;
+    }
+  }
+  if (open !== null) intervals.push([open, now]);
+  return intervals;
+}
+
+// ── The look at the gate ─────────────────────────────────────────────────────
+
+/** Pull a Markdown section ("## Decided") out of the agent's final message. */
+export function section(text: string, heading: string): string | null {
+  const pattern = new RegExp(`^#{1,4}\\s*${heading}\\s*:?\\s*$([\\s\\S]*?)(?=^#{1,4}\\s|(?![\\s\\S]))`, "im");
+  const match = pattern.exec(text);
+  const body = match?.[1]?.trim();
+  return body ? body : null;
+}
+
+export function bullets(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) =>
+      line
+        .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "")
+        .replace(/\*\*(.+?)\*\*/g, "$1")
+        .trim(),
+    )
+    .filter((line) => line.length > 0)
+    .slice(0, 5);
+}
+
+export function lookOf(state: OrchState, events: readonly WorkEvent[], now: number): Look | null {
+  if (state !== "review") return null;
+  const permission = pendingPermission(events);
+  const bind = lastOf(events, "dispatched", "adopted");
+  const start = bind ? ms(bind.ts) : null;
+  const intervals = runningIntervals(start === null ? events : events.filter((e) => ms(e.ts) >= start), now);
+  const ranMs = intervals.reduce((sum, [a, b]) => sum + (b - a), 0);
+  const turns = events.filter((e) => e.type === "turn.ended" && (start === null || ms(e.ts) >= start)).length;
+  const ran = [
+    `${formatDuration(ranMs)} unsupervised`,
+    `${turns} ${turns === 1 ? "turn" : "turns"}`,
+    permission ? "paused on a question" : "ran to the gate",
+  ].join(" · ");
+  if (permission) {
+    return {
+      ran,
+      decided: [],
+      ask: permission.detail ? `${permission.title}: ${permission.detail}` : permission.title,
+    };
+  }
+  const summary = lastOf(events, "turn.ended")?.summary ?? "";
+  const decided = section(summary, "Decided");
+  const ask = section(summary, "Ask");
+  return {
+    ran,
+    decided: decided ? bullets(decided) : [],
+    ask: ask ? bullets(ask).join(" ") : "Approve to close it, or send it back with a note.",
+  };
+}
+
+// ── Receipts for the detail view ─────────────────────────────────────────────
+
+const STATE_WORDS: Partial<Record<OrchState, string>> = {
+  running: "Running",
+  review: "Waiting on you",
+  blocked: "Stuck",
+  done: "Done",
+  canceled: "Canceled",
+};
+
+function shorten(text: string, max = 280): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+export function toWireEvent(event: WorkEvent): WorkEventWire | null {
+  const base = { ts: event.ts, actor: event.actor };
+  switch (event.type) {
+    case "created":
+      return { ...base, type: event.type, text: "Created", detail: null };
+    case "dispatched":
+      return {
+        ...base,
+        type: event.type,
+        text: "Dispatched",
+        detail: [event.provider, event.branch ? `on ${event.branch}` : null].filter(Boolean).join(" "),
+      };
+    case "adopted":
+      return { ...base, type: event.type, text: "Tracked an existing session", detail: event.provider };
+    case "turn.started":
+      return null;
+    case "turn.ended":
+      return {
+        ...base,
+        type: event.type,
+        text:
+          event.outcome === "completed" ? "Turn finished" : event.outcome === "failed" ? "Turn failed" : "Turn stopped",
+        detail: event.error ?? (event.summary ? shorten(event.summary) : null),
+      };
+    case "permission.asked":
+      return { ...base, type: event.type, text: "Asked for permission", detail: event.title };
+    case "permission.resolved":
+      return { ...base, type: event.type, text: "Permission answered", detail: null };
+    case "checks.started":
+      return { ...base, type: event.type, text: "Running checks", detail: null };
+    case "checks.finished": {
+      const failed = event.results.filter((r) => !r.ok).length;
+      return {
+        ...base,
+        type: event.type,
+        text: failed === 0 ? "Checks passed" : "Checks failed",
+        detail: event.results
+          .map((r) => `${r.name} ${r.ok ? "passed" : r.timedOut ? "timed out" : "failed"}`)
+          .join(" · "),
+      };
+    }
+    case "state": {
+      const word = STATE_WORDS[event.to];
+      return word ? { ...base, type: event.type, text: word, detail: event.reason } : null;
+    }
+    case "gate":
+      return {
+        ...base,
+        type: event.type,
+        text:
+          event.verdict === "approve"
+            ? "You approved"
+            : event.verdict === "revise"
+              ? "You sent it back"
+              : "You canceled it",
+        detail: event.note || null,
+      };
+    case "unblocked":
+      return { ...base, type: event.type, text: "You unblocked it", detail: event.note || null };
+    case "note":
+      return { ...base, type: event.type, text: event.text, detail: null };
+  }
+}
+
+// ── The scoreboard: unsupervised hours today ─────────────────────────────────
+
+const HUMAN_LOOKS = new Set<WorkEventType>(["gate", "unblocked", "dispatched", "adopted", "permission.resolved"]);
+
+function merge(intervals: Array<[number, number]>): Array<[number, number]> {
+  const sorted = [...intervals].sort((a, b) => a[0] - b[0]);
+  const out: Array<[number, number]> = [];
+  for (const [a, b] of sorted) {
+    const last = out[out.length - 1];
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b);
+    else out.push([a, b]);
+  }
+  return out;
+}
+
+export function scoreboard(logs: ReadonlyArray<readonly WorkEvent[]>, now: number, dayStart: number): Scoreboard {
+  const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+  const clipped = merge(
+    logs
+      .flatMap((events) => runningIntervals(events, now))
+      .map(([a, b]): [number, number] => [Math.max(a, dayStart), Math.min(b, dayEnd)])
+      .filter(([a, b]) => b > a),
+  );
+  const span = dayEnd - dayStart;
+  const unsupervisedMs = clipped.reduce((sum, [a, b]) => sum + (b - a), 0);
+  const longestRunMs = clipped.reduce((max, [a, b]) => Math.max(max, b - a), 0);
+  const notches = logs
+    .flatMap((events) => events.filter((e) => e.actor === "human" && HUMAN_LOOKS.has(e.type)))
+    .map((e) => ms(e.ts))
+    .filter((t) => t >= dayStart && t < dayEnd)
+    .sort((a, b) => a - b);
+  return {
+    unsupervisedMs,
+    looks: notches.length,
+    longestRunMs,
+    live: clipped.some(([, b]) => b >= now),
+    segments: clipped.map(([a, b]) => ({
+      start: (a - dayStart) / span,
+      width: (b - a) / span,
+      live: b >= now,
+    })),
+    notches: notches.map((t) => (t - dayStart) / span),
+  };
+}

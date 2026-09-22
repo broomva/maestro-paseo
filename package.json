@@ -1,0 +1,38 @@
+{
+  "name": "maestro-paseo",
+  "private": true,
+  "version": "0.1.0",
+  "files": [
+    "paseo-plugin.json",
+    "index.client.ts",
+    "index.client.tsx",
+    "index.server.ts",
+    "index.server.tsx",
+    "client/",
+    "server/",
+    "shared/"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "lint": "biome check .",
+    "check": "npm run typecheck && npm run lint && npm test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.13",
+    "@getpaseo/plugin": "0.8.0",
+    "@getpaseo/protocol": "0.8.0",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/bun": "^1.4.2",
+    "@types/node": "^22.20.3",
+    "@types/react": "~19.2.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  },
+  "description": "Maestro on Paseo: work as folders, sessions as the verb, the gate as the human verb",
+  "dependencies": {
+    "yaml": "^2.9.1"
+  }
+}
