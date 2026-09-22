@@ -84,21 +84,29 @@ export function outcomeOf(timeline: readonly AgentTimelineItem[]): Outcome {
 }
 
 /**
- * Whether a turn end repeats one already recorded: the same provider turn id,
- * or an end already recorded for this running stretch with no turn start after
- * it. A late hook after a recovered end is the case this catches.
+ * Whether a turn end repeats one already recorded in the current running
+ * stretch (since the last move to running): the same provider turn id, or an
+ * end with no turn start after it. A late hook after a recovered end is the
+ * case this catches. Turn ids repeat after a session reopens, so an id only
+ * counts within the stretch.
  */
 export function isDuplicateEnd(events: readonly WorkEvent[], turnId: string | null): boolean {
-  if (turnId && events.some((event) => event.type === "turn.ended" && event.turnId === turnId)) return true;
-  let lastEnd = -1;
   let lastRun = -1;
-  let lastStart = -1;
   events.forEach((event, index) => {
-    if (event.type === "turn.ended") lastEnd = index;
-    else if (event.type === "turn.started") lastStart = index;
-    else if (event.type === "state" && event.to === "running") lastRun = index;
+    if (event.type === "state" && event.to === "running") lastRun = index;
   });
-  return lastEnd > lastRun && lastEnd > lastStart;
+  let lastEnd = -1;
+  let lastStart = -1;
+  let sameTurn = false;
+  events.forEach((event, index) => {
+    if (index <= lastRun) return;
+    if (event.type === "turn.started") lastStart = index;
+    if (event.type === "turn.ended") {
+      lastEnd = index;
+      if (turnId && event.turnId === turnId) sameTurn = true;
+    }
+  });
+  return sameTurn || (lastEnd > lastRun && lastEnd > lastStart);
 }
 
 const QUEUE_MS = 120_000;

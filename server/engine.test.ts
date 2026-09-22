@@ -725,17 +725,20 @@ describe("round 2: lookups and duplicates", () => {
     expect(events.filter((e) => e.type === "checks.started")).toHaveLength(1);
   });
 
-  test("the same provider turn id is one turn end, even after a send back", async () => {
+  test("a repeated turn end in one stretch changes nothing; a reused id after a send back is a new turn", async () => {
     const { create, engine, fake } = await setup();
-    const item = await create();
+    const item = await create({ check: "sleep 0.2" });
     const idle = fake.agents.get("agent-1");
     if (idle) idle.status = "idle";
     await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");
+    await settle(engine, item.id, "review");
+    expect((await engine.get(item.id)).events.filter((e) => e.type === "checks.started")).toHaveLength(1);
+    // The session reopened and numbers its turns from 1 again.
     await engine.verdict(fake.paseo, item.id, "revise", "one more thing");
     await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");
-    expect((await engine.get(item.id)).item.state).toBe("running");
-    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-2");
-    expect((await engine.get(item.id)).item.state).toBe("review");
+    await settle(engine, item.id, "review");
+    expect((await engine.get(item.id)).events.filter((e) => e.type === "checks.started")).toHaveLength(2);
   });
 
   test("a recovered end with checks is still stamped when the agent stopped", async () => {
