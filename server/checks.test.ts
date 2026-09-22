@@ -1,8 +1,19 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkEnv, runCheck, runChecks } from "./checks";
+
+const scratchDirs: string[] = [];
+afterAll(async () => {
+  await Promise.all(scratchDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+async function scratch(prefix: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  scratchDirs.push(dir);
+  return dir;
+}
 
 const check = (run: string, extra: Partial<{ timeoutS: number; required: boolean }> = {}) => ({
   name: "c",
@@ -12,7 +23,7 @@ const check = (run: string, extra: Partial<{ timeoutS: number; required: boolean
 });
 
 describe("checks", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "maestro-checks-"));
+  const cwd = await scratch("maestro-checks-");
 
   test("exit code decides, output tail is kept", async () => {
     const pass = await runCheck(check("echo hello"), cwd);
@@ -52,10 +63,7 @@ describe("checks", async () => {
 });
 
 test("a check that leaves a detached child holding its output still settles", async () => {
-  const { mkdtemp } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const cwd = await mkdtemp(join(tmpdir(), "maestro-detach-"));
+  const cwd = await scratch("maestro-detach-");
   const started = Date.now();
   const result = await runCheck(check("(sleep 30 &) ; echo spawned"), cwd);
   expect(Date.now() - started).toBeLessThan(3000);
@@ -64,10 +72,8 @@ test("a check that leaves a detached child holding its output still settles", as
 });
 
 test("processes a check leaves behind are stopped when it settles", async () => {
-  const { mkdtemp, readFile } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const cwd = await mkdtemp(join(tmpdir(), "maestro-orphan-"));
+  const { readFile } = await import("node:fs/promises");
+  const cwd = await scratch("maestro-orphan-");
   const result = await runCheck(check("sleep 30 & echo $! > child.pid; exit 0"), cwd);
   expect(result.ok).toBe(true);
   const pid = Number((await readFile(join(cwd, "child.pid"), "utf8")).trim());

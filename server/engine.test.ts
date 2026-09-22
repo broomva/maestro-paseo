@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MaestroConfig } from "../shared/contracts";
@@ -124,8 +124,14 @@ const tick = (minutes: number) => {
   clock += minutes * 60_000;
 };
 
+const roots: string[] = [];
+afterAll(async () => {
+  await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
+});
+
 async function setup(overrides: Partial<MaestroConfig> = {}) {
   const root = await mkdtemp(join(tmpdir(), "maestro-engine-"));
+  roots.push(root);
   const repo = join(root, "repo");
   await mkdir(repo);
   const config: MaestroConfig = {
