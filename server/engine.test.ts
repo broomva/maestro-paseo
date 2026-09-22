@@ -904,3 +904,37 @@ describe("round 3: ownership, missed starts, ordering", () => {
     expect(events.some((e) => e.detail === "You continued the session")).toBe(false);
   });
 });
+
+describe("round 4", () => {
+  test("a newer check run stops the older one, so runs never overlap in one worktree", async () => {
+    const { create, engine, fake, config } = await setup();
+    const log = join(config.workRoot, "..", "checks.log");
+    const item = await create({ check: `echo start >> ${log}; sleep 0.4; echo end >> ${log}` });
+    const idle = fake.agents.get("agent-1");
+    if (idle) idle.status = "idle";
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "t1");
+    await settle(engine, item.id, "review");
+    tick(1);
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "t2");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    tick(1);
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "t3");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await settle(engine, item.id, "review");
+    const lines = (await readFile(log, "utf8")).trim().split("\n");
+    // Three runs started; the superseded one was stopped before it could finish, so only two ended.
+    expect(lines.filter((line) => line === "start")).toHaveLength(3);
+    expect(lines.filter((line) => line === "end")).toHaveLength(2);
+    expect(lines.at(-1)).toBe("end");
+  });
+
+  test("a failed turn end without a turn id is never hidden as a repeat", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    const idle = fake.agents.get("agent-1");
+    if (idle) idle.status = "idle";
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], null);
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "push rejected" } }, [], null);
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "blocked", reason: "push rejected" });
+  });
+});

@@ -136,6 +136,7 @@ export class Engine {
   private readonly log: (message: string) => void;
   private readonly dispatching = new Set<string>();
   private readonly activeChecks = new Set<string>();
+  private readonly checkRuns = new Map<string, AbortController>();
   /** Hook events for an agent that is not bound yet, in arrival order. */
   private readonly queues = new Map<string, { at: number; runs: Array<() => Promise<unknown>> }>();
   /**
@@ -168,6 +169,14 @@ export class Engine {
   private async store(): Promise<{ store: WorkStore; config: MaestroConfig }> {
     const config = await this.readConfig();
     return { store: new WorkStore(config.workRoot, this.now), config };
+  }
+
+  private tokens = 0;
+
+  /** Unique per check run, even for two turn ends stamped in the same millisecond. */
+  private checkToken(agentId: string, ts: string): string {
+    this.tokens += 1;
+    return `${agentId}:${ts}:${process.pid}.${this.tokens}`;
   }
 
   private note(text: string): WorkEvent {
@@ -727,7 +736,9 @@ export class Engine {
       (fresh): Mutation | null => {
         if (options.seen !== undefined && fresh.events.length !== options.seen) return null;
         if (workerOf(fresh.events)?.agentId !== agentId) return null;
-        if (isDuplicateEnd(fresh.events, options.turnId ?? null)) return null;
+        // Without a turn id a repeat cannot be told from a new turn; a failure is never hidden as a repeat.
+        const unidentifiedFailure = !options.turnId && outcome.kind !== "completed";
+        if (!unidentifiedFailure && isDuplicateEnd(fresh.events, options.turnId ?? null)) return null;
         const at = options.endedAt ?? this.stamp();
         const ended: WorkEvent = {
           ts: at,
@@ -750,7 +761,7 @@ export class Engine {
               return { at, to: "blocked", reason: "Stopped before finishing", events: [ended] };
             }
             if (fresh.contract.checks.length > 0) {
-              token = `${agentId}:${ended.ts}`;
+              token = this.checkToken(agentId, ended.ts);
               return {
                 stateFirst: true,
                 to: "running",
@@ -767,7 +778,7 @@ export class Engine {
           return { at, to: "blocked", reason: "Stopped before finishing", events: [ended] };
         }
         if (fresh.contract.checks.length > 0) {
-          token = `${agentId}:${ended.ts}`;
+          token = this.checkToken(agentId, ended.ts);
           const started: WorkEvent = {
             ts: this.stamp(),
             type: "checks.started",
@@ -844,10 +855,17 @@ export class Engine {
   private async runChecksFor(store: WorkStore, item: StoredWork, token: string): Promise<void> {
     if (this.activeChecks.has(token)) return;
     this.activeChecks.add(token);
+    // One check run per item: a newer run stops the older one, whose result would be discarded anyway,
+    // so two test runs never share a worktree.
+    const id = item.contract.id;
+    this.checkRuns.get(id)?.abort();
+    const run = new AbortController();
+    this.checkRuns.set(id, run);
     try {
       const cwd = workerOf(item.events)?.cwd ?? item.contract.repo;
-      const results = cwd ? await runChecks(item.contract.checks, cwd, this.abort.signal) : [];
-      if (this.abort.signal.aborted) return;
+      const signal = AbortSignal.any([this.abort.signal, run.signal]);
+      const results = cwd ? await runChecks(item.contract.checks, cwd, signal) : [];
+      if (signal.aborted) return;
       await store.mutate(
         item.contract.id,
         (fresh): Mutation | null => {
@@ -890,6 +908,7 @@ export class Engine {
       this.log(`checks failed to run for ${item.contract.id}: ${(error as Error).message}`);
     } finally {
       this.activeChecks.delete(token);
+      if (this.checkRuns.get(id) === run) this.checkRuns.delete(id);
     }
   }
 
