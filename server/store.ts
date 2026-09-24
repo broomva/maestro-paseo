@@ -121,7 +121,21 @@ export class WorkStore {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
+  /**
+   * One item as it stands once any change to it in flight has finished. A
+   * change renames `_work.md` and then appends to `_events.jsonl`; a read in
+   * between would pair the new state with the old receipts.
+   */
   async load(dir: string): Promise<StoredWork> {
+    const first = await this.read(dir);
+    const pending = locks.get(first.contract.id);
+    if (!pending) return first;
+    await pending.catch(() => undefined);
+    return this.read(dir);
+  }
+
+  /** One item exactly as the files are now. Only for code already holding the item's lock. */
+  private async read(dir: string): Promise<StoredWork> {
     const source = await readFile(join(dir, WORK_FILE), "utf8");
     const work = parseWorkDoc(source);
     const contract = readContract(work);
@@ -146,7 +160,8 @@ export class WorkStore {
   }
 
   /** Every `_work.md` below the root. A broken file is a warning, never a silent drop. */
-  async scan(): Promise<{ items: StoredWork[]; warnings: string[] }> {
+  async scan(options: { raw?: boolean } = {}): Promise<{ items: StoredWork[]; warnings: string[] }> {
+    const loadOne = (dir: string) => (options.raw ? this.read(dir) : this.load(dir));
     const items: StoredWork[] = [];
     const warnings: string[] = [];
     const visit = async (dir: string, depth: number): Promise<void> => {
@@ -160,7 +175,7 @@ export class WorkStore {
       }
       if (depth > 0 && entries.some((entry) => entry.isFile() && entry.name === WORK_FILE)) {
         try {
-          const item = await this.load(dir);
+          const item = await loadOne(dir);
           items.push(item);
           if (item.badLines > 0) {
             warnings.push(`${item.rel}/${EVENTS_FILE}: ${item.badLines} unreadable line(s) skipped`);
@@ -185,20 +200,23 @@ export class WorkStore {
     return { items: items.filter((item) => seen.get(item.contract.id) === item.rel), warnings };
   }
 
-  async findById(id: string): Promise<StoredWork> {
-    const { items } = await this.scan();
+  async findById(id: string, options: { raw?: boolean } = {}): Promise<StoredWork> {
+    const { items } = await this.scan(options);
     const found = items.find((item) => item.contract.id === id);
     if (!found) throw new WorkNotFoundError(id);
     return found;
   }
 
-  /** Re-read one item: from its known folder when it still holds that id, otherwise by scanning. */
+  /**
+   * Re-read one item from its known folder when it still holds that id, otherwise by scanning.
+   * Raw: `mutate` calls it while holding the item's lock.
+   */
   async fresh(id: string, dir?: string): Promise<StoredWork> {
     if (dir) {
-      const item = await this.load(dir).catch(() => null);
+      const item = await this.read(dir).catch(() => null);
       if (item?.contract.id === id) return item;
     }
-    return this.findById(id);
+    return this.findById(id, { raw: true });
   }
 
   async create(input: {
@@ -236,7 +254,7 @@ export class WorkStore {
       "utf8",
     );
     await this.append(dir, [{ ts: now.toISOString(), type: "created", actor: "human" }]);
-    return this.load(dir);
+    return this.read(dir);
   }
 
   async append(dir: string, events: readonly WorkEvent[]): Promise<void> {
@@ -284,7 +302,7 @@ export class WorkStore {
         await writeAtomic(join(item.dir, WORK_FILE), renderWorkDoc(item.work));
       }
       await this.append(item.dir, events);
-      return this.load(item.dir);
+      return this.read(item.dir);
     });
   }
 }

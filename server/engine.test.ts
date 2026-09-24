@@ -944,3 +944,29 @@ describe("round 4", () => {
     expect((await engine.get(item.id)).item).toMatchObject({ state: "blocked", reason: "push rejected" });
   });
 });
+
+test("a read while a change is in flight returns the finished change, never half of it", async () => {
+  const { create, engine, store } = await setup();
+  const item = await create();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered!: () => void;
+  const inside = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const change = store.mutate(item.id, async () => {
+    entered();
+    await gate;
+    return { to: "review", reason: "held open" };
+  });
+  await inside;
+  const reading = engine.get(item.id);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  release();
+  await change;
+  const { item: read, events } = await reading;
+  expect(read.state).toBe("review");
+  expect(events.at(-1)?.detail).toBe("held open");
+});
