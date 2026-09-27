@@ -534,7 +534,7 @@ function swimlanes(ds, win, D, width) {
   }
 }
 function swimlaneTable(ds, D) {
-  return { cols: ["Work", "Repo", "State", "Created", "Agent time (whole day)", "Waited on you (whole day)", "Check runs", "You stepped in"],
+  return { cols: ["Work", "Repo", "State", "Created", "Agent time (whole day)", "Waited on you (whole day)", "Check runs (whole day)", "You stepped in (whole day)"],
     rows: D.map((d) => [d.it.title, d.it.repo, d.override && d.state === "done" ? "Done over a failed check" : VOICE[d.state], clock(d.created),
       dur(d.runMs || 0), dur(d.waits.reduce((a, w) => a + w.ms, 0)),
       d.checks.map((c) => (c.ok ? "pass" : c.results.some((r) => r.timedOut) ? "timeout" : "fail")).join(", ") || "none", d.human.length]) };
@@ -617,8 +617,8 @@ function attention(ds, win, D, width) {
       el("div", { fontSize: "12px", fontWeight: "600", color: "var(--muted)", text: "Unsupervised today" }),
       el("div", { fontSize: "48px", lineHeight: "54px", fontWeight: "650", letterSpacing: "-0.5px", text: dur(s.unsupMs) }),
       el("div", { fontSize: "12px", color: "var(--muted)", text: "Agents working with nobody watching" })),
-    tile("You stepped in", String(s.looks), "dispatch, answer, verdict"),
-    tile("Median wait on you", dur(s.median), `${s.waits.length} waits`),
+    tile("You stepped in", String(s.looks), "whole day: dispatch, answer, verdict"),
+    tile("Median wait on you", dur(s.median), `whole day, ${s.waits.length} waits`),
     tile("Approved first time", s.gated ? `${Math.round((100 * s.firstTime) / s.gated)}%` : "—", `${s.firstTime} of ${s.gated} gated items`),
     tile("Approved over a failure", String(s.overrides), s.overrides ? "shown as Done today" : "none", s.overrides ? GLYPH.Override : null)));
 
@@ -638,7 +638,7 @@ function attention(ds, win, D, width) {
     const hgt = v ? Math.max(3, (v / max) * (chartH - 14)) : 0;
     const bar = el("div", { flex: "1", height: `${hgt}px`, background: "var(--ink)", borderRadius: "4px 4px 0 0", maxWidth: "24px" });
     const hit = el("div", { flex: "1", height: "100%", display: "flex", alignItems: "flex-end", justifyContent: "center" }, bar);
-    cols.append(tip(hit, v ? `${dur(v)} waiting on you` : "No waiting", [`${clock(hours[i])}–${clock(hours[i] + H)}`]));
+    cols.append(tip(hit, v ? `${dur(v)} waiting on you` : "No waiting", [`${clock(Math.max(hours[i], win.t0))}–${clock(Math.min(hours[i] + H, win.t1))}`]));
   });
   const peak = perHour.indexOf(Math.max(...perHour));
   const labels = el("div", { display: "flex", gap: "2px", marginTop: "4px" }, hours.map((h, i) =>
@@ -647,7 +647,7 @@ function attention(ds, win, D, width) {
   root.append(el("div", null,
     el("div", { fontSize: "13px", fontWeight: "600", marginBottom: "6px", text: "Waiting on you, summed across items, by hour" }),
     perHour[peak] ? el("div", { fontSize: "12px", color: "var(--muted)", marginBottom: "6px",
-      text: `Items waiting at the same time add up, so an hour can hold more than 60 minutes. Heaviest: ${clock(hours[peak])}–${clock(hours[peak] + H)}, ${dur(perHour[peak])}.` }) : null,
+      text: `Items waiting at the same time add up, so an hour can hold more than 60 minutes. Heaviest: ${clock(Math.max(hours[peak], win.t0))}–${clock(Math.min(hours[peak] + H, win.t1))}, ${dur(perHour[peak])}.` }) : null,
     cols, labels));
 
   // every wait as a dot, binned by duration so dots never overlap
@@ -666,7 +666,7 @@ function attention(ds, win, D, width) {
         `Waited ${dur(w.ms)}${w.open ? " so far" : ""}`, [w.title, `${clock(w.a)} → ${w.open ? "now" : clock(w.b)}`]));
     }
     root.append(el("div", null,
-      el("div", { fontSize: "13px", fontWeight: "600", marginBottom: "6px", text: "Each time work waited on you" }),
+      el("div", { fontSize: "13px", fontWeight: "600", marginBottom: "6px", text: "Each time work waited on you (whole day)" }),
       el("div", { fontSize: "12px", color: "var(--muted)", marginBottom: "6px", text: `Longest: ${longest.title}, ${dur(longest.ms)}.` }),
       strip, el("div", { position: "relative", height: "16px", fontSize: "11px", color: "var(--muted)", marginTop: "4px" },
         [lo, M, 10 * M, H, 6 * H].filter((v) => v <= hi).map((v) => el("span", { position: "absolute", left: pct(LX(v)),

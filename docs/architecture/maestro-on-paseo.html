@@ -201,7 +201,7 @@
       routes it by agent id, records the turn, and runs the item's checks in the run's directory (the worktree, or the
       repository itself in directory mode) with a minimal environment (<code>server/checks.ts</code>, in order, stopping at
       the first required failure). A completed turn under <code>gate: human</code> lands at review (Needs you); under
-      <code>gate: auto</code> it closes unless a required check failed, in which case it is Stuck (<code>shared/states.ts</code>
+      <code>gate: auto</code> it closes only when the required checks ran and passed; a failed required check makes it Stuck, and a run with no required check stops at review (<code>shared/states.ts</code>
       <code>landingState</code>, <code>server/events.ts:134-137</code>). A failed or canceled turn goes to Stuck.</li>
     <li><b>Permission.</b> <code>agent.permission_requested</code> parks the item at Needs you as a question. The app
       answers by calling Paseo directly (<code>client/detail.tsx:162</code>), not through the plugin. Paseo then fires
@@ -322,7 +322,7 @@
       <tr><td>The writer never grades its own work (protected verifier, tests and contract)</td><td class="st adapted"><i>≈</i> Checks are deterministic, but nothing stops the agent editing tests in its working directory</td></tr>
       <tr><td>The filesystem is truth; the index never owns it</td><td class="st same"><i>✓</i> Files only</td></tr>
       <tr><td>Intents in, events out; every intent idempotent</td><td class="st adapted"><i>≈</i> RPC and polling; locks instead of idempotency keys</td></tr>
-      <tr><td>Budget checked before every model call</td><td class="st missing"><i>✕</i> Not built; reachable only for runs on a plugin-registered provider</td></tr>
+      <tr><td>Budget checked before every model call</td><td class="st missing"><i>✕</i> Not built; reachable only when a plugin-registered provider makes the model calls itself (it receives prompts, not model calls)</td></tr>
       <tr><td>Nothing unattended without stop conditions, budget, kill, gate on irreversible actions and receipts</td><td class="st missing"><i>✕</i> Gate and receipts yes; kill (by archiving), budget and stop conditions not built</td></tr>
       <tr><td>Receipts, never progress percentages; Needs you is blue, not red</td><td class="st same"><i>✓</i> Receipts kept; Needs you uses the theme accent, blue in the Broomva themes and green in Paseo's default theme (<code>docs/needs-you-default-theme.png</code>)</td></tr>
       <tr><td>The relay holds no work state; the key never leaves the runtime</td><td class="st same"><i>✓</i> Paseo's relay; keys are the provider's</td></tr>
