@@ -96,15 +96,15 @@
         Paseo.app on 2026-09-24 (light: success <code>#3e704a</code>, warning <code>#7b5d39</code>, danger
         <code>#9d433b</code>; dark: <code>#6cb17b</code>, <code>#c09664</code>, <code>#d8847b</code>). Under simulated
         deuteranopia, warning and danger are ΔE 0.5 apart in light mode, and pass and fail are ΔE 3.2 (light) and 1.1
-        (dark); the validator's target is ΔE 8 (OKLab × 100). So every status here also carries a shape or glyph, and a
-        word wherever the mark has room: a passed check is a circle, a failed one a square, a timeout a triangle, and
-        every row ends in a labelled state. Treemap cells too small for words keep only the glyph; the table view
-        always has the word.</li>
+        (dark); the validator's target is ΔE 8 (OKLab × 100). So status here is carried by a shape or glyph and,
+        wherever the mark has room, a word: a passed check is a circle, a failed one a square, a timeout a triangle,
+        and swimlane and check-grid rows end in a labelled state. Treemap cells show the glyph when words do not fit
+        and colour alone below 14px square, so small cells are read in the treemap's table view.</li>
       <li><b>Approving over a failed check has no state of its own.</b> The data already knows (the last
         <code>checks.finished</code> before the approving <code>gate</code> has a failure), so every view here can mark
         it. Today the list shows it as a green Done dot; the detail pane shows it only in small grey type ("1 of 1
-        check failed · you approved") above a red failed-check row. This prototype proposes a state of its own and uses
-        two labels the plugin does not: Overridden, and Canceled (the plugin groups canceled work under Done).</li>
+        check failed · you approved") above a red failed-check row. This prototype proposes a state of its own
+        (Overridden), and labels canceled work Canceled in rows where the plugin's list groups it under Done.</li>
       <li><b><code>work.list</code> does not return events.</b> The swimlanes, attention, check and permission views
         need the event logs of every item. One aggregate RPC (for example <code>work.timeline</code>, reusing
         <code>runningIntervals</code> from <code>server/events.ts</code>) avoids calling <code>work.get</code> per item.
@@ -534,7 +534,7 @@ function swimlanes(ds, win, D, width) {
   }
 }
 function swimlaneTable(ds, D) {
-  return { cols: ["Work", "Repo", "State", "Created", "Agent time", "Waited on you", "Check runs", "You stepped in"],
+  return { cols: ["Work", "Repo", "State", "Created", "Agent time (whole day)", "Waited on you (whole day)", "Check runs", "You stepped in"],
     rows: D.map((d) => [d.it.title, d.it.repo, d.override && d.state === "done" ? "Done over a failed check" : VOICE[d.state], clock(d.created),
       dur(d.runMs || 0), dur(d.waits.reduce((a, w) => a + w.ms, 0)),
       d.checks.map((c) => (c.ok ? "pass" : c.results.some((r) => r.timedOut) ? "timeout" : "fail")).join(", ") || "none", d.human.length]) };
@@ -626,7 +626,11 @@ function attention(ds, win, D, width) {
   const hours = [];
   const h0 = Math.floor(win.t0 / H) * H;
   for (let h = h0; h < win.t1; h += H) hours.push(h);
-  const perHour = hours.map((h) => s.waits.reduce((a, w) => a + Math.max(0, Math.min(w.b, h + H) - Math.max(w.a, h)), 0));
+  // Each bin is clamped to the selected window as well as to its hour.
+  const perHour = hours.map((h) => {
+    const lo = Math.max(h, win.t0), hi = Math.min(h + H, win.t1);
+    return s.waits.reduce((a, w) => a + Math.max(0, Math.min(w.b, hi) - Math.max(w.a, lo)), 0);
+  });
   const max = Math.max(...perHour, 1);
   const chartH = 88;
   const cols = el("div", { display: "flex", alignItems: "flex-end", gap: "2px", height: `${chartH}px`, borderBottom: "1px solid var(--border)", position: "relative" });
@@ -694,7 +698,8 @@ function squarify(nodes, x, y, w, h) {
   if (row.length) lay(row);
   return out;
 }
-const FILL = { review: "var(--accent)", running: "var(--wash)", blocked: "var(--warning)", queued: "var(--control)", done: "var(--border)", override: "var(--danger)" };
+// Queued is an outline, not a fill, so it cannot be confused with Done's grey.
+const FILL = { review: "var(--accent)", running: "var(--wash)", blocked: "var(--warning)", queued: "var(--bg)", done: "var(--border)", override: "var(--danger)" };
 function treemap(ds, D, width) {
   const W = width - 34, Hh = Math.round(Math.max(240, Math.min(440, W * 0.56)));
   const floor = 3 * M;
@@ -716,7 +721,7 @@ function treemap(ds, D, width) {
       const fill = d.override && d.state === "done" ? FILL.override : FILL[g];
       const dark = g === "review" || g === "blocked" || (d.override && d.state === "done");
       const cell = el("div", { position: "absolute", left: `${k.x + 1}px`, top: `${k.y + 1}px`, width: `${Math.max(k.w - 2, 1)}px`, height: `${Math.max(k.h - 2, 1)}px`,
-        background: fill, borderRadius: "4px", padding: "4px 6px", overflow: "hidden" });
+        background: fill, border: g === "queued" ? "1px solid var(--muted)" : "0", borderRadius: "4px", padding: "4px 6px", overflow: "hidden" });
       // A label is drawn only when it fits whole (estimated at 0.58em per glyph); the tooltip and table carry the rest.
       const inner = k.w - 14, textW = (s, px) => s.length * px * 0.58;
       const lines = textW(d.it.title, 12) <= inner ? 1 : textW(d.it.title, 12) <= inner * 2 - 24 ? 2 : 0;
@@ -726,8 +731,8 @@ function treemap(ds, D, width) {
       if (lines && k.h - 10 >= lines * 15 + (status ? 14 : 0)) {
         cell.append(el("div", { fontSize: "12px", lineHeight: "15px", fontWeight: "600", color: dark ? "#ffffff" : "var(--fg)", text: d.it.title }));
         if (status) cell.append(el("div", { fontSize: "11px", lineHeight: "14px", color: dark ? "rgba(255,255,255,.85)" : "var(--muted)", whiteSpace: "nowrap", text: status }));
-      } else if (label !== "Done" && label !== "Queued" && label !== "Canceled" && k.w >= 22 && k.h >= 22) {
-        // Too small for words, but the states that want you still get their glyph.
+      } else if (k.w >= 16 && k.h >= 16) {
+        // Too small for words: every state keeps its glyph down to 14px of cell (16px less the 2px gap).
         cell.style.display = "flex"; cell.style.alignItems = "center"; cell.style.justifyContent = "center";
         cell.append(el("span", { fontSize: "13px", fontWeight: "700", color: dark ? "#ffffff" : "var(--fg)", text: GLYPH[label][0] }));
       }
@@ -736,7 +741,7 @@ function treemap(ds, D, width) {
   }
   const legend = el("div", { class: "legend", marginTop: "10px" },
     ...[["Needs you", FILL.review], ["Running", FILL.running], ["Stuck", FILL.blocked], ["Queued", FILL.queued], ["Done", FILL.done], ["Done over a failed check", FILL.override]]
-      .map(([l, c]) => legendItem(el("div", { width: "12px", height: "12px", borderRadius: "3px", background: c, border: c === FILL.queued ? "1px solid var(--border)" : "0" }), l)));
+      .map(([l, c]) => legendItem(el("div", { width: "12px", height: "12px", borderRadius: "3px", background: c, border: c === FILL.queued ? "1px solid var(--muted)" : "0" }), l)));
   return el("div", null, box, legend);
 }
 function treemapTable(ds, D) {

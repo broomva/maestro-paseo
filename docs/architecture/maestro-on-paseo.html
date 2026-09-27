@@ -43,7 +43,8 @@
     API, how data moves through the plugin as it is built today (<code>apps/maestro-paseo</code> at <code>9438e62</code>),
     and what is missing. Written 2026-09-24 from the design docs, the plugin source and the
     <code>@getpaseo/{plugin,client,protocol}</code> 0.8.0 type definitions. The installed Paseo.app reports 0.9.2 in its <code>Info.plist</code>; host-side facts
-    below marked "0.9 host" were read from its <code>app.asar</code>, not from the 0.8.0 types.</p>
+    below marked "0.9 host" were read from its bundled code (<code>Resources/app.asar</code> and
+    <code>Resources/app-dist</code>), not from the 0.8.0 types.</p>
 
   <h2>The articulation in one idea: two authorities and a binding</h2>
   <div class="three">
@@ -56,15 +57,17 @@
       ledger. All of it lives in plain files under the work root: <code>_work.md</code> is the contract and
       <code>_events.jsonl</code> is the append-only log. The files are the system of record, as the design requires.</div>
     <div class="card"><h3>The binding between them</h3>
-      Each run is a Paseo agent carrying the label <code>maestro.work=&lt;id&gt;</code>, and the item's
+      Each dispatched run is a Paseo agent carrying the label <code>maestro.work=&lt;id&gt;</code> (an adopted session is
+      bound by its id instead), and the item's
       <code>dispatched</code> event records its agent, workspace and branch. Paseo's hook events arrive keyed by
       agent id; the plugin routes them to the right folder through an in-memory index, and a reconcile pass repairs
       anything a missed hook left behind.</div>
   </div>
   <p>Everything that crosses the boundary is one of four things: an <b>RPC</b> from the app to the plugin, a <b>facade
     call</b> from the plugin into Paseo, a <b>hook</b> from Paseo into the plugin, or a <b>direct host call</b> from the
-    app that never touches the plugin. Permissions are the only case of the last kind today, and that is where the
-    allow-or-deny decision currently gets lost.</p>
+    app that never touches the plugin. There are two direct host calls today: answering a permission
+    (<code>client/detail.tsx:162</code>) and listing projects in the new-work form (<code>client/new-work.tsx:40-45</code>).
+    The first is where the allow-or-deny decision gets lost.</p>
 
   <h2>How data flows</h2>
   <div class="legend">
@@ -149,7 +152,7 @@
       <line x1="505" y1="488" x2="726" y2="488" stroke="#3e704a" stroke-width="1.6" marker-end="url(#a-ok)"/>
       <text x="618" y="482" text-anchor="middle" fill="#3e704a">hook agent.turn_ended</text>
       <line x1="730" y1="524" x2="938" y2="524" stroke="#5f636c" stroke-width="1.6" marker-end="url(#a-mu)"/>
-      <text x="836" y="518" text-anchor="middle">run checks in the worktree</text>
+      <text x="836" y="518" text-anchor="middle">run checks in the run's dir</text>
       <line x1="730" y1="560" x2="938" y2="560" stroke="#5f636c" stroke-width="1.6" marker-end="url(#a-mu)"/>
       <text x="836" y="554" text-anchor="middle">state review = Needs you</text>
 
@@ -187,7 +190,7 @@
       index (the design's SQLite); the list is recomputed from files each time, and an in-memory map from agent to
       folder routes hooks.</li>
     <li><b>Dispatch.</b> <code>work.dispatch</code> → <code>engine.dispatch</code> → <code>startRun</code>
-      (<code>server/runs.ts:69-96</code>): resolve the provider's default model; with <code>isolation: worktree</code> (the
+      (<code>server/runs.ts:67-97</code>): resolve the provider's default model; with <code>isolation: worktree</code> (the
       default) create a Paseo workspace as a worktree on a fresh <code>run/&lt;hex&gt;</code> branch (random hex,
       <code>server/runs.ts:35-37</code>), otherwise open the repository directory; then create one agent there with the
       composed brief and the label <code>maestro.work=&lt;id&gt;</code>. Only then is the item moved to running, under its
@@ -195,11 +198,11 @@
       appended). If recording fails, the engine tries to archive the agent and a worktree it created
       (<code>server/engine.ts:350-379</code>); both are best effort, so a run can outlive a failed dispatch.</li>
     <li><b>The run stops.</b> Paseo fires <code>agent.turn_ended</code> with the outcome and the timeline. The plugin
-      routes it by agent id, records the turn, runs the item's checks inside the worktree with a minimal environment
-      (<code>server/checks.ts</code>, in order, stopping at the first required failure). A completed turn under
-      <code>gate: human</code> lands at review (Needs you); under <code>gate: auto</code> passing checks close it and failing
-      checks leave it Stuck (<code>shared/states.ts</code>, <code>landingState</code>). A failed or canceled turn goes to
-      Stuck.</li>
+      routes it by agent id, records the turn, and runs the item's checks in the run's directory (the worktree, or the
+      repository itself in directory mode) with a minimal environment (<code>server/checks.ts</code>, in order, stopping at
+      the first required failure). A completed turn under <code>gate: human</code> lands at review (Needs you); under
+      <code>gate: auto</code> it closes unless a required check failed, in which case it is Stuck (<code>shared/states.ts</code>
+      <code>landingState</code>, <code>server/events.ts:134-137</code>). A failed or canceled turn goes to Stuck.</li>
     <li><b>Permission.</b> <code>agent.permission_requested</code> parks the item at Needs you as a question. The app
       answers by calling Paseo directly (<code>client/detail.tsx:162</code>), not through the plugin. Paseo then fires
       <code>agent.permission_resolved</code> with <code>resolution: {behavior: "allow" | "deny", message?}</code>
@@ -234,7 +237,7 @@
       <tr class="group"><td colspan="4">Data model</td></tr>
       <tr><td>Work item as a folder; kinds; initiative → project → item nesting</td><td>n/a</td><td>Same layout, nesting is the grouping; kinds parsed</td><td class="st same"><i>✓</i> Same</td></tr>
       <tr><td>WorkContract: id, kind, state, owner, gate, budget, done, trigger, created, updated</td><td>n/a</td><td>Written field for field for what it uses, plus <code>repo</code> and <code>provider</code>; <code>budget</code>, <code>trigger</code> and the richer <code>done</code> (judge, protect, diff limits, stop_on) are not acted on</td><td class="st adapted"><i>≈</i> Partial</td></tr>
-      <tr><td>Eight OrchStates and legal transitions</td><td>n/a</td><td>Same enum. Against the design's table (<code>packages/protocol/src/state.ts:102-110</code>), <code>shared/states.ts:102-111</code> adds eight edges and drops review → triggered; its header comment explains three of the changes</td><td class="st adapted"><i>≈</i> Adapted</td></tr>
+      <tr><td>Eight OrchStates and legal transitions</td><td>n/a</td><td>Same enum. Against the design's table (<code>packages/protocol/src/state.ts:102-110</code>), <code>shared/states.ts:102-111</code> adds eight edges and drops review → triggered; its header comment explains five of the nine</td><td class="st adapted"><i>≈</i> Adapted</td></tr>
       <tr><td>Plain voice: Queued, Running, Stuck, Needs you, Done, Standing</td><td>n/a</td><td>Same labels; Standing is unused without routines</td><td class="st same"><i>✓</i> Same</td></tr>
       <tr><td>The look {ran, decided[], ask}</td><td><code>agents.create({outputSchema})</code> could make it typed</td><td>Parsed from <code>## Decided</code> / <code>## Ask</code> in the final message</td><td class="st same"><i>✓</i> Same</td></tr>
       <tr><td>Events and receipts (run, tool, check, gate, budget, agent namespaces)</td><td>Hooks supply the raw events; <code>timeline.append</code> can write into the session</td><td>Own event set in <code>_events.jsonl</code>; no budget, schedule or attention events</td><td class="st adapted"><i>≈</i> Partial</td></tr>
@@ -254,8 +257,8 @@
       <tr><td>5-second undo window; idempotency keys on every intent</td><td>n/a</td><td>Per-item locks and in-flight guards instead</td><td class="st missing"><i>✕</i> Not built</td></tr>
 
       <tr class="group"><td colspan="4">Verifier and governance</td></tr>
-      <tr><td>Stage 1: deterministic checks</td><td>Node child processes in the worktree</td><td>Minimal environment, per-check exit code, tail, timeout</td><td class="st same"><i>✓</i> Same</td></tr>
-      <tr><td>Stage 0: tamper and diff guard, protected paths</td><td>Plain git in the worktree</td><td>Only an instruction in the prompt</td><td class="st missing"><i>✕</i> Not built</td></tr>
+      <tr><td>Stage 1: deterministic checks</td><td>Node child processes in the run's directory</td><td>Minimal environment, per-check exit code, tail, timeout</td><td class="st same"><i>✓</i> Same</td></tr>
+      <tr><td>Stage 0: tamper and diff guard, protected paths</td><td>Plain git in the run's directory</td><td>Only an instruction in the prompt</td><td class="st missing"><i>✕</i> Not built</td></tr>
       <tr><td>Stage 2: LLM judge on a rubric, different model</td><td>A second <code>agents.create</code> with another provider and an <code>outputSchema</code></td><td>Not present</td><td class="st missing"><i>✕</i> Not built</td></tr>
       <tr><td>Attempt cap, fix_plan feedback, stale verdict → rebase and re-verify</td><td>n/a</td><td>A person sends back by hand</td><td class="st missing"><i>✕</i> Not built</td></tr>
       <tr><td>Budgets per run and per day, checked before every model call</td><td>A plugin can register its own provider (<code>registerProvider</code>, <code>@getpaseo/plugin/dist/server/contracts.d.ts:13</code>) whose <code>ProviderConnection.send</code> receives each prompt (<code>server/provider.d.ts:28-34</code>), so runs made on such a provider could be metered and refused; <code>providers.listUsage</code> and an agent's <code>lastUsage</code> observe the others. Not tried</td><td>Not present</td><td class="st missing"><i>✕</i> Not built</td></tr>
@@ -270,7 +273,7 @@
       <tr><td>Inspector (lifecycle rail, receipts, chat)</td><td><code>addWorkspacePanel</code> (agent context)</td><td>Receipts in the detail pane; Work panel beside the agent</td><td class="st adapted"><i>≈</i> Partial</td></tr>
       <tr><td>Composer with dispatch rail (model, harness, effort, scope, autonomy)</td><td><code>addComposerPill</code>, <code>addSlashCommand</code></td><td>New-work form; provider and mode in settings</td><td class="st adapted"><i>≈</i> Partial</td></tr>
       <tr><td>History by day, work, agent, lineage</td><td><code>addSurface</code>; boxes only, no SVG or canvas</td><td>Receipts per item; the swimlane prototype is the candidate</td><td class="st missing"><i>✕</i> Not built</td></tr>
-      <tr><td>Wake log, kill button, knowledge graph</td><td>Kill needs cancel</td><td>Not present</td><td class="st missing"><i>✕</i> Not built</td></tr>
+      <tr><td>Wake log, kill button, knowledge graph</td><td>A kill button could use <code>archive()</code> (see kill above)</td><td>Not present</td><td class="st missing"><i>✕</i> Not built</td></tr>
       <tr><td>⌘K palette</td><td><code>addCommandCenterItem</code></td><td>Open Maestro; Track this session</td><td class="st same"><i>✓</i> Same</td></tr>
       <tr><td>Settings (runners, credentials, autonomy, routines, notifications, members)</td><td><code>addSettingsScreen</code>, <code>registerSettings</code></td><td>Work folder, provider, mode, isolation, themes</td><td class="st adapted"><i>≈</i> Partial</td></tr>
       <tr><td>Mobile shell</td><td>Paseo's iOS and Android apps render plugin surfaces (<code>layout.compact</code>)</td><td>Compact layout exists (<code>docs/compact-*.png</code>)</td><td class="st adapted"><i>≈</i> Adapted</td></tr>
@@ -284,7 +287,7 @@
     <li><b>Record the permission decision</b> (BRO-2573). Pass <code>event.resolution</code> through <code>index.server.ts:42</code> and store it.</li>
     <li><b>An overridden state</b> for approving over a failed check; the data already knows.</li>
     <li><b>Stage 0 and Stage 2 of the verifier.</b> A diff and protected-path guard is a built-in check over git in the
-      worktree. A judge is a second agent on another provider in the same worktree, returning a typed verdict through
+      run's directory. A judge is a second agent on another provider in the same directory, returning a typed verdict through
       <code>outputSchema</code>.</li>
     <li><b>Attempt caps and automatic send-back</b> on failing checks, as engine policy.</li>
     <li><b>Hook-triggered routines</b> (the design's <code>hook</code> trigger) via <code>server.on</code>.</li>
@@ -301,9 +304,7 @@
     importing the client's internal module as a runtime dependency, both unverified and both coupled to internals. The
     clean path is asking Paseo to widen the facade.</p>
   <h3>3. Needs the host</h3>
-  <p>Notifications to a closed laptop or a phone, and real charts (SVG or canvas). Budgets are only partly here: a
-    plugin sits in the request path of model calls only for agents created on a provider it registered, so runs on
-    Paseo's own providers can be observed but not refused.</p>
+  <p>Notifications to a closed laptop or a phone, and real charts (SVG or canvas).</p>
   <h3>4. Deliberately different</h3>
   <p>Send back wakes the same session instead of a fresh run; approve does not merge; queued or stuck work can be
     canceled directly; existing sessions can be adopted; the run branch is shown in the detail pane where the design
@@ -318,14 +319,14 @@
     <thead><tr><th>Invariant</th><th>Plugin</th></tr></thead>
     <tbody>
       <tr><td>Approve is the only path from review to done under a human gate</td><td class="st same"><i>✓</i> Kept, and tested</td></tr>
-      <tr><td>The writer never grades its own work (protected verifier, tests and contract)</td><td class="st adapted"><i>≈</i> Checks are deterministic, but nothing stops the agent editing tests in its worktree</td></tr>
+      <tr><td>The writer never grades its own work (protected verifier, tests and contract)</td><td class="st adapted"><i>≈</i> Checks are deterministic, but nothing stops the agent editing tests in its working directory</td></tr>
       <tr><td>The filesystem is truth; the index never owns it</td><td class="st same"><i>✓</i> Files only</td></tr>
       <tr><td>Intents in, events out; every intent idempotent</td><td class="st adapted"><i>≈</i> RPC and polling; locks instead of idempotency keys</td></tr>
       <tr><td>Budget checked before every model call</td><td class="st missing"><i>✕</i> Not built; reachable only for runs on a plugin-registered provider</td></tr>
       <tr><td>Nothing unattended without stop conditions, budget, kill, gate on irreversible actions and receipts</td><td class="st missing"><i>✕</i> Gate and receipts yes; kill (by archiving), budget and stop conditions not built</td></tr>
       <tr><td>Receipts, never progress percentages; Needs you is blue, not red</td><td class="st same"><i>✓</i> Receipts kept; Needs you uses the theme accent, blue in the Broomva themes and green in Paseo's default theme (<code>docs/needs-you-default-theme.png</code>)</td></tr>
       <tr><td>The relay holds no work state; the key never leaves the runtime</td><td class="st same"><i>✓</i> Paseo's relay; keys are the provider's</td></tr>
-      <tr><td>Orphaned runs are never silently respawned</td><td class="st same"><i>✓</i> Recovered ends always land at your gate</td></tr>
+      <tr><td>Orphaned runs are never silently respawned</td><td class="st same"><i>✓</i> A recovered end never closes work by itself: one that would reach Done lands at review instead (<code>server/engine.ts:887-903</code>); a failed turn or a failing required auto check still goes to Stuck</td></tr>
       <tr><td>A verdict is valid only against the base it was judged on</td><td class="st missing"><i>✕</i> Not tracked</td></tr>
     </tbody>
   </table>
