@@ -100,8 +100,9 @@
       <li><b><code>work.list</code> does not return events.</b> The swimlanes, attention, check and permission views
         need the event logs of every item. One aggregate RPC (for example <code>work.timeline</code>, reusing
         <code>runningIntervals</code> from <code>server/events.ts</code>) avoids calling <code>work.get</code> per item.
-        The flow board and treemap need only what <code>work.list</code> already returns plus the time each item
-        entered its state.</li>
+        The flow board needs only what <code>work.list</code> already returns plus the time each item entered its
+        state. The treemap also needs each item's accumulated running time, which <code>work.list</code> does not
+        return, so the aggregate RPC has to carry it.</li>
       <li><b>The pending-decision cap is a rule, not a picture.</b> The flow board draws it, but "dispatch pauses when
         three items need you" has to be enforced in the engine's dispatch path to mean anything.</li>
     </ol>
@@ -123,7 +124,10 @@ function dur(ms) {
   return r ? `${h}h ${r}m` : `${h}h`;
 }
 
-// ─── event builders (same shapes as server/events.ts WorkEvent) ─────────────
+// ─── event builders ─────────────────────────────────────────────────────────
+// Reduced shapes, not a portable event log: the event type names of server/events.ts WorkEvent and only the fields
+// these views read. Timestamps are milliseconds since local midnight rather than ISO strings, and fields the views
+// never read (agentId on every event, check tokens, the dispatch workspaceId and cwd) are omitted.
 function Item(id, title, repo, o = {}) {
   return { id, title, repo, initiative: o.initiative || null, gate: o.gate || "human", kind: o.kind || "task",
     checks: o.checks || [], events: [], _state: "proposed" };
@@ -323,7 +327,7 @@ function synthetic() {
   }
   return { key: "synthetic", now: NOW, items,
     provenance: "Synthetic data",
-    provenanceDetail: "29 items across 4 repos, generated from a fixed seed in the plugin's own event shapes. Reviewer available 08:30–12:30 and 13:45–18:30. No real run produced these numbers." };
+    provenanceDetail: "29 items across 4 repos, generated from a fixed seed with the plugin's event type names and only the fields these views read (reduced shapes: millisecond timestamps, no agentId or check tokens). Reviewer available 08:30–12:30 and 13:45–18:30. No real run produced these numbers." };
 }
 
 // ─── derivations (mirror server/events.ts where the server has the logic) ───
@@ -890,7 +894,8 @@ function render() {
        ["Ports as:", "stat tiles plus a column chart and a binned dot strip, all boxes."]]),
     card("tree", 4, "Treemap", "Where is agent time going across repos right now?", ds,
       () => treemap(ds, D, w), () => treemapTable(ds, D),
-      [["Built from:", "repo, state and running time per item."],
+      [["Built from:", "repo, state and accumulated running time per item."],
+       ["Needs:", "running time from the aggregate RPC in 1; work.list returns repo and state but not running time."],
        ["Sized by:", "agent running time, with a 3-minute floor so queued items stay visible."],
        ["Trade-off:", "sized by agent time, the items that need you are usually the small ones. This view answers where compute went, not what needs you."],
        ["Ports as:", "absolutely positioned <View>s; the layout is computed in JS, not by the renderer."]]),
