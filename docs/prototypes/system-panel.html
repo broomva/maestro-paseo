@@ -73,10 +73,11 @@
 <div class="wrap">
   <h1>Maestro · system panel prototypes</h1>
   <p class="lede">Six ways to show the whole system on one panel of the Maestro plugin page. Every mark is a
-    <b>positioned box, dot or line of text</b>: no SVG, no canvas, no CSS grid, no pseudo-elements. The plugin SDK
-    (0.8.0) gives the panel React Native views and nothing else, so anything drawn here ports to
-    <code>&lt;View&gt;</code>s with percentage positions, the way the "Unsupervised today" track already works.
-    Hover here stands in for press in the app.</p>
+    <b>positioned box, dot or line of text</b>: no SVG, no canvas, no CSS grid, no pseudo-elements, no
+    <code>calc()</code> and no percentage transforms. The 0.8.0 client SDK hands a plugin React Native components (its
+    <code>react-native</code> and <code>ui</code> entries) and no SVG or canvas component, so what is drawn here should
+    port to <code>&lt;View&gt;</code>s with percentage positions, the way the "Unsupervised today" track already works.
+    Hover here stands in for press in the app. All data on this page is synthetic.</p>
 
   <div class="controls" id="controls"></div>
   <div id="prov-line"></div>
@@ -90,13 +91,20 @@
         (<code>@getpaseo/plugin/dist/server/lifecycle.d.ts:59-63</code>), but the plugin passes on only the request id
         (<code>index.server.ts:42</code>) and records only that (<code>server/engine.ts:837-843</code>). Passing
         <code>event.resolution</code> through and storing it makes the permissions view show what you granted (BRO-2573).</li>
-      <li><b>The host's status colors cannot carry meaning alone.</b> Measured with the dataviz validator: warning
-        and danger are ΔE 0.5 apart under deuteranopia in light mode, and pass and fail are ΔE 3.2 (light) and 1.1
-        (dark), against a target of 8. Every status here is therefore also a shape and a word: a passed check is a
-        circle, a failed one a square, a timeout a triangle, and every row ends in a labelled state.</li>
+      <li><b>The host's status colors cannot carry meaning alone.</b> Measured with <code>validate_palette.js</code>
+        from the dataviz skill bundled with Claude Code 2.1.280, on the status colours read from the installed
+        Paseo.app on 2026-09-24 (light: success <code>#3e704a</code>, warning <code>#7b5d39</code>, danger
+        <code>#9d433b</code>; dark: <code>#6cb17b</code>, <code>#c09664</code>, <code>#d8847b</code>). Under simulated
+        deuteranopia, warning and danger are ΔE 0.5 apart in light mode, and pass and fail are ΔE 3.2 (light) and 1.1
+        (dark); the validator's target is ΔE 8 (OKLab × 100). So every status here also carries a shape or glyph, and a
+        word wherever the mark has room: a passed check is a circle, a failed one a square, a timeout a triangle, and
+        every row ends in a labelled state. Treemap cells too small for words keep only the glyph; the table view
+        always has the word.</li>
       <li><b>Approving over a failed check has no state of its own.</b> The data already knows (the last
         <code>checks.finished</code> before the approving <code>gate</code> has a failure), so every view here can mark
-        it. The list and detail pane today show it as a green Done.</li>
+        it. Today the list shows it as a green Done dot; the detail pane shows it only in small grey type ("1 of 1
+        check failed · you approved") above a red failed-check row. This prototype proposes a state of its own and uses
+        two labels the plugin does not: Overridden, and Canceled (the plugin groups canceled work under Done).</li>
       <li><b><code>work.list</code> does not return events.</b> The swimlanes, attention, check and permission views
         need the event logs of every item. One aggregate RPC (for example <code>work.timeline</code>, reusing
         <code>runningIntervals</code> from <code>server/events.ts</code>) avoids calling <code>work.get</code> per item.
@@ -143,66 +151,7 @@ function result(name, ok, ms, timedOut = false) {
   return { name, run: CMD[name] || name, required: true, ok, exit: ok ? 0 : timedOut ? null : 1, durationMs: ms, timedOut, tail: "" };
 }
 
-// ─── dataset 1: the sandbox run, reconstructed from docs/*.png receipts ─────
-function sandbox() {
-  const NOW = 16 * H + 40 * M, t = (h, m, s = 0) => h * H + m * M + s * S;
-  const hello = Item("hello", "Add a hello file", "sandbox · repo", { checks: ["check"] });
-  E(hello, t(16, 24), "created", "human");
-  E(hello, t(16, 24, 10), "dispatched", "human", { provider: "claude/claude-haiku-4-5", branch: "run/cec3380a" });
-  St(hello, t(16, 24, 10), "running", "human", "Dispatched");
-  E(hello, t(16, 24, 11), "turn.started", "agent");
-  E(hello, t(16, 25, 5), "turn.ended", "agent", { outcome: "completed", summary: "Created hello.txt containing hello maestro and committed it." });
-  E(hello, t(16, 25, 6), "checks.started", "maestro");
-  E(hello, t(16, 25, 9), "checks.finished", "maestro", { results: [result("check", true, 900)] });
-  St(hello, t(16, 25, 9), "review", "maestro", "Ran to the gate");
-  E(hello, t(16, 25, 50), "gate", "human", { verdict: "revise", note: "Also add a second line to hello.txt." });
-  St(hello, t(16, 25, 50), "running", "human", "Sent back");
-  E(hello, t(16, 25, 51), "turn.started", "agent");
-  E(hello, t(16, 26, 20), "turn.ended", "agent", { outcome: "completed", summary: "I'll add the second line to hello.txt and commit the change." });
-  E(hello, t(16, 26, 21), "checks.started", "maestro");
-  E(hello, t(16, 26, 24), "checks.finished", "maestro", { results: [result("check", false, 800)] });
-  St(hello, t(16, 26, 24), "review", "maestro", "Checks failed");
-  E(hello, t(16, 27), "gate", "human", { verdict: "approve", note: "" });
-  St(hello, t(16, 27), "done", "human", "Approved");
-
-  const notes = Item("notes", "Write release notes", "sandbox · repo");
-  E(notes, t(16, 26, 30), "created", "human");
-  E(notes, t(16, 26, 40), "dispatched", "human", { provider: "claude/claude-haiku-4-5", branch: "run/2b91d0e4" });
-  St(notes, t(16, 26, 40), "running", "human", "Dispatched");
-  E(notes, t(16, 26, 41), "turn.started", "agent");
-  E(notes, t(16, 27, 35), "turn.ended", "agent", { outcome: "completed", summary: "Wrote RELEASE_NOTES.md and committed it." });
-  St(notes, t(16, 27, 35), "review", "maestro", "Ran to the gate");
-  E(notes, t(16, 28, 15), "gate", "human", { verdict: "approve", note: "" });
-  St(notes, t(16, 28, 15), "done", "human", "Approved");
-
-  const log = Item("changelog", "Add a changelog", "repo");
-  E(log, t(16, 28, 30), "created", "human");
-  St(log, t(16, 30), "canceled", "human", "Canceled");
-
-  const lic = Item("license", "Add a license stub", "repo");
-  E(lic, t(16, 29), "created", "human");
-  E(lic, t(16, 29, 5), "dispatched", "human", { provider: "claude/claude-haiku-4-5", branch: "run/669a5e7f" });
-  St(lic, t(16, 29, 5), "running", "human", "Dispatched");
-  E(lic, t(16, 29, 6), "turn.started", "agent");
-  E(lic, t(16, 29, 10), "permission.asked", "agent", { requestId: "p1", title: "Write", detail: "LICENSE.txt" });
-  St(lic, t(16, 29, 10), "review", "agent", "Permission asked");
-  E(lic, t(16, 29, 25), "permission.resolved", "human", { requestId: "p1" });
-  St(lic, t(16, 29, 25), "running", "human", "Permission answered");
-  E(lic, t(16, 29, 30), "permission.asked", "agent", { requestId: "p2", title: "Bash", detail: "git commit" });
-  St(lic, t(16, 29, 30), "review", "agent", "Permission asked");
-  E(lic, t(16, 29, 50), "permission.resolved", "human", { requestId: "p2" });
-  St(lic, t(16, 29, 50), "running", "human", "Permission answered");
-  E(lic, t(16, 30, 10), "turn.ended", "agent", { outcome: "completed", summary: "Created LICENSE.txt with the requested line and committed it." });
-  St(lic, t(16, 30, 10), "review", "maestro", "Ran to the gate");
-  E(lic, t(16, 35), "gate", "human", { verdict: "approve", note: "" });
-  St(lic, t(16, 35), "done", "human", "Approved");
-
-  return { key: "sandbox", now: NOW, items: [hello, notes, log, lic],
-    provenance: "Reconstructed from the receipts in docs/*.png",
-    provenanceDetail: "Order and durations follow the screenshots to the minute; where on the clock they sit is illustrative. Four items, one reviewer, about fifteen minutes." };
-}
-
-// ─── dataset 2: a synthetic working day (deterministic, seeded) ─────────────
+// ─── the dataset: a synthetic working day (deterministic, seeded) ────────────
 function mulberry32(seed) {
   return () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let x = Math.imul(seed ^ (seed >>> 15), 1 | seed);
     x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x; return ((x ^ (x >>> 14)) >>> 0) / 4294967296; };
@@ -289,8 +238,8 @@ function synthetic() {
       c += sp.stuck ? slice * 0.6 : slice;
       if (c > NOW) return it;
       if (sp.stuck) {
-        E(it, c, "turn.ended", "agent", { outcome: "failed", error: "Session closed while a question was pending", summary: "" });
-        St(it, c, "blocked", "maestro", "Session ended with a question pending");
+        E(it, c, "turn.ended", "agent", { outcome: "failed", error: "Turn failed", summary: "" });
+        St(it, c, "blocked", "maestro", "The turn failed");
         return it;
       }
       E(it, c, "turn.ended", "agent", { outcome: "completed", summary: `${sp.title}: done, committed on the run branch.` });
@@ -298,19 +247,25 @@ function synthetic() {
       if (it.checks.length) {
         E(it, c + 5 * S, "checks.started", "maestro");
         const last = cycle === cycles;
-        const results = it.checks.map((name) => {
+        // In order, stopping at the first required failure (server/checks.ts runChecks).
+        const results = [];
+        for (const name of it.checks) {
           const ms = between(20 * S, 90 * S);
-          if (cycle === 0 && sp.timeoutFirst && name === "test") return result(name, false, 120 * S, true);
-          if (cycle === 0 && sp.failFirst && name === it.checks[it.checks.length - 1]) return result(name, false, ms);
-          if (last && sp.overrideFail === name) return result(name, false, ms);
-          return result(name, true, ms);
-        });
+          let r = result(name, true, ms);
+          if (cycle === 0 && sp.timeoutFirst && name === "test") r = result(name, false, 120 * S, true);
+          else if (cycle === 0 && sp.failFirst && name === it.checks[it.checks.length - 1]) r = result(name, false, ms);
+          else if (last && sp.overrideFail === name) r = result(name, false, ms);
+          results.push(r);
+          if (!r.ok) break;
+        }
         failed = results.some((r) => !r.ok);
-        c += 5 * S + Math.max(...results.map((r) => r.durationMs));
+        c += 5 * S + results.reduce((a, r) => a + r.durationMs, 0);
         E(it, c, "checks.finished", "maestro", { results });
       }
+      // Where a finished run lands (shared/states.ts landingState): gate auto closes on passing checks and
+      // is Stuck on failing ones; gate human always stops at Needs you.
+      if (sp.auto) { St(it, c, failed ? "blocked" : "done", "maestro", failed ? "Checks failed" : "Checks passed"); return it; }
       St(it, c, "review", "maestro", failed ? "Checks failed" : "Ran to the gate");
-      if (sp.auto && !failed) { St(it, c + 2 * S, "done", "maestro", "Auto gate: checks passed"); return it; }
       if (sp.pending) return it;
       const tg = human(c, false);
       if (tg === null) return it;
@@ -327,7 +282,7 @@ function synthetic() {
   }
   return { key: "synthetic", now: NOW, items,
     provenance: "Synthetic data",
-    provenanceDetail: "29 items across 4 repos, generated from a fixed seed with the plugin's event type names and only the fields these views read (reduced shapes: millisecond timestamps, no agentId or check tokens). Reviewer available 08:30–12:30 and 13:45–18:30. No real run produced these numbers." };
+    provenanceDetail: "29 items across 4 repos, generated from a fixed seed with the plugin's event type names and only the fields these views read (reduced shapes: millisecond timestamps, no agentId or check tokens). Reviewer available 08:30–12:30 and 13:45–18:30. No real run produced these numbers. The three overnight items behave as the design\u2019s routines do (dispatched without a person, gate auto); the plugin has no routines today and types its dispatched event as a human action." };
 }
 
 // ─── derivations (mirror server/events.ts where the server has the logic) ───
@@ -395,12 +350,13 @@ function tip(node, value, lines) {
 }
 const pct = (x) => `${(x * 100).toFixed(3)}%`;
 // Marks. Status is always shape + word, never color alone (see finding 2).
-const dot = (color, size = 10, ring = true) => el("div", { width: `${size}px`, height: `${size}px`, borderRadius: "50%", background: color,
-  border: ring ? "2px solid var(--bg)" : "0", boxSizing: "content-box" });
-const square = (color, size = 10) => el("div", { width: `${size}px`, height: `${size}px`, borderRadius: "2px", background: color, border: "2px solid var(--bg)", boxSizing: "content-box" });
+// Mark sizes include the 2px surface ring, the way a React Native border counts inside width and height.
+const dot = (color, size = 10, ring = true) => el("div", { width: `${ring ? size + 4 : size}px`, height: `${ring ? size + 4 : size}px`,
+  borderRadius: "50%", background: color, border: ring ? "2px solid var(--bg)" : "0" });
+const square = (color, size = 10) => el("div", { width: `${size + 4}px`, height: `${size + 4}px`, borderRadius: "2px", background: color, border: "2px solid var(--bg)" });
 const triangle = (color, size = 11) => el("div", { width: "0", height: "0", borderLeft: `${size / 2 + 1}px solid transparent`,
   borderRight: `${size / 2 + 1}px solid transparent`, borderBottom: `${size}px solid ${color}` });
-const hollow = (color, size = 10) => el("div", { width: `${size}px`, height: `${size}px`, borderRadius: "50%", border: `2px solid ${color}`, background: "var(--bg)", boxSizing: "content-box" });
+const hollow = (color, size = 10) => el("div", { width: `${size + 4}px`, height: `${size + 4}px`, borderRadius: "50%", border: `2px solid ${color}`, background: "var(--bg)" });
 function checkMark(res) {
   if (res === "pass") return dot("var(--success)");
   if (res === "timeout") return triangle("var(--warning)");
@@ -422,19 +378,17 @@ function legendItem(mark, label) { return el("div", null, mark, el("span", { tex
 // ─── state ─────────────────────────────────────────────────────────────────
 const params = new URLSearchParams(location.hash.slice(1));
 const state = {
-  data: params.get("data") || "synthetic",
   window: params.get("window") || null,
   width: Number(params.get("width")) || 720,
   theme: params.get("theme") || "light",
   table: new Set(params.get("table") === "all" ? ["swim", "flow", "attn", "tree", "checks", "perms"] : []),
 };
-const DATASETS = { sandbox, synthetic };
 const WINDOWS = { "30m": 30 * M, "4h": 4 * H, today: null };
 function windowFor(ds) {
-  const key = state.window || (ds.key === "sandbox" ? "30m" : "today");
+  const key = state.window || "today";
   const first = Math.min(...ds.items.flatMap((it) => it.events.map((e) => e.ts)));
   if (key === "today") return { key, t0: Math.floor(first / H) * H, t1: Math.ceil((ds.now + 1) / H) * H };
-  return { key, t0: ds.now - WINDOWS[key], t1: ds.now + WINDOWS[key] * 0.04 };
+  return { key, t0: ds.now - WINDOWS[key], t1: ds.now };
 }
 
 // ─── controls ──────────────────────────────────────────────────────────────
@@ -452,7 +406,6 @@ function seg(label, options, current, onPick) {
 function renderControls(ds, win) {
   const c = document.getElementById("controls");
   c.replaceChildren(
-    seg("Data", [["synthetic", "A working day"], ["sandbox", "Sandbox run"]], state.data, (v) => { state.data = v; state.window = null; render(); }),
     seg("Window", [["30m", "30 min"], ["4h", "4 h"], ["today", "Today"]], win.key, (v) => { state.window = v; render(); }),
     seg("Panel width", [[440, "Plugin column"], [720, "Detail pane"], [1040, "Full"]], state.width, (v) => { state.width = v; render(); }),
     seg("Theme", [["light", "Light"], ["dark", "Dark"]], state.theme, (v) => { state.theme = v; render(); }),
@@ -461,7 +414,7 @@ function renderControls(ds, win) {
   p.replaceChildren(el("div", { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 12px", margin: "4px 0 0" },
     el("span", { class: "provenance" }, el("i"), ds.provenance),
     el("span", { color: "var(--muted)", fontSize: "12px", text: ds.provenanceDetail })));
-  history.replaceState(null, "", `#data=${state.data}&window=${win.key}&width=${state.width}&theme=${state.theme}`);
+  history.replaceState(null, "", `#window=${win.key}&width=${state.width}&theme=${state.theme}`);
 }
 
 // ─── card shell ────────────────────────────────────────────────────────────
@@ -472,7 +425,7 @@ function card(id, n, title, question, ds, body, table, footLines, extra) {
   toggle.addEventListener("click", () => { showTable ? state.table.delete(id) : state.table.add(id); render(); });
   const head = el("div", { class: "card-head" },
     el("span", { class: "num", text: `${n}` }), el("h2", { text: title }),
-    el("span", { class: "provenance", fontSize: "12px", padding: "0 8px" }, el("i"), ds.key === "sandbox" ? "Reconstructed" : "Synthetic"),
+    el("span", { class: "provenance", fontSize: "12px", padding: "0 8px" }, el("i"), "Synthetic"),
     toggle);
   const content = showTable ? tableView(table()) : body();
   return el("section", { class: "card", ariaLabel: title }, head, el("p", { class: "question", text: question }), content,
@@ -511,7 +464,7 @@ function swimlanes(ds, win, D, width) {
   // axis
   const axis = el("div", { display: "flex", height: "18px" }, el("div", { width: `${labelW}px`, flexShrink: "0" }),
     el("div", { position: "relative", flex: "1" }, ticks.filter((t) => Math.abs(X(t) - X(ds.now)) > 0.06).map((t) => el("span", { position: "absolute", left: pct(X(t)),
-      transform: "translateX(-50%)", fontSize: "11px", color: "var(--muted)", class: "tabular", text: clock(t) }))),
+      width: "40px", marginLeft: "-20px", textAlign: "center", fontSize: "11px", color: "var(--muted)", class: "tabular", text: clock(t) }))),
     el("div", { width: `${chipW}px`, flexShrink: "0" }));
   grid.append(axis);
 
@@ -529,7 +482,7 @@ function swimlanes(ds, win, D, width) {
   const overlay = el("div", { position: "absolute", top: "0", bottom: "0", left: `${labelW}px`, right: `${chipW}px`, pointerEvents: "none" });
   for (const t of ticks) overlay.append(el("div", { position: "absolute", top: "0", bottom: "0", left: pct(X(t)), width: "1px", background: "var(--border)" }));
   if (ds.now >= win.t0 && ds.now <= win.t1) overlay.append(el("div", { position: "absolute", top: "-4px", bottom: "0", left: pct(X(ds.now)), width: "1px", background: "var(--accent)" }),
-    el("div", { position: "absolute", top: "-18px", left: pct(X(ds.now)), transform: "translateX(-50%)", fontSize: "11px", fontWeight: "600", color: "var(--accent)", whiteSpace: "nowrap", class: "tabular", text: `now ${clock(ds.now)}` }));
+    el("div", { position: "absolute", top: "-18px", left: pct(X(ds.now)), width: "80px", marginLeft: "-40px", textAlign: "center", fontSize: "11px", fontWeight: "600", color: "var(--accent)", whiteSpace: "nowrap", class: "tabular", text: `now ${clock(ds.now)}` }));
   const body = el("div", { position: "relative" }, overlay, lanes);
   grid.append(body);
   root.append(grid);
@@ -540,7 +493,7 @@ function swimlanes(ds, win, D, width) {
 
   function lane(d) {
     const track = el("div", { position: "relative", flex: "1", height: "28px" });
-    const place = (node, t, w, h) => { node.style.position = "absolute"; node.style.left = `calc(${pct(X(t))} - ${w / 2}px)`; node.style.top = `${14 - h / 2}px`; return node; };
+    const place = (node, t, w, h) => { node.style.position = "absolute"; node.style.left = pct(X(t)); node.style.marginLeft = `${-w / 2}px`; node.style.top = `${14 - h / 2}px`; return node; };
     const firstRun = d.spans.find((s) => s.state !== "proposed");
     const queuedEnd = firstRun ? firstRun.a : d.terminal ? d.spans[d.spans.length - 1].b : ds.now;
     if (inWin(d.created, queuedEnd)) track.append(tip(el("div", { position: "absolute", top: "13.5px", height: "1px", left: pct(X(d.created)),
@@ -592,13 +545,13 @@ const CAP = 3;
 function flowBoard(ds, D, width) {
   const cols = [["review", "Needs you"], ["blocked", "Stuck"], ["running", "Running"], ["queued", "Queued"], ["done", "Done today"]];
   const perRow = width < 560 ? 2 : width < 900 ? 3 : 5;
-  const box = el("div", { display: "flex", flexWrap: "wrap", gap: "12px" });
-  const colW = `calc((100% - ${(perRow - 1) * 12}px) / ${perRow})`;
+  const box = el("div", { display: "flex", flexWrap: "wrap", marginRight: "-12px" });
+  const colW = pct(1 / perRow);
   for (const [g, name] of cols) {
     const items = D.filter((d) => GROUP[d.state] === g).sort((a, b) => a.since - b.since);
     const ages = items.map((d) => (d.terminal ? 0 : ds.now - d.since));
     const maxAge = Math.max(...ages, 1);
-    const col = el("div", { width: colW, minWidth: "0", display: "flex", flexDirection: "column", gap: "6px" });
+    const col = el("div", { width: colW, minWidth: "0", display: "flex", flexDirection: "column", gap: "6px", paddingRight: "12px", marginBottom: "12px" });
     const [glyph, gc] = GLYPH[name === "Done today" ? "Done" : name];
     col.append(el("div", { display: "flex", alignItems: "baseline", gap: "6px" },
       el("span", { color: gc, fontWeight: "700", text: glyph }), el("span", { fontWeight: "600", text: name }),
@@ -705,7 +658,7 @@ function attention(ds, win, D, width) {
       const b = Math.min(bins - 1, Math.floor(LX(w.ms) * bins));
       const y = stacks[b]++;
       if (y > 4) continue;
-      strip.append(tip(el("div", { position: "absolute", left: `calc(${pct((b + 0.5) / bins)} - 6px)`, bottom: `${2 + y * 11}px` }, dot("var(--ink)", 8)),
+      strip.append(tip(el("div", { position: "absolute", left: pct((b + 0.5) / bins), marginLeft: "-6px", bottom: `${2 + y * 11}px` }, dot("var(--ink)", 8)),
         `Waited ${dur(w.ms)}${w.open ? " so far" : ""}`, [w.title, `${clock(w.a)} → ${w.open ? "now" : clock(w.b)}`]));
     }
     root.append(el("div", null,
@@ -713,7 +666,7 @@ function attention(ds, win, D, width) {
       el("div", { fontSize: "12px", color: "var(--muted)", marginBottom: "6px", text: `Longest: ${longest.title}, ${dur(longest.ms)}.` }),
       strip, el("div", { position: "relative", height: "16px", fontSize: "11px", color: "var(--muted)", marginTop: "4px" },
         [lo, M, 10 * M, H, 6 * H].filter((v) => v <= hi).map((v) => el("span", { position: "absolute", left: pct(LX(v)),
-          transform: v === lo ? "none" : "translateX(-50%)", class: "tabular", text: v === lo ? "10s" : dur(v) }))),
+          width: "40px", marginLeft: v === lo ? "0" : "-20px", textAlign: v === lo ? "left" : "center", class: "tabular", text: v === lo ? "10s" : dur(v) }))),
       el("div", { fontSize: "11px", color: "var(--muted)", text: "Log scale." })));
   }
   return root;
@@ -747,7 +700,7 @@ function treemap(ds, D, width) {
   const floor = 3 * M;
   const repos = [...new Set(D.map((d) => d.it.repo))].map((repo) => {
     const kids = D.filter((d) => d.it.repo === repo).map((d) => ({ d, value: Math.max(d.runMs, floor) }));
-    return { repo, kids, value: kids.reduce((a, k) => a + k.value, 0) };
+    return { repo, kids, value: kids.reduce((a, k) => a + k.value, 0), runMs: kids.reduce((a, k) => a + k.d.runMs, 0) };
   });
   const box = el("div", { position: "relative", width: "100%", height: `${Hh}px` });
   box.setAttribute("role", "img");
@@ -756,7 +709,7 @@ function treemap(ds, D, width) {
     const head = 20;
     const rb = el("div", { position: "absolute", left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px`, padding: "1px" });
     rb.append(el("div", { position: "absolute", left: "4px", top: "3px", right: "4px", fontSize: "11px", fontWeight: "600", color: "var(--muted)",
-      whiteSpace: "nowrap", overflow: "hidden", text: r.w > 70 ? `${r.node.repo} · ${dur(r.node.value)}` : "" }));
+      whiteSpace: "nowrap", overflow: "hidden", text: r.w > 70 ? `${r.node.repo} · ${dur(r.node.runMs)}` : "" }));
     box.append(rb);
     for (const k of squarify(r.node.kids, r.x, r.y + head, r.w, Math.max(r.h - head, 1))) {
       const d = k.node.d, g = GROUP[d.state];
@@ -868,7 +821,7 @@ function permissionTable(ds, D) {
 // ─── render ────────────────────────────────────────────────────────────────
 function render() {
   document.documentElement.setAttribute("data-theme", state.theme);
-  const ds = DATASETS[state.data]();
+  const ds = synthetic();
   const win = windowFor(ds);
   const D = ds.items.map((it) => derive(it, ds.now));
   renderControls(ds, win);

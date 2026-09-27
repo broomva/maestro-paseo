@@ -42,7 +42,8 @@
   <p class="lede">How the Maestro design (<code>apps/maestro/handoff/design_handoff_maestro</code>) maps onto the Paseo plugin
     API, how data moves through the plugin as it is built today (<code>apps/maestro-paseo</code> at <code>9438e62</code>),
     and what is missing. Written 2026-09-24 from the design docs, the plugin source and the
-    <code>@getpaseo/{plugin,client,protocol}</code> 0.8.0 type definitions, with the installed host at 0.9.1.</p>
+    <code>@getpaseo/{plugin,client,protocol}</code> 0.8.0 type definitions. The installed Paseo.app reports 0.9.2 in its <code>Info.plist</code>; host-side facts
+    below marked "0.9 host" were read from its <code>app.asar</code>, not from the 0.8.0 types.</p>
 
   <h2>The articulation in one idea: two authorities and a binding</h2>
   <div class="three">
@@ -103,13 +104,13 @@
 
       <rect x="635" y="10" width="190" height="64" rx="10" fill="#eef2fa" stroke="#5480c7"/>
       <text x="730" y="34" text-anchor="middle" font-weight="650">Maestro plugin server</text>
-      <text x="730" y="52" text-anchor="middle" font-size="11" fill="#5f636c">Node subprocess of the daemon</text>
+      <text x="730" y="52" text-anchor="middle" font-size="11" fill="#5f636c">the plugin's server entry</text>
       <text x="730" y="66" text-anchor="middle" font-size="11" fill="#5f636c">RPC handlers · Engine · store</text>
 
       <rect x="860" y="10" width="165" height="64" rx="10" fill="#f3f4f6" stroke="#e1e3e6"/>
       <text x="942" y="34" text-anchor="middle" font-weight="650">Filesystem + git</text>
       <text x="942" y="52" text-anchor="middle" font-size="11" fill="#5f636c">_work.md · _events.jsonl</text>
-      <text x="942" y="66" text-anchor="middle" font-size="11" fill="#5f636c">run/&lt;id&gt; worktrees</text>
+      <text x="942" y="66" text-anchor="middle" font-size="11" fill="#5f636c">run/&lt;hex&gt; worktrees</text>
     </g>
     <!-- lifelines -->
     <g stroke="#e1e3e6" stroke-width="1.5">
@@ -136,7 +137,7 @@
       <line x1="105" y1="312" x2="726" y2="312" stroke="#0c101a" stroke-width="1.6" marker-end="url(#a-fg)"/>
       <text x="415" y="306" text-anchor="middle">RPC work.dispatch {id}</text>
       <line x1="730" y1="348" x2="509" y2="348" stroke="#5480c7" stroke-width="1.6" marker-end="url(#a-ac)"/>
-      <text x="618" y="342" text-anchor="middle" fill="#5480c7">workspaces.create  run/&lt;id&gt;</text>
+      <text x="618" y="342" text-anchor="middle" fill="#5480c7">workspaces.create  run/&lt;hex&gt;</text>
       <line x1="730" y1="384" x2="509" y2="384" stroke="#5480c7" stroke-width="1.6" marker-end="url(#a-ac)"/>
       <text x="618" y="378" text-anchor="middle" fill="#5480c7">agents.create  label maestro.work</text>
       <line x1="730" y1="420" x2="938" y2="420" stroke="#5f636c" stroke-width="1.6" marker-end="url(#a-mu)"/>
@@ -167,7 +168,7 @@
       <rect x="10" y="736" width="1020" height="22" fill="#f3f4f6"/>
       <text x="18" y="751" font-weight="700" font-size="12">5 · The gate</text>
       <line x1="105" y1="780" x2="726" y2="780" stroke="#0c101a" stroke-width="1.6" marker-end="url(#a-fg)"/>
-      <text x="415" y="774" text-anchor="middle">RPC work.decide  approve · send back · block</text>
+      <text x="415" y="774" text-anchor="middle">RPC work.verdict  approve · send back · block</text>
       <line x1="730" y1="816" x2="509" y2="816" stroke="#5480c7" stroke-width="1.6" marker-end="url(#a-ac)"/>
       <text x="618" y="810" text-anchor="middle" fill="#5480c7">send back only: send(note)</text>
       <line x1="730" y1="852" x2="938" y2="852" stroke="#5f636c" stroke-width="1.6" marker-end="url(#a-mu)"/>
@@ -177,30 +178,37 @@
   </div>
 
   <ol class="steps">
-    <li><b>Reading.</b> Each open Maestro surface calls <code>work.list</code> every 4 seconds
-      (<code>client/hooks.ts:22-27</code>). The plugin scans every <code>_work.md</code> and its log from disk, and at most
-      every 10 seconds (<code>server/engine.ts:118</code>) it asks Paseo about each bound agent
-      (<code>agents.ref(id).refresh()</code>, then <code>timeline.refetch</code> for a missed turn end) so a hook it
-      missed while stopped is recovered. There is no push channel to the client and no index; the list is recomputed
-      from files each time.</li>
+    <li><b>Reading.</b> The Maestro surface calls <code>work.list</code> every 4 seconds (<code>client/plane.tsx:19</code>,
+      <code>client/hooks.ts:22-27</code>); the Work panel polls <code>work.for-agent</code> and the detail pane
+      <code>work.get</code> at the same interval. The plugin scans every <code>_work.md</code> and its log from disk, and
+      at most every 10 seconds (<code>server/engine.ts:118</code>) it asks Paseo about the agent bound to each item that is
+      running or at review and not running its checks (<code>server/engine.ts:931-957</code>): <code>refresh()</code>,
+      then <code>timeline.refetch</code> for a missed turn end. There is no push channel to the client and no persistent
+      index (the design's SQLite); the list is recomputed from files each time, and an in-memory map from agent to
+      folder routes hooks.</li>
     <li><b>Dispatch.</b> <code>work.dispatch</code> → <code>engine.dispatch</code> → <code>startRun</code>
-      (<code>server/runs.ts:69-96</code>): resolve the provider's default model, create a Paseo workspace as a worktree
-      on a fresh <code>run/&lt;id&gt;</code> branch, and create one agent in it with the composed brief and the label
-      <code>maestro.work=&lt;id&gt;</code>. Only then is the item moved to running, under its per-item lock
-      (<code>_work.md</code> is rewritten by temp file and rename, then <code>_events.jsonl</code> is appended). If recording
-      fails, the agent and the worktree are archived, so no run exists that the files do not know about.</li>
+      (<code>server/runs.ts:69-96</code>): resolve the provider's default model; with <code>isolation: worktree</code> (the
+      default) create a Paseo workspace as a worktree on a fresh <code>run/&lt;hex&gt;</code> branch (random hex,
+      <code>server/runs.ts:35-37</code>), otherwise open the repository directory; then create one agent there with the
+      composed brief and the label <code>maestro.work=&lt;id&gt;</code>. Only then is the item moved to running, under its
+      per-item lock (<code>_work.md</code> is rewritten by temp file and rename, then <code>_events.jsonl</code> is
+      appended). If recording fails, the engine tries to archive the agent and a worktree it created
+      (<code>server/engine.ts:350-379</code>); both are best effort, so a run can outlive a failed dispatch.</li>
     <li><b>The run stops.</b> Paseo fires <code>agent.turn_ended</code> with the outcome and the timeline. The plugin
       routes it by agent id, records the turn, runs the item's checks inside the worktree with a minimal environment
-      (<code>server/checks.ts</code>), and moves the item to review (Needs you). Under <code>gate: auto</code>, passing
-      checks close it and failing checks leave it Stuck.</li>
+      (<code>server/checks.ts</code>, in order, stopping at the first required failure). A completed turn under
+      <code>gate: human</code> lands at review (Needs you); under <code>gate: auto</code> passing checks close it and failing
+      checks leave it Stuck (<code>shared/states.ts</code>, <code>landingState</code>). A failed or canceled turn goes to
+      Stuck.</li>
     <li><b>Permission.</b> <code>agent.permission_requested</code> parks the item at Needs you as a question. The app
       answers by calling Paseo directly (<code>client/detail.tsx:162</code>), not through the plugin. Paseo then fires
       <code>agent.permission_resolved</code> with <code>resolution: {behavior: "allow" | "deny", message?}</code>
       (<code>@getpaseo/plugin/dist/server/lifecycle.d.ts:59-63</code>), but the plugin passes on only the request id
       (<code>index.server.ts:42</code>), so the receipts never say what you decided.</li>
-    <li><b>The gate.</b> <code>work.decide</code> records the verdict. Approve moves to Done, block to canceled, and
-      send back returns to running and wakes the same session with your note (<code>agents.ref(id).send</code>). A
-      verdict is refused while the session is visibly working, or while a permission question is open.</li>
+    <li><b>The gate.</b> <code>work.verdict</code> (<code>shared/contracts.ts:147-151</code>) records the verdict. Approve
+      moves to Done, block to canceled, and send back returns to running and wakes the same session with your note
+      (<code>agents.ref(id).send</code>). Approve and send back are refused while the session is visibly working or a
+      permission question is open; block is not (<code>server/engine.ts:413-418</code>).</li>
   </ol>
   <p class="muted">Also: <code>/maestro</code> and "Track this session in Maestro" adopt an existing Paseo session as
     work (<code>adoptAgent</code>); <code>agent.turn_started</code> and <code>agent.archived</code> keep the state honest
@@ -218,27 +226,27 @@
     <thead><tr><th>Maestro design</th><th>Paseo API it maps to</th><th>In the plugin today</th><th>Status</th></tr></thead>
     <tbody>
       <tr class="group"><td colspan="4">Architecture</td></tr>
-      <tr><td>Runtime (always on: files, git, agent children, worktrees, event log, scheduler, run queue)</td><td>The daemon: <code>workspaces.create</code>, <code>agents.create</code>, hook bus</td><td>Execution is Paseo's; the plugin server is a subprocess of the daemon and lives exactly as long as it does</td><td class="st adapted"><i>≈</i> Adapted</td></tr>
-      <tr><td>Relay (auth, routing, multi-device, dial-out)</td><td>Paseo's relay; multi-host in 0.9 (<code>useHosts</code>)</td><td>Nothing to build</td><td class="st same"><i>✓</i> Same</td></tr>
+      <tr><td>Runtime (always on: files, git, agent children, worktrees, event log, scheduler, run queue)</td><td>The daemon: <code>workspaces.create</code>, <code>agents.create</code>, hook bus</td><td>Execution is Paseo's; the plugin adds RPC handlers and hook listeners</td><td class="st adapted"><i>≈</i> Adapted</td></tr>
+      <tr><td>Relay (auth, routing, multi-device, dial-out)</td><td>Paseo's relay; multi-host in the 0.9 host (<code>useHosts</code>, not in the 0.8.0 types)</td><td>Nothing to build</td><td class="st same"><i>✓</i> Same</td></tr>
       <tr><td>Clients (web, PWA, desktop, tray, mobile)</td><td>Paseo app on desktop, web, iOS, Android; surfaces, panels, command center, slash commands, settings, themes</td><td>Sidebar surface, Work panel beside agents, two command-center items, <code>/maestro</code>, settings screen, two themes</td><td class="st adapted"><i>≈</i> Adapted</td></tr>
-      <tr><td>Filesystem is truth; SQLite index derived from it</td><td>Plain Node <code>fs</code> in the plugin process</td><td><code>_work.md</code> + <code>_events.jsonl</code>; no index, a full scan per list</td><td class="st adapted"><i>≈</i> Adapted</td></tr>
+      <tr><td>Filesystem is truth; SQLite index derived from it</td><td>Plain Node <code>fs</code> in the plugin process</td><td><code>_work.md</code> + <code>_events.jsonl</code>; no persistent index, a full scan per list</td><td class="st adapted"><i>≈</i> Adapted</td></tr>
 
       <tr class="group"><td colspan="4">Data model</td></tr>
       <tr><td>Work item as a folder; kinds; initiative → project → item nesting</td><td>n/a</td><td>Same layout, nesting is the grouping; kinds parsed</td><td class="st same"><i>✓</i> Same</td></tr>
       <tr><td>WorkContract: id, kind, state, owner, gate, budget, done, trigger, created, updated</td><td>n/a</td><td>Written field for field for what it uses, plus <code>repo</code> and <code>provider</code>; <code>budget</code>, <code>trigger</code> and the richer <code>done</code> (judge, protect, diff limits, stop_on) are not acted on</td><td class="st adapted"><i>≈</i> Partial</td></tr>
-      <tr><td>Eight OrchStates and legal transitions</td><td>n/a</td><td>Same enum; three documented edges differ because Paseo owns execution (<code>shared/states.ts</code>)</td><td class="st adapted"><i>≈</i> Adapted</td></tr>
+      <tr><td>Eight OrchStates and legal transitions</td><td>n/a</td><td>Same enum. Against the design's table (<code>packages/protocol/src/state.ts:102-110</code>), <code>shared/states.ts:102-111</code> adds eight edges and drops review → triggered; its header comment explains three of the changes</td><td class="st adapted"><i>≈</i> Adapted</td></tr>
       <tr><td>Plain voice: Queued, Running, Stuck, Needs you, Done, Standing</td><td>n/a</td><td>Same labels; Standing is unused without routines</td><td class="st same"><i>✓</i> Same</td></tr>
       <tr><td>The look {ran, decided[], ask}</td><td><code>agents.create({outputSchema})</code> could make it typed</td><td>Parsed from <code>## Decided</code> / <code>## Ask</code> in the final message</td><td class="st same"><i>✓</i> Same</td></tr>
-      <tr><td>Events and receipts (run, tool, check, gate, budget, agent namespaces)</td><td>Hooks supply the raw events; <code>timeline.append</code> can write into the session (in memory, lost on restart)</td><td>Own event set in <code>_events.jsonl</code>; no budget, schedule or attention events</td><td class="st adapted"><i>≈</i> Partial</td></tr>
+      <tr><td>Events and receipts (run, tool, check, gate, budget, agent namespaces)</td><td>Hooks supply the raw events; <code>timeline.append</code> can write into the session</td><td>Own event set in <code>_events.jsonl</code>; no budget, schedule or attention events</td><td class="st adapted"><i>≈</i> Partial</td></tr>
       <tr><td>Run folder: session.jsonl, progress.md, fix_plan.md, verdict.md, check logs, judge.json</td><td>The session timeline stays in Paseo (<code>timeline.refetch</code>)</td><td>None of these files are written</td><td class="st missing"><i>✕</i> Not built</td></tr>
-      <tr><td>Unsupervised-hours ledger</td><td>n/a</td><td>The scoreboard (<code>server/events.ts:377-399</code>)</td><td class="st same"><i>✓</i> Same</td></tr>
+      <tr><td>Unsupervised-hours ledger</td><td>n/a</td><td>The scoreboard (<code>server/events.ts:377-405</code>)</td><td class="st same"><i>✓</i> Same</td></tr>
 
       <tr class="group"><td colspan="4">Verbs</td></tr>
       <tr><td>Dispatch / redispatch</td><td><code>workspaces.create</code> + <code>agents.create</code></td><td><code>work.dispatch</code>; Unblock redispatches when the session is gone</td><td class="st same"><i>✓</i> Same</td></tr>
       <tr><td>Approve → done with squash-merge</td><td>Merge and PR live on <code>DaemonClient.checkout*</code>, not the facade</td><td>Approve → done; never merges, the branch is the receipt</td><td class="st adapted"><i>≈</i> Deliberate</td></tr>
       <tr><td>Revise → triggered (a fresh run)</td><td><code>agents.ref(id).send(note)</code></td><td>Send back wakes the same session</td><td class="st adapted"><i>≈</i> Deliberate</td></tr>
       <tr><td>Block → canceled</td><td>n/a</td><td>Block, plus Cancel from queued or stuck</td><td class="st same"><i>✓</i> Same</td></tr>
-      <tr><td>Kill a running run</td><td>Only <code>DaemonClient.cancelAgent</code>; the facade has <code>archive</code>, no cancel</td><td>Cancel does not stop the session</td><td class="st api"><i>▲</i> API</td></tr>
+      <tr><td>Kill a running run</td><td>The facade has no cancel (<code>DaemonClient.cancelAgent</code> has one); <code>archive()</code> is what the engine uses to stop a run it could not record (<code>server/engine.ts:352-358</code>), at the cost of archiving the session</td><td>Cancel does not stop the session</td><td class="st missing"><i>✕</i> Not built</td></tr>
       <tr><td>Escalate (point to another owner), grant, audited set_state override</td><td>n/a</td><td>Not present</td><td class="st missing"><i>✕</i> Not built</td></tr>
       <tr><td>Chat into a session</td><td>The Paseo session itself</td><td>"Open session" jumps to it</td><td class="st same"><i>✓</i> Via host</td></tr>
       <tr><td>Answer a question</td><td><code>respondToPermission</code>; the resolution comes back on the hook</td><td>Answered from the detail pane; the decision is not recorded</td><td class="st adapted"><i>≈</i> Partial</td></tr>
@@ -250,10 +258,10 @@
       <tr><td>Stage 0: tamper and diff guard, protected paths</td><td>Plain git in the worktree</td><td>Only an instruction in the prompt</td><td class="st missing"><i>✕</i> Not built</td></tr>
       <tr><td>Stage 2: LLM judge on a rubric, different model</td><td>A second <code>agents.create</code> with another provider and an <code>outputSchema</code></td><td>Not present</td><td class="st missing"><i>✕</i> Not built</td></tr>
       <tr><td>Attempt cap, fix_plan feedback, stale verdict → rebase and re-verify</td><td>n/a</td><td>A person sends back by hand</td><td class="st missing"><i>✕</i> Not built</td></tr>
-      <tr><td>Budgets per run and per day, checked before every model call</td><td>No request-path hook on model calls; <code>providers.listUsage</code> and an agent's <code>lastUsage</code> can observe, not enforce</td><td>Not present</td><td class="st api"><i>▲</i> API</td></tr>
-      <tr><td>Stop conditions: cap, no progress, budget</td><td>Would need cancel</td><td>Not present</td><td class="st api"><i>▲</i> API</td></tr>
-      <tr><td>Routines and triggers (heartbeat, cron, hook, goal); a scheduler that survives restarts</td><td>Paseo has schedules and heartbeats, but on <code>DaemonClient.schedule*</code> and the CLI only; hook triggers are possible via <code>server.on</code></td><td>Not present</td><td class="st api"><i>▲</i> API</td></tr>
-      <tr><td>The orchestrator routine ("the maestro"), concurrency cap, run queue</td><td>Needs schedules and cancel</td><td>Not present</td><td class="st api"><i>▲</i> API</td></tr>
+      <tr><td>Budgets per run and per day, checked before every model call</td><td>A plugin can register its own provider (<code>registerProvider</code>, <code>@getpaseo/plugin/dist/server/contracts.d.ts:13</code>) whose <code>ProviderConnection.send</code> receives each prompt (<code>server/provider.d.ts:28-34</code>), so runs made on such a provider could be metered and refused; <code>providers.listUsage</code> and an agent's <code>lastUsage</code> observe the others. Not tried</td><td>Not present</td><td class="st missing"><i>✕</i> Not built</td></tr>
+      <tr><td>Stop conditions: cap, no progress, budget</td><td>Stopping a run means <code>archive()</code> (see kill)</td><td>Not present</td><td class="st missing"><i>✕</i> Not built</td></tr>
+      <tr><td>Routines and triggers (heartbeat, cron, hook, goal); a scheduler that survives restarts</td><td>Schedules exist on <code>DaemonClient.schedule*</code> and the <code>paseo</code> CLI, not on the plugin facade; hook triggers are possible via <code>server.on</code></td><td>Not present</td><td class="st api"><i>▲</i> API</td></tr>
+      <tr><td>The orchestrator routine ("the maestro"), concurrency cap, run queue</td><td>Needs schedules</td><td>Not present</td><td class="st api"><i>▲</i> API</td></tr>
 
       <tr class="group"><td colspan="4">Surfaces</td></tr>
       <tr><td>Gate queue with the look and the verbs</td><td><code>addSurface</code></td><td>Needs you list + detail pane</td><td class="st same"><i>✓</i> Same</td></tr>
@@ -281,19 +289,21 @@
     <li><b>Attempt caps and automatic send-back</b> on failing checks, as engine policy.</li>
     <li><b>Hook-triggered routines</b> (the design's <code>hook</code> trigger) via <code>server.on</code>.</li>
     <li><b>History and the system panel</b> (see <code>docs/prototypes/system-panel.html</code>), behind one aggregate RPC.</li>
-    <li><b>The pending-decision cap</b>, refused at dispatch.</li>
+    <li><b>A pending-decision cap</b>, refused at dispatch. This is our proposal, not the design's; the design caps
+      concurrent runs at 3 (<code>build-docs/specs/ORCHESTRATOR.md:37</code>).</li>
+    <li><b>Kill and stop conditions</b>, through <code>archive()</code>, and <b>budgets</b> for runs on a plugin-registered
+      provider. Neither has been tried.</li>
   </ul>
   <h3>2. In Paseo, but not on the plugin facade</h3>
-  <p>Kill (<code>cancelAgent</code>), switching mode or model, schedules and heartbeats (so: cron routines, the tick and
-    the orchestrator), checkout, PR and merge (so: approve that lands the branch), and file access all exist on
+  <p>A non-destructive cancel (<code>cancelAgent</code>), switching mode or model, schedules (so: cron routines, the tick
+    and the orchestrator), checkout, PR and merge (so: approve that lands the branch), and file access all exist on
     <code>DaemonClient</code> and the <code>paseo</code> CLI. A plugin can reach them only by shelling out to the CLI or by
     importing the client's internal module as a runtime dependency, both unverified and both coupled to internals. The
     clean path is asking Paseo to widen the facade.</p>
   <h3>3. Needs the host</h3>
-  <p>Notifications to a closed laptop or a phone, real charts (SVG or canvas), and budgets enforced in the request path of
-    every model call. The last one is structural: without a hook on model calls a plugin can observe spend but never
-    refuse it, which means the design's rule that nothing runs unattended without a budget guard cannot be met by a
-    plugin alone.</p>
+  <p>Notifications to a closed laptop or a phone, and real charts (SVG or canvas). Budgets are only partly here: a
+    plugin sits in the request path of model calls only for agents created on a provider it registered, so runs on
+    Paseo's own providers can be observed but not refused.</p>
   <h3>4. Deliberately different</h3>
   <p>Send back wakes the same session instead of a fresh run; approve does not merge; queued or stuck work can be
     canceled directly; existing sessions can be adopted; the run branch is shown in the detail pane where the design
@@ -311,9 +321,9 @@
       <tr><td>The writer never grades its own work (protected verifier, tests and contract)</td><td class="st adapted"><i>≈</i> Checks are deterministic, but nothing stops the agent editing tests in its worktree</td></tr>
       <tr><td>The filesystem is truth; the index never owns it</td><td class="st same"><i>✓</i> Files only</td></tr>
       <tr><td>Intents in, events out; every intent idempotent</td><td class="st adapted"><i>≈</i> RPC and polling; locks instead of idempotency keys</td></tr>
-      <tr><td>Budget checked before every model call</td><td class="st api"><i>▲</i> Not possible from a plugin</td></tr>
-      <tr><td>Nothing unattended without stop conditions, budget, kill, gate on irreversible actions and receipts</td><td class="st api"><i>▲</i> Gate and receipts yes; kill, budget and stop conditions no</td></tr>
-      <tr><td>Receipts, never progress percentages; Needs you is blue, not red</td><td class="st same"><i>✓</i> Kept</td></tr>
+      <tr><td>Budget checked before every model call</td><td class="st missing"><i>✕</i> Not built; reachable only for runs on a plugin-registered provider</td></tr>
+      <tr><td>Nothing unattended without stop conditions, budget, kill, gate on irreversible actions and receipts</td><td class="st missing"><i>✕</i> Gate and receipts yes; kill (by archiving), budget and stop conditions not built</td></tr>
+      <tr><td>Receipts, never progress percentages; Needs you is blue, not red</td><td class="st same"><i>✓</i> Receipts kept; Needs you uses the theme accent, blue in the Broomva themes and green in Paseo's default theme (<code>docs/needs-you-default-theme.png</code>)</td></tr>
       <tr><td>The relay holds no work state; the key never leaves the runtime</td><td class="st same"><i>✓</i> Paseo's relay; keys are the provider's</td></tr>
       <tr><td>Orphaned runs are never silently respawned</td><td class="st same"><i>✓</i> Recovered ends always land at your gate</td></tr>
       <tr><td>A verdict is valid only against the base it was judged on</td><td class="st missing"><i>✕</i> Not tracked</td></tr>
@@ -326,7 +336,7 @@
     (index.server.ts, index.client.tsx, server/engine.ts, server/runs.ts, server/store.ts, server/checks.ts, client/hooks.ts,
     client/detail.tsx, shared/states.ts); <code>@getpaseo/plugin/dist/server/lifecycle.d.ts</code>,
     <code>@getpaseo/client/dist/index.d.ts</code>, <code>@getpaseo/client/dist/daemon-client.d.ts</code>,
-    <code>@getpaseo/protocol/dist/agent-types.d.ts</code> (0.8.0); host app 0.9.1.</p>
+    <code>@getpaseo/protocol/dist/agent-types.d.ts</code> (0.8.0); Paseo.app 0.9.2.</p>
 </div>
 </body>
 </html>
