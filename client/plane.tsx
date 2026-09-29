@@ -123,6 +123,9 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
                   <Button theme={theme} label="Show all work" compact={compact} onPress={() => setFilter(null)} />
                 </View>
               ) : null}
+              {filter && !items.some((item) => item.group === filter) ? (
+                <Text style={text.muted}>Nothing is in {GROUP_COPY[filter].title} right now.</Text>
+              ) : null}
               {GROUP_ORDER.filter((group) => filter === null || group === filter).map((group) => {
                 const rows = items.filter((item) => item.group === group);
                 if (rows.length === 0) return null;
