@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { agentMethods, serveAgents } from "./server/agent-socket";
 import { loadConfig, saveConfig } from "./server/config";
@@ -19,14 +20,17 @@ import {
 } from "./shared/contracts";
 
 const log = (message: string) => console.log(`[maestro] ${message}`);
+const RETRY_MS = 10_000;
 
 export default function contribute(host: PluginServerContext) {
   const engine = new Engine();
 
   // The host hands the plugin its daemon client only inside handlers and hooks,
-  // never at startup. The agent socket needs one outside both, so every handler
-  // and hook below keeps the latest it was given. Until the first arrives, socket
-  // verbs that start or read a session refuse and say why.
+  // never at startup: one client for the life of the plugin process. The agent
+  // socket needs it outside both, so every handler and hook below keeps it. Until
+  // the first event arrives, socket verbs that start or read a session refuse and
+  // say why. On shutdown the host disposes the client before calling the cleanup
+  // below, so a request answered in that window can fail; it fails with an answer.
   let latest: Paseo | null = null;
   const server: Pick<PluginServerContext, "handle" | "on"> = {
     handle: (contract, handler) =>
@@ -68,18 +72,27 @@ export default function contribute(host: PluginServerContext) {
   server.on("agent.created", () => undefined);
 
   // Sessions reach Maestro through a socket of its own (server/agent-socket.ts).
-  // If it cannot open, Maestro's own screens still work.
+  // If it cannot open, Maestro's own screens still work, and it keeps trying:
+  // a predecessor that outlives a reload must not leave sessions shut out.
   const path = socketPath();
+  const methods = agentMethods(engine, () => latest);
+  const quit = new AbortController();
   let closeSocket: (() => Promise<void>) | null = null;
-  const opening = serveAgents({ path, methods: agentMethods(engine, () => latest), log }).then(
-    (close) => {
-      closeSocket = close;
-      log(`sessions can reach Maestro at ${path}`);
-    },
-    (error: Error) => log(`the agent socket did not open: ${error.message}`),
-  );
+  const opening = (async () => {
+    for (let failures = 0; !quit.signal.aborted; failures += 1) {
+      try {
+        closeSocket = await serveAgents({ path, methods, log });
+        log(`sessions can reach Maestro at ${path}`);
+        return;
+      } catch (error) {
+        if (failures === 0) log(`the agent socket did not open, retrying every 10s: ${(error as Error).message}`);
+        await sleep(RETRY_MS, undefined, { signal: quit.signal }).catch(() => undefined);
+      }
+    }
+  })();
 
   return async () => {
+    quit.abort();
     engine.stop();
     await opening;
     await closeSocket?.();

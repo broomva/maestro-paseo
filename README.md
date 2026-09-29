@@ -71,17 +71,26 @@ maestro mine                   # the work this session is running
 ```
 
 - **Sessions get the noun and the verb, never the gate.** Approve, send back, unblock, cancel and
-  settings are not served on the socket; a session that asks is told they are yours. Work a session
-  creates is always `gate: human`.
-- **Receipts say who asked.** Everything done through the socket is recorded as the session's
-  (`actor: agent`, with its `PASEO_AGENT_ID`), reads "by session 1a2b3c4d" in the receipts, and never
-  counts as you stepping in on the scoreboard.
+  settings are not served on the socket; a session that asks is told they are yours. A session
+  starts only queued work (restarting stuck work is unblocking), and work it creates is always
+  `gate: human`.
+- **A session cannot write a done check.** Checks run as you, with no session and no permission
+  prompt in the loop, so they come from you: add one to the work's `_work.md` (`done.check`).
+- **A dispatch runs in the mode you configured.** That is no more than a session can already do:
+  Paseo's own `create_agent` tool, which every session holds, starts an agent in any mode.
+- **Receipts say which session it said it was.** Everything done through the socket is recorded as
+  an agent's (`actor: agent`), never yours, reads "by session 1a2b3c4d" in the receipts, and never
+  counts as you stepping in on the scoreboard. The id is the `PASEO_AGENT_ID` the client reports;
+  nothing verifies it, and a terminal without one is recorded as "by a session".
 - **It is the surface a session is offered, not a sandbox.** A process running as you can still
   edit the work folders directly; the receipts are what keep that visible.
 - **Starting runs needs one agent event first.** Paseo hands a plugin its daemon client only inside
   hooks and handlers. Until the first agent event after the plugin starts, `dispatch` and `track`
   refuse and say so. The calling session's own turn is such an event, so in practice this only shows
   right after a reload.
+
+Exit codes: 0 done, 1 Maestro refused, 2 Maestro is not listening (or bad usage), 3 no clear answer:
+the request may still have been applied, so check with `maestro ls` before retrying.
 
 Why a socket and not a tool: plugin RPC travels over the daemon's password-protected socket, and a
 plugin cannot add tools to an agent. Every session has a shell.
@@ -165,7 +174,8 @@ unsupervised; it is off by default.
 
 Stored at `~/.config/maestro-paseo/config.json` (override with `MAESTRO_PASEO_CONFIG`), edited from
 Settings. The agent socket sits beside it (override with `MAESTRO_PASEO_SOCKET`), so a second daemon
-with its own config gets its own socket.
+with its own config gets its own socket. Two daemons on the same config share one: the first to open
+it answers, and the other keeps retrying every ten seconds, which its plugin log says once.
 
 | Key | Default | Meaning |
 |---|---|---|

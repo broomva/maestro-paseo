@@ -1,9 +1,11 @@
 // Runs a work item's `done.check` commands in the run's directory.
 //
-// The commands come from the human-written contract, but they execute inside a
-// tree the agent just edited: a changed test script runs with whatever
-// environment it is given. So checks get a minimal environment, never the
-// daemon's, which can hold credentials.
+// The commands come from the contract a person wrote: the agent socket refuses
+// a check from a session, since checks run as you with no session in the loop.
+// (A process running as you can still edit `_work.md` directly.) They execute
+// inside a tree the agent just edited, though: a changed test script runs with
+// whatever environment it is given. So checks get a minimal environment, never
+// the daemon's, which can hold credentials.
 
 import { spawn } from "node:child_process";
 import type { CheckResult } from "../shared/contracts";

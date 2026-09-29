@@ -7,6 +7,7 @@
 // session it starts. Anything done here is recorded as that session's.
 
 import { connect } from "node:net";
+import { resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
 import { socketPath } from "../server/paths";
 import type { MaestroConfig, WorkEventWire, WorkItem } from "../shared/contracts";
@@ -29,11 +30,18 @@ const USAGE = `maestro: operate Maestro from a Paseo session
 
   --json                              Print the raw answer
 
+Exit codes: 0 done · 1 Maestro refused · 2 Maestro is not listening, or bad usage ·
+3 no clear answer (the request may still have been applied: check before retrying).
+
 Approve, send back, unblock and cancel are yours, in Maestro. A session cannot
 pass its own gate.`;
 
+/** Nothing was sent: Maestro is not listening there. */
 export class Unreachable extends Error {}
+/** Maestro answered no. */
 export class Refused extends Error {}
+/** The request went out and no clear answer came back; it may have been applied. */
+export class NoAnswer extends Error {}
 
 /** One request, one answer. Rejects with `Refused` when Maestro answers with an error. */
 export function call(
@@ -42,7 +50,7 @@ export function call(
   options: { path?: string; caller?: string | null; timeoutMs?: number } = {},
 ): Promise<unknown> {
   const path = options.path ?? socketPath();
-  const caller = options.caller === undefined ? (process.env.PASEO_AGENT_ID ?? null) : options.caller;
+  const caller = options.caller === undefined ? process.env.PASEO_AGENT_ID || null : options.caller;
   return new Promise((resolve, reject) => {
     const socket = connect(path);
     let buffer = "";
@@ -54,9 +62,12 @@ export function call(
       socket.destroy();
       fn();
     };
+    const unanswered = (why: string) =>
+      new NoAnswer(`${why} The request may still have been applied: check with maestro ls before retrying.`);
     const timer = setTimeout(
-      () => settle(() => reject(new Unreachable(`Maestro did not answer on ${path}.`))),
-      options.timeoutMs ?? 120_000,
+      () => settle(() => reject(unanswered(`Maestro did not answer in time on ${path}.`))),
+      // Under the two minutes a Claude Code Bash call gets, so a session sees this message, not a kill.
+      options.timeoutMs ?? 90_000,
     );
     socket.setEncoding("utf8");
     socket.on("connect", () => socket.write(`${JSON.stringify({ id: 1, method, input, caller })}\n`));
@@ -64,10 +75,17 @@ export function call(
       buffer += chunk;
       const newline = buffer.indexOf("\n");
       if (newline < 0) return;
+      const line = buffer.slice(0, newline);
       settle(() => {
-        const response = JSON.parse(buffer.slice(0, newline)) as { ok: boolean; output?: unknown; error?: string };
-        if (response.ok) resolve(response.output);
-        else reject(new Refused(response.error ?? "Maestro refused."));
+        let response: { ok?: unknown; output?: unknown; error?: unknown } | null = null;
+        try {
+          response = JSON.parse(line);
+        } catch {
+          // falls through to the malformed answer below
+        }
+        if (response?.ok === true) resolve(response.output);
+        else if (response?.ok === false) reject(new Refused(String(response.error ?? "Maestro refused.")));
+        else reject(unanswered(`Maestro answered with something that is not a response: ${line.slice(0, 200)}`));
       });
     });
     socket.on("error", (error: NodeJS.ErrnoException) =>
@@ -81,7 +99,7 @@ export function call(
         ),
       ),
     );
-    socket.on("close", () => settle(() => reject(new Unreachable("Maestro closed the connection without answering."))));
+    socket.on("close", () => settle(() => reject(unanswered("Maestro closed the connection without answering."))));
   });
 }
 
@@ -192,7 +210,7 @@ export async function main(argv: string[], print: (text: string) => void = conso
       const input = {
         title,
         brief: values.brief,
-        repo: values.repo ?? process.cwd(),
+        repo: resolvePath(values.repo ?? "."),
         check: values.check,
         initiative: values.initiative,
         dispatch: values.dispatch,
@@ -231,7 +249,7 @@ if (import.meta.main) {
     (code) => process.exit(code),
     (error: Error) => {
       console.error(`maestro: ${error.message}`);
-      process.exit(error instanceof Unreachable ? 2 : 1);
+      process.exit(error instanceof Unreachable ? 2 : error instanceof NoAnswer ? 3 : 1);
     },
   );
 }

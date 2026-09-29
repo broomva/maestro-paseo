@@ -6,24 +6,27 @@
 //
 // It offers the noun and the verb, never the gate: approve, send back,
 // unblock, cancel and settings are not served, so no session can pass its own
-// gate or loosen how runs start. Everything done through it is recorded as the
-// agent's: nothing here can prove a person asked. This is the surface a session
-// is offered, not a sandbox. A process running as you can still edit the work
-// folders directly; the receipts are what keep that visible.
+// gate or loosen how runs start. A session starts only queued work, and cannot
+// write a done check: checks run as you with no session in the loop.
+// Everything done through it is recorded as the agent's, since nothing here
+// can prove a person asked, under the agent id the client reports (unverified).
+// This is the surface a session is offered, not a sandbox. A process running as
+// you can still edit the work folders directly; the receipts are what keep that
+// visible.
 //
 // Protocol: one JSON request per line, one JSON response per line, in order.
 //   → {"id":1,"method":"work.list","input":{},"caller":"<agent id>"}
 //   ← {"id":1,"ok":true,"output":{...}}   or   {"id":1,"ok":false,"error":"..."}
 
-import { chmod, mkdir, rename, stat, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, rename, stat, unlink } from "node:fs/promises";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { GATE_MODES } from "../shared/states";
-import { loadConfig } from "./config";
 import { type Engine, NO_HANDLE, UserError } from "./engine";
 import type { Origin } from "./events";
 import type { Paseo } from "./runs";
+import { WorkNotFoundError } from "./store";
 
 export interface Caller {
   /** The session's agent id, as the client reported it (`PASEO_AGENT_ID`). */
@@ -89,6 +92,11 @@ export function agentMethods(engine: Engine, paseo: () => Paseo | null): Readonl
             "Work a session creates waits at your gate. Letting checks close it (gate: auto) is your call, made in Maestro.",
           );
         }
+        if (input.check.trim()) {
+          throw new UserError(
+            "A session cannot write a done check: checks run as you, outside any session's permissions. Add one to the work's _work.md (done.check).",
+          );
+        }
         return { item: await engine.create(paseo(), input, origin(caller)) };
       }),
     ],
@@ -106,7 +114,7 @@ export function agentMethods(engine: Engine, paseo: () => Paseo | null): Readonl
       "work.for-agent",
       method(ForAgent, async ({ agentId }, caller) => ({ item: await engine.forAgent(session(agentId, caller)) })),
     ],
-    ["config.get", method(z.object({}), () => loadConfig())],
+    ["config.get", method(z.object({}), () => engine.settings())],
   ]);
 }
 
@@ -135,7 +143,8 @@ export async function answer(
   }
   const request = Request.safeParse(json);
   if (!request.success) {
-    return { id: null, ok: false, error: 'A request needs a method, as in {"method":"work.list"}.' };
+    const issues = request.error.issues.map((issue) => `${issue.path.join(".") || "request"}: ${issue.message}`);
+    return { id: null, ok: false, error: `Invalid request (${issues.join("; ")}). Example: {"method":"work.list"}.` };
   }
   const { id, method: name, input, caller } = request.data;
   const run = methods.get(name);
@@ -149,32 +158,43 @@ export async function answer(
     return { id, ok: true, output: await run(input, { agentId: caller }) };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (!(error instanceof UserError)) log(`agent socket: ${name} failed: ${message}`);
+    // A refusal or an unknown id is an answer, not a fault worth the plugin log.
+    if (!(error instanceof UserError || error instanceof WorkNotFoundError)) {
+      log(`agent socket: ${name} failed: ${message}`);
+    }
     return { id, ok: false, error: message };
   }
 }
 
-const MAX_LINE = 1 << 20;
+export const MAX_LINE = 1 << 20;
+/** `sun_path` holds 104 bytes on macOS and 108 on Linux, including the terminator. */
+const MAX_SOCKET_PATH = 103;
 
-function respond(socket: Socket, methods: ReadonlyMap<string, AgentMethod>, log: (message: string) => void): void {
+/** Answers requests on one connection, in the order sent. Returns what is still in flight. */
+function respond(
+  socket: Socket,
+  methods: ReadonlyMap<string, AgentMethod>,
+  log: (message: string) => void,
+): () => Promise<void> {
   socket.setEncoding("utf8");
   socket.on("error", () => undefined);
   let buffer = "";
-  // Requests on one connection are answered in the order they were sent.
   let chain = Promise.resolve();
   socket.on("data", (chunk: string) => {
     buffer += chunk;
-    for (let newline = buffer.indexOf("\n"); newline >= 0; newline = buffer.indexOf("\n")) {
+    let newline = buffer.indexOf("\n");
+    for (; newline >= 0 && newline <= MAX_LINE; newline = buffer.indexOf("\n")) {
       const line = buffer.slice(0, newline);
       buffer = buffer.slice(newline + 1);
       if (!line.trim()) continue;
       chain = chain.then(async () => {
         const response = await answer(methods, line, log);
-        if (!socket.destroyed) socket.write(`${JSON.stringify(response)}\n`);
+        if (socket.writable) socket.write(`${JSON.stringify(response)}\n`);
       });
     }
-    if (buffer.length > MAX_LINE) {
-      // Stop reading: the rest of an oversized line must not be taken for the next request.
+    // A line over the limit, whole or still arriving, ends the connection however the bytes were chunked.
+    if (newline > MAX_LINE || (newline < 0 && buffer.length > MAX_LINE)) {
+      // Stop reading: nothing after an oversized line is taken for a request.
       socket.removeAllListeners("data");
       buffer = "";
       chain = chain.then(() => {
@@ -182,6 +202,13 @@ function respond(socket: Socket, methods: ReadonlyMap<string, AgentMethod>, log:
       });
     }
   });
+  // A client may send its request and close its side at once; it still gets the answer.
+  socket.on("end", () => {
+    chain = chain.then(() => {
+      socket.end();
+    });
+  });
+  return () => chain;
 }
 
 function bind(server: Server, path: string): Promise<void> {
@@ -200,7 +227,11 @@ function bind(server: Server, path: string): Promise<void> {
   });
 }
 
-/** Whether something answers at `path`. A probe that hangs counts as alive: never take a socket that may be in use. */
+/**
+ * Whether `path` may be in use. Only "nothing there" (ENOENT) and "nobody
+ * listening" (ECONNREFUSED) say it is free; a hang, a full backlog or any
+ * other error counts as in use, so a live socket is never taken.
+ */
 export function answers(path: string, timeoutMs = 1000): Promise<boolean> {
   return new Promise((resolve) => {
     const probe = connect(path);
@@ -210,7 +241,9 @@ export function answers(path: string, timeoutMs = 1000): Promise<boolean> {
     };
     probe.setTimeout(timeoutMs, () => done(true));
     probe.once("connect", () => done(true));
-    probe.once("error", () => done(false));
+    probe.once("error", (error: NodeJS.ErrnoException) =>
+      done(error.code !== "ENOENT" && error.code !== "ECONNREFUSED"),
+    );
   });
 }
 
@@ -221,6 +254,8 @@ export interface ServeOptions {
   /** How often to retry while another instance holds the socket, as during a reload. */
   attempts?: number;
   retryMs?: number;
+  /** How long closing waits for requests already being answered. */
+  graceMs?: number;
 }
 
 let serial = 0;
@@ -228,38 +263,61 @@ let serial = 0;
 /**
  * Listen on `path`, readable and writable by this user only. A socket file
  * nobody answers on is left over from a crash and is replaced; one that
- * answers belongs to a live instance and is waited for, then refused.
+ * answers belongs to a live instance and is waited for, then refused. Anything
+ * at `path` that is not a socket is never replaced.
  *
  * The socket is bound under a private name and renamed into place. Closing a
- * unix socket server unlinks the path it was bound to, so binding `path`
- * itself would let an instance shutting down during a reload delete the
- * socket its successor just opened. Returns the cleanup, which removes `path`
- * only while it is still this instance's.
+ * unix socket server unlinks the path it was bound to, so an instance bound to
+ * `path` itself would delete, on the way out, a socket another instance had
+ * since put there. Paseo 0.9.2 reloads a plugin stop-then-start, so the
+ * instances that can overlap are a second daemon on the same config and a
+ * child orphaned by a daemon crash. Returns the cleanup.
  */
 export async function serveAgents(options: ServeOptions): Promise<() => Promise<void>> {
-  const { path, methods, log = () => undefined, attempts = 15, retryMs = 200 } = options;
-  const sockets = new Set<Socket>();
-  const server = createServer((socket) => {
-    sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
-    respond(socket, methods, log);
+  const { path, methods, log = () => undefined, attempts = 15, retryMs = 200, graceMs = 2000 } = options;
+  const connections = new Map<Socket, () => Promise<void>>();
+  const server = createServer({ allowHalfOpen: true }, (socket) => {
+    connections.set(socket, respond(socket, methods, log));
+    socket.on("close", () => connections.delete(socket));
   });
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   for (let attempt = 1; await answers(path); attempt += 1) {
     if (attempt >= attempts) throw new Error(`Another Maestro is already answering on ${path}`);
     await new Promise((resolve) => setTimeout(resolve, retryMs));
   }
+  const existing = await lstat(path).catch(() => null);
+  if (existing && !existing.isSocket()) throw new Error(`${path} exists and is not a socket; not replacing it`);
   serial += 1;
   const bound = `${path}.${process.pid}-${serial}`;
+  if (Buffer.byteLength(bound) > MAX_SOCKET_PATH) {
+    throw new Error(`The socket path is too long for this system: ${bound} (${MAX_SOCKET_PATH} bytes at most)`);
+  }
   await unlink(bound).catch(() => undefined);
   await bind(server, bound);
-  await chmod(bound, 0o600);
-  await rename(bound, path);
-  const { ino } = await stat(path);
-  return async () => {
-    for (const socket of sockets) socket.destroy();
+  let ino: number;
+  try {
+    await chmod(bound, 0o600);
+    await rename(bound, path);
+    ({ ino } = await stat(path));
+  } catch (error) {
+    // Never leave a listener behind that nothing will close.
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await unlink(bound).catch(() => undefined);
+    throw error;
+  }
+  /**
+   * Remove the path first, while still listening: a successor probing until
+   * now was told the socket is in use, so it cannot have renamed its own into
+   * place between the check and the unlink. Then stop accepting, let requests
+   * already being answered finish for up to `graceMs`, and drop the rest.
+   */
+  return async () => {
     const current = await stat(path).catch(() => null);
     if (current?.ino === ino) await unlink(path).catch(() => undefined);
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+    const inFlight = Promise.all([...connections.values()].map((pending) => pending()));
+    await Promise.race([inFlight, new Promise((resolve) => setTimeout(resolve, graceMs))]);
+    for (const socket of connections.keys()) socket.destroy();
+    await closed;
   };
 }

@@ -132,9 +132,14 @@ export interface EngineOptions {
   log?: (message: string) => void;
 }
 
-/** Work a dispatch may start from: queued, stuck, or a run with no session recorded. */
-function canDispatch(item: StoredWork): boolean {
+/**
+ * Work a dispatch may start from: queued, stuck, or a run with no session
+ * recorded. A session may start only queued work: restarting stuck work is
+ * unblocking, and that is yours.
+ */
+function canDispatch(item: StoredWork, origin: Origin): boolean {
   const state = item.contract.state;
+  if (origin.actor === "agent") return isDispatchable(state);
   return isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events));
 }
 
@@ -143,6 +148,8 @@ export class Engine {
   private readonly readConfig: () => Promise<MaestroConfig>;
   private readonly log: (message: string) => void;
   private readonly dispatching = new Set<string>();
+  /** Sessions being tracked right now, so two calls at once cannot make two items for one session. */
+  private readonly adopting = new Set<string>();
   private readonly activeChecks = new Set<string>();
   private readonly checkRuns = new Map<string, AbortController>();
   /** Hook events for an agent that is not bound yet, in arrival order. */
@@ -164,6 +171,11 @@ export class Engine {
     this.now = options.now ?? (() => new Date());
     this.readConfig = options.config ?? (() => loadConfig());
     this.log = options.log ?? ((message) => console.log(`[maestro] ${message}`));
+  }
+
+  /** The settings runs start from, as this engine reads them. */
+  settings(): Promise<MaestroConfig> {
+    return this.readConfig();
   }
 
   stop(): void {
@@ -336,7 +348,13 @@ export class Engine {
     try {
       const { store, config } = await this.store();
       const item = await store.findById(id);
-      if (!canDispatch(item)) throw new UserError("Only queued or stuck work can be dispatched.");
+      if (!canDispatch(item, origin)) {
+        throw new UserError(
+          origin.actor === "agent"
+            ? "A session can start only queued work. Stuck work is unblocked in Maestro."
+            : "Only queued or stuck work can be dispatched.",
+        );
+      }
       let worker: Awaited<ReturnType<typeof startRun>>;
       try {
         worker = await startRun(paseo, config, item);
@@ -351,7 +369,7 @@ export class Engine {
         bound = await store.mutate(
           id,
           (fresh) => {
-            if (!canDispatch(fresh)) throw new UserError("The work changed while the run was starting.");
+            if (!canDispatch(fresh, origin)) throw new UserError("The work changed while the run was starting.");
             return {
               to: "running",
               actor: origin.actor,
@@ -523,6 +541,17 @@ export class Engine {
 
   /** Track a session that was started by hand, so its end lands at the gate. */
   async adopt(paseo: Paseo, agentId: string, title: string, origin: Origin = BY_HUMAN): Promise<WorkItem> {
+    // Scan-then-create is not atomic: a retry or a second caller must not bind one session twice.
+    if (this.adopting.has(agentId)) throw new UserError("This session is already being tracked.");
+    this.adopting.add(agentId);
+    try {
+      return await this.adoptOnce(paseo, agentId, title, origin);
+    } finally {
+      this.adopting.delete(agentId);
+    }
+  }
+
+  private async adoptOnce(paseo: Paseo, agentId: string, title: string, origin: Origin): Promise<WorkItem> {
     const { store } = await this.store();
     const { items } = await store.scan();
     this.index(store, items);
