@@ -16,6 +16,7 @@ type Card = Pick<GateCardData, "landing" | "agentId">;
 export const SUPERSEDED = "Superseded by a later run.";
 
 export function cardView(card: Card, item: Current): CardView {
+  if (card.landing === undefined || card.agentId === undefined) return "superseded";
   if (item.landing !== card.landing || item.worker?.agentId !== card.agentId) return "superseded";
   if (item.state !== "review") return "resolved";
   return item.permission ? "asking" : "deciding";
@@ -33,7 +34,7 @@ export function cardSettled(card: Card, item: Current): boolean {
 
 /** The session a card may answer a question for: its own, and only while that session is still the worker. */
 export function answerTarget(card: Card, item: Current): string | null {
-  return cardView(card, item) === "asking" ? card.agentId : null;
+  return cardView(card, item) === "asking" ? (card.agentId ?? null) : null;
 }
 
 /** How the work left the gate, in a sentence; shown beside its state. */

@@ -129,7 +129,7 @@ describe("the gate card in the worker's timeline", () => {
     ];
     const current = (await engine.get(item.id)).item;
     expect(current.state).toBe("review");
-    expect(newer.landing).toBeGreaterThan(older.landing);
+    expect(newer.landing ?? -1).toBeGreaterThan(older.landing ?? -1);
     expect(cardView(older, current)).toBe("superseded");
     expect(cardView(newer, current)).toBe("deciding");
   });

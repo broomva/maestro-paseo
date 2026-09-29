@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { GateCardSchema } from "../shared/gate-card";
 import { fakeWork } from "./fake-work";
 import { answerTarget, cardSettled, cardView, resolution } from "./gate-state";
 
@@ -43,6 +44,18 @@ describe("the gate card", () => {
     expect(cardSettled(card, fakeWork("w", "review", inSessionA, { landing: 4 }))).toBe(false);
     expect(cardSettled(card, fakeWork("w", "running", inSessionA, { landing: 4 }))).toBe(false);
     expect(cardSettled(card, fakeWork("w", "blocked", inSessionA, { landing: 4 }))).toBe(false);
+  });
+
+  test("a card written before landings were recorded parses, reads as superseded and answers nothing", () => {
+    const legacy = GateCardSchema.parse({ workId: "w1" });
+    const waiting = {
+      state: "review",
+      permission: { requestId: "r", title: "Bash", detail: null },
+      landing: undefined,
+      worker: null,
+    } as const;
+    expect(cardView(legacy, waiting as never)).toBe("superseded");
+    expect(answerTarget(legacy, waiting as never)).toBeNull();
   });
 
   test("says how the work left the gate", () => {
