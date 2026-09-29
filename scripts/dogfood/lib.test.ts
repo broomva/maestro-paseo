@@ -2,8 +2,26 @@
 // environment, never delete a directory it did not make, and stop waiting as
 // soon as the thing waited on is known to be dead.
 
-import { afterEach, describe, expect, test } from "bun:test";
-import { ancestors, type DogfoodState, deletable, Fatal, MARKER, sandboxEnv, sandboxProcesses, waitFor } from "./lib";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  ancestors,
+  type DogfoodState,
+  daemonGroup,
+  deletable,
+  Fatal,
+  fileProblem,
+  isDaemonOf,
+  liveDaemon,
+  MARKER,
+  pointerProblem,
+  readState,
+  sandboxEnv,
+  sandboxProcesses,
+  waitFor,
+} from "./lib";
 
 const saved = { ...process.env };
 afterEach(() => {
@@ -116,5 +134,143 @@ describe("waitFor", () => {
     );
     expect(value).toBe("ready");
     expect(calls).toBe(3);
+  });
+});
+
+// The daemon's command line exactly as `ps -axww -o command=` printed it for a live sandbox (paseo 0.9.2):
+// the wrapper execs the Electron helper with "$@" last.
+const HOME = "/private/tmp/maestro-dogfood-F4CaCa/paseo-home";
+const DAEMON_LINE =
+  "/Applications/Paseo.app/Contents/Resources/../Frameworks/Paseo Helper.app/Contents/MacOS/Paseo Helper " +
+  "--disable-warning=DEP0040 /Applications/Paseo.app/Contents/Resources/app.asar.unpacked/dist/daemon/node-entrypoint-runner.js " +
+  `node-script /Applications/Paseo.app/Contents/Resources/app.asar/node_modules/@getpaseo/cli/dist/index.js daemon run --home ${HOME}`;
+const p = (pid: number, ppid: number, pgid: number, command: string) => ({ pid, ppid, pgid, command });
+
+describe("isDaemonOf", () => {
+  const is = (command: string) => isDaemonOf(p(1, 1, 1, command), { paseoHome: HOME });
+
+  test("accepts the sandbox's own daemon invocation", () => {
+    expect(is(DAEMON_LINE)).toBe(true);
+    expect(is(`paseo daemon run --home ${HOME}`)).toBe(true);
+  });
+
+  test("rejects anything else that mentions the home", () => {
+    expect(is(`paseo daemon run --home ${HOME}2`)).toBe(false);
+    expect(is(`paseo daemon run --home ${HOME}/nested`)).toBe(false);
+    expect(is(`paseo daemon start --home ${HOME}`)).toBe(false);
+    expect(is(`paseo plugin install /plugin --home ${HOME}`)).toBe(false);
+    expect(is(`zsh -c paseo daemon run --home ${HOME}; bun scripts/dogfood/down.ts`)).toBe(false);
+    expect(is(`tail -f ${HOME}/daemon.log`)).toBe(false);
+    expect(is("paseo daemon run --home /Users/someone/.paseo")).toBe(false);
+    expect(is("Paseo Daemon")).toBe(false);
+  });
+});
+
+describe("daemon selection", () => {
+  const state = { daemonPid: 200, paseoHome: HOME };
+  // The sandbox's tree as ps shows it: the runner (the recorded pid) leads its own group.
+  const sandbox = [
+    p(200, 1, 200, DAEMON_LINE),
+    p(201, 200, 200, "Paseo Supervisor"),
+    p(202, 201, 200, "Paseo Daemon"),
+    p(
+      203,
+      202,
+      200,
+      "/Applications/Paseo.app/Contents/Frameworks/Paseo Helper.app/Contents/MacOS/Paseo Helper plugin-process.js",
+    ),
+    p(204, 202, 200, "/Users/x/.bun/bin/bun /private/tmp/maestro-dogfood-F4CaCa/bin/fake-acp.ts"),
+  ];
+  // The real daemon, started by launchd in a group of its own.
+  const real = [p(89846, 1, 89846, "Paseo Supervisor"), p(89847, 89846, 89846, "Paseo Daemon")];
+  const pids = (procs: readonly { pid: number }[]) => procs.map((proc) => proc.pid);
+
+  test("selects the verified daemon's whole group and nothing outside it", () => {
+    expect(pids(daemonGroup([...sandbox, ...real], state, new Set()))).toEqual([200, 201, 202, 203, 204]);
+  });
+
+  test("a process in the daemon's group but in the skip set is never selected", () => {
+    const selected = pids(daemonGroup([...sandbox, ...real], state, new Set([203, 999])));
+    expect(selected).toEqual([200, 201, 202, 204]);
+  });
+
+  test("a process whose pid is the group's id but whose own group differs is not selected", () => {
+    // The recorded daemon is not a group leader here: it sits in group 150, and pid 150 is unrelated.
+    const procs = [
+      p(150, 1, 99, "vim notes.md"),
+      p(300, 1, 150, `paseo daemon run --home ${HOME}`),
+      p(301, 300, 150, "Paseo Supervisor"),
+      p(302, 1, 300, "a process in a group numbered like the daemon's pid"),
+    ];
+    expect(pids(daemonGroup(procs, { daemonPid: 300, paseoHome: HOME }, new Set()))).toEqual([300, 301]);
+  });
+
+  test("the real daemon is never selected, even if the recorded pid now belongs to it", () => {
+    // A reused pid (or an edited state file) points at the real daemon, whose group holds its supervisor.
+    const reused = { daemonPid: 89847, paseoHome: HOME };
+    expect(liveDaemon([...sandbox, ...real], reused)).toBeNull();
+    expect(daemonGroup([...sandbox, ...real], reused, new Set())).toEqual([]);
+  });
+
+  test("a group member that is another Paseo daemon invocation is not selected, even with a matching group", () => {
+    const procs = [
+      ...sandbox,
+      p(205, 1, 200, "paseo daemon run --home /Users/someone/.paseo"),
+      p(206, 1, 200, "paseo daemon start"),
+    ];
+    expect(pids(daemonGroup(procs, state, new Set()))).toEqual([200, 201, 202, 203, 204]);
+  });
+
+  test("up.ts treats a sandbox as live only while its recorded pid runs its daemon", () => {
+    expect(liveDaemon(sandbox, state)?.pid).toBe(200);
+    expect(liveDaemon([p(200, 1, 200, "vim notes.md")], state)).toBeNull();
+    expect(liveDaemon(sandbox, { daemonPid: null, paseoHome: HOME })).toBeNull();
+  });
+});
+
+describe("trusted state and pointer files", () => {
+  const uid = 501;
+  const file = (mode: number, owner = uid, isFile = true) => ({ isFile, uid: owner, mode: 0o100000 | mode });
+
+  test("fileProblem accepts only a regular file of this user that the group and world cannot write", () => {
+    expect(fileProblem(file(0o600), uid)).toBeNull();
+    expect(fileProblem(file(0o644), uid)).toBeNull();
+    expect(fileProblem(null, uid)).not.toBeNull();
+    expect(fileProblem(file(0o600, uid, false), uid)).not.toBeNull();
+    expect(fileProblem(file(0o600, 0), uid)).not.toBeNull();
+    expect(fileProblem(file(0o620), uid)).not.toBeNull();
+    expect(fileProblem(file(0o602), uid)).not.toBeNull();
+  });
+
+  const state = (dir: string): DogfoodState =>
+    ({ marker: MARKER, dir, paseoHome: `${dir}/paseo-home` }) as unknown as DogfoodState;
+
+  test("pointerProblem follows only a marked pointer whose directory's state carries the same marker and dir", () => {
+    const dir = "/private/tmp/maestro-dogfood-AbC123";
+    expect(pointerProblem({ marker: MARKER, dir }, state(dir))).toBeNull();
+    expect(pointerProblem({ dir }, state(dir))).not.toBeNull();
+    expect(pointerProblem({ marker: "something-else", dir }, state(dir))).not.toBeNull();
+    expect(pointerProblem({ marker: MARKER }, state(dir))).not.toBeNull();
+    expect(pointerProblem({ marker: MARKER, dir }, null)).not.toBeNull();
+    expect(pointerProblem({ marker: MARKER, dir }, state("/private/tmp/maestro-dogfood-Other"))).not.toBeNull();
+    expect(
+      pointerProblem({ marker: MARKER, dir }, { ...state(dir), marker: "old" } as unknown as DogfoodState),
+    ).not.toBeNull();
+    expect(pointerProblem("not an object", state(dir))).not.toBeNull();
+  });
+
+  const dirs: string[] = [];
+  afterAll(async () => {
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  test("readState refuses a state.json the group or world can write", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dogfood-state-"));
+    dirs.push(dir);
+    const path = join(dir, "state.json");
+    await writeFile(path, JSON.stringify({ marker: MARKER, dir }), { mode: 0o600 });
+    expect(readState(dir)?.dir).toBe(dir);
+    await chmod(path, 0o622);
+    expect(readState(dir)).toBeNull();
   });
 });

@@ -8,15 +8,16 @@ import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, realpathSyn
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
-  alive,
   type DogfoodState,
   Fatal,
   flag,
   freePort,
   hasFlag,
+  liveDaemon,
   MARKER,
   paseoBin,
   portOpen,
+  processes,
   RESERVED_PORTS,
   readState,
   resolveStateDir,
@@ -173,7 +174,8 @@ async function main(): Promise<void> {
   const previous = resolveStateDir(undefined);
   if (previous && existsSync(previous)) {
     const before = readState(previous);
-    if (before?.daemonPid && alive(before.daemonPid)) {
+    // Live only if the recorded pid still runs this sandbox's daemon: a reused pid is not a running sandbox.
+    if (before && liveDaemon(processes(), before)) {
       fail(`a sandbox is already up at ${before.url} (${previous}). Run bun scripts/dogfood/down.ts first.`);
     }
     console.log(`Clearing a stale sandbox first: ${previous}`);

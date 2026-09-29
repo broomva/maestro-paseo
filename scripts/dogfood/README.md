@@ -57,8 +57,12 @@ The real daemon runs live sessions, so the sandbox shares nothing with it:
   model, so a Dispatch clicked while dogfooding costs nothing. It asks for permission in a repo that holds a
   `.dogfood-ask` file.
 - Dictation and voice are off, so the daemon does not download its ~1 GB speech model.
-- The daemon runs in its own process group. `down.ts` stops that group, then anything whose command line names
-  the sandbox (stand-in agents, a browser an interrupted `shot.ts` left), and checks that none survive.
+- The daemon runs in its own process group. `down.ts` stops that group only while the recorded pid still runs this
+  sandbox's exact `daemon run --home <sandbox>/paseo-home` invocation, then anything carrying the sandbox's own
+  arguments (stand-in agents, a browser an interrupted `shot.ts` left), and checks that none survive. It never
+  signals itself, an ancestor, or another Paseo daemon.
+- `state.json` and the pointer are written `0600` and followed only if each is a regular file owned by you that the
+  group and world cannot write, and the pointer's marker and directory match that directory's `state.json`.
 
 The daemon serves the Paseo web client itself (`features.webUi`, pointed at the desktop app's bundle), so the
 browser is on the daemon's own origin: no host to add, and no Local Network Access flags. A cold deep link lands on

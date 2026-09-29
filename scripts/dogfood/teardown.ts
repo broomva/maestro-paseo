@@ -8,8 +8,8 @@ import {
   alive,
   ancestors,
   clearPointer,
+  daemonGroup,
   deletable,
-  isDaemonOf,
   type Proc,
   portOpen,
   processes,
@@ -56,18 +56,16 @@ export async function teardown(dir: string, log: (line: string) => void = consol
   const state = readState(dir);
   if (!state) {
     await clearPointer(dir);
-    log(`${dir} holds no dogfood state.json, so it was left alone.`);
+    log(`${dir} holds no trusted dogfood state.json, so it was left alone.`);
     return false;
   }
 
   // The daemon runs in its own process group (spawned detached), with its plugin processes in it.
-  // Stop that group only if the pid still belongs to this sandbox's daemon.
+  // daemonGroup selects it only while the recorded pid still runs this sandbox's own daemon.
   const all = processes();
-  const skip = ancestors(all);
-  const daemon = state.daemonPid ? all.find((proc) => proc.pid === state.daemonPid) : undefined;
-  const owned =
-    daemon && isDaemonOf(daemon, state) ? all.filter((proc) => proc.pgid === daemon.pgid && !skip.has(proc.pid)) : [];
-  if (daemon && owned.length === 0) log(`pid ${daemon.pid} is no longer this sandbox's daemon; left alone.`);
+  const owned = daemonGroup(all, state, ancestors(all));
+  const recorded = state.daemonPid ? all.find((proc) => proc.pid === state.daemonPid) : undefined;
+  if (recorded && owned.length === 0) log(`pid ${recorded.pid} is no longer this sandbox's daemon; left alone.`);
   const stoppedDaemon = await stop(owned, 15_000);
 
   // What else the sandbox started: stand-in agents, a browser left by an interrupted shot.ts.

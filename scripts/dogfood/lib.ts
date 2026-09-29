@@ -4,7 +4,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -42,45 +42,110 @@ export function pointerPath(): string {
   return join(tmpdir(), `maestro-paseo-dogfood-${hash}.json`);
 }
 
-export function readState(dir: string): DogfoodState | null {
-  const file = join(dir, "state.json");
-  if (!existsSync(file)) return null;
+/** The fields of an lstat that decide whether a file the harness reads can be trusted. */
+export interface FileFacts {
+  isFile: boolean;
+  uid: number;
+  mode: number;
+}
+
+/**
+ * Why a state or pointer file must not be trusted, or null. It must be a
+ * regular file (lstat: a symlink is not one), owned by this user, and not
+ * writable by the group or the world, or anyone could aim down.ts elsewhere.
+ */
+export function fileProblem(facts: FileFacts | null, uid: number): string | null {
+  if (!facts) return "it does not exist";
+  if (!facts.isFile) return "it is not a regular file";
+  if (facts.uid !== uid) return `it is owned by uid ${facts.uid}, not ${uid}`;
+  if ((facts.mode & 0o022) !== 0) return "it is writable by the group or the world";
+  return null;
+}
+
+function factsOf(path: string): FileFacts | null {
   try {
-    const state = JSON.parse(readFileSync(file, "utf8")) as DogfoodState;
-    return state.marker === MARKER ? state : null;
+    const stat = lstatSync(path);
+    return { isFile: stat.isFile(), uid: stat.uid, mode: stat.mode };
   } catch {
     return null;
   }
+}
+
+const currentUid = () => process.getuid?.() ?? -1;
+
+function readTrusted(path: string): { value: unknown } | { problem: string } {
+  const problem = fileProblem(factsOf(path), currentUid());
+  if (problem) return { problem };
+  try {
+    return { value: JSON.parse(readFileSync(path, "utf8")) };
+  } catch {
+    return { problem: "it is not valid JSON" };
+  }
+}
+
+export function readState(dir: string): DogfoodState | null {
+  const read = readTrusted(join(dir, "state.json"));
+  if (!("value" in read)) return null;
+  const state = read.value as DogfoodState | null;
+  return state && typeof state === "object" && state.marker === MARKER ? state : null;
+}
+
+/**
+ * Why the pointer must not be followed, or null: it must carry the marker and
+ * name a directory whose own state.json carries the marker and the same dir.
+ */
+export function pointerProblem(pointer: unknown, state: DogfoodState | null): string | null {
+  const found = pointer as { marker?: unknown; dir?: unknown } | null;
+  if (!found || typeof found !== "object") return "it is not a JSON object";
+  if (found.marker !== MARKER) return "it does not carry the dogfood marker";
+  if (typeof found.dir !== "string" || !found.dir) return "it names no directory";
+  if (!state) return `${found.dir} holds no trusted state.json`;
+  if (state.marker !== MARKER || state.dir !== found.dir) return `${found.dir}/state.json does not match it`;
+  return null;
 }
 
 export async function writeState(state: DogfoodState): Promise<void> {
-  await writeFile(join(state.dir, "state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  await writeFile(pointerPath(), `${JSON.stringify({ dir: state.dir }, null, 2)}\n`, "utf8");
+  const own = { encoding: "utf8", mode: 0o600 } as const;
+  await writeFile(join(state.dir, "state.json"), `${JSON.stringify(state, null, 2)}\n`, own);
+  await writeFile(pointerPath(), `${JSON.stringify({ marker: MARKER, dir: state.dir }, null, 2)}\n`, own);
 }
 
-/** The sandbox to act on: `--state <dir>`, then MAESTRO_DOGFOOD_STATE, then this checkout's pointer. */
-export function resolveStateDir(flag: string | undefined): string | null {
-  if (flag) return flag;
-  if (process.env.MAESTRO_DOGFOOD_STATE) return process.env.MAESTRO_DOGFOOD_STATE;
-  const pointer = pointerPath();
-  if (!existsSync(pointer)) return null;
-  try {
-    return (JSON.parse(readFileSync(pointer, "utf8")) as { dir?: string }).dir ?? null;
-  } catch {
+/**
+ * The sandbox to act on: `--state <dir>`, then MAESTRO_DOGFOOD_STATE, then
+ * this checkout's pointer, which is followed only if it passes fileProblem and
+ * pointerProblem. A trusted pointer to a directory that is gone is dropped.
+ */
+export function resolveStateDir(flag: string | undefined, warn: (line: string) => void = console.warn): string | null {
+  const explicit = flag ?? process.env.MAESTRO_DOGFOOD_STATE;
+  if (explicit) return existsSync(explicit) ? realpathSync(explicit) : explicit;
+  const path = pointerPath();
+  if (!factsOf(path)) return null;
+  const read = readTrusted(path);
+  if (!("value" in read)) {
+    warn(`Ignoring ${path}: ${read.problem}.`);
     return null;
   }
+  const value = read.value as { marker?: unknown; dir?: unknown } | null;
+  const dir = typeof value?.dir === "string" && value.dir ? value.dir : null;
+  if (value?.marker === MARKER && dir && !existsSync(dir)) {
+    rmSync(path, { force: true });
+    return null;
+  }
+  const problem = pointerProblem(read.value, dir ? readState(dir) : null);
+  if (problem || !dir) {
+    warn(`Ignoring ${path}: ${problem ?? "it names no directory"}.`);
+    return null;
+  }
+  return dir;
 }
 
+/** Drop this checkout's pointer if it is a trusted one naming `dir`; anything else is left alone. */
 export async function clearPointer(dir: string): Promise<void> {
-  const pointer = pointerPath();
-  if (!existsSync(pointer)) return;
-  try {
-    const target = (JSON.parse(readFileSync(pointer, "utf8")) as { dir?: string }).dir;
-    if (target && target !== dir) return;
-  } catch {
-    // An unreadable pointer points nowhere useful: drop it.
-  }
-  await rm(pointer, { force: true });
+  const path = pointerPath();
+  const read = readTrusted(path);
+  if (!("value" in read)) return;
+  if ((read.value as { dir?: unknown } | null)?.dir !== dir) return;
+  await rm(path, { force: true });
 }
 
 /**
@@ -192,17 +257,60 @@ export function ancestors(procs: readonly Proc[], pid: number = process.pid): Se
   return chain;
 }
 
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /**
- * The arguments only processes the sandbox started carry: the daemon's home,
- * the stand-in agent copied into its bin/, a browser profile inside it. A
- * shell or editor that merely mentions the sandbox's path does not match.
+ * The exact invocation up.ts starts, `… daemon run --home <paseoHome>`, as
+ * the final arguments (the paseo wrapper execs with "$@" last). A longer home,
+ * a path below it, `daemon start`, or a shell line that runs more after it do
+ * not match.
  */
-export function signatures(state: Pick<DogfoodState, "dir" | "paseoHome">): string[] {
-  return [`--home ${state.paseoHome}`, `${state.dir}/bin/`, `--user-data-dir=${state.dir}/`];
+export function isDaemonOf(proc: Proc, state: Pick<DogfoodState, "paseoHome">): boolean {
+  return new RegExp(`(^|\\s)daemon run --home ${escapeRegExp(state.paseoHome)}$`).test(proc.command);
 }
 
-export function isDaemonOf(proc: Proc, state: Pick<DogfoodState, "paseoHome">): boolean {
-  return proc.command.includes(`--home ${state.paseoHome}`);
+/** Any Paseo daemon invocation, whatever home it names. */
+const DAEMON_INVOCATION = /(^|\s)daemon (run|start)(\s|$)/;
+
+/** The recorded daemon, only while its pid still runs this sandbox's own daemon invocation. */
+export function liveDaemon(procs: readonly Proc[], state: Pick<DogfoodState, "daemonPid" | "paseoHome">): Proc | null {
+  if (!state.daemonPid) return null;
+  const daemon = procs.find((proc) => proc.pid === state.daemonPid);
+  return daemon && isDaemonOf(daemon, state) ? daemon : null;
+}
+
+/**
+ * What down.ts stops first: the verified daemon's process group. up.ts spawns
+ * the daemon detached, so that group is the daemon and everything it started.
+ * Never a pid in `skip` (this process and its ancestors), and never a member
+ * that is itself a Paseo daemon invocation for another home.
+ */
+export function daemonGroup(
+  procs: readonly Proc[],
+  state: Pick<DogfoodState, "daemonPid" | "paseoHome">,
+  skip: ReadonlySet<number>,
+): Proc[] {
+  const daemon = liveDaemon(procs, state);
+  if (!daemon) return [];
+  return procs.filter(
+    (proc) =>
+      proc.pgid === daemon.pgid &&
+      !skip.has(proc.pid) &&
+      (!DAEMON_INVOCATION.test(proc.command) || isDaemonOf(proc, state)),
+  );
+}
+
+/**
+ * Whether the sandbox started this process: its daemon, the stand-in agent
+ * copied into its bin/, a browser profile inside it. A shell or editor that
+ * merely mentions the sandbox's path does not match.
+ */
+export function ownedBySandbox(proc: Proc, state: Pick<DogfoodState, "dir" | "paseoHome">): boolean {
+  return (
+    isDaemonOf(proc, state) ||
+    proc.command.includes(`${state.dir}/bin/`) ||
+    proc.command.includes(`--user-data-dir=${state.dir}/`)
+  );
 }
 
 /** The processes the sandbox started, minus this process and its ancestors. */
@@ -212,8 +320,7 @@ export function sandboxProcesses(
   self: number = process.pid,
 ): Proc[] {
   const skip = ancestors(procs, self);
-  const marks = signatures(state);
-  return procs.filter((proc) => !skip.has(proc.pid) && marks.some((mark) => proc.command.includes(mark)));
+  return procs.filter((proc) => !skip.has(proc.pid) && ownedBySandbox(proc, state));
 }
 
 /** The Paseo CLI, never through $PASEO_CLI (a session's pointer at the real install is fine, but explicit is safer). */
