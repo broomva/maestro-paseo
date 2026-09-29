@@ -23,6 +23,8 @@ export function sameSpec(a: Spec, b: Spec): boolean {
 
 export class Registrations<S extends Spec, H extends Removable> {
   private readonly live = new Map<string, { spec: S; handle: H }>();
+  /** The last refusal logged per key, so a refusal that lasts is logged once, not on every sync. */
+  private readonly refused = new Map<string, string>();
 
   constructor(
     private readonly host: RegistrationHost<S, H>,
@@ -30,23 +32,30 @@ export class Registrations<S extends Spec, H extends Removable> {
   ) {}
 
   sync(next: ReadonlyMap<string, S>): void {
+    for (const key of [...this.refused.keys()]) if (!next.has(key)) this.refused.delete(key);
     for (const [key, entry] of [...this.live]) {
       if (next.has(key)) continue;
       this.live.delete(key);
       entry.handle.remove();
     }
+    // The host validates what it is given; one refusal must not cost any other registration.
     for (const [key, spec] of next) {
       const entry = this.live.get(key);
-      if (!entry) {
-        // The host validates what it is given; one refusal must not cost every other registration.
-        try {
+      try {
+        if (!entry) {
           this.live.set(key, { spec, handle: this.host.add(key, spec) });
-        } catch (error) {
-          this.log(`Could not add ${key}: ${(error as Error).message}`);
+        } else if (!sameSpec(entry.spec, spec)) {
+          this.host.update(entry.handle, spec);
+          // Recorded only once the host took it, so a refused update is tried again next time.
+          entry.spec = spec;
+        } else {
+          continue;
         }
-      } else if (!sameSpec(entry.spec, spec)) {
-        this.host.update(entry.handle, spec);
-        entry.spec = spec;
+        this.refused.delete(key);
+      } catch (error) {
+        const message = `Could not ${entry ? "update" : "add"} ${key}: ${(error as Error).message}`;
+        if (this.refused.get(key) !== message) this.log(message);
+        this.refused.set(key, message);
       }
     }
   }
@@ -54,6 +63,7 @@ export class Registrations<S extends Spec, H extends Removable> {
   clear(): void {
     const entries = [...this.live.values()];
     this.live.clear();
+    this.refused.clear();
     for (const entry of entries) entry.handle.remove();
   }
 

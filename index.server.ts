@@ -1,5 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { agentMethods, keepServing } from "./server/agent-socket";
+import { attentionOf } from "./server/attention";
 import { loadConfig, saveConfig } from "./server/config";
 import { Engine } from "./server/engine";
 import { GateCards } from "./server/gate-card";
@@ -7,6 +8,7 @@ import { socketPath } from "./server/paths";
 import type { Paseo } from "./server/runs";
 import {
   adoptAgent,
+  attentionWork,
   cancelWork,
   createWork,
   decideWork,
@@ -48,6 +50,8 @@ export default function contribute(host: PluginServerContext) {
 
   server.handle(listWork, (_input, { paseo }) => engine.list(paseo));
   server.handle(getWork, ({ id }) => engine.get(id));
+  // No client handed to list: the header count and pills poll this, and must not reconcile sessions.
+  server.handle(attentionWork, () => engine.list().then(({ items }) => attentionOf(items, Date.now())));
   server.handle(createWork, (input, { paseo }) => engine.create(paseo, input).then((item) => ({ item })));
   server.handle(dispatchWork, ({ id }, { paseo }) => engine.dispatch(paseo, id).then((item) => ({ item })));
   server.handle(decideWork, ({ id, verdict, note }, { paseo }) =>

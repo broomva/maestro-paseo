@@ -1,16 +1,48 @@
 import { describe, expect, test } from "bun:test";
 import { fakeWork } from "./fake-work";
-import { gateMode, resolution } from "./gate-state";
+import { answerTarget, cardSettled, cardView, resolution } from "./gate-state";
 
 const permission = { requestId: "p1", title: "Run a command", detail: null };
+const card = { landing: 4, agentId: "a1" };
+const inSessionA = { agentId: "a1", workspaceId: "ws1" };
+const inSessionB = { agentId: "b1", workspaceId: "ws1" };
 
 describe("the gate card", () => {
-  test("offers the verdict while the work waits on you, the answer while it asks, and nothing once it has left", () => {
-    expect(gateMode(fakeWork("w", "review"))).toBe("deciding");
-    expect(gateMode(fakeWork("w", "review", null, { permission }))).toBe("asking");
-    for (const state of ["running", "blocked", "done", "canceled", "proposed"] as const) {
-      expect(gateMode(fakeWork("w", state))).toBe("resolved");
+  test("the current card offers the verdict while the work waits, the answer while it asks, nothing after", () => {
+    expect(cardView(card, fakeWork("w", "review", inSessionA, { landing: 4 }))).toBe("deciding");
+    expect(cardView(card, fakeWork("w", "review", inSessionA, { landing: 4, permission }))).toBe("asking");
+    for (const state of ["running", "blocked", "done", "canceled"] as const) {
+      expect(cardView(card, fakeWork("w", state, inSessionA, { landing: 4 }))).toBe("resolved");
     }
+  });
+
+  test("a card for an earlier landing is superseded, even while the work waits on you again", () => {
+    expect(cardView(card, fakeWork("w", "review", inSessionA, { landing: 9 }))).toBe("superseded");
+    expect(cardView(card, fakeWork("w", "review", inSessionA, { landing: 9, permission }))).toBe("superseded");
+    expect(cardView(card, fakeWork("w", "done", inSessionA, { landing: 9 }))).toBe("superseded");
+    expect(cardView(card, fakeWork("w", "review", inSessionA))).toBe("superseded");
+  });
+
+  test("a card left in a session the work has moved away from is superseded", () => {
+    expect(cardView(card, fakeWork("w", "review", inSessionB, { landing: 4 }))).toBe("superseded");
+    expect(cardView(card, fakeWork("w", "review", null, { landing: 4 }))).toBe("superseded");
+  });
+
+  test("a question is answered only in the card's own session, and only while it is still the worker", () => {
+    expect(answerTarget(card, fakeWork("w", "review", inSessionA, { landing: 4, permission }))).toBe("a1");
+    expect(answerTarget(card, fakeWork("w", "review", inSessionB, { landing: 4, permission }))).toBeNull();
+    expect(answerTarget(card, fakeWork("w", "review", inSessionA, { landing: 9, permission }))).toBeNull();
+    expect(answerTarget(card, fakeWork("w", "review", inSessionA, { landing: 4 }))).toBeNull();
+  });
+
+  test("a card stops changing once superseded or once its work is finished, and only then", () => {
+    expect(cardSettled(card, fakeWork("w", "review", inSessionA, { landing: 9 }))).toBe(true);
+    expect(cardSettled(card, fakeWork("w", "review", inSessionB, { landing: 4 }))).toBe(true);
+    expect(cardSettled(card, fakeWork("w", "done", inSessionA, { landing: 4 }))).toBe(true);
+    expect(cardSettled(card, fakeWork("w", "canceled", inSessionA, { landing: 4 }))).toBe(true);
+    expect(cardSettled(card, fakeWork("w", "review", inSessionA, { landing: 4 }))).toBe(false);
+    expect(cardSettled(card, fakeWork("w", "running", inSessionA, { landing: 4 }))).toBe(false);
+    expect(cardSettled(card, fakeWork("w", "blocked", inSessionA, { landing: 4 }))).toBe(false);
   });
 
   test("says how the work left the gate", () => {

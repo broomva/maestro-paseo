@@ -1,15 +1,14 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PluginServerContext } from "@getpaseo/plugin/server";
-import contribute from "../index.server";
+import { answerTarget, cardView } from "../client/gate-state";
 import type { MaestroConfig } from "../shared/contracts";
-import { GATE_CARD_KIND, GATE_CARD_VERSION } from "../shared/gate-card";
-import { Engine } from "./engine";
+import { GATE_CARD_KIND, GATE_CARD_VERSION, type GateCardData, GateCardSchema } from "../shared/gate-card";
+import { Engine, type EngineOptions } from "./engine";
 import type { WorkEvent } from "./events";
 import { fakePaseo } from "./fake-paseo";
-import { GateCards, landingOf } from "./gate-card";
+import { GateCards, landingOf, lastLanding } from "./gate-card";
 import type { Paseo } from "./runs";
 
 let clock = Date.parse("2026-09-29T09:00:00.000Z");
@@ -24,7 +23,7 @@ afterAll(async () => {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-async function setup() {
+async function setup(options: { landed?: EngineOptions["landed"] } = {}) {
   const root = await mkdtemp(join(tmpdir(), "maestro-gate-card-"));
   roots.push(root);
   const repo = join(root, "repo");
@@ -39,18 +38,18 @@ async function setup() {
   const logs: string[] = [];
   const log = (message: string) => logs.push(message);
   /** One plugin process: an engine and its gate cards. A second call is the plugin after a restart. */
-  const boot = () => {
+  const boot = (landed?: EngineOptions["landed"]) => {
     const cards = new GateCards(() => fake.paseo, log);
     return new Engine({
       now: () => new Date(clock),
       config: async () => config,
       log,
-      landed: (before, after) => cards.landed(before, after),
+      landed: landed ?? ((before, after) => cards.landed(before, after)),
     });
   };
-  const engine = boot();
-  const create = (extra: Partial<{ gate: "human" | "auto"; check: string }> = {}) =>
-    engine.create(fake.paseo, {
+  const engine = boot(options.landed);
+  const create = (extra: Partial<{ gate: "human" | "auto"; check: string }> = {}, on: Engine = engine) =>
+    on.create(fake.paseo, {
       title: "Persist run transcripts",
       brief: "Store it on the Run record.",
       repo,
@@ -93,10 +92,107 @@ describe("the gate card in the worker's timeline", () => {
           id: expect.stringContaining(item.id),
           kind: GATE_CARD_KIND,
           version: GATE_CARD_VERSION,
-          data: { workId: item.id },
+          data: { workId: item.id, landing: expect.any(Number), agentId: "agent-1" },
         },
       },
     ]);
+  });
+
+  test("the card names its landing, and the wire says which landing is current", async () => {
+    const { create, endTurn, fake, engine } = await setup();
+    const item = await create();
+    expect((await engine.get(item.id)).item.landing).toBeUndefined();
+    await endTurn();
+    await flush();
+    const card = GateCardSchema.parse(fake.appended[0]?.item.data);
+    expect(fake.appended[0]?.item.id).toBe(`${GATE_CARD_KIND}:${item.id}:${card.landing}`);
+    const landed = (await engine.get(item.id)).item;
+    expect(landed.landing).toBe(card.landing);
+    expect(cardView(card, landed)).toBe("deciding");
+    // Approved, the work has left the gate: the same card now says how, and offers nothing.
+    const done = await engine.verdict(fake.paseo, item.id, "approve", "");
+    expect(done.landing).toBe(card.landing);
+    expect(cardView(card, done)).toBe("resolved");
+  });
+
+  test("after Send back and a new landing, the older card offers no verbs and the new one does", async () => {
+    const { create, endTurn, fake, engine } = await setup();
+    const item = await create();
+    await endTurn();
+    await engine.verdict(fake.paseo, item.id, "revise", "Add a replay test");
+    clock += 60_000;
+    await endTurn();
+    await flush();
+    const [older, newer] = fake.appended.map((entry) => GateCardSchema.parse(entry.item.data)) as [
+      GateCardData,
+      GateCardData,
+    ];
+    const current = (await engine.get(item.id)).item;
+    expect(current.state).toBe("review");
+    expect(newer.landing).toBeGreaterThan(older.landing);
+    expect(cardView(older, current)).toBe("superseded");
+    expect(cardView(newer, current)).toBe("deciding");
+  });
+
+  test("a card in session A, after the work moved to session B, offers nothing and cannot answer B's question", async () => {
+    const { create, endTurn, fake, engine } = await setup();
+    const item = await create();
+    await endTurn();
+    await flush();
+    const cardA = GateCardSchema.parse(fake.appended[0]?.item.data);
+    expect(cardA.agentId).toBe("agent-1");
+    // Session A is continued after landing and its turn fails: the work is stuck, and a dispatch moves it to session B.
+    await engine.onTurnStarted({ id: "agent-1" });
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "crashed" } }, [], "t2");
+    expect((await engine.get(item.id)).item.state).toBe("blocked");
+    await engine.dispatch(fake.paseo, item.id);
+    await engine.onPermissionRequested(
+      { id: "agent-2" },
+      { id: "p1", name: "Bash", title: "Run a command", description: "rm -rf dist" },
+    );
+    const asking = (await engine.get(item.id)).item;
+    expect(asking).toMatchObject({ state: "review", worker: { agentId: "agent-2" }, permission: { requestId: "p1" } });
+    expect(cardView(cardA, asking)).toBe("superseded");
+    expect(answerTarget(cardA, asking)).toBeNull();
+    // Even a card naming B's current landing answers only for its own session.
+    expect(answerTarget({ landing: asking.landing ?? -1, agentId: "agent-1" }, asking)).toBeNull();
+    expect(answerTarget({ landing: asking.landing ?? -1, agentId: "agent-2" }, asking)).toBe("agent-2");
+  });
+
+  test("a landed callback that throws at once is logged, and the checks still start", async () => {
+    const { create, endTurn, settle, logs } = await setup({
+      landed: () => {
+        throw new Error("boom");
+      },
+    });
+    const item = await create({ check: "true" });
+    await endTurn();
+    await settle(item.id, "review");
+    expect(logs.some((line) => line.includes(`landing hook failed for ${item.id}: boom`))).toBe(true);
+  });
+
+  test("with checks, an append that never answers does not hold the checks run open", async () => {
+    const { create, endTurn, fake, engine, settle } = await setup();
+    const runs: Promise<void>[] = [];
+    const spy = engine as unknown as { runChecksFor: (...args: unknown[]) => Promise<void> };
+    const original = spy.runChecksFor.bind(engine);
+    spy.runChecksFor = (...args) => {
+      const run = original(...args);
+      runs.push(run);
+      return run;
+    };
+    fake.setAppend("hang");
+    const item = await create({ check: "true" });
+    await endTurn();
+    await settle(item.id, "review");
+    await flush();
+    expect(fake.appended).toHaveLength(1);
+    expect(runs).toHaveLength(1);
+    const finished = await Promise.race([
+      Promise.all(runs).then(() => "finished"),
+      new Promise((resolve) => setTimeout(() => resolve("held"), 500)),
+    ]);
+    expect(finished).toBe("finished");
   });
 
   test("a repeat of the same turn end adds no second card", async () => {
@@ -127,7 +223,7 @@ describe("the gate card in the worker's timeline", () => {
     await settle(item.id, "review");
     await flush();
     expect(fake.appended).toHaveLength(1);
-    expect(fake.appended[0]?.item.data).toEqual({ workId: item.id });
+    expect(fake.appended[0]?.item.data).toMatchObject({ workId: item.id, agentId: "agent-1" });
   });
 
   test("work that closes itself or gets stuck leaves no card", async () => {
@@ -248,6 +344,22 @@ describe("landingOf and GateCards", () => {
     expect(fake.appended.map((entry) => entry.item.id)).toEqual([`${GATE_CARD_KIND}:w1:2`, `${GATE_CARD_KIND}:w1:4`]);
   });
 
+  test("two reports of one landing at once still append once", async () => {
+    const fake = fakePaseo();
+    const { cards } = cardsWith(fake.paseo);
+    const before = work([bound]);
+    const after = work([bound, ended, toReview]);
+    await Promise.all([cards.landed(before, after), cards.landed(before, after)]);
+    expect(fake.appended).toHaveLength(1);
+    expect(fake.appended[0]?.item.data).toEqual({ workId: "w1", landing: 2, agentId: "agent-9" });
+  });
+
+  test("the latest landing is the last move into review, whatever came after it", () => {
+    expect(lastLanding(work([bound]).events)).toBeNull();
+    expect(lastLanding(work([bound, ended, toReview, ended, toBlocked]).events)).toBe(2);
+    expect(lastLanding(work([bound, ended, toReview, ended, toReview]).events)).toBe(4);
+  });
+
   test("work with no session has nowhere to put a card", async () => {
     const fake = fakePaseo();
     const { cards } = cardsWith(fake.paseo);
@@ -265,52 +377,4 @@ describe("landingOf and GateCards", () => {
     await expect(failing.cards.landed(work([bound]), work([bound, ended, toReview]))).resolves.toBeUndefined();
     expect(failing.logs).toEqual(["gate card for w1 not added: agent is not loaded"]);
   });
-});
-
-test("the plugin cards a landing through the client its hooks were handed", async () => {
-  const root = await mkdtemp(join(tmpdir(), "maestro-gate-card-plugin-"));
-  roots.push(root);
-  const repo = join(root, "repo");
-  await mkdir(repo);
-  const config = join(root, "config.json");
-  await writeFile(
-    config,
-    JSON.stringify({ workRoot: join(root, "work"), provider: "claude/test", modeId: null, isolation: "worktree" }),
-  );
-  const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
-  process.env.MAESTRO_PASEO_CONFIG = config;
-  process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
-  type Handler = (input: unknown, context: unknown) => unknown;
-  const handlers = new Map<string, Handler>();
-  const hooks = new Map<string, Handler>();
-  const host = {
-    handle: (contract: { name: string }, handler: Handler) => handlers.set(contract.name, handler),
-    on: (name: string, handler: Handler) => hooks.set(name, handler),
-  } as unknown as PluginServerContext;
-  const cleanup = contribute(host);
-  try {
-    const fake = fakePaseo();
-    const context = { paseo: fake.paseo, signal: new AbortController().signal };
-    const create = handlers.get("work.create");
-    const ended = hooks.get("agent.turn_ended");
-    if (!create || !ended) throw new Error("work.create or agent.turn_ended is not wired");
-    const { item } = (await create(
-      { title: "Wired", brief: "", repo, gate: "human", check: "", initiative: "", dispatch: true },
-      context,
-    )) as { item: { id: string } };
-    const agent = fake.agents.get("agent-1");
-    if (agent) agent.status = "idle";
-    await ended({ agent: { id: "agent-1" }, outcome: { kind: "completed" }, timeline: [], turnId: "t1" }, context);
-    await flush();
-    expect(fake.appended.map((entry) => entry.item.data)).toEqual([{ workId: item.id }]);
-  } finally {
-    await cleanup();
-    for (const [key, value] of [
-      ["MAESTRO_PASEO_CONFIG", saved.config],
-      ["MAESTRO_PASEO_SOCKET", saved.socket],
-    ] as const) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
 });

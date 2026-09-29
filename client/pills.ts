@@ -1,7 +1,7 @@
 // The composer pill: a session Maestro tracks says, beside its composer, where
 // its work stands in plain voice. Untracked sessions get no pill. Pure.
 
-import type { WorkItem } from "../shared/contracts";
+import type { Attention } from "../shared/contracts";
 import { type OrchState, PLAIN_VOICE } from "../shared/states";
 
 export type PillSpec = { workspaceId: string; agentId: string; workId: string; state: OrchState; title: string };
@@ -15,23 +15,18 @@ export function pillLabel(state: OrchState): string {
  * One pill per session that is some work's current worker, keyed by workspace
  * and agent: a pill is registered against both, so a session that moves
  * workspace is a new registration. Sessions with no known workspace are
- * skipped. The list comes attention first, so if two items name one session
- * the one that needs you wins.
+ * skipped. work.attention lists live work and work changed in the last day,
+ * attention first, so if two items name one session the one that needs you
+ * wins.
  */
-export function pillSpecs(items: readonly WorkItem[]): Map<string, PillSpec> {
+export function pillSpecs(sessions: readonly Attention["sessions"][number][]): Map<string, PillSpec> {
   const specs = new Map<string, PillSpec>();
-  for (const item of items) {
-    const worker = item.worker;
-    if (!worker?.workspaceId) continue;
-    const key = `${worker.workspaceId}/${worker.agentId}`;
+  for (const session of sessions) {
+    const { workspaceId, agentId } = session;
+    if (!workspaceId) continue;
+    const key = `${workspaceId}/${agentId}`;
     if (specs.has(key)) continue;
-    specs.set(key, {
-      workspaceId: worker.workspaceId,
-      agentId: worker.agentId,
-      workId: item.id,
-      state: item.state,
-      title: item.title,
-    });
+    specs.set(key, { workspaceId, agentId, workId: session.workId, state: session.state, title: session.title });
   }
   return specs;
 }

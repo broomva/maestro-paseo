@@ -203,6 +203,13 @@ export class Engine {
     return `${agentId}:${ts}:${process.pid}.${this.tokens}`;
   }
 
+  /** Tells `landed` about a change without letting it throw into, or hold up, the caller. */
+  private tellLanded(before: StoredWork, after: StoredWork): void {
+    void Promise.resolve()
+      .then(() => this.landed(before, after))
+      .catch((error) => this.log(`landing hook failed for ${after.contract.id}: ${(error as Error).message}`));
+  }
+
   private note(text: string): WorkEvent {
     return { ts: this.stamp(), type: "note", actor: "maestro", text };
   }
@@ -839,7 +846,7 @@ export class Engine {
       },
       item.dir,
     );
-    void this.landed(item, updated);
+    this.tellLanded(item, updated);
     if (token) void this.runChecksFor(store, updated, token);
   }
 
@@ -951,7 +958,7 @@ export class Engine {
         },
         item.dir,
       );
-      void this.landed(item, after);
+      this.tellLanded(item, after);
     } catch (error) {
       this.log(`checks failed to run for ${item.contract.id}: ${(error as Error).message}`);
     } finally {

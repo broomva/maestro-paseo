@@ -11,6 +11,15 @@ import { z } from "zod";
 export const GATE_CARD_KIND = "maestro-gate";
 export const GATE_CARD_VERSION = 1;
 
-/** Only the work id: the card reads the item live, so it never shows a stale state. */
-export const GateCardSchema = z.object({ workId: z.string() });
+/**
+ * The work, which landing the card was left for (the index of the state event
+ * that moved it into review) and the session it was left in. The card reads
+ * the item live; only the card for the current landing, in the current
+ * worker's session, offers a verb.
+ */
+export const GateCardSchema = z.object({
+  workId: z.string(),
+  landing: z.number().int().nonnegative(),
+  agentId: z.string(),
+});
 export type GateCardData = z.infer<typeof GateCardSchema>;

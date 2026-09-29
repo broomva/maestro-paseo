@@ -27,6 +27,7 @@ export function fakePaseo() {
   const timelines = new Map<string, unknown[]>();
   const timelineEnd = new Map<string, string>();
   const appended: Array<{ agentId: string; item: Record<string, unknown> }> = [];
+  const refreshed: string[] = [];
   let appendMode: "ok" | "throw" | "hang" = "ok";
   let failSend = false;
   let n = 0;
@@ -71,6 +72,7 @@ export function fakePaseo() {
     agents: {
       ref: (id: string) => ({
         refresh: async () => {
+          refreshed.push(id);
           const agent = agents.get(id);
           return agent ? { agent, project: null } : null;
         },
@@ -109,6 +111,8 @@ export function fakePaseo() {
     timelineEnd,
     /** Every timeline.append call, recorded before it resolves, rejects or hangs. */
     appended,
+    /** Every agents.ref(id).refresh() call, by agent id: the reconcile's round trips. */
+    refreshed,
     setAppend: (mode: "ok" | "throw" | "hang") => {
       appendMode = mode;
     },

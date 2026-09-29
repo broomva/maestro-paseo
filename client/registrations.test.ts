@@ -8,11 +8,12 @@ function recorder(refuse: Set<string> = new Set()) {
   const registrations = new Registrations<Spec, { key: string; remove(): void }>(
     {
       add: (key, spec) => {
-        if (refuse.has(key)) throw new Error(`host refused ${key}`);
+        if (refuse.has(`add ${key}`)) throw new Error(`host refused ${key}`);
         calls.push(`add ${key} ${spec.count}`);
         return { key, remove: () => calls.push(`remove ${key}`) };
       },
       update: (handle, spec) => {
+        if (refuse.has(`update ${handle.key}`)) throw new Error(`host refused ${handle.key}`);
         calls.push(`update ${handle.key} ${spec.count}`);
       },
     },
@@ -53,24 +54,44 @@ describe("Registrations", () => {
     expect(calls).toEqual(["add a 3"]);
   });
 
-  test("a refused add is logged, costs no other registration, and is tried again next time", () => {
-    const refuse = new Set(["bad"]);
+  test("a refused add is logged once while it lasts, costs no other registration, and is tried again", () => {
+    const refuse = new Set(["add bad"]);
+    const { registrations, calls } = recorder(refuse);
+    const both = () =>
+      specs([
+        ["bad", 1],
+        ["good", 1],
+      ]);
+    registrations.sync(both());
+    registrations.sync(both());
+    registrations.sync(both());
+    expect(calls).toEqual(["log Could not add bad: host refused bad", "add good 1"]);
+    refuse.clear();
+    registrations.sync(both());
+    expect(calls.at(-1)).toBe("add bad 1");
+  });
+
+  test("a refused update is logged once, leaves the others alone, and is tried again until it takes", () => {
+    const refuse = new Set<string>();
     const { registrations, calls } = recorder(refuse);
     registrations.sync(
       specs([
-        ["bad", 1],
-        ["good", 1],
+        ["a", 1],
+        ["b", 1],
       ]),
     );
-    expect(calls).toEqual(["log Could not add bad: host refused bad", "add good 1"]);
-    refuse.clear();
-    registrations.sync(
+    refuse.add("update a");
+    const next = () =>
       specs([
-        ["bad", 1],
-        ["good", 1],
-      ]),
-    );
-    expect(calls.at(-1)).toBe("add bad 1");
+        ["a", 2],
+        ["b", 2],
+      ]);
+    registrations.sync(next());
+    registrations.sync(next());
+    expect(calls.slice(2)).toEqual(["log Could not update a: host refused a", "update b 2"]);
+    refuse.clear();
+    registrations.sync(next());
+    expect(calls.at(-1)).toBe("update a 2");
   });
 
   test("clear removes every registration", () => {

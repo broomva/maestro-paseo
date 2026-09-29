@@ -68,6 +68,8 @@ export const WorkItemSchema = z.object({
   look: LookSchema.nullable(),
   permission: PermissionSchema.nullable(),
   checks: z.array(CheckSpecSchema),
+  /** The latest move into review, as its index in the event log; kept after the work leaves review. */
+  landing: z.number().int().optional(),
 });
 export type WorkItem = z.infer<typeof WorkItemSchema>;
 
@@ -181,3 +183,27 @@ export const setConfig = defineRpc({
   input: ConfigSchema,
   output: ConfigSchema,
 });
+
+/**
+ * What the header count and the composer pills show, read from the work files
+ * alone: it never reconciles against sessions, so polling it costs no agent
+ * round trips. `waiting` is the work at your gate or stuck; `sessions` are the
+ * workers of work that is live or changed in the last day.
+ */
+export const attentionWork = defineRpc({
+  name: "work.attention",
+  input: z.object({}),
+  output: z.object({
+    waiting: z.array(z.object({ id: z.string(), group: z.enum(GROUP_ORDER) })),
+    sessions: z.array(
+      z.object({
+        workId: z.string(),
+        title: z.string(),
+        state: z.enum(ORCH_STATES),
+        agentId: z.string(),
+        workspaceId: z.string().nullable(),
+      }),
+    ),
+  }),
+});
+export type Attention = z.infer<typeof attentionWork.output>;

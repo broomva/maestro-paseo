@@ -1,43 +1,62 @@
 // The approval card Maestro leaves in a worker's timeline when its run lands
-// at your gate (server/gate-card.ts appends it). It reads the work live: while
-// the work waits on you it carries the look and the verbs, and once the work
-// has left the gate it says how, with no verb left to press.
+// at your gate (server/gate-card.ts appends it). It reads the work live. The
+// card for the current landing, in the current worker's session, carries the
+// look and the verbs while the work waits on you, and says how it left the
+// gate afterwards. Any other card says it was superseded and offers nothing
+// (client/gate-state.ts decides which).
 
 import type { PluginTheme } from "@getpaseo/plugin";
-import { type PluginTimelineItemProps, usePaseo } from "@getpaseo/plugin/client";
+import { type PluginTimelineItemProps, usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
+import { useQuery } from "@tanstack/react-query";
 import { type ComponentType, type ReactNode, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
-import type { Look, WorkItem } from "../shared/contracts";
+import { getWork, type Look, type WorkItem } from "../shared/contracts";
 import type { GateCardData } from "../shared/gate-card";
 import { errorText } from "./format";
-import { gateMode, resolution } from "./gate-state";
-import { useVerbs, useWorkDetail } from "./hooks";
+import { answerTarget, cardSettled, cardView, resolution, SUPERSEDED } from "./gate-state";
+import { useVerbs } from "./hooks";
 import type { MaestroIntent } from "./intent";
 import { Button, Card, Notice, radius, StateLabel, space, useText } from "./ui";
 
 type Open = (intent: MaestroIntent) => void;
 
+/**
+ * The work behind a card, polled like the surfaces poll (and on the same cache
+ * key, so a verb anywhere refreshes it) until the card can no longer change.
+ */
+function useCardWork(card: GateCardData) {
+  const get = useRpc(getWork);
+  return useQuery({
+    queryKey: ["maestro", "item", card.workId],
+    queryFn: () => get({ id: card.workId }),
+    refetchInterval: (query) => {
+      const item = query.state.data?.item;
+      return item && cardSettled(card, item) ? false : 4000;
+    },
+  });
+}
+
 /** The renderer, bound to how this plugin opens Maestro (timeline items get no navigation). */
 export function createGateCard(open: Open): ComponentType<PluginTimelineItemProps<GateCardData>> {
   function MaestroGateCard({ item, theme, layout }: PluginTimelineItemProps<GateCardData>) {
-    return <GateCard workId={item.data.workId} theme={theme} compact={layout.compact} open={open} />;
+    return <GateCard card={item.data} theme={theme} compact={layout.compact} open={open} />;
   }
   return MaestroGateCard;
 }
 
 function GateCard({
-  workId,
+  card,
   theme,
   compact,
   open,
 }: {
-  workId: string;
+  card: GateCardData;
   theme: PluginTheme;
   compact: boolean;
   open: Open;
 }) {
-  const detail = useWorkDetail(workId);
+  const detail = useCardWork(card);
   const text = useText(theme);
   return (
     <Card theme={theme} style={{ marginVertical: space[2], maxWidth: 560 }}>
@@ -54,25 +73,28 @@ function GateCard({
           </View>
         </View>
       ) : (
-        <GateBody item={detail.data.item} theme={theme} compact={compact} open={open} />
+        <GateBody card={card} item={detail.data.item} theme={theme} compact={compact} open={open} />
       )}
     </Card>
   );
 }
 
 function GateBody({
+  card,
   item,
   theme,
   compact,
   open,
 }: {
+  card: GateCardData;
   item: WorkItem;
   theme: PluginTheme;
   compact: boolean;
   open: Open;
 }) {
   const text = useText(theme);
-  const mode = gateMode(item);
+  const view = cardView(card, item);
+  const target = answerTarget(card, item);
   const openInMaestro = (
     <Button
       theme={theme}
@@ -86,18 +108,18 @@ function GateBody({
   return (
     <View style={{ gap: space[3] }}>
       <View style={{ gap: space[1] }}>
-        <StateLabel theme={theme} state={item.state} />
+        {view === "superseded" ? null : <StateLabel theme={theme} state={item.state} />}
         <Text style={[text.body, { fontWeight: "600" }]} numberOfLines={2}>
           {item.title}
         </Text>
       </View>
-      {mode === "asking" ? (
-        <Asking item={item} theme={theme} compact={compact} after={openInMaestro} />
-      ) : mode === "deciding" ? (
+      {view === "asking" && target ? (
+        <Asking item={item} target={target} theme={theme} compact={compact} after={openInMaestro} />
+      ) : view === "deciding" ? (
         <Deciding item={item} theme={theme} compact={compact} after={openInMaestro} />
       ) : (
         <View style={{ gap: space[2] }}>
-          <Text style={text.muted}>{resolution(item)}</Text>
+          <Text style={text.muted}>{view === "superseded" ? SUPERSEDED : resolution(item)}</Text>
           <View style={{ flexDirection: "row" }}>{openInMaestro}</View>
         </View>
       )}
@@ -227,13 +249,16 @@ function Deciding({
   );
 }
 
+/** Answers the question for `target`, the card's own session (answerTarget checked it is still the worker's). */
 function Asking({
   item,
+  target,
   theme,
   compact,
   after,
 }: {
   item: WorkItem;
+  target: string;
   theme: PluginTheme;
   compact: boolean;
   after: ReactNode;
@@ -243,13 +268,11 @@ function Asking({
   const text = useText(theme);
   const [answering, setAnswering] = useState(false);
   const permission = item.permission;
-  const worker = item.worker;
   if (!permission) return null;
   const answer = async (allow: boolean) => {
-    if (!worker) return;
     setAnswering(true);
     try {
-      await paseo.agents.ref(worker.agentId).respondToPermission({
+      await paseo.agents.ref(target).respondToPermission({
         requestId: permission.requestId,
         response: allow ? { behavior: "allow" } : { behavior: "deny", message: "Declined from Maestro" },
       });
@@ -272,17 +295,10 @@ function Asking({
           variant="primary"
           label="Allow"
           busy={answering}
-          disabled={!worker}
           compact={compact}
           onPress={() => void answer(true)}
         />
-        <Button
-          theme={theme}
-          label="Deny"
-          disabled={answering || !worker}
-          compact={compact}
-          onPress={() => void answer(false)}
-        />
+        <Button theme={theme} label="Deny" disabled={answering} compact={compact} onPress={() => void answer(false)} />
         {after}
       </View>
     </View>

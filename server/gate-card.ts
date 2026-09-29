@@ -1,18 +1,29 @@
 // When a run lands at your gate, Maestro leaves an approval card in the
 // worker's own timeline, so the verdict can be given where the work happened.
 //
-// The card is advisory. The engine calls `landed` after the state change and
+// The card is advisory. The engine tells `landed` after the state change and
 // its receipt are written, and does not wait for it: an append that fails or
 // hangs is logged and never touches the landing. Each landing is carded once.
 // A landing is the state event that moved the work into review, named by its
-// place in the append-only event log, which never changes.
+// place in the append-only event log, which never changes. The wire carries
+// the latest one (`lastLanding`), so a card can tell whether it is current.
 
 import { GATE_CARD_KIND, GATE_CARD_VERSION, type GateCardData } from "../shared/gate-card";
-import { workerOf } from "./events";
+import { type WorkEvent, workerOf } from "./events";
 import type { Paseo } from "./runs";
 import type { StoredWork } from "./store";
 
 type Snapshot = Pick<StoredWork, "contract" | "events">;
+
+const isLanding = (event: WorkEvent | undefined): boolean => event?.type === "state" && event.to === "review";
+
+/** The index of the latest move into review, or null if the work never landed. */
+export function lastLanding(events: readonly WorkEvent[]): number | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (isLanding(events[index])) return index;
+  }
+  return null;
+}
 
 /**
  * The landing `after` records that `before` had not seen, as its index in the
@@ -23,8 +34,7 @@ type Snapshot = Pick<StoredWork, "contract" | "events">;
  */
 export function landingOf(before: Pick<StoredWork, "events">, after: Pick<StoredWork, "events">): number | null {
   const index = after.events.length - 1;
-  const last = after.events[index];
-  if (last?.type !== "state" || last.to !== "review") return null;
+  if (!isLanding(after.events[index])) return null;
   if (index < before.events.length) return null;
   return index;
 }
@@ -43,13 +53,14 @@ export class GateCards {
     const id = after.contract.id;
     const landing = landingOf(before, after);
     if (landing === null || landing <= (this.carded.get(id) ?? -1)) return;
+    // Claimed before the first await, so two reports of one landing at once still append once.
     this.carded.set(id, landing);
     const agentId = workerOf(after.events)?.agentId;
     if (!agentId) return;
     try {
       const paseo = this.paseo();
       if (!paseo) throw new Error("Maestro has no connection to Paseo yet");
-      const data: GateCardData = { workId: id };
+      const data: GateCardData = { workId: id, landing, agentId };
       await paseo.agents.ref(agentId).timeline.append({
         type: "plugin",
         id: `${GATE_CARD_KIND}:${id}:${landing}`,
