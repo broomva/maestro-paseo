@@ -5,10 +5,13 @@ import {
   parseWorkDoc,
   readChecks,
   readContract,
+  readFeatures,
   renderWorkDoc,
   setFields,
+  TITLE_MAX,
   titleOf,
   WorkFileError,
+  workTitle,
 } from "./frontmatter";
 
 const base = {
@@ -65,5 +68,87 @@ describe("_work.md", () => {
     expect(checks[0]).toEqual({ name: "unit", run: "bun test", timeoutS: 1800, required: true });
     expect(checks[1]).toEqual({ name: "lint", run: "biome ci", timeoutS: 600, required: false });
     expect(() => readChecks([{ name: "x" }])).toThrow(WorkFileError);
+  });
+});
+
+describe("how runs start, as the work chose", () => {
+  test("every run key round-trips; the file says it in plain keys", () => {
+    const source = newWorkSource({
+      ...base,
+      run: {
+        provider: "codex/gpt-5.5",
+        isolation: "directory",
+        modeId: "full-access",
+        thinkingOptionId: "high",
+        featureValues: { fast: true, plan: false, effort: "max", budget: 3, tier: null },
+      },
+    });
+    expect(source).toContain("provider: codex/gpt-5.5\n");
+    expect(source).toContain("isolation: directory\n");
+    expect(source).toContain("mode: full-access\n");
+    expect(source).toContain("thinking: high\n");
+    const contract = readContract(parseWorkDoc(source));
+    expect(contract).toMatchObject({
+      provider: "codex/gpt-5.5",
+      isolation: "directory",
+      modeId: "full-access",
+      thinkingOptionId: "high",
+      featureValues: { fast: true, plan: false, effort: "max", budget: 3, tier: null },
+    });
+  });
+
+  test("choices not made are not written, and read back as Settings (null)", () => {
+    const source = newWorkSource({ ...base, run: { provider: " ", modeId: "", featureValues: {} } });
+    for (const key of ["provider:", "isolation:", "mode:", "thinking:", "features:"]) {
+      expect(source).not.toContain(key);
+    }
+    expect(readContract(parseWorkDoc(source))).toMatchObject({
+      provider: null,
+      isolation: null,
+      modeId: null,
+      thinkingOptionId: null,
+      featureValues: null,
+    });
+    expect(readContract(parseWorkDoc(newWorkSource(base))).isolation).toBeNull();
+  });
+
+  test("a hand-edited isolation or features block that does not fit is an error, not a silent default", () => {
+    const file = (extra: string) => `---\nid: a\nstate: proposed\ngate: human\n${extra}\n---\n`;
+    expect(() => readContract(parseWorkDoc(file("isolation: sandbox")))).toThrow("unknown isolation");
+    expect(readContract(parseWorkDoc(file("isolation: worktree"))).isolation).toBe("worktree");
+    expect(() => readContract(parseWorkDoc(file("features: [fast]")))).toThrow("features must be a mapping");
+    expect(() => readContract(parseWorkDoc(file("features:\n  fast:\n    on: true")))).toThrow("features.fast");
+    expect(() => readFeatures({ when: new Date() })).toThrow(WorkFileError);
+    expect(() => readFeatures("fast")).toThrow(WorkFileError);
+    expect(readFeatures({})).toBeNull();
+  });
+});
+
+describe("the work's name", () => {
+  test("a written title wins, on one line", () => {
+    expect(workTitle("  Persist   run\ntranscripts ", "Something else")).toBe("Persist run transcripts");
+  });
+
+  test("a blank title takes the brief's first non-empty line, without a heading marker", () => {
+    expect(workTitle("", "\n\n  Store the transcript on each run.\nDone when it renders.")).toBe(
+      "Store the transcript on each run.",
+    );
+    expect(workTitle(undefined, "## Trim the cache\nbody")).toBe("Trim the cache");
+    expect(workTitle("   ", "#hashtag first")).toBe("#hashtag first");
+  });
+
+  test("a long first line is clipped at a word, near the limit", () => {
+    const line = `${"word ".repeat(40)}end`;
+    const title = workTitle("", line) ?? "";
+    expect(title.length).toBeLessThanOrEqual(TITLE_MAX);
+    expect(title.endsWith("word\u2026")).toBe(true);
+    const unbroken = "x".repeat(200);
+    expect(workTitle("", unbroken)).toBe(`${"x".repeat(TITLE_MAX - 1)}\u2026`);
+    expect(workTitle("", "x".repeat(TITLE_MAX))).toBe("x".repeat(TITLE_MAX));
+  });
+
+  test("nothing to name it by is null", () => {
+    expect(workTitle("", "")).toBeNull();
+    expect(workTitle("  ", " \n\t\n # \n")).toBeNull();
   });
 });

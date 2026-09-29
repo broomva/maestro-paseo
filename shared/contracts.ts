@@ -149,10 +149,33 @@ export const getWork = defineRpc({
   }),
 });
 
+export type Isolation = (typeof ISOLATIONS)[number];
+
+/** A provider feature's value: a toggle is a boolean, a select is an option id or null. */
+export const FeatureValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+export type FeatureValue = z.infer<typeof FeatureValueSchema>;
+export const FeatureValuesSchema = z.record(z.string().min(1), FeatureValueSchema);
+export type FeatureValues = z.infer<typeof FeatureValuesSchema>;
+
+/**
+ * How one work item's runs start, chosen in the composer. Every field is
+ * optional: an absent one means the Settings value at dispatch time.
+ */
+export const RunChoicesSchema = z.object({
+  isolation: z.enum(ISOLATIONS).optional(),
+  /** `provider` or `provider/model`, as Settings takes it. */
+  provider: z.string().trim().min(1).optional(),
+  modeId: z.string().trim().min(1).optional(),
+  thinkingOptionId: z.string().trim().min(1).optional(),
+  featureValues: FeatureValuesSchema.optional(),
+});
+export type RunChoices = z.infer<typeof RunChoicesSchema>;
+
 export const createWork = defineRpc({
   name: "work.create",
-  input: z.object({
-    title: z.string().trim().min(1, "Give the work a title"),
+  input: RunChoicesSchema.extend({
+    /** Optional: a blank title takes the brief's first line. */
+    title: z.string().optional(),
     brief: z.string(),
     repo: z.string().trim().min(1, "Choose where the work runs"),
     gate: z.enum(GATE_MODES),

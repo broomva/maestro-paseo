@@ -64,11 +64,35 @@ export function composePrompt(item: StoredWork, branch: string | null): string {
   return lines.join("\n");
 }
 
+/** `claude/opus` is a `claude` run. */
+export function providerFamily(selection: string): string {
+  return selection.trim().split("/")[0] ?? "";
+}
+
+/**
+ * How this item's runs start: what the work chose, else Settings. A mode is a
+ * provider's own, so the Settings mode applies only while the run uses the
+ * Settings provider; thinking and features are the work's alone.
+ */
+export function runSettings(config: MaestroConfig, item: StoredWork) {
+  const contract = item.contract;
+  const selection = contract.provider ?? config.provider;
+  const sameProvider = providerFamily(selection) === providerFamily(config.provider);
+  return {
+    selection,
+    isolation: contract.isolation ?? config.isolation,
+    modeId: contract.modeId ?? (sameProvider ? config.modeId : null),
+    thinkingOptionId: contract.thinkingOptionId,
+    featureValues: contract.featureValues,
+  };
+}
+
 export async function startRun(paseo: Paseo, config: MaestroConfig, item: StoredWork): Promise<Worker> {
   const repo = item.contract.repo;
   if (!repo) throw new DispatchError("This work has no repository to run in. Add a repo: line to _work.md.");
-  const provider = await resolveProvider(paseo, item.contract.provider ?? config.provider, repo);
-  const branch = config.isolation === "worktree" ? runBranch() : null;
+  const run = runSettings(config, item);
+  const provider = await resolveProvider(paseo, run.selection, repo);
+  const branch = run.isolation === "worktree" ? runBranch() : null;
   const workspace = branch
     ? await paseo.workspaces.create({
         title: item.title,
@@ -82,7 +106,12 @@ export async function startRun(paseo: Paseo, config: MaestroConfig, item: Stored
       })
     : await paseo.workspaces.open(repo);
   const agent = await workspace.agents.create({
-    config: { provider, ...(config.modeId ? { modeId: config.modeId } : {}) },
+    config: {
+      provider,
+      ...(run.modeId ? { modeId: run.modeId } : {}),
+      ...(run.thinkingOptionId ? { thinkingOptionId: run.thinkingOptionId } : {}),
+      ...(run.featureValues ? { featureValues: { ...run.featureValues } } : {}),
+    },
     title: item.title,
     prompt: composePrompt(item, branch),
     labels: { [WORK_LABEL]: item.contract.id },

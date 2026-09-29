@@ -871,3 +871,101 @@ test("a read while a change is in flight returns the finished change, never half
   expect(read.state).toBe("review");
   expect(events.at(-1)?.detail).toBe("held open");
 });
+
+describe("the composer's choices", () => {
+  const draft = (repo: string) => ({
+    brief: "Store the transcript on each run.\n\nDone when the detail pane renders it.",
+    repo,
+    gate: "human" as const,
+    check: "",
+    initiative: "",
+    dispatch: false,
+  });
+
+  test("a blank title takes the brief's first line; the brief stays whole", async () => {
+    const { engine, fake, repo } = await setup();
+    const item = await engine.create(fake.paseo, { ...draft(repo), title: "  " });
+    expect(item.title).toBe("Store the transcript on each run.");
+    expect(item.path).toBe("store-the-transcript-on-each-run");
+    expect((await engine.get(item.id)).brief).toBe(
+      "Store the transcript on each run.\n\nDone when the detail pane renders it.",
+    );
+    const untitled = await engine.create(fake.paseo, draft(repo));
+    expect(untitled.title).toBe("Store the transcript on each run.");
+  });
+
+  test("no brief and no title is refused before anything is written", async () => {
+    const { engine, fake, repo, config } = await setup();
+    await expect(engine.create(fake.paseo, { ...draft(repo), title: "", brief: " \n " })).rejects.toThrow(
+      "Write a brief, or at least a title",
+    );
+    expect((await new WorkStore(config.workRoot).scan()).items).toHaveLength(0);
+  });
+
+  test("a dispatch starts the agent the way the work chose, over Settings", async () => {
+    const { engine, fake, repo, config } = await setup({ modeId: "bypassPermissions", isolation: "worktree" });
+    const item = await engine.create(fake.paseo, {
+      ...draft(repo),
+      title: "Chosen",
+      provider: "codex/gpt-5.5",
+      isolation: "directory",
+      modeId: "full-access",
+      thinkingOptionId: "high",
+      featureValues: { fast: true, plan: false },
+      dispatch: true,
+    });
+    const options = fake.created[0] as { config: Record<string, unknown> };
+    expect(options.config).toEqual({
+      provider: "codex/gpt-5.5",
+      modeId: "full-access",
+      thinkingOptionId: "high",
+      featureValues: { fast: true, plan: false },
+    });
+    expect(item.worker).toMatchObject({ provider: "codex/gpt-5.5", branch: null, cwd: repo });
+    const file = await readFile(join(config.workRoot, item.path, WORK_FILE), "utf8");
+    expect(file).toContain("isolation: directory");
+    expect(file).toContain("mode: full-access");
+  });
+
+  test("what the work did not choose comes from Settings at dispatch time", async () => {
+    const { engine, fake, repo, config } = await setup();
+    const item = await engine.create(fake.paseo, { ...draft(repo), title: "Defaults", thinkingOptionId: "low" });
+    config.modeId = "bypassPermissions";
+    config.isolation = "worktree";
+    const running = await engine.dispatch(fake.paseo, item.id);
+    const options = fake.created[0] as { config: Record<string, unknown> };
+    expect(options.config).toEqual({ provider: "claude/sonnet", modeId: "bypassPermissions", thinkingOptionId: "low" });
+    expect(running.worker?.branch).toMatch(/^run\//);
+  });
+
+  test("a Settings mode belongs to the Settings provider; work on another provider does not inherit it", async () => {
+    const { engine, fake, repo } = await setup({ provider: "claude", modeId: "bypassPermissions" });
+    await engine.create(fake.paseo, { ...draft(repo), title: "Codex", provider: "codex/gpt-5.5", dispatch: true });
+    await engine.create(fake.paseo, { ...draft(repo), title: "Opus", provider: "claude/opus", dispatch: true });
+    const configs = fake.created.map((options) => (options as { config: Record<string, unknown> }).config);
+    expect(configs).toEqual([{ provider: "codex/gpt-5.5" }, { provider: "claude/opus", modeId: "bypassPermissions" }]);
+  });
+
+  test("work a session creates carries none of the run choices: how runs start stays yours", async () => {
+    const { engine, fake, repo, config } = await setup();
+    const item = await engine.create(
+      fake.paseo,
+      {
+        ...draft(repo),
+        title: "From a session",
+        provider: "codex/gpt-5.5",
+        isolation: "directory",
+        modeId: "bypassPermissions",
+        thinkingOptionId: "max",
+        featureValues: { fast: true },
+        dispatch: true,
+      },
+      { actor: "agent", by: "session-1" },
+    );
+    const file = await readFile(join(config.workRoot, item.path, WORK_FILE), "utf8");
+    for (const key of ["provider:", "isolation:", "mode:", "thinking:", "features:"]) expect(file).not.toContain(key);
+    const options = fake.created[0] as { config: Record<string, unknown> };
+    expect(options.config).toEqual({ provider: "claude/sonnet" });
+    expect(item.worker?.branch).toMatch(/^run\//);
+  });
+});

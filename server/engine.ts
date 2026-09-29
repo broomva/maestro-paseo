@@ -13,7 +13,7 @@
 
 import { isAbsolute } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
-import type { MaestroConfig, WorkItem } from "../shared/contracts";
+import type { MaestroConfig, RunChoices, WorkItem } from "../shared/contracts";
 import { GROUP_ORDER, isDispatchable, isTerminal, landingState, type Verdict } from "../shared/states";
 import { runChecks } from "./checks";
 import { expandHome, loadConfig } from "./config";
@@ -31,7 +31,7 @@ import {
   type WorkEvent,
   workerOf,
 } from "./events";
-import { briefOf } from "./frontmatter";
+import { briefOf, type RunKeys, workTitle } from "./frontmatter";
 import { describePermission, type PermissionLike } from "./permissions";
 import { type Paseo, startRun } from "./runs";
 import { type Mutation, placement, type StoredWork, WorkStore } from "./store";
@@ -132,6 +132,29 @@ export interface EngineOptions {
   landed?: (before: StoredWork, after: StoredWork) => unknown;
   config?: () => Promise<MaestroConfig>;
   log?: (message: string) => void;
+}
+
+/** What work.create takes: the work, where it runs, how it is judged, and optionally how its runs start. */
+export type CreateInput = RunChoices & {
+  /** Blank takes the brief's first line. */
+  title?: string;
+  brief: string;
+  repo: string;
+  gate: "human" | "auto";
+  check: string;
+  initiative: string;
+  dispatch: boolean;
+};
+
+/** Only the run choices that were made: an absent one means Settings at dispatch. */
+function runKeys(input: RunChoices): RunKeys {
+  const keys: RunKeys = {};
+  if (input.provider?.trim()) keys.provider = input.provider.trim();
+  if (input.isolation) keys.isolation = input.isolation;
+  if (input.modeId?.trim()) keys.modeId = input.modeId.trim();
+  if (input.thinkingOptionId?.trim()) keys.thinkingOptionId = input.thinkingOptionId.trim();
+  if (input.featureValues && Object.keys(input.featureValues).length > 0) keys.featureValues = input.featureValues;
+  return keys;
 }
 
 /**
@@ -324,19 +347,9 @@ export class Engine {
 
   // ── Human verbs ────────────────────────────────────────────────────────────
 
-  async create(
-    paseo: Paseo | null,
-    input: {
-      title: string;
-      brief: string;
-      repo: string;
-      gate: "human" | "auto";
-      check: string;
-      initiative: string;
-      dispatch: boolean;
-    },
-    origin: Origin = BY_HUMAN,
-  ): Promise<WorkItem> {
+  async create(paseo: Paseo | null, input: CreateInput, origin: Origin = BY_HUMAN): Promise<WorkItem> {
+    const title = workTitle(input.title, input.brief);
+    if (!title) throw new UserError("Write a brief, or at least a title.");
     if (input.gate === "auto" && !input.check.trim()) {
       throw new UserError("Letting checks decide needs a check command.");
     }
@@ -346,7 +359,19 @@ export class Engine {
     const info = await stat(repo).catch(() => null);
     if (!info?.isDirectory()) throw new UserError(`No folder at ${repo}.`);
     const { store } = await this.store();
-    const item = await store.create({ ...input, repo, now: this.now(), origin });
+    const item = await store.create({
+      title,
+      brief: input.brief,
+      repo,
+      gate: input.gate,
+      check: input.check,
+      initiative: input.initiative,
+      now: this.now(),
+      origin,
+      // How runs start is yours alone: work a session creates runs as Settings say, so no
+      // session can file work that dispatches with a mode that skips permissions.
+      run: origin.actor === "agent" ? undefined : runKeys(input),
+    });
     if (input.dispatch) {
       if (!paseo) throw new UserError(`Created ${item.contract.id}, but it cannot be dispatched yet: ${NO_HANDLE}`);
       return this.dispatch(paseo, item.contract.id, origin);

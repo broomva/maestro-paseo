@@ -12,6 +12,7 @@ import {
   type Contract,
   newWorkSource,
   parseWorkDoc,
+  type RunKeys,
   readContract,
   renderWorkDoc,
   setFields,
@@ -230,6 +231,8 @@ export class WorkStore {
     state?: OrchState;
     now?: Date;
     origin?: Origin;
+    /** How its runs start; absent keys mean Settings at dispatch. */
+    run?: RunKeys;
   }): Promise<StoredWork> {
     const now = input.now ?? this.now();
     const parent = input.initiative.trim() ? join(this.root, slugify(input.initiative)) : this.root;
@@ -251,6 +254,7 @@ export class WorkStore {
         repo: input.repo,
         check: input.check,
         date: now.toISOString().slice(0, 10),
+        run: input.run,
       }),
       "utf8",
     );
