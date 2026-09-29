@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeWork } from "../client/fake-work";
 import { attentionOf, RECENT_MS } from "./attention";
+import { defaultConfig } from "./config";
 import { Engine } from "./engine";
 import { fakePaseo } from "./fake-paseo";
 
@@ -59,7 +60,13 @@ test("a list reconciles sessions at most once every 10 s, however often it is ca
   let clock = Date.parse("2026-09-29T09:00:00.000Z");
   const engine = new Engine({
     now: () => new Date(clock),
-    config: async () => ({ workRoot: join(root, "work"), provider: "claude", modeId: null, isolation: "worktree" }),
+    config: async () => ({
+      ...defaultConfig(),
+      workRoot: join(root, "work"),
+      provider: "claude",
+      modeId: null,
+      isolation: "worktree",
+    }),
     log: () => undefined,
   });
   const fake = fakePaseo();

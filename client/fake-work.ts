@@ -31,6 +31,7 @@ export function fakeWork(
     look: null,
     permission: null,
     checks: [],
+    pending: null,
     ...extra,
   };
 }
