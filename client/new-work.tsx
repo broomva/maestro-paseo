@@ -403,6 +403,7 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
         // that holds the menu and over everything else; on the web it reaches past the composer
         // to the whole pane, on native it covers the composer's own area.
         <Pressable
+          testID="menu-backdrop"
           accessible={false}
           importantForAccessibility="no"
           onPress={() => setMenu(null)}
