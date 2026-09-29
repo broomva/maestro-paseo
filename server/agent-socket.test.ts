@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -11,6 +11,20 @@ import { parseEvents } from "./events";
 import { fakePaseo } from "./fake-paseo";
 import type { Paseo } from "./runs";
 import { EVENTS_FILE } from "./store";
+
+// These tests spawn processes, build a bundle and move megabytes through a socket.
+// On a loaded machine that can take far longer than Bun's 5s default; nothing
+// here waits on a clock for correctness, so a generous limit only catches hangs.
+setDefaultTimeout(60_000);
+
+/** Wait for a condition instead of a fixed time: a busy machine stretches every sleep. */
+async function until(check: () => boolean | Promise<boolean>, what: string, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await check())) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 const roots: string[] = [];
 afterAll(async () => {
@@ -233,18 +247,28 @@ describe("what a session is offered", () => {
 });
 
 describe("the socket", () => {
-  const once = (path: string, text: string) =>
+  /**
+   * Send `text` and collect answers until `lines` of them have arrived, or until
+   * the server closes the connection (pass Infinity to wait for that). Never a
+   * timer: under Bun a client that closes first loses answers still being worked
+   * out, so closing on a clock made this flaky on a busy machine.
+   */
+  const once = (path: string, text: string, lines: number) =>
     new Promise<string>((resolve, reject) => {
       const socket = connect(path);
       let buffer = "";
+      const done = () => {
+        socket.end();
+        resolve(buffer);
+      };
       socket.setEncoding("utf8");
       socket.on("connect", () => socket.write(text));
       socket.on("data", (chunk: string) => {
         buffer += chunk;
+        if (buffer.split("\n").length - 1 >= lines) done();
       });
       socket.on("end", () => resolve(buffer));
       socket.on("error", reject);
-      setTimeout(() => socket.end(), 300);
     });
 
   test("only this user can open it, and the CLI speaks to it", async () => {
@@ -271,6 +295,7 @@ describe("the socket", () => {
       const lines = await once(
         path,
         `${JSON.stringify({ id: 1, method: "config.get" })}\n\n${JSON.stringify({ id: 2, method: "nope" })}\n`,
+        2,
       );
       expect(
         lines
@@ -279,7 +304,8 @@ describe("the socket", () => {
           .map((line) => JSON.parse(line).id),
       ).toEqual([1, 2]);
       const request = (id: number) => `${JSON.stringify({ id, method: "config.get" })}\n`;
-      const big = await once(path, `${request(8)}${"x".repeat(MAX_LINE + 10)}\n${request(9)}`);
+      // Read until the server hangs up, so an answer to the line after the oversized one would be seen.
+      const big = await once(path, `${request(8)}${"x".repeat(MAX_LINE + 10)}\n${request(9)}`, Infinity);
       const answered = big
         .trim()
         .split("\n")
@@ -287,7 +313,7 @@ describe("the socket", () => {
       expect(answered.map((line) => line.id)).toEqual([8, null]);
       expect(answered[1]?.error).toBe("Request too large.");
       // A line of exactly the limit is still a request (here, not JSON); the next one is answered.
-      const edge = await once(path, `${"x".repeat(MAX_LINE)}\n${request(5)}`);
+      const edge = await once(path, `${"x".repeat(MAX_LINE)}\n${request(5)}`, 2);
       expect(
         edge
           .trim()
@@ -352,13 +378,35 @@ describe("the socket", () => {
   test("closing lets a request already being answered finish", async () => {
     const { root } = await setup();
     const path = join(root, "maestro.sock");
+    // The method starts, closing gets as far as removing the path (it then waits on
+    // requests in flight), and only then does the answer become ready.
+    let started = false;
+    let release: (value: unknown) => void = () => undefined;
     const methods = new Map<string, AgentMethod>([
-      ["slow", () => new Promise((resolve) => setTimeout(() => resolve("late"), 150))],
+      [
+        "slow",
+        () => {
+          started = true;
+          return new Promise((resolve) => {
+            release = resolve;
+          });
+        },
+      ],
     ]);
-    const close = await serveAgents({ path, methods });
+    const close = await serveAgents({ path, methods, graceMs: 30_000 });
     const reply = call("slow", {}, { path });
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    await close();
+    await until(() => started, "the request to reach the server");
+    const closing = close();
+    await until(
+      () =>
+        stat(path).then(
+          () => false,
+          () => true,
+        ),
+      "closing to remove the socket path",
+    );
+    release("late");
+    await closing;
     expect(await reply).toBe("late");
   });
 
@@ -388,28 +436,34 @@ describe("the socket", () => {
   test("kept serving: when the holder stops, the waiting instance takes over", async () => {
     const { root } = await setup();
     const path = join(root, "maestro.sock");
-    const who = (name: string) => new Map<string, AgentMethod>([["who", async () => name]]);
-    const closeHolder = await serveAgents({ path, methods: who("holder") });
+    // The holder counts connections, so the test waits for the keeper's attempts
+    // rather than guessing how long they take.
+    let connections = 0;
+    const holder = createServer((socket) => {
+      connections += 1;
+      socket.on("data", () => socket.end(`${JSON.stringify({ id: 1, ok: true, output: "holder" })}\n`));
+      socket.on("error", () => undefined);
+    });
+    await new Promise<void>((resolve) => holder.listen(path, resolve));
     const logs: string[] = [];
     const stop = keepServing({
       path,
-      methods: who("keeper"),
+      methods: new Map<string, AgentMethod>([["who", async () => "keeper"]]),
       log: (line) => logs.push(line),
       attempts: 2,
       retryMs: 10,
-      reopenMs: 50,
+      reopenMs: 20,
     });
     try {
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      // Two probes per attempt: six connections mean at least two attempts have failed.
+      await until(() => connections >= 6, "three rounds of the keeper probing the holder");
       expect(logs.filter((line) => line.includes("did not open"))).toHaveLength(1);
       expect(await call("who", {}, { path })).toBe("holder");
-      await closeHolder();
-      let answer = "";
-      for (let i = 0; i < 50 && answer !== "keeper"; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        answer = (await call("who", {}, { path }).catch(() => "")) as string;
-      }
-      expect(answer).toBe("keeper");
+      await new Promise<void>((resolve) => holder.close(() => resolve()));
+      await until(
+        async () => (await call("who", {}, { path }).catch(() => "")) === "keeper",
+        "the keeper to take the socket",
+      );
     } finally {
       await stop();
     }
