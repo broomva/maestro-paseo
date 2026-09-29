@@ -2,6 +2,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { agentMethods, keepServing } from "./server/agent-socket";
 import { loadConfig, saveConfig } from "./server/config";
 import { Engine } from "./server/engine";
+import { GateCards } from "./server/gate-card";
 import { socketPath } from "./server/paths";
 import type { Paseo } from "./server/runs";
 import {
@@ -21,7 +22,9 @@ import {
 const log = (message: string) => console.log(`[maestro] ${message}`);
 
 export default function contribute(host: PluginServerContext) {
-  const engine = new Engine();
+  // A run that lands at your gate leaves an approval card in its session, through the latest client below.
+  const cards = new GateCards(() => latest, log);
+  const engine = new Engine({ landed: (before, after) => cards.landed(before, after) });
 
   // The host hands the plugin its daemon client only inside handlers and hooks,
   // never at startup: one client for the life of the plugin process. The agent

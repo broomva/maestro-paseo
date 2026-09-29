@@ -128,6 +128,8 @@ const MISSED_END_MS = 90_000;
 
 export interface EngineOptions {
   now?: () => Date;
+  /** Told after a run's end or its checks are written, with the item before and after; not awaited (server/gate-card.ts). */
+  landed?: (before: StoredWork, after: StoredWork) => unknown;
   config?: () => Promise<MaestroConfig>;
   log?: (message: string) => void;
 }
@@ -147,6 +149,7 @@ export class Engine {
   private readonly now: () => Date;
   private readonly readConfig: () => Promise<MaestroConfig>;
   private readonly log: (message: string) => void;
+  private readonly landed: NonNullable<EngineOptions["landed"]>;
   private readonly dispatching = new Set<string>();
   /** Sessions being tracked right now, so two calls at once cannot make two items for one session. */
   private readonly adopting = new Set<string>();
@@ -171,6 +174,7 @@ export class Engine {
     this.now = options.now ?? (() => new Date());
     this.readConfig = options.config ?? (() => loadConfig());
     this.log = options.log ?? ((message) => console.log(`[maestro] ${message}`));
+    this.landed = options.landed ?? (() => undefined);
   }
 
   /** The settings runs start from, as this engine reads them. */
@@ -835,6 +839,7 @@ export class Engine {
       },
       item.dir,
     );
+    void this.landed(item, updated);
     if (token) void this.runChecksFor(store, updated, token);
   }
 
@@ -908,7 +913,7 @@ export class Engine {
       const signal = AbortSignal.any([this.abort.signal, run.signal]);
       const results = cwd ? await runChecks(item.contract.checks, cwd, signal) : [];
       if (signal.aborted) return;
-      await store.mutate(
+      const after = await store.mutate(
         item.contract.id,
         (fresh): Mutation | null => {
           if (pendingChecks(fresh.events) !== token) return null;
@@ -946,6 +951,7 @@ export class Engine {
         },
         item.dir,
       );
+      void this.landed(item, after);
     } catch (error) {
       this.log(`checks failed to run for ${item.contract.id}: ${(error as Error).message}`);
     } finally {
