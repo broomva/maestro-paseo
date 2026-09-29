@@ -5,6 +5,7 @@
 
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { MaestroConfig, Worker } from "../shared/contracts";
+import { runFolder } from "./folders";
 import { briefOf } from "./frontmatter";
 import { type StoredWork, slugify } from "./store";
 
@@ -88,9 +89,14 @@ export function runSettings(config: MaestroConfig, item: StoredWork) {
 }
 
 export async function startRun(paseo: Paseo, config: MaestroConfig, item: StoredWork): Promise<Worker> {
-  const repo = item.contract.repo;
-  if (!repo) throw new DispatchError("This work has no repository to run in. Add a repo: line to _work.md.");
+  if (!item.contract.repo) {
+    throw new DispatchError("This work has no repository to run in. Add a repo: line to _work.md.");
+  }
   const run = runSettings(config, item);
+  // Every run starts here, whichever verb reached it: the folder is checked where it is used.
+  const folder = await runFolder(item.contract.repo, { workRoot: config.workRoot, isolation: run.isolation });
+  if (folder.refusal) throw new DispatchError(folder.refusal);
+  const repo = folder.path;
   const provider = await resolveProvider(paseo, run.selection, repo);
   const branch = run.isolation === "worktree" ? runBranch() : null;
   const workspace = branch

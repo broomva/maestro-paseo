@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonical, inspectFolder, isGitFolder, repoRefusal, within } from "./folders";
+import { canonical, inspectFolder, isGitFolder, repoRefusal, runFolder, within } from "./folders";
 
 const roots: string[] = [];
 afterAll(async () => {
@@ -75,5 +75,30 @@ describe("folders", () => {
     expect(await repoRefusal(join(work, "item"), work, home)).toContain("inside the work folder");
     expect(await repoRefusal(repo, work, home)).toBeNull();
     expect(await repoRefusal(join(home, "maestro-other"), work, home)).toBeNull();
+  });
+
+  test("the check before every run: a stored folder, ~ expanded, said as the work's own", async () => {
+    const root = await scratch();
+    const home = join(root, "home");
+    const work = join(home, "maestro");
+    const repo = join(home, "code", "project");
+    const plain = join(home, "code", "plain");
+    await mkdir(join(repo, ".git"), { recursive: true });
+    await mkdir(join(work, "item"), { recursive: true });
+    await mkdir(plain, { recursive: true });
+    const check = (path: string, isolation: "worktree" | "directory" = "worktree") =>
+      runFolder(path, { workRoot: work, isolation, home });
+    expect(await check(repo)).toEqual({ path: repo, refusal: null });
+    expect((await check(home)).refusal).toBe("This work's folder is your home folder; set a repository to run it in.");
+    expect((await check(root)).refusal).toContain("holds the work folder");
+    expect((await check(join(work, "item"))).refusal).toContain("is inside the work folder");
+    expect((await check(plain)).refusal).toContain("is not a git repository");
+    expect(await check(plain, "directory")).toEqual({ path: plain, refusal: null });
+    expect((await check(join(home, "gone"))).refusal).toBe(
+      `There is no folder at ${join(home, "gone")}; set a repository to run it in.`,
+    );
+    expect((await check("code/project")).refusal).toContain("not an absolute path");
+    // ~ is the daemon's home, expanded before any rule is read.
+    expect((await runFolder("~", { workRoot: work, isolation: "directory" })).refusal).toContain("your home folder");
   });
 });

@@ -133,7 +133,10 @@ dispatch time; the Settings mode applies only while the run uses the Settings pr
 mode belongs to one provider. A title left blank in the composer takes the brief's first line.
 
 Runs start only in a repository the work changes: never your home folder, the work folder, a folder
-holding it, or one inside it. With `isolation: worktree` the folder must be a git repository.
+holding it, or one inside it. With `isolation: worktree` the folder must be a git repository. The
+folder is checked when you create the work and again before every run starts, however it starts
+(dispatch, unblock, or restarting work tracked from a session), so a hand-edited `repo:` or a
+session tracked in such a folder can be recorded, but no run starts there.
 
 Folders nest: `<root>/<initiative>/<project>/<item>/_work.md`. The nesting is the grouping.
 Edits keep the author's comments and key order. `_events.jsonl` is append-only. A file that does

@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MaestroConfig } from "../shared/contracts";
@@ -1075,5 +1075,120 @@ describe("where runs may start", () => {
     await expect(engine.create(fake.paseo, { ...plain(folder), isolation: "worktree" })).rejects.toThrow(
       "is not a git repository",
     );
+  });
+});
+
+describe("every run passes the folder check, whichever verb starts it", () => {
+  /** Paseo refuses to start anything, and says where it was asked to: nothing reaches a real folder. */
+  function recordStarts(fake: ReturnType<typeof fakePaseo>) {
+    const attempted: string[] = [];
+    fake.paseo.workspaces.create = (async (options: { source: { cwd: string } }) => {
+      attempted.push(options.source.cwd);
+      throw new Error("a run would have started");
+    }) as unknown as typeof fake.paseo.workspaces.create;
+    fake.paseo.workspaces.open = (async (cwd: unknown) => {
+      attempted.push(String(cwd));
+      throw new Error("a run would have started");
+    }) as unknown as typeof fake.paseo.workspaces.open;
+    return attempted;
+  }
+  const draft = (repo: string) => ({
+    title: "Guarded",
+    brief: "",
+    repo,
+    gate: "human" as const,
+    check: "",
+    initiative: "",
+    dispatch: false,
+  });
+
+  test("dispatch: a _work.md hand-edited to your home folder is refused, and the receipt says why", async () => {
+    const { engine, fake, repo, config } = await setup();
+    // A bare `~` is YAML's null (no repo at all); these are the spellings that name home.
+    for (const spelling of ['"~"', "~/"]) {
+      const item = await engine.create(fake.paseo, { ...draft(repo), title: `Home ${spelling}` });
+      const file = join(config.workRoot, item.path, WORK_FILE);
+      await writeFile(file, (await readFile(file, "utf8")).replace(`repo: ${repo}`, `repo: ${spelling}`));
+      const attempted = recordStarts(fake);
+      await expect(engine.dispatch(fake.paseo, item.id)).rejects.toThrow(
+        "This work's folder is your home folder; set a repository to run it in.",
+      );
+      expect(attempted).toEqual([]);
+      const after = await engine.get(item.id);
+      expect(after.item.state).toBe("proposed");
+      expect(after.events.at(-1)?.text).toContain("your home folder");
+    }
+  });
+
+  test("adopt: tracking a session in your home folder is allowed; restarting it there is not", async () => {
+    const { engine, fake } = await setup();
+    fake.agents.set("manual", {
+      id: "manual",
+      cwd: homedir(),
+      status: "running",
+      workspaceId: "ws-x",
+      provider: "claude",
+      title: "Tidy the dotfiles",
+      archivedAt: null,
+      pendingPermissions: [],
+      activeTurn: null,
+    });
+    const item = await engine.adopt(fake.paseo, "manual", "");
+    expect(item).toMatchObject({ state: "running", repo: homedir() });
+    await engine.onArchived({ id: "manual" });
+    const agent = fake.agents.get("manual");
+    if (agent) agent.archivedAt = new Date().toISOString();
+    expect((await engine.get(item.id)).item.state).toBe("blocked");
+    const attempted = recordStarts(fake);
+    await expect(engine.unblock(fake.paseo, item.id, "")).rejects.toThrow(
+      "This work's folder is your home folder; set a repository to run it in.",
+    );
+    expect(attempted).toEqual([]);
+    expect((await engine.get(item.id)).item.state).toBe("blocked");
+  });
+
+  test("dispatch: a folder that is not a git repository under worktree isolation is refused at dispatch time", async () => {
+    const { engine, fake, config } = await setup({ isolation: "directory" });
+    const folder = join(config.workRoot, "..", "plain");
+    await mkdir(folder);
+    const item = await engine.create(fake.paseo, draft(folder));
+    config.isolation = "worktree";
+    const attempted = recordStarts(fake);
+    await expect(engine.dispatch(fake.paseo, item.id)).rejects.toThrow(
+      "This work's folder is not a git repository, and each run gets a new worktree",
+    );
+    expect(attempted).toEqual([]);
+    config.isolation = "directory";
+    await expect(engine.dispatch(fake.paseo, item.id)).rejects.toThrow("a run would have started");
+    expect(attempted).toEqual([folder]);
+    // The work's own isolation, hand-edited, is what the check reads; Settings still says directory.
+    const own = await engine.create(fake.paseo, { ...draft(folder), title: "Own worktree" });
+    const file = join(config.workRoot, own.path, WORK_FILE);
+    await writeFile(
+      file,
+      (await readFile(file, "utf8")).replace(`repo: ${folder}`, `repo: ${folder}\nisolation: worktree`),
+    );
+    await expect(engine.dispatch(fake.paseo, own.id)).rejects.toThrow("is not a git repository");
+    expect(attempted).toEqual([folder]);
+  });
+
+  test("dispatch: a folder moved into the work folder, or holding it, is refused", async () => {
+    const { engine, fake, repo, config } = await setup();
+    const inside = await engine.create(fake.paseo, { ...draft(repo), title: "Inside" });
+    const holding = await engine.create(fake.paseo, { ...draft(repo), title: "Holding" });
+    const nested = join(config.workRoot, "nested-repo");
+    await mkdir(join(nested, ".git"), { recursive: true });
+    const holder = join(config.workRoot, "..");
+    for (const [item, target] of [
+      [inside, nested],
+      [holding, holder],
+    ] as const) {
+      const file = join(config.workRoot, item.path, WORK_FILE);
+      await writeFile(file, (await readFile(file, "utf8")).replace(`repo: ${repo}`, `repo: ${target}`));
+    }
+    const attempted = recordStarts(fake);
+    await expect(engine.dispatch(fake.paseo, inside.id)).rejects.toThrow("is inside the work folder");
+    await expect(engine.dispatch(fake.paseo, holding.id)).rejects.toThrow("holds the work folder");
+    expect(attempted).toEqual([]);
   });
 });
