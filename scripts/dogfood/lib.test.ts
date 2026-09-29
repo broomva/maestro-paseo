@@ -3,11 +3,13 @@
 // soon as the thing waited on is known to be dead.
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ancestors,
+  clearPointer,
   type DogfoodState,
   daemonGroup,
   deletable,
@@ -18,9 +20,11 @@ import {
   MARKER,
   pointerProblem,
   readState,
+  resolveStateDir,
   sandboxEnv,
   sandboxProcesses,
   waitFor,
+  writeState,
 } from "./lib";
 
 const saved = { ...process.env };
@@ -112,12 +116,14 @@ describe("sandboxProcesses", () => {
 
 describe("waitFor", () => {
   test("a Fatal from the probe stops the wait at once", async () => {
-    const started = Date.now();
+    // Counted, not timed: a wall-clock bound failed on a loaded machine. Retrying would call the probe again.
+    let calls = 0;
     const probe = async (): Promise<boolean> => {
+      calls += 1;
       throw new Fatal("the daemon exited");
     };
-    await expect(waitFor("the daemon", probe, 10_000, 50)).rejects.toThrow("the daemon exited");
-    expect(Date.now() - started).toBeLessThan(1000);
+    await expect(waitFor("the daemon", probe, 2000, 50)).rejects.toThrow("the daemon exited");
+    expect(calls).toBe(1);
   });
 
   test("any other error is retried until the probe answers", async () => {
@@ -272,5 +278,110 @@ describe("trusted state and pointer files", () => {
     expect(readState(dir)?.dir).toBe(dir);
     await chmod(path, 0o622);
     expect(readState(dir)).toBeNull();
+  });
+});
+
+// The call sites, end to end on real files. Each test gets its own pointer path, never this checkout's real one.
+describe("state and pointer files on disk", () => {
+  const roots: string[] = [];
+  afterAll(async () => {
+    await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  async function sandbox() {
+    delete process.env.MAESTRO_DOGFOOD_STATE;
+    const root = realpathSync(await mkdtemp(join(tmpdir(), "dogfood-pointer-")));
+    roots.push(root);
+    const dir = join(root, "maestro-dogfood-AbC123");
+    await mkdir(dir, { mode: 0o700 });
+    const pointer = join(root, "pointer.json");
+    const state = { marker: MARKER, dir, paseoHome: join(dir, "paseo-home") } as unknown as DogfoodState;
+    const warnings: string[] = [];
+    const resolve = () => resolveStateDir(undefined, (line) => warnings.push(line), pointer);
+    return { root, dir, pointer, state, warnings, resolve };
+  }
+  const modeOf = (path: string) => statSync(path).mode & 0o777;
+
+  test("writeState writes state.json and the pointer 0600, even over a loose file already there", async () => {
+    const { dir, pointer, state } = await sandbox();
+    await writeFile(pointer, "{}");
+    await chmod(pointer, 0o666);
+    await writeState(state, pointer);
+    expect(modeOf(pointer)).toBe(0o600);
+    expect(modeOf(join(dir, "state.json"))).toBe(0o600);
+    expect(JSON.parse(await readFile(pointer, "utf8"))).toEqual({ marker: MARKER, dir });
+  });
+
+  test("a trusted pointer resolves", async () => {
+    const { dir, pointer, state, warnings, resolve } = await sandbox();
+    await writeState(state, pointer);
+    expect(resolve()).toBe(dir);
+    expect(warnings).toEqual([]);
+  });
+
+  test("a group-writable pointer is refused", async () => {
+    const { pointer, state, warnings, resolve } = await sandbox();
+    await writeState(state, pointer);
+    await chmod(pointer, 0o620);
+    expect(resolve()).toBeNull();
+    expect(warnings.join()).toContain("writable by the group or the world");
+  });
+
+  test("a pointer without the marker is refused", async () => {
+    const { dir, pointer, state, warnings, resolve } = await sandbox();
+    await writeState(state, pointer);
+    await writeFile(pointer, JSON.stringify({ dir }));
+    expect(resolve()).toBeNull();
+    expect(warnings.join()).toContain("marker");
+  });
+
+  test("a pointer whose state.json carries a different marker is refused", async () => {
+    const { dir, pointer, state, warnings, resolve } = await sandbox();
+    await writeState(state, pointer);
+    await writeFile(join(dir, "state.json"), JSON.stringify({ ...state, marker: "someone-else/v1" }));
+    expect(resolve()).toBeNull();
+    expect(warnings.join()).toContain("holds no trusted state.json");
+  });
+
+  test("a pointer whose state.json names a different dir is refused", async () => {
+    const { dir, pointer, state, warnings, resolve } = await sandbox();
+    await writeState(state, pointer);
+    await writeFile(join(dir, "state.json"), JSON.stringify({ ...state, dir: "/Users/someone/maestro" }));
+    expect(resolve()).toBeNull();
+    expect(warnings.join()).toContain("does not match");
+  });
+
+  test("a pointer whose state.json is missing is refused, and kept", async () => {
+    const { dir, pointer, state, warnings, resolve } = await sandbox();
+    await writeState(state, pointer);
+    await rm(join(dir, "state.json"));
+    expect(resolve()).toBeNull();
+    expect(warnings.join()).toContain("holds no trusted state.json");
+    expect(existsSync(pointer)).toBe(true);
+  });
+
+  test("a trusted pointer to a directory that is gone is dropped quietly", async () => {
+    const { dir, pointer, state, warnings, resolve } = await sandbox();
+    await writeState(state, pointer);
+    await rm(dir, { recursive: true });
+    expect(resolve()).toBeNull();
+    expect(existsSync(pointer)).toBe(false);
+    expect(warnings).toEqual([]);
+  });
+
+  test("clearPointer removes only a trusted pointer naming the dir, and is idempotent", async () => {
+    const { dir, pointer, state } = await sandbox();
+    await writeState(state, pointer);
+    await clearPointer("/private/tmp/maestro-dogfood-Other", pointer);
+    expect(existsSync(pointer)).toBe(true);
+    await chmod(pointer, 0o622);
+    await clearPointer(dir, pointer);
+    expect(existsSync(pointer)).toBe(true);
+    await chmod(pointer, 0o600);
+    await clearPointer(dir, pointer);
+    expect(existsSync(pointer)).toBe(false);
+    await clearPointer(dir, pointer);
+    await clearPointer(dir, pointer);
+    expect(existsSync(pointer)).toBe(false);
   });
 });

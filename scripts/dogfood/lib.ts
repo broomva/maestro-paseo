@@ -5,7 +5,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { rm, writeFile } from "node:fs/promises";
+import { rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -104,10 +104,20 @@ export function pointerProblem(pointer: unknown, state: DogfoodState | null): st
   return null;
 }
 
-export async function writeState(state: DogfoodState): Promise<void> {
-  const own = { encoding: "utf8", mode: 0o600 } as const;
-  await writeFile(join(state.dir, "state.json"), `${JSON.stringify(state, null, 2)}\n`, own);
-  await writeFile(pointerPath(), `${JSON.stringify({ marker: MARKER, dir: state.dir }, null, 2)}\n`, own);
+/**
+ * A fresh 0600 file renamed into place: writeFile's mode applies only when it
+ * creates a file, so writing over an existing loose one would keep its mode.
+ * `wx` refuses a temp name someone planted first.
+ */
+async function writeOwn(path: string, content: string): Promise<void> {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  await rename(tmp, path);
+}
+
+export async function writeState(state: DogfoodState, pointer: string = pointerPath()): Promise<void> {
+  await writeOwn(join(state.dir, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
+  await writeOwn(pointer, `${JSON.stringify({ marker: MARKER, dir: state.dir }, null, 2)}\n`);
 }
 
 /**
@@ -115,10 +125,13 @@ export async function writeState(state: DogfoodState): Promise<void> {
  * this checkout's pointer, which is followed only if it passes fileProblem and
  * pointerProblem. A trusted pointer to a directory that is gone is dropped.
  */
-export function resolveStateDir(flag: string | undefined, warn: (line: string) => void = console.warn): string | null {
+export function resolveStateDir(
+  flag: string | undefined,
+  warn: (line: string) => void = console.warn,
+  path: string = pointerPath(),
+): string | null {
   const explicit = flag ?? process.env.MAESTRO_DOGFOOD_STATE;
   if (explicit) return existsSync(explicit) ? realpathSync(explicit) : explicit;
-  const path = pointerPath();
   if (!factsOf(path)) return null;
   const read = readTrusted(path);
   if (!("value" in read)) {
@@ -140,8 +153,7 @@ export function resolveStateDir(flag: string | undefined, warn: (line: string) =
 }
 
 /** Drop this checkout's pointer if it is a trusted one naming `dir`; anything else is left alone. */
-export async function clearPointer(dir: string): Promise<void> {
-  const path = pointerPath();
+export async function clearPointer(dir: string, path: string = pointerPath()): Promise<void> {
   const read = readTrusted(path);
   if (!("value" in read)) return;
   if ((read.value as { dir?: unknown } | null)?.dir !== dir) return;
