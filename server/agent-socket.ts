@@ -230,8 +230,9 @@ function bind(server: Server, path: string): Promise<void> {
 
 /**
  * Whether `path` may be in use. Only "nothing there" (ENOENT) and "nobody
- * listening" (ECONNREFUSED) say it is free; a hang, a full backlog or any
- * other error counts as in use, so a live socket is never taken.
+ * listening" (ECONNREFUSED) say it is free; a hang or any other error counts
+ * as in use. One limit: on macOS a listener whose backlog is full also refuses,
+ * so a holder that has stopped accepting altogether reads as gone.
  */
 export function answers(path: string, timeoutMs = 1000): Promise<boolean> {
   return new Promise((resolve) => {
@@ -284,7 +285,7 @@ async function claim(bound: string, path: string, options: ServeOptions): Promis
     if (!existing) continue;
     if (!existing.isSocket()) throw new Error(`${path} exists and is not a socket; not replacing it`);
     if (await answers(path)) {
-      await sleep(retryMs);
+      await sleep(retryMs, undefined, { signal }).catch(() => undefined);
       continue;
     }
     // Left by a crash. Take it aside with one atomic rename, then check it is the
