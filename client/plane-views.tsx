@@ -6,10 +6,19 @@ import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
 import { Pressable, Text, View } from "react-native";
 import type { WorkItem } from "../shared/contracts";
 import { GROUP_COPY, type Group } from "../shared/states";
-import { ChangeStat } from "./changed";
+import { ChangeText, WithChange } from "./changed";
 import { ago } from "./format";
-import { boardColumns, crumb, groupsOf, stateText, stuckText, workerText } from "./plane-model";
-import { radius, StateDot, StateLabel, space, useText } from "./ui";
+import {
+  boardColumns,
+  cardLabel,
+  changedVisible,
+  crumb,
+  groupsOf,
+  stateText,
+  stuckText,
+  workerText,
+} from "./plane-model";
+import { radius, StateDot, StateLabel, space, useText, webAria } from "./ui";
 
 type Selectable = { theme: PluginTheme; selected: string | null; onSelect: (id: string) => void };
 
@@ -90,13 +99,13 @@ function WorkCard({ theme, item, selected, onSelect }: Selectable & { item: Work
   const stuck = stuckText(item);
   const worker = workerText(item.worker);
   const branch = item.worker?.branch ?? null;
-  const label = stateText(item);
   const isSelected = item.id === selected;
   return (
     <Pressable
       accessibilityRole="button"
-      aria-selected={isSelected}
-      accessibilityLabel={`${item.title}, ${label}`}
+      accessibilityState={{ selected: isSelected }}
+      {...webAria({ "aria-current": isSelected })}
+      accessibilityLabel={cardLabel(item)}
       onPress={() => onSelect(item.id)}
       style={({ pressed }) => ({
         gap: space[2],
@@ -127,19 +136,23 @@ function WorkCard({ theme, item, selected, onSelect }: Selectable & { item: Work
         </View>
       ) : null}
       <View style={{ flexDirection: "row", alignItems: "center", gap: space[3], flexWrap: "wrap" }}>
-        <StateLabel theme={theme} state={item.state} label={label} />
+        <StateLabel theme={theme} state={item.state} label={stateText(item)} />
         {worker ? <Text style={text.small}>{worker}</Text> : null}
       </View>
-      {branch || item.worker?.workspaceId ? (
-        <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
-          {branch ? (
-            <Text style={[text.mono, { color: theme.colors.foregroundMuted, flexShrink: 1 }]} numberOfLines={1}>
-              {branch}
-            </Text>
-          ) : null}
-          <ChangeStat theme={theme} workspaceId={item.worker?.workspaceId} />
-        </View>
-      ) : null}
+      <WithChange workspaceId={item.worker?.workspaceId}>
+        {(stat) =>
+          changedVisible(branch, stat) ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
+              {branch ? (
+                <Text style={[text.mono, { color: theme.colors.foregroundMuted, flexShrink: 1 }]} numberOfLines={1}>
+                  {branch}
+                </Text>
+              ) : null}
+              {stat ? <ChangeText theme={theme} stat={stat} /> : null}
+            </View>
+          ) : null
+        }
+      </WithChange>
     </Pressable>
   );
 }
@@ -152,8 +165,9 @@ function ListRow({ theme, item, selected, onSelect }: Selectable & { item: WorkI
   return (
     <Pressable
       accessibilityRole="button"
-      aria-selected={isSelected}
-      accessibilityLabel={`${item.title}, ${stateText(item)}`}
+      accessibilityState={{ selected: isSelected }}
+      {...webAria({ "aria-current": isSelected })}
+      accessibilityLabel={cardLabel(item)}
       onPress={() => onSelect(item.id)}
       style={({ pressed }) => ({
         flexDirection: "row",
@@ -166,6 +180,9 @@ function ListRow({ theme, item, selected, onSelect }: Selectable & { item: WorkI
       })}
     >
       <StateDot theme={theme} state={item.state} dim={7} />
+      <Text style={[text.small, { width: 64 }]} numberOfLines={1}>
+        {stateText(item)}
+      </Text>
       <Text style={[text.body, { flex: 2, minWidth: 0 }]} numberOfLines={1}>
         {item.title}
       </Text>

@@ -1,13 +1,13 @@
-// The plane's controls: the Feed / Board / List switch, the initiative scope
-// and the state filter. Chips carry a label and a count; a dot never stands
-// alone.
+// The plane's controls: the Feed / Board / List switch (tabs), the initiative
+// scope and the state filter (toggle chips: pressing the active one clears
+// it). Chips carry a label and a count; a dot never stands alone.
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { Pressable, Text, View } from "react-native";
 import type { Group, OrchState } from "../shared/states";
 import { type Filter, filterLabel, type Initiative, type PlaneView, scopeLabel, VIEWS } from "./plane-model";
-import { radius, StateDot, size, space } from "./ui";
+import { radius, StateDot, size, space, webAria } from "./ui";
 
 // A representative state per group, for the chip's dot.
 const GROUP_DOT: Record<Group, OrchState> = {
@@ -91,8 +91,9 @@ function Chip({
 }) {
   return (
     <Pressable
-      accessibilityRole="radio"
-      aria-checked={selected}
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      {...webAria({ "aria-pressed": selected })}
       accessibilityLabel={accessibilityLabel}
       onPress={onPress}
       style={({ pressed }) => ({
@@ -146,7 +147,7 @@ export function ScopeRow({
 }) {
   return (
     <View
-      accessibilityRole="radiogroup"
+      accessibilityRole="toolbar"
       accessibilityLabel="Initiatives"
       style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}
     >
@@ -189,7 +190,7 @@ export function FilterRow({
 }) {
   return (
     <View
-      accessibilityRole="radiogroup"
+      accessibilityRole="toolbar"
       accessibilityLabel="Filter by state"
       style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}
     >

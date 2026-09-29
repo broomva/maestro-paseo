@@ -7,7 +7,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import type { Scoreboard } from "../shared/contracts";
 import { ChangeScope } from "./changed";
@@ -59,10 +59,20 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const current = selected && items.some((item) => item.id === selected) ? selected : null;
   const scopes = initiatives(items);
   const scope = resolveScope(items, chosenScope);
+  const loaded = list.data !== undefined;
+  // A scope whose initiative left the list is dropped, so it cannot come back unseen.
+  useEffect(() => {
+    if (loaded && chosenScope !== null && scope === null) setScope(null);
+  }, [loaded, chosenScope, scope]);
   const scoped = inScope(items, scope);
   const counts = countFilters(scoped);
   const shown = view === "board" ? scoped : applyFilter(scoped, filter);
   const pick = { theme, selected: current, onSelect: setSelected };
+  // The board has no state chips, so it clears the filter rather than hide one.
+  const chooseView = (next: PlaneView) => {
+    setView(next);
+    if (next === "board") setFilter("all");
+  };
 
   const newWork = (
     <NewWork theme={theme} open={creating} onOpenChange={setCreating} onCreated={setSelected} compact={compact} />
@@ -99,7 +109,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
         />
       </View>
 
-      {compact ? null : <ViewSwitch theme={theme} view={view} onView={setView} />}
+      {compact ? null : <ViewSwitch theme={theme} view={view} onView={chooseView} />}
 
       {list.isPending ? (
         <ActivityIndicator color={theme.colors.foregroundMuted} />

@@ -4,11 +4,15 @@ import { groupOf, type OrchState } from "../shared/states";
 import {
   applyFilter,
   boardColumns,
+  cardLabel,
+  changedVisible,
   changeLabel,
   changeText,
   countFilters,
   crumb,
   emptyText,
+  FILTERS,
+  filterLabel,
   groupsOf,
   initiatives,
   inScope,
@@ -86,9 +90,19 @@ describe("filters", () => {
     expect(visibleFilters(countFilters([]), "all")).toEqual(["all"]);
   });
 
+  test("chips read in the plain voice, attention first", () => {
+    expect(FILTERS.map(filterLabel)).toEqual(["All", "Needs you", "Stuck", "Running", "Queued", "Done"]);
+  });
+
   test("an empty filter says so in plain words", () => {
-    expect(emptyText("review")).toBe("Nothing needs you right now.");
-    expect(emptyText("all")).toBe("No work here yet.");
+    expect(FILTERS.map(emptyText)).toEqual([
+      "No work here yet.",
+      "Nothing needs you right now.",
+      "Nothing is stuck.",
+      "Nothing is running.",
+      "Nothing is queued.",
+      "Nothing is done yet.",
+    ]);
   });
 });
 
@@ -177,6 +191,7 @@ describe("card words", () => {
   test("only stuck work carries a reason, and never an empty one", () => {
     expect(stuckText(plane[1] as WorkItem)).toBe("Needs a Linear scope");
     expect(stuckText(work("x", "blocked"))).toBe("The run stopped without a reason.");
+    expect(stuckText(work("x", "blocked", { reason: "" }))).toBe("The run stopped without a reason.");
     expect(stuckText(work("x", "review", { reason: "stale" }))).toBeNull();
   });
 
@@ -185,6 +200,22 @@ describe("card words", () => {
     expect(changeText({ additions: 0, deletions: 0 })).toBe("+0 −0");
     expect(changeText(null)).toBeNull();
     expect(changeLabel({ additions: 1, deletions: 3 })).toBe("1 line added, 3 removed");
+  });
+
+  test("the changed row needs a branch or a stat that was read, never a bare label", () => {
+    expect(changedVisible("maestro/x-1", null)).toBe(true);
+    expect(changedVisible(null, { additions: 0, deletions: 0 })).toBe(true);
+    expect(changedVisible(null, null)).toBe(false);
+    expect(changedVisible(undefined, null)).toBe(false);
+    expect(changedVisible("", null)).toBe(false);
+  });
+
+  test("a card is spoken with its crumb, stuck reason and age", () => {
+    const now = Date.parse("2026-09-29T11:12:00Z");
+    expect(cardLabel(plane[1] as WorkItem, now)).toBe(
+      "Work b, Stuck, hawthorne › db, Needs a Linear scope, updated 12 minutes ago",
+    );
+    expect(cardLabel(work("x", "running"), now)).toBe("Work x, Running, updated 12 minutes ago");
   });
 
   test("the header puts what needs a person first", () => {

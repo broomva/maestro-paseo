@@ -24,6 +24,14 @@ export const space = { 1: 4, 2: 8, 3: 12, 4: 16, 5: 20, 6: 24, 8: 32 } as const;
 export const radius = { control: 8, card: 12, pill: 9999 } as const;
 export const size = { xs: 12, sm: 14, base: 16, lg: 18, xl: 22, xxl: 24 } as const;
 
+/**
+ * ARIA that react-native-web writes to the DOM but React Native's types omit.
+ * Native ignores it, so pair it with accessibilityState for iOS and Android.
+ */
+export function webAria(props: { "aria-pressed"?: boolean; "aria-current"?: boolean }): object {
+  return props;
+}
+
 export function toneColor(theme: PluginTheme, tone: Tone): string {
   switch (tone) {
     case "active":

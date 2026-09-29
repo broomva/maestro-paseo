@@ -8,9 +8,10 @@ import { ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-n
 import { useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import type { CheckResult, WorkEventWire, WorkItem } from "../shared/contracts";
-import { ChangeStat } from "./changed";
+import { ChangeText, WithChange } from "./changed";
 import { ago, basename, errorText } from "./format";
 import { useVerbs, useWorkDetail } from "./hooks";
+import { changedVisible } from "./plane-model";
 import { Button, Card, IconButton, Notice, radius, StateLabel, space, useText } from "./ui";
 
 type Navigation = PluginSurfaceProps["navigation"];
@@ -222,15 +223,19 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
             </View>
           </View>
         ) : null}
-        {item.worker?.branch || item.worker?.workspaceId ? (
-          <View style={{ gap: space[1] }}>
-            <Text style={text.label}>Changed</Text>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
-              {item.worker.branch ? <Text style={text.mono}>{item.worker.branch}</Text> : null}
-              <ChangeStat theme={theme} workspaceId={item.worker.workspaceId} />
-            </View>
-          </View>
-        ) : null}
+        <WithChange workspaceId={item.worker?.workspaceId}>
+          {(stat) =>
+            changedVisible(item.worker?.branch, stat) ? (
+              <View style={{ gap: space[1] }}>
+                <Text style={text.label}>Changed</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
+                  {item.worker?.branch ? <Text style={text.mono}>{item.worker.branch}</Text> : null}
+                  {stat ? <ChangeText theme={theme} stat={stat} /> : null}
+                </View>
+              </View>
+            ) : null
+          }
+        </WithChange>
         {item.verdict ? <Text style={text.small}>{item.verdict}</Text> : null}
         {sendingBack ? (
           <View style={{ gap: space[2] }}>

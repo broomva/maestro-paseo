@@ -3,7 +3,7 @@
 
 import type { Worker, WorkItem } from "../shared/contracts";
 import { GROUP_COPY, GROUP_ORDER, type Group, PLAIN_VOICE } from "../shared/states";
-import { basename, plural } from "./format";
+import { agoWords, basename, plural } from "./format";
 
 export const VIEWS = [
   { id: "feed", label: "Feed", icon: "LayoutList" },
@@ -144,10 +144,15 @@ export function workerText(worker: Worker | null): string | null {
 
 export function stuckText(item: WorkItem): string | null {
   if (item.group !== "blocked") return null;
-  return item.reason ?? "The run stopped without a reason.";
+  return item.reason || "The run stopped without a reason.";
 }
 
 export type DiffStat = { additions: number; deletions: number };
+
+/** The changed row shows only when it has something to say: a branch or a stat actually read. */
+export function changedVisible(branch: string | null | undefined, stat: DiffStat | null): boolean {
+  return Boolean(branch) || stat !== null;
+}
 
 export function changeText(stat: DiffStat | null): string | null {
   return stat ? `+${stat.additions} −${stat.deletions}` : null;
@@ -155,6 +160,13 @@ export function changeText(stat: DiffStat | null): string | null {
 
 export function changeLabel(stat: DiffStat): string {
   return `${plural(stat.additions, "line")} added, ${stat.deletions} removed`;
+}
+
+/** What a screen reader hears for a card or row: title, state, where, why it is stuck, and when. */
+export function cardLabel(item: WorkItem, now = Date.now()): string {
+  return [item.title, stateText(item), crumb(item), stuckText(item), agoWords(item.updatedAt, now)]
+    .filter(Boolean)
+    .join(", ");
 }
 
 /** The header line: what needs a person first, then what is moving. */

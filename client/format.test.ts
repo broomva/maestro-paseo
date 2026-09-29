@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ago, duration, errorText } from "./format";
+import { ago, agoWords, duration, errorText } from "./format";
 
 test("errors read as the handler's sentence", () => {
   expect(
@@ -20,4 +20,14 @@ test("ages and durations", () => {
   expect(ago("2026-09-22T09:00:00Z", now)).toBe("3h");
   expect(ago("2026-09-20T12:00:00Z", now)).toBe("2d");
   expect(duration(230 * 60_000)).toBe("3h 50m");
+});
+
+test("ages in words, for screen readers", () => {
+  const now = Date.parse("2026-09-22T12:00:00Z");
+  expect(agoWords("2026-09-22T11:59:40Z", now)).toBe("updated just now");
+  expect(agoWords("2026-09-22T11:59:00Z", now)).toBe("updated 1 minute ago");
+  expect(agoWords("2026-09-22T11:48:00Z", now)).toBe("updated 12 minutes ago");
+  expect(agoWords("2026-09-22T09:00:00Z", now)).toBe("updated 3 hours ago");
+  expect(agoWords("2026-09-21T12:00:00Z", now)).toBe("updated 1 day ago");
+  expect(agoWords(null, now)).toBe("");
 });
