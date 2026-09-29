@@ -24,6 +24,14 @@ export const space = { 1: 4, 2: 8, 3: 12, 4: 16, 5: 20, 6: 24, 8: 32 } as const;
 export const radius = { control: 8, card: 12, pill: 9999 } as const;
 export const size = { xs: 12, sm: 14, base: 16, lg: 18, xl: 22, xxl: 24 } as const;
 
+/**
+ * ARIA that react-native-web writes to the DOM but React Native's types omit.
+ * Native ignores it, so pair it with accessibilityState for iOS and Android.
+ */
+export function webAria(props: { "aria-pressed"?: boolean; "aria-current"?: boolean }): object {
+  return props;
+}
+
 export function toneColor(theme: PluginTheme, tone: Tone): string {
   switch (tone) {
     case "active":
@@ -59,12 +67,23 @@ export function useReducedMotion(): boolean {
 /**
  * The state dot. Running work gets the tidepool: a ring that widens and fades
  * from the dot. Queued work is a hollow ring so it reads by shape as well as
- * color. Reduced motion keeps the ring as a static halo.
+ * color. Reduced motion keeps the ring as a static halo; `still` drops it, for
+ * dots that stand for a group rather than live work.
  */
-export function StateDot({ theme, state, dim = 8 }: { theme: PluginTheme; state: OrchState; dim?: number }) {
+export function StateDot({
+  theme,
+  state,
+  dim = 8,
+  still = false,
+}: {
+  theme: PluginTheme;
+  state: OrchState;
+  dim?: number;
+  still?: boolean;
+}) {
   const tone = PLAIN_VOICE[state].tone;
   const color = toneColor(theme, tone);
-  const live = state === "running";
+  const live = state === "running" && !still;
   const reduced = useReducedMotion();
   const wave = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -115,13 +134,15 @@ export function StateDot({ theme, state, dim = 8 }: { theme: PluginTheme; state:
   );
 }
 
-export function StateLabel({ theme, state }: { theme: PluginTheme; state: OrchState }) {
-  const { label, tone } = PLAIN_VOICE[state];
-  const color = tone === "muted" ? theme.colors.foregroundMuted : toneColor(theme, tone);
+export function StateLabel({ theme, state, label }: { theme: PluginTheme; state: OrchState; label?: string }) {
+  const voice = PLAIN_VOICE[state];
+  const color = voice.tone === "muted" ? theme.colors.foregroundMuted : toneColor(theme, voice.tone);
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: space[1] }}>
       <StateDot theme={theme} state={state} dim={7} />
-      <Text style={{ color, fontSize: size.xs, fontWeight: "600" }}>{state === "canceled" ? "Canceled" : label}</Text>
+      <Text style={{ color, fontSize: size.xs, fontWeight: "600" }}>
+        {label ?? (state === "canceled" ? "Canceled" : voice.label)}
+      </Text>
     </View>
   );
 }

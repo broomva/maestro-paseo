@@ -10,6 +10,16 @@ export function ago(iso: string | null, now = Date.now()): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
+/** The same age as `ago`, in words a screen reader can say. */
+export function agoWords(iso: string | null, now = Date.now()): string {
+  const short = ago(iso, now);
+  if (!short) return "";
+  if (short === "now") return "updated just now";
+  const n = Number.parseInt(short, 10);
+  const unit = short.endsWith("m") ? "minute" : short.endsWith("h") ? "hour" : "day";
+  return `updated ${plural(n, unit)} ago`;
+}
+
 export function duration(ms: number): string {
   const minutes = Math.round(ms / 60000);
   if (minutes < 1) return "0m";
