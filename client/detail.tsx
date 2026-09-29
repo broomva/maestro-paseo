@@ -74,7 +74,11 @@ export function WorkDetail({
           {item.title}
         </Text>
         {where ? <Text style={text.muted}>{where}</Text> : null}
-        {item.worker?.branch ? <Text style={text.mono}>{item.worker.branch}</Text> : null}
+        {item.worker ? (
+          <Text style={text.mono}>
+            {[item.worker.branch, item.worker.startedWith ?? item.worker.provider].filter(Boolean).join(" · ")}
+          </Text>
+        ) : null}
       </View>
 
       <Verbs item={item} theme={theme} compact={compact} />

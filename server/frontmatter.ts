@@ -10,7 +10,7 @@
 // provider's feature ids to simple values). An absent key means Settings.
 
 import YAML from "yaml";
-import { type CheckSpec, type FeatureValues, ISOLATIONS, type Isolation } from "../shared/contracts";
+import { type CheckSpec, FEATURE_LIMITS, type FeatureValues, ISOLATIONS, type Isolation } from "../shared/contracts";
 import { type GateMode, isGateMode, isKind, isOrchState, type Kind, type OrchState } from "../shared/states";
 
 export class WorkFileError extends Error {
@@ -104,11 +104,19 @@ export function readFeatures(raw: unknown): FeatureValues | null {
   if (typeof raw !== "object" || Array.isArray(raw) || raw instanceof Date) {
     throw new WorkFileError("features must be a mapping of feature ids to values");
   }
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length > FEATURE_LIMITS.keys)
+    throw new WorkFileError(`features holds at most ${FEATURE_LIMITS.keys} values`);
   const values: FeatureValues = {};
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+  for (const [key, value] of entries) {
+    if (key.length > FEATURE_LIMITS.chars)
+      throw new WorkFileError(`a features id is longer than ${FEATURE_LIMITS.chars} characters`);
     const simple =
       value === null || typeof value === "string" || typeof value === "boolean" || Number.isFinite(value as number);
     if (!simple) throw new WorkFileError(`features.${key} must be true, false, a number, a string or null`);
+    if (typeof value === "string" && value.length > FEATURE_LIMITS.chars) {
+      throw new WorkFileError(`features.${key} is longer than ${FEATURE_LIMITS.chars} characters`);
+    }
     values[key] = value as FeatureValues[string];
   }
   return Object.keys(values).length > 0 ? values : null;

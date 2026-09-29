@@ -120,7 +120,20 @@ describe("how runs start, as the work chose", () => {
     expect(() => readContract(parseWorkDoc(file("features:\n  fast:\n    on: true")))).toThrow("features.fast");
     expect(() => readFeatures({ when: new Date() })).toThrow(WorkFileError);
     expect(() => readFeatures("fast")).toThrow(WorkFileError);
+    expect(() => readFeatures(new Date())).toThrow("features must be a mapping");
+    expect(() => readFeatures({ budget: Number.POSITIVE_INFINITY })).toThrow("features.budget");
+    expect(() => readFeatures({ budget: Number.NaN })).toThrow("features.budget");
+    expect(() => readContract(parseWorkDoc(file("features:\n  budget: .inf")))).toThrow("features.budget");
     expect(readFeatures({})).toBeNull();
+  });
+
+  test("features are bounded: 32 values, 200 characters each", () => {
+    const many = Object.fromEntries(Array.from({ length: 33 }, (_, n) => [`f${n}`, true]));
+    expect(() => readFeatures(many)).toThrow("at most 32");
+    expect(readFeatures(Object.fromEntries(Object.entries(many).slice(0, 32)))).not.toBeNull();
+    expect(() => readFeatures({ effort: "x".repeat(201) })).toThrow("longer than 200");
+    expect(readFeatures({ effort: "x".repeat(200) })).toEqual({ effort: "x".repeat(200) });
+    expect(() => readFeatures({ ["k".repeat(201)]: true })).toThrow("longer than 200");
   });
 });
 
@@ -142,6 +155,8 @@ describe("the work's name", () => {
     const title = workTitle("", line) ?? "";
     expect(title.length).toBeLessThanOrEqual(TITLE_MAX);
     expect(title.endsWith("word\u2026")).toBe(true);
+    // A space too early to cut at would leave a stub: the line is cut hard instead.
+    expect(workTitle("", `a ${"x".repeat(200)}`)).toBe(`a ${"x".repeat(TITLE_MAX - 3)}\u2026`);
     const unbroken = "x".repeat(200);
     expect(workTitle("", unbroken)).toBe(`${"x".repeat(TITLE_MAX - 1)}\u2026`);
     expect(workTitle("", "x".repeat(TITLE_MAX))).toBe("x".repeat(TITLE_MAX));

@@ -128,18 +128,18 @@ export function withModel(draft: AgentDraft, next: string, shownFamily: string |
 }
 
 /**
- * The agent fields for `work.create`. Thinking and features belong to one
- * model, so choosing either pins the model the pill shows; a mode belongs to
- * a provider, so choosing one pins the provider and leaves its model to Settings.
+ * The agent fields for `work.create`. A mode, a thinking level or a feature is
+ * chosen against the model the pill shows, so choosing any of them pins that
+ * model: a bare provider would resolve to its own default at dispatch, which
+ * is not always the model Settings names. Nothing chosen sends nothing.
  */
 export function agentChoices(
   draft: AgentDraft,
   shown: { model: string | null; family: string | null },
 ): Pick<RunChoices, "provider" | "modeId" | "thinkingOptionId" | "featureValues"> {
   const hasFeatures = Object.keys(draft.featureValues).length > 0;
-  const pinsModel = draft.thinkingOptionId !== null || hasFeatures;
-  const provider =
-    draft.model ?? (pinsModel ? (shown.model ?? shown.family) : draft.modeId ? shown.family : null) ?? null;
+  const pinsModel = draft.modeId !== null || draft.thinkingOptionId !== null || hasFeatures;
+  const provider = draft.model ?? (pinsModel ? (shown.model ?? shown.family) : null);
   return {
     ...(provider ? { provider } : {}),
     ...(draft.modeId ? { modeId: draft.modeId } : {}),
@@ -226,6 +226,28 @@ export function featureIcon(icon: string | undefined): string {
 /** A value the feature can hold, or the feature's own when the draft has none. */
 export function featureValue(feature: FeatureDef, draft: FeatureValues): FeatureValue {
   return Object.hasOwn(draft, feature.id) ? (draft[feature.id] ?? null) : feature.value;
+}
+
+/**
+ * The words on the model, thinking and mode pills. Each pill is always shown:
+ * "Loading\u2026" while its read (or Settings) is in flight, the answer once
+ * there is one, and "Settings default" when the read failed or listed
+ * nothing, since then the run starts the way Settings says.
+ */
+export function agentPillLabels(input: {
+  settingsLoading: boolean;
+  modelsLoading: boolean;
+  modesLoading: boolean;
+  model: Pick<ModelDef, "label"> | null;
+  thinking: Pick<Choice, "label"> | null;
+  mode: Pick<ModeDef, "label"> | null;
+}): { model: string; thinking: string; mode: string } {
+  const models = input.settingsLoading || input.modelsLoading;
+  return {
+    model: pillLabel({ loading: models, label: input.model?.label }),
+    thinking: pillLabel({ loading: models, label: input.thinking?.label }),
+    mode: pillLabel({ loading: input.settingsLoading || input.modesLoading, label: input.mode?.label }),
+  };
 }
 
 /** A pill's words while its provider read is in flight, failed, or answered. */

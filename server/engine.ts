@@ -16,7 +16,7 @@ import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { MaestroConfig, RunChoices, WorkItem } from "../shared/contracts";
 import { GROUP_ORDER, isDispatchable, isTerminal, landingState, type Verdict } from "../shared/states";
 import { runChecks } from "./checks";
-import { expandHome, loadConfig } from "./config";
+import { loadConfig } from "./config";
 import {
   BY_HUMAN,
   checkOutcome,
@@ -31,6 +31,7 @@ import {
   type WorkEvent,
   workerOf,
 } from "./events";
+import { inspectFolder, repoRefusal } from "./folders";
 import { briefOf, type RunKeys, workTitle } from "./frontmatter";
 import { describePermission, type PermissionLike } from "./permissions";
 import { type Paseo, startRun } from "./runs";
@@ -157,15 +158,22 @@ function runKeys(input: RunChoices): RunKeys {
   return keys;
 }
 
+export const MODED_BY_YOU = "This work runs in a mode you chose; start it yourself.";
+
 /**
- * Work a dispatch may start from: queued, stuck, or a run with no session
- * recorded. A session may start only queued work: restarting stuck work is
- * unblocking, and that is yours.
+ * Why this caller may not start this work, or null. You may start queued or
+ * stuck work, or a run with no session recorded. A session may start only
+ * queued work (restarting stuck work is unblocking, and that is yours), and
+ * never work that carries a mode you chose for it: the mode is yours to use.
  */
-function canDispatch(item: StoredWork, origin: Origin): boolean {
+function startRefusal(item: StoredWork, origin: Origin): string | null {
   const state = item.contract.state;
-  if (origin.actor === "agent") return isDispatchable(state);
-  return isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events));
+  if (origin.actor === "agent") {
+    if (!isDispatchable(state)) return "A session can start only queued work. Stuck work is unblocked in Maestro.";
+    return item.contract.modeId ? MODED_BY_YOU : null;
+  }
+  if (isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events))) return null;
+  return "Only queued or stuck work can be dispatched.";
 }
 
 export class Engine {
@@ -353,12 +361,21 @@ export class Engine {
     if (input.gate === "auto" && !input.check.trim()) {
       throw new UserError("Letting checks decide needs a check command.");
     }
-    const repo = expandHome(input.repo.trim());
+    // How runs start is yours alone: work a session creates runs as Settings say, so no
+    // session can file work that dispatches with a mode that skips permissions.
+    const run = origin.actor === "agent" ? undefined : runKeys(input);
+    const folder = await inspectFolder(input.repo);
+    const repo = folder.path;
     if (!isAbsolute(repo)) throw new UserError("Use an absolute path for the repository.");
-    const { stat } = await import("node:fs/promises");
-    const info = await stat(repo).catch(() => null);
-    if (!info?.isDirectory()) throw new UserError(`No folder at ${repo}.`);
-    const { store } = await this.store();
+    if (!folder.directory) throw new UserError(`No folder at ${repo}.`);
+    const { store, config } = await this.store();
+    const refusal = await repoRefusal(repo, config.workRoot);
+    if (refusal) throw new UserError(refusal);
+    if ((run?.isolation ?? config.isolation) === "worktree" && !folder.git) {
+      throw new UserError(
+        `${repo} is not a git repository, and each run gets a new worktree. Choose a repository, or run in the folder itself.`,
+      );
+    }
     const item = await store.create({
       title,
       brief: input.brief,
@@ -368,9 +385,7 @@ export class Engine {
       initiative: input.initiative,
       now: this.now(),
       origin,
-      // How runs start is yours alone: work a session creates runs as Settings say, so no
-      // session can file work that dispatches with a mode that skips permissions.
-      run: origin.actor === "agent" ? undefined : runKeys(input),
+      run,
     });
     if (input.dispatch) {
       if (!paseo) throw new UserError(`Created ${item.contract.id}, but it cannot be dispatched yet: ${NO_HANDLE}`);
@@ -385,13 +400,8 @@ export class Engine {
     try {
       const { store, config } = await this.store();
       const item = await store.findById(id);
-      if (!canDispatch(item, origin)) {
-        throw new UserError(
-          origin.actor === "agent"
-            ? "A session can start only queued work. Stuck work is unblocked in Maestro."
-            : "Only queued or stuck work can be dispatched.",
-        );
-      }
+      const refusal = startRefusal(item, origin);
+      if (refusal) throw new UserError(refusal);
       let worker: Awaited<ReturnType<typeof startRun>>;
       try {
         worker = await startRun(paseo, config, item);
@@ -406,7 +416,7 @@ export class Engine {
         bound = await store.mutate(
           id,
           (fresh) => {
-            if (!canDispatch(fresh, origin)) throw new UserError("The work changed while the run was starting.");
+            if (startRefusal(fresh, origin)) throw new UserError("The work changed while the run was starting.");
             return {
               to: "running",
               actor: origin.actor,

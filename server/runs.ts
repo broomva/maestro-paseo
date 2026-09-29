@@ -122,5 +122,8 @@ export async function startRun(paseo: Paseo, config: MaestroConfig, item: Stored
     provider,
     branch,
     cwd: agent.cwd ?? workspace.directory ?? repo,
+    modeId: run.modeId ?? null,
+    thinkingOptionId: run.thinkingOptionId ?? null,
+    featureValues: run.featureValues ? { ...run.featureValues } : null,
   };
 }

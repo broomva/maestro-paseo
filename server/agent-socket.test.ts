@@ -37,7 +37,8 @@ async function setup() {
   const root = await mkdtemp(join(tmpdir(), "maestro-socket-"));
   roots.push(root);
   const repo = join(root, "repo");
-  await mkdir(repo);
+  // A git repository as far as Maestro checks: runs branch a worktree from it.
+  await mkdir(join(repo, ".git"), { recursive: true });
   const config: MaestroConfig = {
     workRoot: join(root, "work"),
     provider: "claude/test-model",
@@ -179,6 +180,24 @@ describe("what a session is offered", () => {
       provider: "claude/test-model",
     });
     expect(item.worker?.branch).toMatch(/^run\//);
+  });
+
+  test("a session cannot start work that carries a mode you chose", async () => {
+    const { repo, ask, engine, fake } = await setup();
+    const mine = await engine.create(fake.paseo, {
+      title: "Moded by you",
+      brief: "",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "",
+      dispatch: false,
+      modeId: "bypassPermissions",
+    });
+    const response = await ask("work.dispatch", { id: mine.id });
+    expect(!response.ok && response.error).toContain("start it yourself");
+    expect(fake.created).toHaveLength(0);
+    expect((await engine.get(mine.id)).item.state).toBe("proposed");
   });
 
   test("settings are the engine's, not whatever file is on disk", async () => {

@@ -80,6 +80,8 @@ maestro mine                   # the work this session is running
   choices the composer offers you (provider, isolation, mode, thinking, features), so it runs as
   Settings say. That is no more than a session can already do: Paseo's own `create_agent` tool,
   which every session holds, starts an agent in any mode.
+- **A mode you chose for one work is yours to use.** A session cannot start work that carries its
+  own mode: it is told "This work runs in a mode you chose; start it yourself."
 - **Receipts say which session it said it was.** Everything done through the socket is recorded as
   an agent's (`actor: agent`), never yours, reads "by session 1a2b3c4d" in the receipts, and never
   counts as you stepping in on the scoreboard. The id is the `PASEO_AGENT_ID` the client reports;
@@ -130,6 +132,9 @@ The optional keys are what the New work composer chose. An absent one means Sett
 dispatch time; the Settings mode applies only while the run uses the Settings provider, since a
 mode belongs to one provider. A title left blank in the composer takes the brief's first line.
 
+Runs start only in a repository the work changes: never your home folder, the work folder, a folder
+holding it, or one inside it. With `isolation: worktree` the folder must be a git repository.
+
 Folders nest: `<root>/<initiative>/<project>/<item>/_work.md`. The nesting is the grouping.
 Edits keep the author's comments and key order. `_events.jsonl` is append-only. A file that does
 not parse shows as a warning in the list; it is never silently skipped.
@@ -160,6 +165,9 @@ are documented in `shared/states.ts`, and the invariant that matters is kept exa
 under a human gate reaches Done without an approve verdict.
 
 ## The agent's instructions
+
+The receipt of each dispatch, and the detail pane, say how the agent was started: provider, mode,
+thinking level and features.
 
 Each dispatch sends the title, the brief, the checks, and three rules: commit on the run branch,
 do not merge or push unless asked, and end with `## Decided` and `## Ask` sections. Those two
@@ -192,7 +200,7 @@ it answers, and the other keeps retrying every ten seconds, which its plugin log
 |---|---|---|
 | `workRoot` | `~/maestro` | Where work folders live |
 | `provider` | `claude` | Provider, optionally with a model: `claude/claude-sonnet-5` |
-| `modeId` | none | Provider mode for runs; empty means the provider default |
+| `modeId` | none | Provider mode for runs; empty means the provider default. It applies only while a run uses the Settings provider: work that chose another provider starts in that provider's default mode |
 | `isolation` | `worktree` | `worktree` for a fresh branch per run, `directory` to run in the repo |
 
 ## Development

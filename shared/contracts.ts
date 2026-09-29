@@ -5,12 +5,31 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { GATE_MODES, GROUP_ORDER, KINDS, ORCH_STATES, VERDICTS } from "./states";
 
+/** Bounds on what a work may pass to a provider as feature values. */
+export const FEATURE_LIMITS = { keys: 32, chars: 200 } as const;
+
+/** A provider feature's value: a toggle is a boolean, a select is an option id or null. */
+export const FeatureValueSchema = z.union([z.string().max(FEATURE_LIMITS.chars), z.number(), z.boolean(), z.null()]);
+export type FeatureValue = z.infer<typeof FeatureValueSchema>;
+export const FeatureValuesSchema = z
+  .record(z.string().min(1).max(FEATURE_LIMITS.chars), FeatureValueSchema)
+  .refine((values) => Object.keys(values).length <= FEATURE_LIMITS.keys, {
+    message: `At most ${FEATURE_LIMITS.keys} feature values`,
+  });
+export type FeatureValues = z.infer<typeof FeatureValuesSchema>;
+
 export const WorkerSchema = z.object({
   agentId: z.string(),
   workspaceId: z.string().nullable(),
   provider: z.string(),
   branch: z.string().nullable(),
   cwd: z.string().nullable(),
+  /** How the run was started, beyond the provider; absent on runs recorded before these were kept. */
+  modeId: z.string().nullable().optional(),
+  thinkingOptionId: z.string().nullable().optional(),
+  featureValues: FeatureValuesSchema.nullable().optional(),
+  /** The same, in words: `claude/opus (mode bypassPermissions, thinking high)`. */
+  startedWith: z.string().optional(),
 });
 export type Worker = z.infer<typeof WorkerSchema>;
 
@@ -151,12 +170,6 @@ export const getWork = defineRpc({
 
 export type Isolation = (typeof ISOLATIONS)[number];
 
-/** A provider feature's value: a toggle is a boolean, a select is an option id or null. */
-export const FeatureValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
-export type FeatureValue = z.infer<typeof FeatureValueSchema>;
-export const FeatureValuesSchema = z.record(z.string().min(1), FeatureValueSchema);
-export type FeatureValues = z.infer<typeof FeatureValuesSchema>;
-
 /**
  * How one work item's runs start, chosen in the composer. Every field is
  * optional: an absent one means the Settings value at dispatch time.
@@ -184,6 +197,13 @@ export const createWork = defineRpc({
     dispatch: z.boolean(),
   }),
   output: ItemResult,
+});
+
+/** A folder as the daemon sees it: `~` expanded, and whether runs can branch from it. */
+export const inspectFolder = defineRpc({
+  name: "folder.inspect",
+  input: z.object({ path: z.string() }),
+  output: z.object({ path: z.string(), directory: z.boolean(), git: z.boolean() }),
 });
 
 export const dispatchWork = defineRpc({ name: "work.dispatch", input: ById, output: ItemResult });

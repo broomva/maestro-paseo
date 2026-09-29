@@ -10,7 +10,7 @@
 // View, TextInput and Pressable with Paseo's composer tokens.
 
 import type { PluginTheme } from "@getpaseo/plugin";
-import { usePaseo } from "@getpaseo/plugin/client";
+import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
@@ -20,15 +20,17 @@ import {
   type TextInput as NativeTextInput,
   Platform,
   Pressable,
+  type Role,
   Text,
   type TextInputKeyPressEventData,
   type TextStyle,
   View,
 } from "react-native";
-import type { Isolation } from "../shared/contracts";
+import { type Isolation, inspectFolder } from "../shared/contracts";
 import type { GateMode } from "../shared/states";
 import {
   type AgentDraft,
+  agentPillLabels,
   canSubmit,
   contractSummary,
   createInput,
@@ -89,9 +91,17 @@ type Keys = TextInputKeyPressEventData & {
 };
 
 interface KeyTarget {
-  addEventListener(type: "keydown", listener: (event: { key?: string }) => void): void;
-  removeEventListener(type: "keydown", listener: (event: { key?: string }) => void): void;
+  addEventListener(type: "keydown", listener: (event: { key?: string }) => void, capture: boolean): void;
+  removeEventListener(type: "keydown", listener: (event: { key?: string }) => void, capture: boolean): void;
 }
+
+/**
+ * A row that is one choice among several. On the web it is ARIA's
+ * `menuitemradio` inside `role="menu"`: react-native-web writes the role as
+ * given, though RN's Role type omits it. Native has no such role and logs an
+ * error for unknown ones, so there it is a radio.
+ */
+const CHOICE_ROLE = (Platform.OS === "web" ? "menuitemradio" : "radio") as Role;
 
 export interface NewWorkPaneProps {
   theme: PluginTheme;
@@ -173,7 +183,8 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
   const [brief, setBrief] = useState("");
   const [repo, setRepo] = useState("");
   const [folderMode, setFolderMode] = useState(false);
-  const [folderCwd, setFolderCwd] = useState<string | null>(null);
+  /** The folder path as last committed (blur or return), for the daemon to inspect. */
+  const [folderPath, setFolderPath] = useState<string | null>(null);
   const [check, setCheck] = useState("");
   const [gate, setGate] = useState<GateMode>("human");
   const [initiative, setInitiative] = useState("");
@@ -185,7 +196,8 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
   const briefRef = useRef<NativeTextInput>(null);
   const searchRef = useRef<NativeTextInput>(null);
 
-  // esc closes the open menu, then the composer. Web only: native has its own back.
+  // esc closes the open menu, then the composer. Web only: native has its own back. Capture
+  // phase, so the key is seen before a focused text field handles it.
   const menuRef = useRef(menu);
   menuRef.current = menu;
   const closeRef = useRef(onClose);
@@ -199,8 +211,8 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
       if (menuRef.current) setMenu(null);
       else closeRef.current();
     };
-    doc.addEventListener("keydown", onKey);
-    return () => doc.removeEventListener("keydown", onKey);
+    doc.addEventListener("keydown", onKey, true);
+    return () => doc.removeEventListener("keydown", onKey, true);
   }, [heading]);
 
   const toggle = (id: MenuId) => {
@@ -221,10 +233,27 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
   }, [repo, folderMode, firstProject]);
   const project = folderMode ? undefined : gitProjects.find((candidate) => candidate.projectRootPath === repo);
   const projectName = project?.projectDisplayName ?? (repo.trim() ? basename(repo.trim()) : null);
-  const cwd = project?.projectRootPath ?? (folderMode ? (folderCwd ?? undefined) : undefined);
+  // A typed folder is read by the daemon, which expands ~ and knows whether it is a repository;
+  // the provider reads then use the path it returns, the same one a run will use.
+  const inspect = useRpc(inspectFolder);
+  const folder = useQuery({
+    queryKey: [PASEO_KEY, "folder", folderPath],
+    queryFn: () => inspect({ path: folderPath ?? "" }),
+    enabled: folderMode && Boolean(folderPath),
+    staleTime: 10_000,
+  });
+  const folderInfo = folderMode && folderPath ? folder.data : undefined;
+  const cwd = project?.projectRootPath ?? (folderInfo?.directory ? folderInfo.path : undefined);
 
   const config = settings.data;
   const shownIsolation: Isolation = isolation ?? config?.isolation ?? "worktree";
+  const folderProblem = !folderInfo
+    ? null
+    : !folderInfo.directory
+      ? `No folder at ${folderInfo.path}.`
+      : !folderInfo.git && shownIsolation === "worktree"
+        ? "Not a git repository, and each run gets a new worktree. Choose In the repository to run in the folder itself."
+        : null;
 
   // ── The agent: Paseo's provider reads ──────────────────────────────────────
   const selection = agent.model ?? config?.provider ?? null;
@@ -267,6 +296,14 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
   });
 
   const thinking = thinkingShown(shownModelDef, agent.thinkingOptionId);
+  const pills = agentPillLabels({
+    settingsLoading: settings.isLoading,
+    modelsLoading: models.isLoading,
+    modesLoading: modes.isLoading,
+    model: shownModelDef,
+    thinking,
+    mode,
+  });
   const thinkingOptions = shownModelDef?.thinkingOptions ?? [];
 
   const hasDraftFeatures = Object.keys(agent.featureValues).length > 0;
@@ -294,6 +331,7 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
     placeholderData: (previous) => previous,
   });
   const featureList: FeatureDef[] = features.data?.features ?? [];
+  const featureError = features.isError ? errorText(features.error) : (features.data?.error ?? null);
 
   // ── Initiatives in use ─────────────────────────────────────────────────────
   const initiatives = initiativesOf(list.data?.items ?? []);
@@ -304,7 +342,7 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
   const typedIsNew = typedInitiative !== null && !initiatives.some((known) => known.name === typedInitiative);
 
   // ── Submit ─────────────────────────────────────────────────────────────────
-  const ready = canSubmit({ title, brief, repo });
+  const ready = canSubmit({ title, brief, repo }) && !folderProblem;
   const pending = verbs.create.isPending;
   const submit = (dispatch: boolean) => {
     if (!ready || pending) return;
@@ -360,6 +398,17 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
 
   return (
     <View style={{ gap: space[3] }}>
+      {menu ? (
+        // Pressing anywhere outside the open menu closes it. It sits under the row or composer
+        // that holds the menu and over everything else; on the web it reaches past the composer
+        // to the whole pane, on native it covers the composer's own area.
+        <Pressable
+          accessible={false}
+          importantForAccessibility="no"
+          onPress={() => setMenu(null)}
+          style={{ position: "absolute", top: -4000, bottom: -4000, left: -4000, right: -4000, zIndex: 10 }}
+        />
+      ) : null}
       {heading ? (
         <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], paddingHorizontal: space[1] }}>
           <Text
@@ -423,7 +472,7 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
                 selected={folderMode}
                 onPress={() => {
                   setFolderMode(true);
-                  setFolderCwd(null);
+                  setFolderPath(null);
                   setRepo("");
                   setMenu(null);
                 }}
@@ -521,7 +570,7 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
               <MenuRow
                 theme={theme}
                 icon={shownGate === "human" ? "CircleCheck" : "Circle"}
-                role="radio"
+                radio
                 label="You approve"
                 hint="Every run waits at your gate, check or not."
                 selected={shownGate === "human"}
@@ -530,7 +579,7 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
               <MenuRow
                 theme={theme}
                 icon={shownGate === "auto" ? "CircleCheck" : "Circle"}
-                role="radio"
+                radio
                 label="Checks decide"
                 hint={
                   checkText
@@ -608,6 +657,7 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
                   <MenuRow
                     theme={theme}
                     icon="FolderPlus"
+                    kind="action"
                     label={typed ? `New initiative “${typed}”` : "New initiative…"}
                     hint={typed ? "Creates a folder under the work root" : "Type its name above"}
                     selected={false}
@@ -632,8 +682,8 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
           <TextInput
             value={repo}
             onChangeText={setRepo}
-            onBlur={() => setFolderCwd(repo.trim() || null)}
-            onSubmitEditing={() => setFolderCwd(repo.trim() || null)}
+            onBlur={() => setFolderPath(repo.trim() || null)}
+            onSubmitEditing={() => setFolderPath(repo.trim() || null)}
             autoFocus
             autoCapitalize="none"
             autoCorrect={false}
@@ -651,8 +701,22 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
               backgroundColor: theme.colors.surface1,
             }}
           />
-          <Text style={[text.small, { paddingHorizontal: space[1] }]}>
-            An absolute path to a git repository on this host.
+          <Text
+            style={[
+              text.small,
+              { paddingHorizontal: space[1] },
+              folderProblem || folder.isError ? { color: theme.colors.statusDanger } : null,
+            ]}
+          >
+            {folder.isError
+              ? errorText(folder.error)
+              : folderProblem
+                ? folderProblem
+                : folderInfo
+                  ? `${shortPath(folderInfo.path)}${folderInfo.git ? ", a git repository" : ""}`
+                  : folder.isFetching
+                    ? "Checking\u2026"
+                    : "An absolute path to a git repository on this host. ~ is your home folder."}
           </Text>
         </View>
       ) : null}
@@ -703,7 +767,7 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
               theme={theme}
               compact={compact}
               icon={providerIcon(shownFamily)}
-              label={pillLabel({ loading: settings.isLoading || models.isLoading, label: shownModelDef?.label })}
+              label={pills.model}
               open={menu === "model"}
               accessibilityLabel="Model"
               onPress={() => toggle("model")}
@@ -771,6 +835,7 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
                     <MenuRow
                       theme={theme}
                       icon="RotateCcw"
+                      kind="action"
                       label="Use the Settings default"
                       hint={config ? `Currently ${config.provider}` : undefined}
                       selected={false}
@@ -785,79 +850,89 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
             ) : null}
           </Anchor>
 
-          {thinkingOptions.length > 0 ? (
-            <Anchor open={menu === "thinking"}>
-              <ToolbarPill
-                theme={theme}
-                compact={compact}
-                icon="Brain"
-                label={thinking?.label ?? "Thinking"}
-                open={menu === "thinking"}
-                accessibilityLabel="Thinking"
-                onPress={() => toggle("thinking")}
-              />
-              {menu === "thinking" ? (
-                <Menu theme={theme} width={240}>
-                  {thinkingOptions.map((option) => (
-                    <MenuRow
-                      key={option.id}
-                      theme={theme}
-                      icon="Brain"
-                      label={option.label}
-                      hint={option.description}
-                      selected={thinking?.id === option.id}
-                      onPress={() => {
-                        setAgent({ ...agent, thinkingOptionId: option.id });
-                        setMenu(null);
-                      }}
-                    />
-                  ))}
-                  <MenuDivider theme={theme} />
-                  <MenuNote theme={theme}>The levels are the model{"’"}s own.</MenuNote>
-                </Menu>
-              ) : null}
-            </Anchor>
-          ) : null}
-
-          {modes.isLoading || modes.isError || modeList.length > 0 ? (
-            <Anchor open={menu === "mode"}>
-              <ToolbarPill
-                theme={theme}
-                compact={compact}
-                icon={mode?.icon && MODE_ICONS.has(mode.icon) ? mode.icon : "Shield"}
-                label={pillLabel({ loading: settings.isLoading || modes.isLoading, label: mode?.label })}
-                open={menu === "mode"}
-                accessibilityLabel="Mode"
-                onPress={() => toggle("mode")}
-              />
-              {menu === "mode" ? (
-                <Menu theme={theme}>
-                  <MenuSearch theme={theme} placeholder={"Search modes…"} value={query} onChange={setQuery} />
-                  {modes.isError ? <MenuNote theme={theme}>{errorText(modes.error)}</MenuNote> : null}
-                  {modes.data?.error ? <MenuNote theme={theme}>{modes.data.error}</MenuNote> : null}
-                  {filter(modeList, (candidate) => `${candidate.label} ${candidate.id}`).map((candidate) => (
-                    <MenuRow
-                      key={candidate.id}
-                      theme={theme}
-                      icon={candidate.icon && MODE_ICONS.has(candidate.icon) ? candidate.icon : "Shield"}
-                      label={candidate.label}
-                      hint={candidate.description}
-                      selected={mode?.id === candidate.id}
-                      onPress={() => {
-                        setAgent({ ...agent, modeId: candidate.id });
-                        setMenu(null);
-                      }}
-                    />
-                  ))}
-                  <MenuDivider theme={theme} />
+          <Anchor open={menu === "thinking"}>
+            <ToolbarPill
+              theme={theme}
+              compact={compact}
+              icon="Brain"
+              label={pills.thinking}
+              open={menu === "thinking"}
+              accessibilityLabel="Thinking"
+              onPress={() => toggle("thinking")}
+            />
+            {menu === "thinking" ? (
+              <Menu theme={theme} width={240}>
+                {thinkingOptions.length === 0 ? (
                   <MenuNote theme={theme}>
-                    From {providerName}
-                    {"’"}s mode list in Paseo.
+                    {models.isLoading
+                      ? "Loading\u2026"
+                      : models.isError
+                        ? errorText(models.error)
+                        : (models.data?.error ??
+                          "This model lists no thinking levels here, so it runs at its default.")}
                   </MenuNote>
-                </Menu>
-              ) : null}
-            </Anchor>
-          ) : null}
+                ) : null}
+                {thinkingOptions.map((option) => (
+                  <MenuRow
+                    key={option.id}
+                    theme={theme}
+                    icon="Brain"
+                    label={option.label}
+                    hint={option.description}
+                    selected={thinking?.id === option.id}
+                    onPress={() => {
+                      setAgent({ ...agent, thinkingOptionId: option.id });
+                      setMenu(null);
+                    }}
+                  />
+                ))}
+                <MenuDivider theme={theme} />
+                <MenuNote theme={theme}>The levels are the model{"’"}s own.</MenuNote>
+              </Menu>
+            ) : null}
+          </Anchor>
+
+          <Anchor open={menu === "mode"}>
+            <ToolbarPill
+              theme={theme}
+              compact={compact}
+              icon={mode?.icon && MODE_ICONS.has(mode.icon) ? mode.icon : "Shield"}
+              label={pills.mode}
+              open={menu === "mode"}
+              accessibilityLabel="Mode"
+              onPress={() => toggle("mode")}
+            />
+            {menu === "mode" ? (
+              <Menu theme={theme}>
+                <MenuSearch theme={theme} placeholder={"Search modes…"} value={query} onChange={setQuery} />
+                {modes.isError ? <MenuNote theme={theme}>{errorText(modes.error)}</MenuNote> : null}
+                {modes.data?.error ? <MenuNote theme={theme}>{modes.data.error}</MenuNote> : null}
+                {modes.isLoading ? <MenuNote theme={theme}>Loading{"\u2026"}</MenuNote> : null}
+                {!modes.isLoading && modeList.length === 0 && !modes.data?.error && !modes.isError ? (
+                  <MenuNote theme={theme}>No modes listed here, so runs use the Settings mode.</MenuNote>
+                ) : null}
+                {filter(modeList, (candidate) => `${candidate.label} ${candidate.id}`).map((candidate) => (
+                  <MenuRow
+                    key={candidate.id}
+                    theme={theme}
+                    icon={candidate.icon && MODE_ICONS.has(candidate.icon) ? candidate.icon : "Shield"}
+                    label={candidate.label}
+                    hint={candidate.description}
+                    selected={mode?.id === candidate.id}
+                    onPress={() => {
+                      setAgent({ ...agent, modeId: candidate.id });
+                      setMenu(null);
+                    }}
+                  />
+                ))}
+                <MenuDivider theme={theme} />
+                <MenuNote theme={theme}>
+                  From {providerName}
+                  {"’"}s mode list in Paseo.
+                </MenuNote>
+              </Menu>
+            ) : null}
+          </Anchor>
 
           {featureList.map((feature) => {
             const value = featureValue(feature, agent.featureValues);
@@ -980,6 +1055,16 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
         </View>
       </View>
 
+      {featureError ? (
+        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[2], paddingHorizontal: space[1] }}>
+          <Icon name="TriangleAlert" size={14} color={theme.colors.statusWarning} />
+          <Text style={[text.small, { flex: 1 }]}>
+            Could not list {providerName}
+            {"\u2019"}s features: {featureError}
+          </Text>
+        </View>
+      ) : null}
+
       <View
         style={{
           flexDirection: "row",
@@ -1034,7 +1119,7 @@ function Menu({
 }) {
   return (
     <View
-      accessibilityRole="menu"
+      role="menu"
       style={{
         position: "absolute",
         top: "100%",
@@ -1067,6 +1152,10 @@ function Menu({
   );
 }
 
+/**
+ * One row of a menu. A choice is one of several (checked when it is the
+ * current one); an action does something else, such as revealing a field.
+ */
 function MenuRow({
   theme,
   label,
@@ -1075,7 +1164,8 @@ function MenuRow({
   leading,
   selected,
   disabled = false,
-  role = "menuitem",
+  kind = "choice",
+  radio = false,
   onPress,
 }: {
   theme: PluginTheme;
@@ -1085,14 +1175,18 @@ function MenuRow({
   leading?: ReactNode;
   selected: boolean;
   disabled?: boolean;
-  role?: "menuitem" | "radio";
+  kind?: "choice" | "action";
+  /** Drawn as a radio button rather than with a check mark. */
+  radio?: boolean;
   onPress: () => void;
 }) {
+  const choice = kind === "choice";
   return (
     <Pressable
-      accessibilityRole={role}
+      role={choice ? CHOICE_ROLE : "menuitem"}
+      aria-checked={choice ? selected : undefined}
+      aria-disabled={disabled}
       accessibilityLabel={hint ? `${label}. ${hint}` : label}
-      accessibilityState={role === "radio" ? { checked: selected, disabled } : { selected, disabled }}
       disabled={disabled}
       onPress={onPress}
       style={({ pressed }) => ({
@@ -1112,7 +1206,7 @@ function MenuRow({
             <Icon
               name={icon}
               size={16}
-              color={role === "radio" && selected ? theme.colors.accent : theme.colors.foregroundMuted}
+              color={radio && selected ? theme.colors.accent : theme.colors.foregroundMuted}
             />
           </View>
         ) : null)}
@@ -1122,7 +1216,7 @@ function MenuRow({
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: size.xs, lineHeight: 16 }}>{hint}</Text>
         ) : null}
       </View>
-      {selected && role === "menuitem" ? <Icon name="Check" size={16} color={theme.colors.accent} /> : null}
+      {selected && choice && !radio ? <Icon name="Check" size={16} color={theme.colors.accent} /> : null}
     </Pressable>
   );
 }

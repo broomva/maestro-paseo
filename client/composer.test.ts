@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   agentChoices,
+  agentPillLabels,
   canSubmit,
   contractSummary,
   createInput,
@@ -9,6 +10,7 @@ import {
   featureValue,
   initiativesOf,
   type ModelDef,
+  modelKey,
   modeShown,
   pillLabel,
   resolveModel,
@@ -77,6 +79,37 @@ describe("what the pills show", () => {
     expect(modeShown(modes, { ...base, shownFamily: "claude", settings: null, providerDefault: null })).toBeNull();
   });
 
+  test("each agent pill says Loading while its read runs, and Settings default when it failed or listed nothing", () => {
+    const idle = { settingsLoading: false, modelsLoading: false, modesLoading: false };
+    expect(agentPillLabels({ ...idle, modelsLoading: true, model: null, thinking: null, mode: null })).toEqual({
+      model: "Loading\u2026",
+      thinking: "Loading\u2026",
+      mode: "Settings default",
+    });
+    expect(agentPillLabels({ ...idle, modesLoading: true, model: null, thinking: null, mode: null }).mode).toBe(
+      "Loading\u2026",
+    );
+    expect(agentPillLabels({ ...idle, settingsLoading: true, model: null, thinking: null, mode: null })).toEqual({
+      model: "Loading\u2026",
+      thinking: "Loading\u2026",
+      mode: "Loading\u2026",
+    });
+    // An error payload or an empty list resolves nothing: every pill stays, reading Settings default.
+    expect(agentPillLabels({ ...idle, model: null, thinking: null, mode: null })).toEqual({
+      model: "Settings default",
+      thinking: "Settings default",
+      mode: "Settings default",
+    });
+    expect(
+      agentPillLabels({
+        ...idle,
+        model: { label: "Opus 5.5" },
+        thinking: { label: "High" },
+        mode: { label: "Bypass" },
+      }),
+    ).toEqual({ model: "Opus 5.5", thinking: "High", mode: "Bypass" });
+  });
+
   test("a read in flight says so; a failed or empty one falls back to Settings", () => {
     expect(pillLabel({ loading: true, label: null })).toBe("Loading…");
     expect(pillLabel({ loading: false, label: undefined })).toBe("Settings default");
@@ -107,21 +140,30 @@ describe("what work.create receives", () => {
     expect(input).toMatchObject({ title: "Trim", check: "bun test", gate: "auto", isolation: "directory" });
   });
 
-  test("a mode pins the provider; thinking or a feature pins the model the pill shows", () => {
-    const shown = { model: "claude/opus", family: "claude" };
+  test("a mode, thinking or feature pins the model the pill shows, never the provider's own default", () => {
+    // Settings names haiku; the provider's default is opus. A bare "claude" would run opus.
+    const settingsModel = resolveModel(models, "claude/haiku");
+    expect(settingsModel?.id).toBe("haiku");
+    expect(resolveModel(models, "claude")?.id).toBe("opus");
+    const shown = { model: settingsModel ? modelKey(settingsModel) : null, family: "claude" };
     expect(agentChoices({ ...EMPTY_AGENT, modeId: "bypassPermissions" }, shown)).toEqual({
-      provider: "claude",
+      provider: "claude/haiku",
       modeId: "bypassPermissions",
     });
     expect(agentChoices({ ...EMPTY_AGENT, thinkingOptionId: "xhigh" }, shown)).toEqual({
-      provider: "claude/opus",
+      provider: "claude/haiku",
       thinkingOptionId: "xhigh",
     });
     expect(agentChoices({ ...EMPTY_AGENT, featureValues: { fast_mode: true } }, shown)).toEqual({
-      provider: "claude/opus",
+      provider: "claude/haiku",
       featureValues: { fast_mode: true },
     });
     expect(agentChoices({ ...EMPTY_AGENT, model: "codex" }, shown)).toEqual({ provider: "codex" });
+    // With no model resolved (the read failed), the provider Settings names is all there is to pin.
+    expect(agentChoices({ ...EMPTY_AGENT, modeId: "plan" }, { model: null, family: "claude" })).toEqual({
+      provider: "claude",
+      modeId: "plan",
+    });
   });
 
   test("picking a model starts thinking and features over; a mode survives only within its provider", () => {
