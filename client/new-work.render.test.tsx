@@ -20,11 +20,12 @@
 
 import { afterAll, afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 
-const SLOW = 30_000;
-const it = (name: string, run: () => Promise<void>) => test(name, run, SLOW);
 import { Window } from "happy-dom";
 import type { ReactNode } from "react";
 import type { WorkItem } from "../shared/contracts";
+
+const SLOW = 30_000;
+const it = (name: string, run: () => Promise<void>) => test(name, run, SLOW);
 
 const win = new Window({ url: "http://localhost/" });
 Object.assign(win, {

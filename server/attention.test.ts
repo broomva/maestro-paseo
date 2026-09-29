@@ -55,7 +55,8 @@ test("a list reconciles sessions at most once every 10 s, however often it is ca
   const root = await mkdtemp(join(tmpdir(), "maestro-attention-"));
   roots.push(root);
   const repo = join(root, "repo");
-  await mkdir(repo);
+  // A git repository as far as Maestro checks: runs branch a worktree from it.
+  await mkdir(join(repo, ".git"), { recursive: true });
   let clock = Date.parse("2026-09-29T09:00:00.000Z");
   const engine = new Engine({
     now: () => new Date(clock),
