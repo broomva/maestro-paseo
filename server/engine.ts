@@ -5,27 +5,45 @@
 // socket offers sessions create, dispatch and adopt too, recorded under their
 // own origin, and never the gate.
 //
+// A decision at the gate (approve, send back, cancel) is recorded when you make
+// it and applies UNDO_MS later, so a slip can be undone. The pending decision is
+// an event with the time it takes effect: a timer applies it, and a sweep on
+// load and on every list applies anything overdue, so a restart inside the
+// window still applies it. Every guard is checked again when it applies.
+//
 // Paseo delivers hook events live and best effort, with no replay. So every
 // list also reconciles bound work against the agent's real status. Reconcile
 // acts only on what it saw: each correction is guarded by the event count it
 // read, so a real hook that lands first always wins, and an outcome it did
 // not observe never closes work on its own.
 
+import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { MaestroConfig, WorkItem } from "../shared/contracts";
-import { GROUP_ORDER, isDispatchable, isTerminal, landingState, type Verdict } from "../shared/states";
+import {
+  GROUP_ORDER,
+  isDispatchable,
+  isTerminal,
+  landingState,
+  PLAIN_VOICE,
+  type Verdict,
+  verdictTarget,
+} from "../shared/states";
 import { runChecks } from "./checks";
 import { expandHome, loadConfig } from "./config";
 import {
   BY_HUMAN,
   checkOutcome,
+  decisionApplied,
   lastOf,
   latestChecks,
   type Origin,
   pendingChecks,
+  pendingDecision,
   pendingPermission,
   phaseOf,
+  reasonOf,
   scoreboard,
   toWireEvents,
   type WorkEvent,
@@ -126,13 +144,49 @@ const INDEX_MS = 15_000;
 const RECONCILE_MS = 10_000;
 const MISSED_END_MS = 90_000;
 
+/** How long a decision at the gate waits before it takes effect. */
+export const UNDO_MS = 10_000;
+
+/** The reason work you stopped is stuck. */
+export const STOPPED = "You stopped the run";
+
+/** Runs `run` once after `ms` and returns what cancels it. */
+export type Timer = (run: () => Promise<void>, ms: number) => () => void;
+
+const realTimer: Timer = (run, ms) => {
+  const handle = setTimeout(() => void run(), ms);
+  // The decision is on disk: a timer alone never keeps the process up, and the load sweep applies it after a restart.
+  handle.unref?.();
+  return () => clearTimeout(handle);
+};
+
 export interface EngineOptions {
   now?: () => Date;
   /** Told after a run's end or its checks are written, with the item before and after; not awaited (server/gate-card.ts). */
   landed?: (before: StoredWork, after: StoredWork) => unknown;
   config?: () => Promise<MaestroConfig>;
   log?: (message: string) => void;
+  /** The daemon client once the plugin has one. A decision that comes due with nothing else in hand uses it. */
+  client?: () => Paseo | null;
+  /** Schedules the undo window. Tests pass their own, driven by the same clock as `now`. */
+  timer?: Timer;
 }
+
+/** Why a decision cannot be made (or, when it comes due, applied) on this item right now. */
+function gateRefusal(item: StoredWork, verdict: Verdict, applying: boolean): string | null {
+  if (item.contract.state !== "review") {
+    return applying ? "It was no longer waiting on you." : "Only work waiting on you takes a verdict.";
+  }
+  if (verdict !== "block" && pendingPermission(item.events)) {
+    return "The agent is waiting on a question. Answer it first.";
+  }
+  if (verdict === "revise" && !workerOf(item.events)) return "There is no session to send this back to.";
+  return null;
+}
+
+const ALREADY_PENDING = "A decision is already waiting to take effect. Undo it first to change it.";
+
+type ApplyOutcome = "applied" | "dropped" | "early" | "waiting" | "settled";
 
 /**
  * Work a dispatch may start from: queued, stuck, or a run with no session
@@ -169,12 +223,23 @@ export class Engine {
   private readonly chains = new Map<string, Promise<void>>();
   private readonly abort = new AbortController();
   private lastReconcile = 0;
+  private readonly client: () => Paseo | null;
+  private readonly timer: Timer;
+  /** Pending decisions with a timer armed, by token, to the timer's cancel. */
+  private readonly armed = new Map<string, () => void>();
+  /** Decisions being applied right now, by token, so a timer and a sweep never apply one twice. */
+  private readonly applying = new Set<string>();
+  /** Dispatches that passed the capacity check and have not finished: each holds a slot. */
+  private readonly admitted = new Set<string>();
+  private closed = false;
 
   constructor(options: EngineOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.readConfig = options.config ?? (() => loadConfig());
     this.log = options.log ?? ((message) => console.log(`[maestro] ${message}`));
     this.landed = options.landed ?? (() => undefined);
+    this.client = options.client ?? (() => null);
+    this.timer = options.timer ?? realTimer;
   }
 
   /** The settings runs start from, as this engine reads them. */
@@ -182,8 +247,12 @@ export class Engine {
     return this.readConfig();
   }
 
+  /** The plugin is shutting down: stop check runs and clear every undo timer. Pending decisions stay on disk. */
   stop(): void {
+    this.closed = true;
     this.abort.abort();
+    for (const cancel of this.armed.values()) cancel();
+    this.armed.clear();
   }
 
   private stamp(): string {
@@ -285,6 +354,10 @@ export class Engine {
         this.index(store, items);
       }
     }
+    if (await this.sweep(paseo, items)) {
+      ({ items, warnings } = await store.scan());
+      this.index(store, items);
+    }
     const now = this.now();
     const dayStart = new Date(now);
     dayStart.setHours(0, 0, 0, 0);
@@ -367,6 +440,7 @@ export class Engine {
             : "Only queued or stuck work can be dispatched.",
         );
       }
+      this.admit(item, await this.running(store), config.concurrencyCap);
       let worker: Awaited<ReturnType<typeof startRun>>;
       try {
         worker = await startRun(paseo, config, item);
@@ -426,11 +500,36 @@ export class Engine {
       return toWire(await store.fresh(id, bound.dir), this.now().getTime());
     } finally {
       this.dispatching.delete(id);
+      this.admitted.delete(id);
       // With no dispatch left in flight nothing else can bind a queued agent: settle every queue now.
       if (this.dispatching.size === 0) {
         for (const agentId of [...this.queues.keys()]) await this.flush(agentId);
       }
     }
+  }
+
+  /** Ids of the work running now, as the files say. */
+  private async running(store: WorkStore): Promise<Set<string>> {
+    const { items } = await store.scan();
+    return new Set(items.filter((other) => other.contract.state === "running").map((other) => other.contract.id));
+  }
+
+  /**
+   * Take a slot for this dispatch, or refuse at the cap. A slot is what is
+   * running plus every dispatch admitted and still starting. Counting and
+   * taking happen with no await between them, so two dispatches at once can
+   * never both take the last slot.
+   */
+  private admit(item: StoredWork, running: Set<string>, cap: number | null): void {
+    const id = item.contract.id;
+    const busy = new Set([...running, ...this.admitted]);
+    busy.delete(id);
+    if (cap !== null && busy.size >= cap) {
+      throw new UserError(
+        `At capacity: ${busy.size} running. It stays ${PLAIN_VOICE[item.contract.state].label.toLowerCase()}.`,
+      );
+    }
+    this.admitted.add(id);
   }
 
   /** Refuse a decision while the session is visibly working again: the result is not final. */
@@ -446,39 +545,223 @@ export class Engine {
     }
   }
 
-  async verdict(paseo: Paseo | undefined, id: string, verdict: Verdict, note: string): Promise<WorkItem> {
+  /**
+   * Record a decision at the gate. It takes effect UNDO_MS later, unless it is
+   * undone first; every guard here is checked again when it applies. The look
+   * counts now, when you decide.
+   */
+  async verdict(paseo: Paseo | null | undefined, id: string, verdict: Verdict, note: string): Promise<WorkItem> {
     const { store } = await this.store();
     const trimmed = note.trim();
     if (verdict === "revise" && !trimmed) throw new UserError("Say what should change before sending it back.");
     const current = await store.findById(id);
-    if (current.contract.state !== "review") throw new UserError("Only work waiting on you takes a verdict.");
-    if (verdict !== "block") await this.assertIdle(paseo, current);
+    const early = gateRefusal(current, verdict, false) ?? (pendingDecision(current.events) ? ALREADY_PENDING : null);
+    if (early) throw new UserError(early);
+    if (verdict !== "block") await this.assertIdle(paseo ?? undefined, current);
+    const token = randomUUID();
+    const decided = this.now();
+    const effectiveAt = new Date(decided.getTime() + UNDO_MS).toISOString();
     const updated = await store.mutate(
       id,
       (item) => {
-        if (item.contract.state !== "review") throw new UserError("Only work waiting on you takes a verdict.");
-        if (verdict !== "block" && pendingPermission(item.events)) {
-          throw new UserError("The agent is waiting on a question. Answer it first.");
-        }
-        if (verdict === "revise" && !workerOf(item.events)) {
-          throw new UserError("There is no session to send this back to.");
-        }
+        const refusal = gateRefusal(item, verdict, false) ?? (pendingDecision(item.events) ? ALREADY_PENDING : null);
+        if (refusal) throw new UserError(refusal);
         return {
-          to: verdict === "approve" ? "done" : verdict === "revise" ? "running" : "canceled",
-          actor: "human",
-          ctx: { verdict },
-          reason: verdict === "revise" ? "Sent back with a note" : null,
-          events: [{ ts: this.stamp(), type: "gate", actor: "human", verdict, note: trimmed }],
+          events: [
+            {
+              ts: decided.toISOString(),
+              type: "gate.pending",
+              actor: "human",
+              verdict,
+              note: trimmed,
+              token,
+              effectiveAt,
+            },
+          ],
         };
       },
       current.dir,
     );
-    if (verdict !== "revise" || !paseo) return toWire(updated, this.now().getTime());
-    return this.wake(
-      paseo,
-      store,
-      updated,
-      `Changes requested before this is done:\n\n${trimmed}\n\nMake the changes, commit them, and end with the Decided and Ask sections again.`,
+    this.arm(id, token, effectiveAt, paseo ?? null, updated.dir);
+    return toWire(updated, this.now().getTime());
+  }
+
+  /** Take back a decision that has not taken effect yet. */
+  async undo(id: string): Promise<WorkItem> {
+    const { store } = await this.store();
+    const current = await store.findById(id);
+    let token: string | null = null;
+    const updated = await store.mutate(
+      id,
+      (item) => {
+        const pending = pendingDecision(item.events);
+        if (!pending) {
+          throw new UserError(
+            decisionApplied(item.events)
+              ? "Too late to undo: it already took effect."
+              : "There is no decision waiting to take effect.",
+          );
+        }
+        token = pending.token;
+        return {
+          events: [
+            { ts: this.stamp(), type: "gate.undone", actor: "human", verdict: pending.verdict, token: pending.token },
+          ],
+        };
+      },
+      current.dir,
+    );
+    if (token) this.disarm(token);
+    return toWire(updated, this.now().getTime());
+  }
+
+  /**
+   * Apply every decision whose window has closed, and arm a timer for the rest.
+   * Runs on load, on every list, and when the plugin first gets a client, so a
+   * restart inside the window still applies the decision. True when any changed.
+   */
+  async sweep(paseo?: Paseo | null, items?: readonly StoredWork[]): Promise<boolean> {
+    const client = paseo ?? this.client();
+    const all = items ?? (await (await this.store()).store.scan()).items;
+    let changed = false;
+    for (const item of all) {
+      const pending = pendingDecision(item.events);
+      if (!pending) continue;
+      const id = item.contract.id;
+      if (Date.parse(pending.effectiveAt) > this.now().getTime()) {
+        this.arm(id, pending.token, pending.effectiveAt, client, item.dir);
+        continue;
+      }
+      const outcome = await this.applyPending(client, id, pending.token, item.dir).catch((error) => {
+        this.log(`applying the decision on ${id}: ${(error as Error).message}`);
+        return "settled" as const;
+      });
+      if (outcome === "applied" || outcome === "dropped") changed = true;
+    }
+    return changed;
+  }
+
+  private arm(id: string, token: string, effectiveAt: string, paseo: Paseo | null, dir: string): void {
+    if (this.closed || this.armed.has(token)) return;
+    const delay = Math.max(0, Date.parse(effectiveAt) - this.now().getTime());
+    const cancel = this.timer(async () => {
+      this.armed.delete(token);
+      const outcome = await this.applyPending(paseo ?? this.client(), id, token, dir).catch((error) => {
+        this.log(`applying the decision on ${id}: ${(error as Error).message}`);
+        return "settled" as const;
+      });
+      // Fired before the clock reached it: wait out the rest.
+      if (outcome === "early") this.arm(id, token, effectiveAt, paseo, dir);
+    }, delay);
+    this.armed.set(token, cancel);
+  }
+
+  private disarm(token: string): void {
+    this.armed.get(token)?.();
+    this.armed.delete(token);
+  }
+
+  /**
+   * Apply one pending decision once it is due, re-checking every guard. A
+   * guard that refuses now drops the decision with a receipt that says why.
+   * Approve and send back ask the session whether it is working again, so
+   * without a client they wait for one rather than skip the question.
+   */
+  private async applyPending(paseo: Paseo | null, id: string, token: string, dir?: string): Promise<ApplyOutcome> {
+    if (this.applying.has(token)) return "settled";
+    this.applying.add(token);
+    try {
+      const { store, config } = await this.store();
+      const current = await this.locate(store, id, dir);
+      const pending = pendingDecision(current.events);
+      if (pending?.token !== token) return "settled";
+      if (Date.parse(pending.effectiveAt) > this.now().getTime()) return "early";
+      const { verdict, note } = pending;
+      if (verdict !== "block" && !paseo) return "waiting";
+      const busy =
+        verdict === "block" || !paseo
+          ? null
+          : await this.assertIdle(paseo, current).then(
+              () => null,
+              (error) => (error as Error).message,
+            );
+      let outcome = "settled" as ApplyOutcome;
+      const updated = await store.mutate(
+        id,
+        (item) => {
+          // Undone (or applied elsewhere) while the session was being asked.
+          if (pendingDecision(item.events)?.token !== token) return null;
+          const reason = busy ?? gateRefusal(item, verdict, true);
+          if (reason) {
+            outcome = "dropped";
+            return { events: [{ ts: this.stamp(), type: "gate.dropped", actor: "maestro", verdict, token, reason }] };
+          }
+          outcome = "applied";
+          return {
+            to: verdictTarget(verdict),
+            actor: "human",
+            ctx: { verdict },
+            reason: verdict === "revise" ? "Sent back with a note" : null,
+            events: [{ ts: this.stamp(), type: "gate", actor: "human", verdict, note, token }],
+          };
+        },
+        current.dir,
+      );
+      if (outcome !== "applied") return outcome;
+      if (verdict === "revise" && paseo) {
+        await this.wake(
+          paseo,
+          store,
+          updated,
+          `Changes requested before this is done:\n\n${note}\n\nMake the changes, commit them, and end with the Decided and Ask sections again.`,
+        );
+      }
+      if (verdict === "approve" && config.archiveOnApprove) await this.archiveWorkspace(paseo, store, updated);
+      return "applied";
+    } finally {
+      this.applying.delete(token);
+    }
+  }
+
+  /** The item from its known folder when it is still there, otherwise by scanning. */
+  private async locate(store: WorkStore, id: string, dir?: string): Promise<StoredWork> {
+    if (dir) {
+      const item = await store.load(dir).catch(() => null);
+      if (item?.contract.id === id) return item;
+    }
+    return store.findById(id);
+  }
+
+  /**
+   * After an approval applies: archive the run's workspace, so its worktree
+   * goes and its branch stays as the receipt. Best effort: a failure is a
+   * receipt and never undoes the approval. Only a workspace a dispatch
+   * created is Maestro's; a tracked session's, or the repository itself in
+   * directory mode, is yours and stays.
+   */
+  private async archiveWorkspace(paseo: Paseo | null, store: WorkStore, item: StoredWork): Promise<void> {
+    const worker = workerOf(item.events);
+    if (!worker) return;
+    const record = (text: string) =>
+      store
+        .mutate(item.contract.id, () => ({ events: [this.note(text)] }), item.dir)
+        .then(
+          () => undefined,
+          (error) => this.log(`recording the archive on ${item.contract.id}: ${(error as Error).message}`),
+        );
+    const { workspaceId, branch } = worker;
+    if (!branch || !workspaceId) return record("Kept the workspace: Maestro did not create it.");
+    if (!paseo) return record(`Could not archive the workspace: ${NO_HANDLE} The approval stands.`);
+    const failure = await Promise.resolve()
+      .then(() => paseo.workspaces.archive(workspaceId))
+      .then(
+        (result) => result?.error ?? null,
+        (error) => (error instanceof Error ? error.message : String(error)),
+      );
+    return record(
+      failure
+        ? `Could not archive the workspace: ${failure}. The approval stands.`
+        : `Archived the workspace. The branch ${branch} stays.`,
     );
   }
 
@@ -517,10 +800,15 @@ export class Engine {
     );
   }
 
-  async cancel(id: string): Promise<WorkItem> {
+  /**
+   * Cancel work. At the gate that is a decision like approve, so it waits out
+   * the undo window; queued or stuck work closes now.
+   */
+  async cancel(id: string, paseo?: Paseo | null): Promise<WorkItem> {
     if (this.dispatching.has(id)) throw new UserError("A run is starting for this work. Cancel it once it is running.");
     const { store } = await this.store();
     const current = await store.findById(id);
+    if (current.contract.state === "review") return this.verdict(paseo, id, "block", "");
     const unbound = current.contract.state === "running" && !workerOf(current.events);
     if (unbound) {
       // A run with no recorded session has nothing to stop: move it through Stuck so it can close.
@@ -538,17 +826,66 @@ export class Engine {
       (item) => {
         const state = item.contract.state;
         if (isTerminal(state)) return null;
-        if (state === "running") throw new UserError("Stop the session first, then cancel the work.");
-        return {
-          to: "canceled",
-          actor: "human",
-          events:
-            state === "review" ? [{ ts: this.stamp(), type: "gate", actor: "human", verdict: "block", note: "" }] : [],
-        };
+        if (state === "running") throw new UserError("Stop the run first, then cancel the work.");
+        // It reached the gate after this call looked: canceling there waits out the undo window.
+        if (state === "review") throw new UserError("This work just reached Needs you. Cancel it there.");
+        return { to: "canceled", actor: "human" };
       },
       current.dir,
     );
     return toWire(updated, this.now().getTime());
+  }
+
+  /**
+   * Stop a running run. Paseo has no stop that keeps the session, so this
+   * archives it; the branch and its commits stay. The work is stuck with the
+   * reason recorded first, so hooks the archive sets off (a stopped turn, the
+   * archive itself) find it already stuck and only add their receipts. If the
+   * archive fails, the session may still be working: the work goes back to
+   * running with the reason, and the call fails.
+   */
+  async stopRun(paseo: Paseo, id: string): Promise<WorkItem> {
+    if (this.dispatching.has(id)) throw new UserError("A run is starting for this work. Stop it once it is running.");
+    const { store } = await this.store();
+    const current = await store.findById(id);
+    if (current.contract.state !== "running") throw new UserError("Only running work can be stopped.");
+    const worker = workerOf(current.events);
+    const stopped = await store.mutate(
+      id,
+      (item) => {
+        if (item.contract.state !== "running") throw new UserError("Only running work can be stopped.");
+        if (workerOf(item.events)?.agentId !== worker?.agentId) {
+          throw new UserError("A new run started while this one was being stopped.");
+        }
+        return {
+          to: "blocked",
+          actor: "human",
+          reason: STOPPED,
+          events: [{ ts: this.stamp(), type: "stopped", actor: "human", agentId: worker?.agentId ?? null }],
+        };
+      },
+      current.dir,
+    );
+    if (!worker) return toWire(stopped, this.now().getTime());
+    try {
+      await paseo.agents.ref(worker.agentId).archive();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await store
+        .mutate(
+          id,
+          (item) =>
+            item.contract.state === "blocked" &&
+            reasonOf("blocked", item.events) === STOPPED &&
+            workerOf(item.events)?.agentId === worker.agentId
+              ? { to: "running", reason: `Could not stop the session: ${message}` }
+              : { events: [this.note(`Could not archive session ${worker.agentId}: ${message}`)] },
+          stopped.dir,
+        )
+        .catch(() => undefined);
+      throw new UserError(`Could not stop the session: ${message}`);
+    }
+    return toWire(await store.load(stopped.dir), this.now().getTime());
   }
 
   /** Track a session that was started by hand, so its end lands at the gate. */

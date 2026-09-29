@@ -200,3 +200,77 @@ describe("receipts a person reads", () => {
     );
   });
 });
+
+describe("a decision inside its undo window", () => {
+  const made: WorkEvent = {
+    ts: at(10),
+    type: "gate.pending",
+    actor: "human",
+    verdict: "approve",
+    note: "",
+    token: "d1",
+    effectiveAt: new Date(T0 + 10 * 60_000 + 10_000).toISOString(),
+  };
+
+  test("is pending until it is applied, undone or dropped, by its own token", async () => {
+    const { pendingDecision, decisionApplied } = await import("./events");
+    expect(pendingDecision([...toReview, made])).toMatchObject({ token: "d1", verdict: "approve", decidedAt: at(10) });
+    const applied: WorkEvent = { ts: at(11), type: "gate", actor: "human", verdict: "approve", note: "", token: "d1" };
+    const undone: WorkEvent = { ts: at(11), type: "gate.undone", actor: "human", verdict: "approve", token: "d1" };
+    const dropped: WorkEvent = {
+      ts: at(11),
+      type: "gate.dropped",
+      actor: "maestro",
+      verdict: "approve",
+      token: "d1",
+      reason: "x",
+    };
+    for (const settled of [applied, undone, dropped]) expect(pendingDecision([made, settled])).toBeNull();
+    // Another decision's settlement does not settle this one.
+    expect(pendingDecision([made, { ...undone, token: "other" }])?.token).toBe("d1");
+    expect(decisionApplied([made, applied])).toBe(true);
+    expect(decisionApplied([made, undone])).toBe(false);
+    expect(decisionApplied([made])).toBe(false);
+  });
+
+  test("the look counts when you decide, once, and an applied decision is not a second look", () => {
+    const dayStart = Date.parse("2026-09-22T00:00:00.000Z");
+    const applied: WorkEvent = { ts: at(11), type: "gate", actor: "human", verdict: "approve", note: "", token: "d1" };
+    const board = (events: WorkEvent[]) => scoreboard([events], T0 + 60 * 60_000, dayStart);
+    const base = board(toReview).looks;
+    expect(board([...toReview, made]).looks).toBe(base + 1);
+    expect(board([...toReview, made, applied]).looks).toBe(base + 1);
+    expect(board([...toReview, made, applied]).notches.at(-1)).toBe((Date.parse(made.ts) - dayStart) / 86_400_000);
+    // A gate recorded before the window existed carries no token and still counts.
+    const { token: _drop, ...legacy } = applied as Extract<WorkEvent, { type: "gate" }>;
+    expect(board([...toReview, legacy]).looks).toBe(base + 1);
+    // Stopping a run is stepping in.
+    expect(board([...toReview, { ts: at(12), type: "stopped", actor: "human", agentId: "a1" }]).looks).toBe(base + 1);
+  });
+
+  test("its receipts say what is coming, what was taken back, and why one did not apply", async () => {
+    const { toWireEvents } = await import("./events");
+    const events: WorkEvent[] = [
+      { ...made, verdict: "revise", note: "Add a test" },
+      { ts: at(11), type: "gate.undone", actor: "human", verdict: "revise", token: "d1" },
+      { ...made, token: "d2" },
+      {
+        ts: at(12),
+        type: "gate.dropped",
+        actor: "maestro",
+        verdict: "approve",
+        token: "d2",
+        reason: "The agent is waiting on a question. Answer it first.",
+      },
+      { ts: at(13), type: "stopped", actor: "human", agentId: "a1" },
+      { ts: at(13), type: "state", actor: "human", from: "running", to: "blocked", reason: "You stopped the run" },
+    ];
+    expect(toWireEvents(events).map(({ text, detail }) => [text, detail])).toEqual([
+      ["Sending it back in 10s", "Add a test"],
+      ["Undone", "Send back"],
+      ["Approving in 10s", null],
+      ["Approve did not take effect", "The agent is waiting on a question. Answer it first."],
+      ["You stopped the run", null],
+    ]);
+  });
+});

@@ -50,6 +50,20 @@ export const PHASES = ["working", "checking", "asking"] as const;
 export const DiffStatSchema = z.object({ additions: z.number(), deletions: z.number() });
 export type DiffStat = z.infer<typeof DiffStatSchema>;
 
+/**
+ * A decision at the gate that has not taken effect yet. It applies when the
+ * undo window closes, unless it is undone first.
+ */
+export const PendingSchema = z.object({
+  verdict: z.enum(VERDICTS),
+  note: z.string(),
+  decidedAt: z.string(),
+  effectiveAt: z.string(),
+  /** Time left in the undo window when this was read; 0 once it is due. */
+  remainingMs: z.number(),
+});
+export type Pending = z.infer<typeof PendingSchema>;
+
 export const WorkItemSchema = z.object({
   id: z.string(),
   path: z.string(),
@@ -76,6 +90,7 @@ export const WorkItemSchema = z.object({
   checks: z.array(CheckSpecSchema),
   /** The latest move into review, as its index in the event log; kept after the work leaves review. */
   landing: z.number().int().optional(),
+  pending: PendingSchema.nullable(),
 });
 export type WorkItem = z.infer<typeof WorkItemSchema>;
 
@@ -116,11 +131,19 @@ export type Scoreboard = z.infer<typeof ScoreboardSchema>;
 
 export const ISOLATIONS = ["worktree", "directory"] as const;
 
+const CAP = "The concurrency cap is a whole number of runs, 1 or more, or empty for no cap";
+
 export const ConfigSchema = z.object({
   workRoot: z.string().min(1),
   provider: z.string().min(1),
   modeId: z.string().nullable(),
   isolation: z.enum(ISOLATIONS),
+  /** Runs that may work at once; null for no cap. A dispatch at the cap is refused and the work stays queued. */
+  concurrencyCap: z.number().int(CAP).positive(CAP).nullable(),
+  /** Archive a run's workspace when its approval applies, so the worktree goes; the branch stays. */
+  archiveOnApprove: z.boolean(),
+  /** The gate new work gets when the form does not say. */
+  defaultGate: z.enum(GATE_MODES),
 });
 export type MaestroConfig = z.infer<typeof ConfigSchema>;
 
@@ -155,7 +178,8 @@ export const createWork = defineRpc({
     title: z.string().trim().min(1, "Give the work a title"),
     brief: z.string(),
     repo: z.string().trim().min(1, "Choose where the work runs"),
-    gate: z.enum(GATE_MODES),
+    /** Omitted: the configured default gate. */
+    gate: z.enum(GATE_MODES).optional(),
     check: z.string(),
     initiative: z.string(),
     dispatch: z.boolean(),
@@ -178,6 +202,12 @@ export const unblockWork = defineRpc({
 });
 
 export const cancelWork = defineRpc({ name: "work.cancel", input: ById, output: ItemResult });
+
+/** Take back a decision at the gate before it takes effect. */
+export const undoWork = defineRpc({ name: "work.undo", input: ById, output: ItemResult });
+
+/** Stop a running run: its session is archived and the work is stuck, with the branch kept. */
+export const stopWork = defineRpc({ name: "work.stop", input: ById, output: ItemResult });
 
 export const adoptAgent = defineRpc({
   name: "work.adopt",

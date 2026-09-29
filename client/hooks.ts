@@ -4,6 +4,7 @@
 
 import { useRpc } from "@getpaseo/plugin/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback } from "react";
 import {
   adoptAgent,
   cancelWork,
@@ -14,7 +15,9 @@ import {
   getWork,
   listWork,
   setConfig,
+  stopWork,
   unblockWork,
+  undoWork,
   workForAgent,
 } from "../shared/contracts";
 
@@ -46,16 +49,23 @@ export function useConfig() {
   return useQuery({ queryKey: [...KEY, "config"], queryFn: () => get({}) });
 }
 
+/** Refetch every Maestro query now, as when a decision's undo window closes. */
+export function useRefresh() {
+  const client = useQueryClient();
+  return useCallback(() => client.invalidateQueries({ queryKey: KEY }), [client]);
+}
+
 /** Every verb invalidates all Maestro queries: one change can move several views. */
 export function useVerbs() {
-  const client = useQueryClient();
-  const refresh = () => client.invalidateQueries({ queryKey: KEY });
+  const refresh = useRefresh();
   const rpc = {
     create: useRpc(createWork),
     dispatch: useRpc(dispatchWork),
     verdict: useRpc(decideWork),
     unblock: useRpc(unblockWork),
     cancel: useRpc(cancelWork),
+    undo: useRpc(undoWork),
+    stop: useRpc(stopWork),
     adopt: useRpc(adoptAgent),
     saveConfig: useRpc(setConfig),
   };
@@ -65,6 +75,8 @@ export function useVerbs() {
     verdict: useMutation({ mutationFn: rpc.verdict, onSettled: refresh }),
     unblock: useMutation({ mutationFn: rpc.unblock, onSettled: refresh }),
     cancel: useMutation({ mutationFn: rpc.cancel, onSettled: refresh }),
+    undo: useMutation({ mutationFn: rpc.undo, onSettled: refresh }),
+    stop: useMutation({ mutationFn: rpc.stop, onSettled: refresh }),
     adopt: useMutation({ mutationFn: rpc.adopt, onSettled: refresh }),
     saveConfig: useMutation({ mutationFn: rpc.saveConfig, onSettled: refresh }),
   };
