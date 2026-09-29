@@ -13,8 +13,10 @@ import type { Paseo } from "./runs";
 import { EVENTS_FILE } from "./store";
 
 // These tests spawn processes, build a bundle and move megabytes through a socket.
-// On a loaded machine that can take far longer than Bun's 5s default; nothing
-// here waits on a clock for correctness, so a generous limit only catches hangs.
+// On a loaded machine that can take far longer than Bun's 5s default; no
+// assertion here is decided by a clock, so a generous limit only catches hangs.
+// (The Node half-close test's 50ms decides only how surely it exercises a
+// half-close, never whether it passes.)
 setDefaultTimeout(60_000);
 
 /** Wait for a condition instead of a fixed time: a busy machine stretches every sleep. */
@@ -378,8 +380,9 @@ describe("the socket", () => {
   test("closing lets a request already being answered finish", async () => {
     const { root } = await setup();
     const path = join(root, "maestro.sock");
-    // The method starts, closing gets as far as removing the path (it then waits on
-    // requests in flight), and only then does the answer become ready.
+    // The method starts, closing gets as far as removing the path, and only then
+    // does the answer become ready. Waiting on requests in flight is close's very
+    // next step, so the answer normally lands inside that wait.
     let started = false;
     let release: (value: unknown) => void = () => undefined;
     const methods = new Map<string, AgentMethod>([
@@ -395,19 +398,24 @@ describe("the socket", () => {
     ]);
     const close = await serveAgents({ path, methods, graceMs: 30_000 });
     const reply = call("slow", {}, { path });
-    await until(() => started, "the request to reach the server");
-    const closing = close();
-    await until(
-      () =>
+    let closing: Promise<void> | null = null;
+    try {
+      await until(() => started, "the request to reach the server");
+      closing = close();
+      const gone = () =>
         stat(path).then(
           () => false,
           () => true,
-        ),
-      "closing to remove the socket path",
-    );
-    release("late");
-    await closing;
-    expect(await reply).toBe("late");
+        );
+      await until(gone, "closing to remove the socket path");
+      release("late");
+      await closing;
+      expect(await reply).toBe("late");
+    } finally {
+      release("late");
+      await (closing ?? close());
+      await reply.catch(() => undefined);
+    }
   });
 
   test("anything at the path that is not a socket is left alone", async () => {
@@ -455,7 +463,7 @@ describe("the socket", () => {
       reopenMs: 20,
     });
     try {
-      // Two probes per attempt: six connections mean at least two attempts have failed.
+      // Two probes per failed start: six connections mean at least two starts have failed.
       await until(() => connections >= 6, "three rounds of the keeper probing the holder");
       expect(logs.filter((line) => line.includes("did not open"))).toHaveLength(1);
       expect(await call("who", {}, { path })).toBe("holder");
@@ -466,6 +474,7 @@ describe("the socket", () => {
       );
     } finally {
       await stop();
+      if (holder.listening) await new Promise<void>((resolve) => holder.close(() => resolve()));
     }
     await expect(stat(path)).rejects.toThrow();
   });
