@@ -5,10 +5,9 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { ConfigSchema, type MaestroConfig } from "../shared/contracts";
+import { configPath } from "./paths";
 
-export function configPath(env: NodeJS.ProcessEnv = process.env): string {
-  return env.MAESTRO_PASEO_CONFIG ?? join(homedir(), ".config", "maestro-paseo", "config.json");
-}
+export { configPath };
 
 export function defaultConfig(): MaestroConfig {
   return { workRoot: join(homedir(), "maestro"), provider: "claude", modeId: null, isolation: "worktree" };

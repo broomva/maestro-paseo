@@ -54,6 +54,38 @@ paseo plugin ls            # expect: maestro  running
 
 After editing the source: `npm run typecheck`, then `paseo plugin reload maestro`.
 
+## From other sessions
+
+Any Paseo session can operate Maestro from its shell. The plugin listens on a unix socket beside its
+config, `~/.config/maestro-paseo/maestro.sock`, that only you can open, and `bin/maestro.ts` speaks
+to it:
+
+```bash
+alias maestro="bun /absolute/path/to/maestro-paseo/bin/maestro.ts"
+
+maestro ls                     # all work, what needs you first
+maestro new "Persist run transcripts" --brief "Store it on the Run record." --repo ~/code/project --dispatch
+maestro show <id>              # state, the look at the gate, receipts
+maestro track                  # track this session as work
+maestro mine                   # the work this session is running
+```
+
+- **Sessions get the noun and the verb, never the gate.** Approve, send back, unblock, cancel and
+  settings are not served on the socket; a session that asks is told they are yours. Work a session
+  creates is always `gate: human`.
+- **Receipts say who asked.** Everything done through the socket is recorded as the session's
+  (`actor: agent`, with its `PASEO_AGENT_ID`), reads "by session 1a2b3c4d" in the receipts, and never
+  counts as you stepping in on the scoreboard.
+- **It is the surface a session is offered, not a sandbox.** A process running as you can still
+  edit the work folders directly; the receipts are what keep that visible.
+- **Starting runs needs one agent event first.** Paseo hands a plugin its daemon client only inside
+  hooks and handlers. Until the first agent event after the plugin starts, `dispatch` and `track`
+  refuse and say so. The calling session's own turn is such an event, so in practice this only shows
+  right after a reload.
+
+Why a socket and not a tool: plugin RPC travels over the daemon's password-protected socket, and a
+plugin cannot add tools to an agent. Every session has a shell.
+
 ## The work file
 
 `_work.md` is Maestro's work contract, field for field, so the Maestro runtime can read files
@@ -124,6 +156,7 @@ this one does:
   through it.
 - The plugin never merges, pushes, or deletes branches. The branch is the receipt; landing it is
   yours.
+- The agent socket is mode 0600 in your config folder, and serves only the verbs above.
 
 Choosing a permissive provider mode (for example `bypassPermissions`) is what makes runs
 unsupervised; it is off by default.
@@ -131,7 +164,8 @@ unsupervised; it is off by default.
 ## Configuration
 
 Stored at `~/.config/maestro-paseo/config.json` (override with `MAESTRO_PASEO_CONFIG`), edited from
-Settings.
+Settings. The agent socket sits beside it (override with `MAESTRO_PASEO_SOCKET`), so a second daemon
+with its own config gets its own socket.
 
 | Key | Default | Meaning |
 |---|---|---|

@@ -1,6 +1,9 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { agentMethods, serveAgents } from "./server/agent-socket";
 import { loadConfig, saveConfig } from "./server/config";
 import { Engine } from "./server/engine";
+import { socketPath } from "./server/paths";
+import type { Paseo } from "./server/runs";
 import {
   adoptAgent,
   cancelWork,
@@ -15,8 +18,28 @@ import {
   workForAgent,
 } from "./shared/contracts";
 
-export default function contribute(server: PluginServerContext) {
+const log = (message: string) => console.log(`[maestro] ${message}`);
+
+export default function contribute(host: PluginServerContext) {
   const engine = new Engine();
+
+  // The host hands the plugin its daemon client only inside handlers and hooks,
+  // never at startup. The agent socket needs one outside both, so every handler
+  // and hook below keeps the latest it was given. Until the first arrives, socket
+  // verbs that start or read a session refuse and say why.
+  let latest: Paseo | null = null;
+  const server: Pick<PluginServerContext, "handle" | "on"> = {
+    handle: (contract, handler) =>
+      host.handle(contract, (input, context) => {
+        latest = context.paseo;
+        return handler(input, context);
+      }),
+    on: (name, handler) =>
+      host.on(name, (event, context) => {
+        latest = context.paseo;
+        return handler(event, context);
+      }),
+  };
 
   server.handle(listWork, (_input, { paseo }) => engine.list(paseo));
   server.handle(getWork, ({ id }) => engine.get(id));
@@ -41,6 +64,24 @@ export default function contribute(server: PluginServerContext) {
   server.on("agent.permission_requested", (event) => engine.onPermissionRequested(event.agent, event.request));
   server.on("agent.permission_resolved", (event) => engine.onPermissionResolved(event.agent, event.requestId));
   server.on("agent.archived", (event) => engine.onArchived(event.agent));
+  // Heard only for its client: the socket can then start runs as soon as any session exists.
+  server.on("agent.created", () => undefined);
 
-  return () => engine.stop();
+  // Sessions reach Maestro through a socket of its own (server/agent-socket.ts).
+  // If it cannot open, Maestro's own screens still work.
+  const path = socketPath();
+  let closeSocket: (() => Promise<void>) | null = null;
+  const opening = serveAgents({ path, methods: agentMethods(engine, () => latest), log }).then(
+    (close) => {
+      closeSocket = close;
+      log(`sessions can reach Maestro at ${path}`);
+    },
+    (error: Error) => log(`the agent socket did not open: ${error.message}`),
+  );
+
+  return async () => {
+    engine.stop();
+    await opening;
+    await closeSocket?.();
+  };
 }

@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, join, relative, sep } from "node:path";
 import { type GateMode, type Kind, type OrchState, type TransitionContext, transition } from "../shared/states";
-import { parseEvents, type WorkEvent } from "./events";
+import { BY_HUMAN, type Origin, parseEvents, type WorkEvent } from "./events";
 import {
   type Contract,
   newWorkSource,
@@ -229,6 +229,7 @@ export class WorkStore {
     kind?: Kind;
     state?: OrchState;
     now?: Date;
+    origin?: Origin;
   }): Promise<StoredWork> {
     const now = input.now ?? this.now();
     const parent = input.initiative.trim() ? join(this.root, slugify(input.initiative)) : this.root;
@@ -253,7 +254,7 @@ export class WorkStore {
       }),
       "utf8",
     );
-    await this.append(dir, [{ ts: now.toISOString(), type: "created", actor: "human" }]);
+    await this.append(dir, [{ ts: now.toISOString(), type: "created", ...(input.origin ?? BY_HUMAN) }]);
     return this.read(dir);
   }
 

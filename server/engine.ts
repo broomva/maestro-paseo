@@ -1,7 +1,9 @@
 // The Maestro engine on Paseo. RPCs are the human's verbs (create, dispatch,
 // the gate, unblock, cancel, adopt); lifecycle hooks are the agent's side of
 // the story (turns, permissions, archive). Both end in `store.mutate`, which
-// validates every transition against the shared state machine.
+// validates every transition against the shared state machine. The agent
+// socket offers sessions create, dispatch and adopt too, recorded under their
+// own origin, and never the gate.
 //
 // Paseo delivers hook events live and best effort, with no replay. So every
 // list also reconciles bound work against the agent's real status. Reconcile
@@ -16,9 +18,11 @@ import { GROUP_ORDER, isDispatchable, isTerminal, landingState, type Verdict } f
 import { runChecks } from "./checks";
 import { expandHome, loadConfig } from "./config";
 import {
+  BY_HUMAN,
   checkOutcome,
   lastOf,
   latestChecks,
+  type Origin,
   pendingChecks,
   pendingPermission,
   phaseOf,
@@ -32,6 +36,10 @@ import { describePermission, type PermissionLike } from "./permissions";
 import { type Paseo, startRun } from "./runs";
 import { type Mutation, type StoredWork, WorkStore } from "./store";
 import { toWire } from "./wire";
+
+/** Why a verb that starts or reads a session cannot run: the plugin has not been handed a Paseo client yet. */
+export const NO_HANDLE =
+  "Maestro has no connection to Paseo yet. It gets one with the first agent event after the plugin starts: start or message any session, then retry.";
 
 export class UserError extends Error {
   constructor(message: string) {
@@ -293,7 +301,7 @@ export class Engine {
   // ── Human verbs ────────────────────────────────────────────────────────────
 
   async create(
-    paseo: Paseo,
+    paseo: Paseo | null,
     input: {
       title: string;
       brief: string;
@@ -303,6 +311,7 @@ export class Engine {
       initiative: string;
       dispatch: boolean;
     },
+    origin: Origin = BY_HUMAN,
   ): Promise<WorkItem> {
     if (input.gate === "auto" && !input.check.trim()) {
       throw new UserError("Letting checks decide needs a check command.");
@@ -313,12 +322,15 @@ export class Engine {
     const info = await stat(repo).catch(() => null);
     if (!info?.isDirectory()) throw new UserError(`No folder at ${repo}.`);
     const { store } = await this.store();
-    const item = await store.create({ ...input, repo, now: this.now() });
-    if (input.dispatch) return this.dispatch(paseo, item.contract.id);
+    const item = await store.create({ ...input, repo, now: this.now(), origin });
+    if (input.dispatch) {
+      if (!paseo) throw new UserError(`Created ${item.contract.id}, but it cannot be dispatched yet: ${NO_HANDLE}`);
+      return this.dispatch(paseo, item.contract.id, origin);
+    }
     return toWire(item, this.now().getTime());
   }
 
-  async dispatch(paseo: Paseo, id: string): Promise<WorkItem> {
+  async dispatch(paseo: Paseo, id: string, origin: Origin = BY_HUMAN): Promise<WorkItem> {
     if (this.dispatching.has(id)) throw new UserError("This work is already being dispatched.");
     this.dispatching.add(id);
     try {
@@ -342,8 +354,8 @@ export class Engine {
             if (!canDispatch(fresh)) throw new UserError("The work changed while the run was starting.");
             return {
               to: "running",
-              actor: "human",
-              events: [{ ts: this.stamp(), type: "dispatched", actor: "human", ...worker }],
+              actor: origin.actor,
+              events: [{ ts: this.stamp(), type: "dispatched", ...worker, ...origin }],
             };
           },
           item.dir,
@@ -510,7 +522,7 @@ export class Engine {
   }
 
   /** Track a session that was started by hand, so its end lands at the gate. */
-  async adopt(paseo: Paseo, agentId: string, title: string): Promise<WorkItem> {
+  async adopt(paseo: Paseo, agentId: string, title: string, origin: Origin = BY_HUMAN): Promise<WorkItem> {
     const { store } = await this.store();
     const { items } = await store.scan();
     this.index(store, items);
@@ -527,18 +539,19 @@ export class Engine {
       check: "",
       initiative: "",
       now: this.now(),
+      origin,
     });
     const id = created.contract.id;
     const running = await store.mutate(
       id,
       () => ({
         to: "running",
-        actor: "human",
+        actor: origin.actor,
         events: [
           {
             ts: this.stamp(),
             type: "adopted",
-            actor: "human",
+            ...origin,
             agentId,
             workspaceId: agent.workspaceId ?? null,
             provider: agent.provider,
