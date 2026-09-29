@@ -3,15 +3,16 @@
 // so the caller leaves the intent here and then opens the surface; the surface
 // takes it when it mounts, or at once when it is already open.
 //
-// An intent is taken once and goes stale after INTENT_TTL_MS: one whose surface
-// never opened must not fire later, when Maestro is opened for another reason.
+// An intent is taken once and goes stale after INTENT_TTL_MS: long enough for a
+// cold surface load, short enough that one whose surface never opened does not
+// fire later, when Maestro is opened for another reason.
 
 import { useEffect, useRef } from "react";
 import type { Group } from "../shared/states";
 
 export type MaestroIntent = { kind: "select"; id: string } | { kind: "new" } | { kind: "filter"; group: Group };
 
-export const INTENT_TTL_MS = 5000;
+export const INTENT_TTL_MS = 30_000;
 
 let pending: { intent: MaestroIntent; at: number } | null = null;
 let listeners: Array<() => void> = [];
