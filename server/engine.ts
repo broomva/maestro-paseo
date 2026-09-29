@@ -1,7 +1,9 @@
 // The Maestro engine on Paseo. RPCs are the human's verbs (create, dispatch,
 // the gate, unblock, cancel, adopt); lifecycle hooks are the agent's side of
 // the story (turns, permissions, archive). Both end in `store.mutate`, which
-// validates every transition against the shared state machine.
+// validates every transition against the shared state machine. The agent
+// socket offers sessions create, dispatch and adopt too, recorded under their
+// own origin, and never the gate.
 //
 // Paseo delivers hook events live and best effort, with no replay. So every
 // list also reconciles bound work against the agent's real status. Reconcile
@@ -16,9 +18,11 @@ import { GROUP_ORDER, isDispatchable, isTerminal, landingState, type Verdict } f
 import { runChecks } from "./checks";
 import { expandHome, loadConfig } from "./config";
 import {
+  BY_HUMAN,
   checkOutcome,
   lastOf,
   latestChecks,
+  type Origin,
   pendingChecks,
   pendingPermission,
   phaseOf,
@@ -32,6 +36,10 @@ import { describePermission, type PermissionLike } from "./permissions";
 import { type Paseo, startRun } from "./runs";
 import { type Mutation, type StoredWork, WorkStore } from "./store";
 import { toWire } from "./wire";
+
+/** Why a verb that starts or reads a session cannot run: the plugin has not been handed a Paseo client yet. */
+export const NO_HANDLE =
+  "Maestro has no connection to Paseo yet. It gets one with the first agent event after the plugin starts: start or message any session, then retry.";
 
 export class UserError extends Error {
   constructor(message: string) {
@@ -124,9 +132,14 @@ export interface EngineOptions {
   log?: (message: string) => void;
 }
 
-/** Work a dispatch may start from: queued, stuck, or a run with no session recorded. */
-function canDispatch(item: StoredWork): boolean {
+/**
+ * Work a dispatch may start from: queued, stuck, or a run with no session
+ * recorded. A session may start only queued work: restarting stuck work is
+ * unblocking, and that is yours.
+ */
+function canDispatch(item: StoredWork, origin: Origin): boolean {
   const state = item.contract.state;
+  if (origin.actor === "agent") return isDispatchable(state);
   return isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events));
 }
 
@@ -135,6 +148,8 @@ export class Engine {
   private readonly readConfig: () => Promise<MaestroConfig>;
   private readonly log: (message: string) => void;
   private readonly dispatching = new Set<string>();
+  /** Sessions being tracked right now, so two calls at once cannot make two items for one session. */
+  private readonly adopting = new Set<string>();
   private readonly activeChecks = new Set<string>();
   private readonly checkRuns = new Map<string, AbortController>();
   /** Hook events for an agent that is not bound yet, in arrival order. */
@@ -156,6 +171,11 @@ export class Engine {
     this.now = options.now ?? (() => new Date());
     this.readConfig = options.config ?? (() => loadConfig());
     this.log = options.log ?? ((message) => console.log(`[maestro] ${message}`));
+  }
+
+  /** The settings runs start from, as this engine reads them. */
+  settings(): Promise<MaestroConfig> {
+    return this.readConfig();
   }
 
   stop(): void {
@@ -293,7 +313,7 @@ export class Engine {
   // ── Human verbs ────────────────────────────────────────────────────────────
 
   async create(
-    paseo: Paseo,
+    paseo: Paseo | null,
     input: {
       title: string;
       brief: string;
@@ -303,6 +323,7 @@ export class Engine {
       initiative: string;
       dispatch: boolean;
     },
+    origin: Origin = BY_HUMAN,
   ): Promise<WorkItem> {
     if (input.gate === "auto" && !input.check.trim()) {
       throw new UserError("Letting checks decide needs a check command.");
@@ -313,18 +334,27 @@ export class Engine {
     const info = await stat(repo).catch(() => null);
     if (!info?.isDirectory()) throw new UserError(`No folder at ${repo}.`);
     const { store } = await this.store();
-    const item = await store.create({ ...input, repo, now: this.now() });
-    if (input.dispatch) return this.dispatch(paseo, item.contract.id);
+    const item = await store.create({ ...input, repo, now: this.now(), origin });
+    if (input.dispatch) {
+      if (!paseo) throw new UserError(`Created ${item.contract.id}, but it cannot be dispatched yet: ${NO_HANDLE}`);
+      return this.dispatch(paseo, item.contract.id, origin);
+    }
     return toWire(item, this.now().getTime());
   }
 
-  async dispatch(paseo: Paseo, id: string): Promise<WorkItem> {
+  async dispatch(paseo: Paseo, id: string, origin: Origin = BY_HUMAN): Promise<WorkItem> {
     if (this.dispatching.has(id)) throw new UserError("This work is already being dispatched.");
     this.dispatching.add(id);
     try {
       const { store, config } = await this.store();
       const item = await store.findById(id);
-      if (!canDispatch(item)) throw new UserError("Only queued or stuck work can be dispatched.");
+      if (!canDispatch(item, origin)) {
+        throw new UserError(
+          origin.actor === "agent"
+            ? "A session can start only queued work. Stuck work is unblocked in Maestro."
+            : "Only queued or stuck work can be dispatched.",
+        );
+      }
       let worker: Awaited<ReturnType<typeof startRun>>;
       try {
         worker = await startRun(paseo, config, item);
@@ -339,11 +369,11 @@ export class Engine {
         bound = await store.mutate(
           id,
           (fresh) => {
-            if (!canDispatch(fresh)) throw new UserError("The work changed while the run was starting.");
+            if (!canDispatch(fresh, origin)) throw new UserError("The work changed while the run was starting.");
             return {
               to: "running",
-              actor: "human",
-              events: [{ ts: this.stamp(), type: "dispatched", actor: "human", ...worker }],
+              actor: origin.actor,
+              events: [{ ts: this.stamp(), type: "dispatched", ...worker, ...origin }],
             };
           },
           item.dir,
@@ -510,7 +540,18 @@ export class Engine {
   }
 
   /** Track a session that was started by hand, so its end lands at the gate. */
-  async adopt(paseo: Paseo, agentId: string, title: string): Promise<WorkItem> {
+  async adopt(paseo: Paseo, agentId: string, title: string, origin: Origin = BY_HUMAN): Promise<WorkItem> {
+    // Scan-then-create is not atomic: a retry or a second caller must not bind one session twice.
+    if (this.adopting.has(agentId)) throw new UserError("This session is already being tracked.");
+    this.adopting.add(agentId);
+    try {
+      return await this.adoptOnce(paseo, agentId, title, origin);
+    } finally {
+      this.adopting.delete(agentId);
+    }
+  }
+
+  private async adoptOnce(paseo: Paseo, agentId: string, title: string, origin: Origin): Promise<WorkItem> {
     const { store } = await this.store();
     const { items } = await store.scan();
     this.index(store, items);
@@ -527,18 +568,19 @@ export class Engine {
       check: "",
       initiative: "",
       now: this.now(),
+      origin,
     });
     const id = created.contract.id;
     const running = await store.mutate(
       id,
       () => ({
         to: "running",
-        actor: "human",
+        actor: origin.actor,
         events: [
           {
             ts: this.stamp(),
             type: "adopted",
-            actor: "human",
+            ...origin,
             agentId,
             workspaceId: agent.workspaceId ?? null,
             provider: agent.provider,

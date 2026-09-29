@@ -67,7 +67,7 @@ export const isTerminal = (state: OrchState): boolean => state === "done" || sta
 
 export const isAttention = (state: OrchState): boolean => state === "review" || state === "blocked";
 
-/** States a human can dispatch from. */
+/** Queued states: the ones anyone may dispatch from. Stuck work dispatches too, but only from Maestro. */
 export const isDispatchable = (state: OrchState): boolean =>
   state === "proposed" || state === "reviewing" || state === "triggered";
 

@@ -2,8 +2,12 @@
   "name": "maestro-paseo",
   "private": true,
   "version": "0.1.0",
+  "bin": {
+    "maestro": "bin/maestro.ts"
+  },
   "files": [
     "paseo-plugin.json",
+    "bin/",
     "index.client.ts",
     "index.client.tsx",
     "index.server.ts",

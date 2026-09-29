@@ -155,6 +155,28 @@ describe("unsupervised hours", () => {
   });
 });
 
+describe("who asked", () => {
+  const bySession: WorkEvent = { ...dispatched, actor: "agent", by: "5e55107a-0000-4000-8000-000000000000" };
+
+  test("a session starting work is not you stepping in", () => {
+    const dayStart = Date.parse("2026-09-22T00:00:00.000Z");
+    const run = (event: WorkEvent) => [
+      { ts: at(0), type: "state", actor: event.actor, from: "proposed", to: "running", reason: null } as WorkEvent,
+      event,
+    ];
+    expect(scoreboard([run(bySession)], T0 + 60 * 60_000, dayStart).looks).toBe(0);
+    expect(scoreboard([run(dispatched)], T0 + 60 * 60_000, dayStart).looks).toBe(1);
+  });
+
+  test("receipts name the session that asked, and nothing for you", async () => {
+    const { toWireEvent } = await import("./events");
+    expect(toWireEvent(bySession)?.detail).toBe("claude/sonnet on run/abc by session 5e55107a");
+    expect(toWireEvent({ ...bySession, by: null })?.detail).toBe("claude/sonnet on run/abc by a session");
+    expect(toWireEvent(dispatched)?.detail).toBe("claude/sonnet on run/abc");
+    expect(toWireEvent({ ts: at(0), type: "created", actor: "human" })?.detail).toBeNull();
+  });
+});
+
 test("bullets drop list markers and bold emphasis", () => {
   expect(bullets("- **File content**: exact\n2. plain")).toEqual(["File content: exact", "plain"]);
 });

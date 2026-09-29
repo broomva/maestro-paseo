@@ -8,22 +8,30 @@ import type { OrchState, Verdict } from "../shared/states";
 
 export type Actor = "human" | "agent" | "maestro";
 
+/**
+ * Who asked for a change: you, in Maestro's own surfaces, or a session through
+ * the agent socket (`by` is its agent id when it said). Only the first counts
+ * as a look: a session starting work is not you stepping in.
+ */
+export type Origin = { actor: "human" } | { actor: "agent"; by: string | null };
+
+export const BY_HUMAN: Origin = { actor: "human" };
+
 interface Base {
   ts: string;
 }
 
 export type WorkEvent = Base &
   (
-    | { type: "created"; actor: "human" }
-    | {
+    | ({ type: "created" } & Origin)
+    | ({
         type: "dispatched" | "adopted";
-        actor: "human";
         agentId: string;
         workspaceId: string | null;
         provider: string;
         branch: string | null;
         cwd: string | null;
-      }
+      } & Origin)
     | { type: "turn.started"; actor: "agent"; agentId: string }
     | {
         type: "turn.ended";
@@ -295,20 +303,31 @@ export function toWireEvents(events: readonly WorkEvent[]): WorkEventWire[] {
   return out;
 }
 
+/** Names the session behind a change it asked for; a change you made needs no byline. */
+function byline(origin: Origin): string | null {
+  if (origin.actor === "human") return null;
+  return origin.by ? `by session ${origin.by.slice(0, 8)}` : "by a session";
+}
+
 export function toWireEvent(event: WorkEvent): WorkEventWire | null {
   const base = { ts: event.ts, actor: event.actor };
   switch (event.type) {
     case "created":
-      return { ...base, type: event.type, text: "Created", detail: null };
+      return { ...base, type: event.type, text: "Created", detail: byline(event) };
     case "dispatched":
       return {
         ...base,
         type: event.type,
         text: "Dispatched",
-        detail: [event.provider, event.branch ? `on ${event.branch}` : null].filter(Boolean).join(" "),
+        detail: [event.provider, event.branch ? `on ${event.branch}` : null, byline(event)].filter(Boolean).join(" "),
       };
     case "adopted":
-      return { ...base, type: event.type, text: "Tracked an existing session", detail: event.provider };
+      return {
+        ...base,
+        type: event.type,
+        text: "Tracked an existing session",
+        detail: [event.provider, byline(event)].filter(Boolean).join(" "),
+      };
     case "turn.started":
       return null;
     case "turn.ended":
