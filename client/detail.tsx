@@ -8,6 +8,7 @@ import { ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-n
 import { useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import type { CheckResult, WorkEventWire, WorkItem } from "../shared/contracts";
+import { ChangeStat } from "./changed";
 import { ago, basename, errorText } from "./format";
 import { useVerbs, useWorkDetail } from "./hooks";
 import { Button, Card, IconButton, Notice, radius, StateLabel, space, useText } from "./ui";
@@ -218,6 +219,15 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
             <View style={{ gap: space[1] }}>
               <Text style={text.label}>Ask</Text>
               <Text style={text.body}>{look.ask}</Text>
+            </View>
+          </View>
+        ) : null}
+        {item.worker?.branch || item.worker?.workspaceId ? (
+          <View style={{ gap: space[1] }}>
+            <Text style={text.label}>Changed</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
+              {item.worker.branch ? <Text style={text.mono}>{item.worker.branch}</Text> : null}
+              <ChangeStat theme={theme} workspaceId={item.worker.workspaceId} />
             </View>
           </View>
         ) : null}

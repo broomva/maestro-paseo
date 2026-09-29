@@ -1,48 +1,68 @@
-// The Maestro surface: all work, attention first. Wide windows keep the list
-// and the selected item side by side; compact windows push the item over the
-// list and give it a way back.
+// The Maestro surface: all work, attention first, as a feed, a board or a
+// list, scoped to one initiative or to everything. Wide windows keep the feed
+// and the selected item side by side; the board and the list take the width
+// and open the item beside them. Compact windows show the feed and push the
+// item over it, with a way back.
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
-import type { Scoreboard, WorkItem } from "../shared/contracts";
-import { GROUP_COPY, GROUP_ORDER, type Group, PLAIN_VOICE } from "../shared/states";
+import { ActivityIndicator, Text, View } from "react-native";
+import type { Scoreboard } from "../shared/contracts";
+import { ChangeScope } from "./changed";
 import { WorkDetail } from "./detail";
-import { ago, basename, duration, errorText, plural } from "./format";
+import { duration, errorText, plural } from "./format";
 import { useWorkList } from "./hooks";
 import { useIntent } from "./intent";
 import { NewWork } from "./new-work";
-import { Button, Card, IconButton, Notice, radius, StateDot, space, toneColor, useText } from "./ui";
+import { FilterRow, ScopeRow, ViewSwitch } from "./plane-controls";
+import {
+  applyFilter,
+  countFilters,
+  emptyText,
+  type Filter,
+  initiatives,
+  inScope,
+  type PlaneView,
+  resolveScope,
+  summaryText,
+  viewFor,
+  visibleFilters,
+} from "./plane-model";
+import { BoardView, FeedView, ListView } from "./plane-views";
+import { Button, Card, IconButton, Notice, space, useText } from "./ui";
 
 export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps) {
   const list = useWorkList();
   const text = useText(theme);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [filter, setFilter] = useState<Group | null>(null);
+  const [chosenView, setView] = useState<PlaneView>("feed");
+  const [filter, setFilter] = useState<Filter>("all");
+  const [chosenScope, setScope] = useState<string | null>(null);
   useIntent((intent) => {
     if (intent.kind === "select") setSelected(intent.id);
     else if (intent.kind === "new") setCreating(true);
-    else setFilter(intent.group);
+    else {
+      // A filter opened from elsewhere means that group across all work, where its chips show.
+      setFilter(intent.group);
+      setScope(null);
+      setView((view) => (view === "board" ? "feed" : view));
+    }
   });
   const compact = layout.compact;
   const pad = compact ? space[4] : space[6];
+  const view = viewFor(chosenView, compact);
 
   const items = list.data?.items ?? [];
   const current = selected && items.some((item) => item.id === selected) ? selected : null;
-  const needsYou = items.filter((item) => item.group === "review").length;
-  const running = items.filter((item) => item.group === "running").length;
-  const stuck = items.filter((item) => item.group === "blocked").length;
-  const summary =
-    [
-      needsYou ? `${needsYou} ${needsYou === 1 ? "needs" : "need"} you` : null,
-      stuck ? `${stuck} stuck` : null,
-      running ? `${running} running` : null,
-    ]
-      .filter(Boolean)
-      .join(" · ") || (items.length ? "Nothing needs you" : "No work yet");
+  const scopes = initiatives(items);
+  const scope = resolveScope(items, chosenScope);
+  const scoped = inScope(items, scope);
+  const counts = countFilters(scoped);
+  const shown = view === "board" ? scoped : applyFilter(scoped, filter);
+  const pick = { theme, selected: current, onSelect: setSelected };
 
   const newWork = (
     <NewWork theme={theme} open={creating} onOpenChange={setCreating} onCreated={setSelected} compact={compact} />
@@ -50,10 +70,12 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
 
   if (compact && current) {
     return (
-      <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
-        <WorkDetail id={current} theme={theme} compact navigation={navigation} onBack={() => setSelected(null)} />
-        {newWork}
-      </View>
+      <ChangeScope>
+        <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
+          <WorkDetail id={current} theme={theme} compact navigation={navigation} onBack={() => setSelected(null)} />
+          {newWork}
+        </View>
+      </ChangeScope>
     );
   }
 
@@ -64,7 +86,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
           <Text style={text.heading} accessibilityRole="header">
             Maestro
           </Text>
-          <Text style={text.muted}>{summary}</Text>
+          <Text style={text.muted}>{summaryText(items)}</Text>
         </View>
         <IconButton theme={theme} icon="RefreshCw" label="Refresh work" onPress={() => void list.refetch()} />
         <Button
@@ -76,6 +98,8 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
           onPress={() => setCreating(true)}
         />
       </View>
+
+      {compact ? null : <ViewSwitch theme={theme} view={view} onView={setView} />}
 
       {list.isPending ? (
         <ActivityIndicator color={theme.colors.foregroundMuted} />
@@ -117,42 +141,27 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
             </Card>
           ) : (
             <>
-              {filter ? (
-                <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
-                  <Text style={text.muted}>Showing {GROUP_COPY[filter].title} only</Text>
-                  <Button theme={theme} label="Show all work" compact={compact} onPress={() => setFilter(null)} />
-                </View>
+              {scopes.length > 0 ? (
+                <ScopeRow theme={theme} initiatives={scopes} scope={scope} onScope={setScope} />
               ) : null}
-              {filter && !items.some((item) => item.group === filter) ? (
-                <Text style={text.muted}>Nothing is in {GROUP_COPY[filter].title} right now.</Text>
-              ) : null}
-              {GROUP_ORDER.filter((group) => filter === null || group === filter).map((group) => {
-                const rows = items.filter((item) => item.group === group);
-                if (rows.length === 0) return null;
-                return (
-                  <View key={group} style={{ gap: space[2] }}>
-                    <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[2], flexWrap: "wrap" }}>
-                      <Text style={[text.body, { fontWeight: "600" }]} accessibilityRole="header">
-                        {GROUP_COPY[group].title}
-                      </Text>
-                      <Text style={[text.small, text.tabular]}>{rows.length}</Text>
-                      <Text style={text.small}>{GROUP_COPY[group].hint}</Text>
-                    </View>
-                    <View style={{ gap: space[1] }}>
-                      {rows.map((item) => (
-                        <WorkRow
-                          key={item.id}
-                          theme={theme}
-                          item={item}
-                          selected={item.id === current}
-                          compact={compact}
-                          onPress={() => setSelected(item.id)}
-                        />
-                      ))}
-                    </View>
-                  </View>
-                );
-              })}
+              {view === "board" ? null : (
+                <FilterRow
+                  theme={theme}
+                  filters={visibleFilters(counts, filter)}
+                  counts={counts}
+                  filter={filter}
+                  onFilter={setFilter}
+                />
+              )}
+              {shown.length === 0 && view !== "board" ? (
+                <Text style={text.muted}>{emptyText(filter)}</Text>
+              ) : view === "board" ? (
+                <BoardView {...pick} items={shown} />
+              ) : view === "list" ? (
+                <ListView {...pick} items={shown} />
+              ) : (
+                <FeedView {...pick} items={shown} />
+              )}
             </>
           )}
         </>
@@ -162,93 +171,60 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
 
   if (compact) {
     return (
-      <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
-        {listPane}
-        {newWork}
-      </View>
+      <ChangeScope>
+        <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
+          {listPane}
+          {newWork}
+        </View>
+      </ChangeScope>
     );
   }
 
+  // The board and the list want the width: the item opens beside them only when one is picked.
+  const wide = view !== "feed";
   return (
-    <View style={{ flex: 1, flexDirection: "row", backgroundColor: theme.colors.surface0 }}>
-      <View style={{ width: 440, maxWidth: "45%", borderRightWidth: 1, borderRightColor: theme.colors.border }}>
-        {listPane}
-      </View>
-      <View style={{ flex: 1 }}>
-        {current ? (
-          <WorkDetail id={current} theme={theme} compact={false} navigation={navigation} />
+    <ChangeScope>
+      <View style={{ flex: 1, flexDirection: "row", backgroundColor: theme.colors.surface0 }}>
+        <View
+          style={
+            wide
+              ? { flex: 1 }
+              : { width: 440, maxWidth: "45%", borderRightWidth: 1, borderRightColor: theme.colors.border }
+          }
+        >
+          {listPane}
+        </View>
+        {wide ? (
+          current ? (
+            <View style={{ width: 440, maxWidth: "45%", borderLeftWidth: 1, borderLeftColor: theme.colors.border }}>
+              <WorkDetail
+                id={current}
+                theme={theme}
+                compact={false}
+                navigation={navigation}
+                onBack={() => setSelected(null)}
+              />
+            </View>
+          ) : null
         ) : (
-          <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: space[8], gap: space[2] }}>
-            <Text style={text.title}>Pick a work item</Text>
-            <Text style={[text.muted, { textAlign: "center", maxWidth: 360 }]}>
-              Its receipts, checks and the verb it needs from you show here.
-            </Text>
+          <View style={{ flex: 1 }}>
+            {current ? (
+              <WorkDetail id={current} theme={theme} compact={false} navigation={navigation} />
+            ) : (
+              <View
+                style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: space[8], gap: space[2] }}
+              >
+                <Text style={text.title}>Pick a work item</Text>
+                <Text style={[text.muted, { textAlign: "center", maxWidth: 360 }]}>
+                  Its receipts, checks and the verb it needs from you show here.
+                </Text>
+              </View>
+            )}
           </View>
         )}
+        {newWork}
       </View>
-      {newWork}
-    </View>
-  );
-}
-
-function WorkRow({
-  theme,
-  item,
-  selected,
-  compact,
-  onPress,
-}: {
-  theme: PluginTheme;
-  item: WorkItem;
-  selected: boolean;
-  compact: boolean;
-  onPress: () => void;
-}) {
-  const text = useText(theme);
-  const voice = PLAIN_VOICE[item.state];
-  const flag =
-    item.phase === "asking"
-      ? "Question"
-      : item.phase === "checking"
-        ? "Checking"
-        : item.group === "review" || item.group === "blocked"
-          ? voice.label
-          : null;
-  const meta = [item.project ?? item.initiative, basename(item.repo), ago(item.updatedAt)].filter(Boolean).join(" · ");
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ selected }}
-      accessibilityLabel={`${item.title}, ${item.state === "canceled" ? "Canceled" : voice.label}`}
-      onPress={onPress}
-      style={({ pressed }) => ({
-        flexDirection: "row",
-        alignItems: "center",
-        gap: space[2],
-        minHeight: compact ? 56 : 52,
-        paddingVertical: space[2],
-        paddingHorizontal: space[3],
-        borderRadius: radius.control,
-        borderWidth: 1,
-        borderColor: selected ? theme.colors.border : "transparent",
-        backgroundColor: selected || pressed ? theme.colors.surface1 : "transparent",
-      })}
-    >
-      <StateDot theme={theme} state={item.state} />
-      <View style={{ flex: 1, gap: 2 }}>
-        <Text style={[text.body, { fontWeight: "500" }]} numberOfLines={1}>
-          {item.title}
-        </Text>
-        {meta ? (
-          <Text style={[text.small, text.tabular]} numberOfLines={1}>
-            {meta}
-          </Text>
-        ) : null}
-      </View>
-      {flag ? (
-        <Text style={{ color: toneColor(theme, voice.tone), fontSize: 12, fontWeight: "600" }}>{flag}</Text>
-      ) : null}
-    </Pressable>
+    </ChangeScope>
   );
 }
 

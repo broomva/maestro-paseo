@@ -59,12 +59,23 @@ export function useReducedMotion(): boolean {
 /**
  * The state dot. Running work gets the tidepool: a ring that widens and fades
  * from the dot. Queued work is a hollow ring so it reads by shape as well as
- * color. Reduced motion keeps the ring as a static halo.
+ * color. Reduced motion keeps the ring as a static halo; `still` drops it, for
+ * dots that stand for a group rather than live work.
  */
-export function StateDot({ theme, state, dim = 8 }: { theme: PluginTheme; state: OrchState; dim?: number }) {
+export function StateDot({
+  theme,
+  state,
+  dim = 8,
+  still = false,
+}: {
+  theme: PluginTheme;
+  state: OrchState;
+  dim?: number;
+  still?: boolean;
+}) {
   const tone = PLAIN_VOICE[state].tone;
   const color = toneColor(theme, tone);
-  const live = state === "running";
+  const live = state === "running" && !still;
   const reduced = useReducedMotion();
   const wave = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -115,13 +126,15 @@ export function StateDot({ theme, state, dim = 8 }: { theme: PluginTheme; state:
   );
 }
 
-export function StateLabel({ theme, state }: { theme: PluginTheme; state: OrchState }) {
-  const { label, tone } = PLAIN_VOICE[state];
-  const color = tone === "muted" ? theme.colors.foregroundMuted : toneColor(theme, tone);
+export function StateLabel({ theme, state, label }: { theme: PluginTheme; state: OrchState; label?: string }) {
+  const voice = PLAIN_VOICE[state];
+  const color = voice.tone === "muted" ? theme.colors.foregroundMuted : toneColor(theme, voice.tone);
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: space[1] }}>
       <StateDot theme={theme} state={state} dim={7} />
-      <Text style={{ color, fontSize: size.xs, fontWeight: "600" }}>{state === "canceled" ? "Canceled" : label}</Text>
+      <Text style={{ color, fontSize: size.xs, fontWeight: "600" }}>
+        {label ?? (state === "canceled" ? "Canceled" : voice.label)}
+      </Text>
     </View>
   );
 }
