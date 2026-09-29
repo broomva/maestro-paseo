@@ -1,11 +1,14 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { agentMethods, keepServing } from "./server/agent-socket";
+import { attentionOf } from "./server/attention";
 import { loadConfig, saveConfig } from "./server/config";
 import { Engine } from "./server/engine";
+import { GateCards } from "./server/gate-card";
 import { socketPath } from "./server/paths";
 import type { Paseo } from "./server/runs";
 import {
   adoptAgent,
+  attentionWork,
   cancelWork,
   createWork,
   decideWork,
@@ -21,7 +24,9 @@ import {
 const log = (message: string) => console.log(`[maestro] ${message}`);
 
 export default function contribute(host: PluginServerContext) {
-  const engine = new Engine();
+  // A run that lands at your gate leaves an approval card in its session, through the latest client below.
+  const cards = new GateCards(() => latest, log);
+  const engine = new Engine({ landed: (before, after) => cards.landed(before, after) });
 
   // The host hands the plugin its daemon client only inside handlers and hooks,
   // never at startup: one client for the life of the plugin process. The agent
@@ -45,6 +50,8 @@ export default function contribute(host: PluginServerContext) {
 
   server.handle(listWork, (_input, { paseo }) => engine.list(paseo));
   server.handle(getWork, ({ id }) => engine.get(id));
+  // No client handed to list: the header count and pills poll this, and must not reconcile sessions.
+  server.handle(attentionWork, () => engine.list().then(({ items }) => attentionOf(items, Date.now())));
   server.handle(createWork, (input, { paseo }) => engine.create(paseo, input).then((item) => ({ item })));
   server.handle(dispatchWork, ({ id }, { paseo }) => engine.dispatch(paseo, id).then((item) => ({ item })));
   server.handle(decideWork, ({ id, verdict, note }, { paseo }) =>

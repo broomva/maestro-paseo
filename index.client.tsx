@@ -1,9 +1,13 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { WorkPanel } from "./client/agent-panel";
+import { createPillContent, PILL_ICONS } from "./client/composer-pill";
+import { createGateCard } from "./client/gate-card";
+import { opener, startIntegrations } from "./client/integrations";
 import { requestIntent } from "./client/intent";
 import { MaestroSurface } from "./client/plane";
 import { MaestroSettings } from "./client/settings";
 import { adoptAgent } from "./shared/contracts";
+import { GATE_CARD_KIND, GATE_CARD_VERSION, GateCardSchema } from "./shared/gate-card";
 import { BROOMVA_DARK, BROOMVA_LIGHT } from "./shared/theme";
 
 export default function contribute(client: PluginClientContext) {
@@ -74,5 +78,23 @@ export default function contribute(client: PluginClientContext) {
     },
   });
 
-  return () => {};
+  const open = opener(client);
+
+  // The card a run leaves in its session when it lands at your gate (server/gate-card.ts).
+  client.addTimelineRenderer({
+    kind: GATE_CARD_KIND,
+    version: GATE_CARD_VERSION,
+    schema: GateCardSchema,
+    Component: createGateCard(open),
+  });
+
+  // The header count in every workspace and a pill beside every tracked session's composer.
+  const integrations = startIntegrations(client, {
+    pillIcon: (state) => PILL_ICONS[state],
+    PillContent: createPillContent(open),
+  });
+
+  return () => {
+    integrations.stop();
+  };
 }

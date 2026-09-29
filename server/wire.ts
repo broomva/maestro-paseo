@@ -4,6 +4,7 @@
 import type { WorkItem } from "../shared/contracts";
 import { groupOf } from "../shared/states";
 import { lookOf, pendingPermission, phaseOf, reasonOf, verdictOf, workerOf } from "./events";
+import { lastLanding } from "./gate-card";
 import { placement, type StoredWork } from "./store";
 
 export function toWire(item: StoredWork, now: number): WorkItem {
@@ -33,5 +34,6 @@ export function toWire(item: StoredWork, now: number): WorkItem {
     look: lookOf(contract.state, events, now),
     permission: contract.state === "review" ? pendingPermission(events) : null,
     checks: contract.checks.map(({ name, run }) => ({ name, run })),
+    landing: lastLanding(events) ?? undefined,
   };
 }

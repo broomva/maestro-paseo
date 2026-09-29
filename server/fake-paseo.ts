@@ -26,6 +26,9 @@ export function fakePaseo() {
   const archivedWorkspaces: string[] = [];
   const timelines = new Map<string, unknown[]>();
   const timelineEnd = new Map<string, string>();
+  const appended: Array<{ agentId: string; item: Record<string, unknown> }> = [];
+  const refreshed: string[] = [];
+  let appendMode: "ok" | "throw" | "hang" = "ok";
   let failSend = false;
   let n = 0;
   const makeWorkspace = (directory: string) => ({
@@ -69,6 +72,7 @@ export function fakePaseo() {
     agents: {
       ref: (id: string) => ({
         refresh: async () => {
+          refreshed.push(id);
           const agent = agents.get(id);
           return agent ? { agent, project: null } : null;
         },
@@ -86,6 +90,12 @@ export function fakePaseo() {
           refetch: async () => ({
             entries: (timelines.get(id) ?? []).map((item) => ({ item, timestamp: timelineEnd.get(id) ?? "" })),
           }),
+          append: (item: Record<string, unknown>) => {
+            appended.push({ agentId: id, item });
+            if (appendMode === "throw") return Promise.reject(new Error("agent is not loaded"));
+            if (appendMode === "hang") return new Promise(() => undefined);
+            return Promise.resolve({ seq: appended.length, epoch: "e1" });
+          },
         },
       }),
     },
@@ -99,6 +109,13 @@ export function fakePaseo() {
     archivedWorkspaces,
     timelines,
     timelineEnd,
+    /** Every timeline.append call, recorded before it resolves, rejects or hangs. */
+    appended,
+    /** Every agents.ref(id).refresh() call, by agent id: the reconcile's round trips. */
+    refreshed,
+    setAppend: (mode: "ok" | "throw" | "hang") => {
+      appendMode = mode;
+    },
     failNextSends: () => {
       failSend = true;
     },
