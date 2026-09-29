@@ -9,7 +9,7 @@
 import { connect } from "node:net";
 import { resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
-import { socketPath } from "../server/paths";
+import { expandHome, socketPath } from "../server/paths";
 import type { MaestroConfig, WorkEventWire, WorkItem } from "../shared/contracts";
 import { GROUP_COPY, GROUP_ORDER, PLAIN_VOICE } from "../shared/states";
 
@@ -20,7 +20,6 @@ const USAGE = `maestro: operate Maestro from a Paseo session
   maestro new <title> [options]       Create work (it waits at your gate)
       --brief <text>                  What to do and why
       --repo <path>                   Where runs happen (default: this directory)
-      --check <command>               Done check, run in the run's worktree
       --initiative <name>             Group it under a folder
       --dispatch                      Start a run right away
   maestro dispatch <id>               Start a run in its own worktree
@@ -34,8 +33,10 @@ Exit codes: 0 done · 1 Maestro refused · 2 Maestro is not listening, or bad us
 3 no clear answer (the request may still have been applied: check before retrying).
 
 Approve, send back, unblock and cancel are yours, in Maestro. A session cannot
-pass its own gate.`;
+pass its own gate, restart stuck work, or write a done check.`;
 
+/** The command line does not say what to do. */
+export class Usage extends Error {}
 /** Nothing was sent: Maestro is not listening there. */
 export class Unreachable extends Error {}
 /** Maestro answered no. */
@@ -55,6 +56,7 @@ export function call(
     const socket = connect(path);
     let buffer = "";
     let settled = false;
+    let sent = false;
     const settle = (fn: () => void) => {
       if (settled) return;
       settled = true;
@@ -70,7 +72,10 @@ export function call(
       options.timeoutMs ?? 90_000,
     );
     socket.setEncoding("utf8");
-    socket.on("connect", () => socket.write(`${JSON.stringify({ id: 1, method, input, caller })}\n`));
+    socket.on("connect", () => {
+      sent = true;
+      socket.write(`${JSON.stringify({ id: 1, method, input, caller })}\n`);
+    });
     socket.on("data", (chunk: string) => {
       buffer += chunk;
       const newline = buffer.indexOf("\n");
@@ -89,15 +94,17 @@ export function call(
       });
     });
     socket.on("error", (error: NodeJS.ErrnoException) =>
-      settle(() =>
-        reject(
-          error.code === "ENOENT" || error.code === "ECONNREFUSED"
-            ? new Unreachable(
-                `Maestro is not listening on ${path}. Is the maestro plugin installed and running on this Paseo daemon?`,
-              )
-            : error,
-        ),
-      ),
+      settle(() => {
+        if (sent)
+          reject(unanswered(`The connection failed after the request went out (${error.code ?? error.message}).`));
+        else if (error.code === "ENOENT" || error.code === "ECONNREFUSED") {
+          reject(
+            new Unreachable(
+              `Maestro is not listening on ${path}. Is the maestro plugin installed and running on this Paseo daemon?`,
+            ),
+          );
+        } else reject(new Unreachable(`Could not reach Maestro on ${path}: ${error.code ?? error.message}.`));
+      }),
     );
     socket.on("close", () => settle(() => reject(unanswered("Maestro closed the connection without answering."))));
   });
@@ -169,28 +176,35 @@ function renderConfig(config: MaestroConfig): string {
   ].join("\n");
 }
 
+function parse(argv: string[]) {
+  try {
+    return parseArgs({
+      args: argv,
+      allowPositionals: true,
+      options: {
+        json: { type: "boolean", default: false },
+        brief: { type: "string", default: "" },
+        repo: { type: "string" },
+        initiative: { type: "string", default: "" },
+        dispatch: { type: "boolean", default: false },
+        title: { type: "string", default: "" },
+        agent: { type: "string" },
+        help: { type: "boolean", short: "h", default: false },
+      },
+    });
+  } catch (error) {
+    throw new Usage((error as Error).message);
+  }
+}
+
 export async function main(argv: string[], print: (text: string) => void = console.log): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      json: { type: "boolean", default: false },
-      brief: { type: "string", default: "" },
-      repo: { type: "string" },
-      check: { type: "string", default: "" },
-      initiative: { type: "string", default: "" },
-      dispatch: { type: "boolean", default: false },
-      title: { type: "string", default: "" },
-      agent: { type: "string" },
-      help: { type: "boolean", short: "h", default: false },
-    },
-  });
+  const { values, positionals } = parse(argv);
   const [command, ...rest] = positionals;
   const show = <T>(output: unknown, render: (value: T) => string) =>
     print(values.json ? JSON.stringify(output, null, 2) : render(output as T));
   const needId = () => {
     const id = rest[0];
-    if (!id) throw new Refused(`Usage: maestro ${command} <id>. Ids are listed by: maestro ls`);
+    if (!id) throw new Usage(`Usage: maestro ${command} <id>. Ids are listed by: maestro ls`);
     return id;
   };
   if (!command || values.help || command === "help") {
@@ -206,12 +220,11 @@ export async function main(argv: string[], print: (text: string) => void = conso
       return 0;
     case "new": {
       const title = rest.join(" ").trim();
-      if (!title) throw new Refused("Usage: maestro new <title> [--brief <text>] [--repo <path>] [--dispatch]");
+      if (!title) throw new Usage("Usage: maestro new <title> [--brief <text>] [--repo <path>] [--dispatch]");
       const input = {
         title,
         brief: values.brief,
-        repo: resolvePath(values.repo ?? "."),
-        check: values.check,
+        repo: resolvePath(expandHome(values.repo ?? ".")),
         initiative: values.initiative,
         dispatch: values.dispatch,
       };
@@ -249,7 +262,7 @@ if (import.meta.main) {
     (code) => process.exit(code),
     (error: Error) => {
       console.error(`maestro: ${error.message}`);
-      process.exit(error instanceof Unreachable ? 2 : error instanceof NoAnswer ? 3 : 1);
+      process.exit(error instanceof Usage || error instanceof Unreachable ? 2 : error instanceof NoAnswer ? 3 : 1);
     },
   );
 }

@@ -18,9 +18,10 @@
 //   → {"id":1,"method":"work.list","input":{},"caller":"<agent id>"}
 //   ← {"id":1,"ok":true,"output":{...}}   or   {"id":1,"ok":false,"error":"..."}
 
-import { chmod, lstat, mkdir, rename, stat, unlink } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, rename, stat, unlink } from "node:fs/promises";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { GATE_MODES } from "../shared/states";
 import { type Engine, NO_HANDLE, UserError } from "./engine";
@@ -94,7 +95,7 @@ export function agentMethods(engine: Engine, paseo: () => Paseo | null): Readonl
         }
         if (input.check.trim()) {
           throw new UserError(
-            "A session cannot write a done check: checks run as you, outside any session's permissions. Add one to the work's _work.md (done.check).",
+            "A session cannot write a done check: checks run as you, outside any session's permissions, so they come from the person who owns this Maestro.",
           );
         }
         return { item: await engine.create(paseo(), input, origin(caller)) };
@@ -251,22 +252,63 @@ export interface ServeOptions {
   path: string;
   methods: ReadonlyMap<string, AgentMethod>;
   log?: (message: string) => void;
-  /** How often to retry while another instance holds the socket, as during a reload. */
+  /** How often to look again while another instance holds the socket. */
   attempts?: number;
   retryMs?: number;
   /** How long closing waits for requests already being answered. */
   graceMs?: number;
+  /** Stops a start that is still waiting for the socket. */
+  signal?: AbortSignal;
 }
 
 let serial = 0;
 
 /**
- * Listen on `path`, readable and writable by this user only. A socket file
- * nobody answers on is left over from a crash and is replaced; one that
- * answers belongs to a live instance and is waited for, then refused. Anything
- * at `path` that is not a socket is never replaced.
+ * Put the socket bound at `bound` at `path` too. link() fails if anything is
+ * already there, so two instances starting at once cannot both take it. A
+ * socket file nobody answers on is left over from a crash and is captured and
+ * removed, or put back if what was captured is not what was probed; one that
+ * answers is waited on; anything that is not a socket is never touched.
+ */
+async function claim(bound: string, path: string, options: ServeOptions): Promise<void> {
+  const { attempts = 15, retryMs = 200, signal } = options;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (signal?.aborted) throw new Error("Stopped before the agent socket opened");
+    try {
+      await link(bound, path);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    const existing = await lstat(path).catch(() => null);
+    if (!existing) continue;
+    if (!existing.isSocket()) throw new Error(`${path} exists and is not a socket; not replacing it`);
+    if (await answers(path)) {
+      await sleep(retryMs);
+      continue;
+    }
+    // Left by a crash. Take it aside with one atomic rename, then check it is the
+    // file that was probed: a plain unlink could delete a socket another
+    // instance linked there in between. If it is not, put it back.
+    const captured = `${bound}.stale`;
+    if (
+      !(await rename(path, captured).then(
+        () => true,
+        () => false,
+      ))
+    )
+      continue;
+    const taken = await lstat(captured).catch(() => null);
+    if (taken?.ino !== existing.ino) await link(captured, path).catch(() => undefined);
+    await unlink(captured).catch(() => undefined);
+  }
+  throw new Error(`Another Maestro is already answering on ${path}`);
+}
+
+/**
+ * Listen on `path`, readable and writable by this user only.
  *
- * The socket is bound under a private name and renamed into place. Closing a
+ * The socket is bound under a private name and linked into place. Closing a
  * unix socket server unlinks the path it was bound to, so an instance bound to
  * `path` itself would delete, on the way out, a socket another instance had
  * since put there. Paseo 0.9.2 reloads a plugin stop-then-start, so the
@@ -274,19 +316,23 @@ let serial = 0;
  * child orphaned by a daemon crash. Returns the cleanup.
  */
 export async function serveAgents(options: ServeOptions): Promise<() => Promise<void>> {
-  const { path, methods, log = () => undefined, attempts = 15, retryMs = 200, graceMs = 2000 } = options;
+  const { path, methods, log = () => undefined, graceMs = 2000 } = options;
   const connections = new Map<Socket, () => Promise<void>>();
   const server = createServer({ allowHalfOpen: true }, (socket) => {
     connections.set(socket, respond(socket, methods, log));
     socket.on("close", () => connections.delete(socket));
   });
+  /** Stop accepting, let requests already being answered finish for up to `graceMs`, drop the rest. */
+  const teardown = async () => {
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+    const inFlight = Promise.all([...connections.values()].map((pending) => pending()));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([inFlight, new Promise((resolve) => (timer = setTimeout(resolve, graceMs)))]);
+    clearTimeout(timer);
+    for (const socket of connections.keys()) socket.destroy();
+    await closed;
+  };
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  for (let attempt = 1; await answers(path); attempt += 1) {
-    if (attempt >= attempts) throw new Error(`Another Maestro is already answering on ${path}`);
-    await new Promise((resolve) => setTimeout(resolve, retryMs));
-  }
-  const existing = await lstat(path).catch(() => null);
-  if (existing && !existing.isSocket()) throw new Error(`${path} exists and is not a socket; not replacing it`);
   serial += 1;
   const bound = `${path}.${process.pid}-${serial}`;
   if (Buffer.byteLength(bound) > MAX_SOCKET_PATH) {
@@ -297,27 +343,54 @@ export async function serveAgents(options: ServeOptions): Promise<() => Promise<
   let ino: number;
   try {
     await chmod(bound, 0o600);
-    await rename(bound, path);
-    ({ ino } = await stat(path));
+    ({ ino } = await stat(bound));
+    await claim(bound, path, options);
   } catch (error) {
     // Never leave a listener behind that nothing will close.
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await teardown();
     await unlink(bound).catch(() => undefined);
     throw error;
   }
+  await unlink(bound).catch(() => undefined);
   /**
-   * Remove the path first, while still listening: a successor probing until
-   * now was told the socket is in use, so it cannot have renamed its own into
-   * place between the check and the unlink. Then stop accepting, let requests
-   * already being answered finish for up to `graceMs`, and drop the rest.
+   * Remove the path first, while still listening: until now a successor was
+   * told the socket is in use, so it cannot have linked its own into place
+   * between the check and the unlink.
    */
   return async () => {
     const current = await stat(path).catch(() => null);
     if (current?.ino === ino) await unlink(path).catch(() => undefined);
-    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-    const inFlight = Promise.all([...connections.values()].map((pending) => pending()));
-    await Promise.race([inFlight, new Promise((resolve) => setTimeout(resolve, graceMs))]);
-    for (const socket of connections.keys()) socket.destroy();
-    await closed;
+    await teardown();
+  };
+}
+
+/**
+ * Serve for as long as the plugin runs. If the socket cannot be opened, as
+ * while a second daemon on the same config holds it, say so once and try
+ * again every `reopenMs` until it opens or the plugin stops. Returns the stop.
+ */
+export function keepServing(options: Omit<ServeOptions, "signal"> & { reopenMs?: number }): () => Promise<void> {
+  const { path, log = () => undefined, reopenMs = 10_000 } = options;
+  const quit = new AbortController();
+  let close: (() => Promise<void>) | null = null;
+  const running = (async () => {
+    for (let failures = 0; !quit.signal.aborted; failures += 1) {
+      try {
+        close = await serveAgents({ ...options, signal: quit.signal });
+        log(`sessions can reach Maestro at ${path}`);
+        return;
+      } catch (error) {
+        if (quit.signal.aborted) return;
+        if (failures === 0) {
+          log(`the agent socket did not open, trying again every ${reopenMs / 1000}s: ${(error as Error).message}`);
+        }
+        await sleep(reopenMs, undefined, { signal: quit.signal }).catch(() => undefined);
+      }
+    }
+  })();
+  return async () => {
+    quit.abort();
+    await running;
+    await close?.();
   };
 }

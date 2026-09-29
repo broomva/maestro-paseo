@@ -1,11 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { call, main, Refused } from "../bin/maestro";
+import { call, main, Refused, Usage } from "../bin/maestro";
 import type { MaestroConfig, WorkItem } from "../shared/contracts";
-import { type AgentMethod, agentMethods, answer, answers, MAX_LINE, serveAgents } from "./agent-socket";
+import { type AgentMethod, agentMethods, answer, answers, keepServing, MAX_LINE, serveAgents } from "./agent-socket";
 import { Engine, NO_HANDLE } from "./engine";
 import { parseEvents } from "./events";
 import { fakePaseo } from "./fake-paseo";
@@ -286,6 +286,14 @@ describe("the socket", () => {
         .map((line) => JSON.parse(line) as { id: number | null; error?: string });
       expect(answered.map((line) => line.id)).toEqual([8, null]);
       expect(answered[1]?.error).toBe("Request too large.");
+      // A line of exactly the limit is still a request (here, not JSON); the next one is answered.
+      const edge = await once(path, `${"x".repeat(MAX_LINE)}\n${request(5)}`);
+      expect(
+        edge
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line).error ?? JSON.parse(line).id),
+      ).toEqual(["Each request is one line of JSON.", 5]);
     } finally {
       await close();
     }
@@ -310,6 +318,8 @@ describe("the socket", () => {
     const close = await serveAgents({ path, methods });
     try {
       expect(await call("config.get", {}, { path })).toMatchObject({ provider: "claude/test-model" });
+      // The crashed instance's file is gone, not set aside.
+      expect((await readdir(root)).filter((name) => name.startsWith("maestro.sock."))).toEqual([]);
     } finally {
       await close();
     }
@@ -360,6 +370,52 @@ describe("the socket", () => {
     expect(await readFile(path, "utf8")).toBe("keep me");
   });
 
+  test("two instances starting at once: exactly one takes the socket, the other leaves nothing behind", async () => {
+    const { root } = await setup();
+    const path = join(root, "maestro.sock");
+    const who = (name: string) => new Map<string, AgentMethod>([["who", async () => name]]);
+    const results = await Promise.allSettled([
+      serveAgents({ path, methods: who("a"), attempts: 3, retryMs: 10 }),
+      serveAgents({ path, methods: who("b"), attempts: 3, retryMs: 10 }),
+    ]);
+    const won = results.flatMap((result, i) => (result.status === "fulfilled" ? [{ i, close: result.value }] : []));
+    expect(won).toHaveLength(1);
+    expect(await call("who", {}, { path })).toBe(won[0]?.i === 0 ? "a" : "b");
+    expect((await readdir(root)).filter((name) => name.startsWith("maestro.sock."))).toEqual([]);
+    await won[0]?.close();
+  });
+
+  test("kept serving: when the holder stops, the waiting instance takes over", async () => {
+    const { root } = await setup();
+    const path = join(root, "maestro.sock");
+    const who = (name: string) => new Map<string, AgentMethod>([["who", async () => name]]);
+    const closeHolder = await serveAgents({ path, methods: who("holder") });
+    const logs: string[] = [];
+    const stop = keepServing({
+      path,
+      methods: who("keeper"),
+      log: (line) => logs.push(line),
+      attempts: 2,
+      retryMs: 10,
+      reopenMs: 50,
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(logs.filter((line) => line.includes("did not open"))).toHaveLength(1);
+      expect(await call("who", {}, { path })).toBe("holder");
+      await closeHolder();
+      let answer = "";
+      for (let i = 0; i < 50 && answer !== "keeper"; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        answer = (await call("who", {}, { path }).catch(() => "")) as string;
+      }
+      expect(answer).toBe("keeper");
+    } finally {
+      await stop();
+    }
+    await expect(stat(path)).rejects.toThrow();
+  });
+
   test("a missing path is free", async () => {
     const { root } = await setup();
     expect(await answers(join(root, "missing.sock"))).toBe(false);
@@ -385,7 +441,7 @@ describe("the socket", () => {
       expect((await events(item))[0]).toMatchObject({ actor: "agent", by: "cli-session" });
       await main(["show", item.id], (text) => printed.push(text));
       expect(printed.at(-1)).toContain("by session cli-sess");
-      await expect(main(["show"], () => {})).rejects.toBeInstanceOf(Refused);
+      await expect(main(["show"], () => {})).rejects.toBeInstanceOf(Usage);
     } finally {
       process.env.MAESTRO_PASEO_SOCKET = saved.socket;
       process.env.PASEO_AGENT_ID = saved.agent;
@@ -417,6 +473,26 @@ describe("the CLI's exit codes", () => {
     return () => new Promise<void>((resolve) => server.close(() => resolve()));
   };
 
+  test("~ in a repo means home; an empty agent id means none", async () => {
+    const { root, methods, engine } = await setup();
+    const path = join(root, "maestro.sock");
+    const close = await serveAgents({ path, methods });
+    try {
+      const child = Bun.spawn([process.execPath, cli, "new", "Home", "--repo", "~/repo"], {
+        env: { ...process.env, MAESTRO_PASEO_SOCKET: path, HOME: root, PASEO_AGENT_ID: "" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+      expect(stderr).toBe("");
+      expect(code).toBe(0);
+      const [item] = (await engine.list()).items;
+      expect(item?.repo).toBe(join(root, "repo"));
+    } finally {
+      await close();
+    }
+  });
+
   test("a relative repo is resolved from where the CLI runs", async () => {
     const { root, repo, methods, engine } = await setup();
     const path = join(root, "maestro.sock");
@@ -439,6 +515,10 @@ describe("the CLI's exit codes", () => {
     const { root } = await setup();
     const missing = join(root, "missing.sock");
     expect((await run(["frobnicate"], missing)).code).toBe(2);
+    expect((await run(["show"], missing)).code).toBe(2);
+    const flag = await run(["new", "x", "--check", "true"], missing);
+    expect(flag.code).toBe(2);
+    expect(flag.stderr).toContain("--check");
     const absent = await run(["ls"], missing);
     expect(absent.code).toBe(2);
     expect(absent.stderr).toContain("not listening");

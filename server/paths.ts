@@ -4,6 +4,13 @@
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+/** `~` and `~/x` name the home folder; anything else is returned as written. */
+export function expandHome(path: string): string {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/")) return join(homedir(), path.slice(2));
+  return path;
+}
+
 export function configPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.MAESTRO_PASEO_CONFIG ?? join(homedir(), ".config", "maestro-paseo", "config.json");
 }

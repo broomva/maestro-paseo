@@ -1,6 +1,5 @@
-import { setTimeout as sleep } from "node:timers/promises";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { agentMethods, serveAgents } from "./server/agent-socket";
+import { agentMethods, keepServing } from "./server/agent-socket";
 import { loadConfig, saveConfig } from "./server/config";
 import { Engine } from "./server/engine";
 import { socketPath } from "./server/paths";
@@ -20,7 +19,6 @@ import {
 } from "./shared/contracts";
 
 const log = (message: string) => console.log(`[maestro] ${message}`);
-const RETRY_MS = 10_000;
 
 export default function contribute(host: PluginServerContext) {
   const engine = new Engine();
@@ -72,29 +70,11 @@ export default function contribute(host: PluginServerContext) {
   server.on("agent.created", () => undefined);
 
   // Sessions reach Maestro through a socket of its own (server/agent-socket.ts).
-  // If it cannot open, Maestro's own screens still work, and it keeps trying:
-  // a predecessor that outlives a reload must not leave sessions shut out.
-  const path = socketPath();
-  const methods = agentMethods(engine, () => latest);
-  const quit = new AbortController();
-  let closeSocket: (() => Promise<void>) | null = null;
-  const opening = (async () => {
-    for (let failures = 0; !quit.signal.aborted; failures += 1) {
-      try {
-        closeSocket = await serveAgents({ path, methods, log });
-        log(`sessions can reach Maestro at ${path}`);
-        return;
-      } catch (error) {
-        if (failures === 0) log(`the agent socket did not open, retrying every 10s: ${(error as Error).message}`);
-        await sleep(RETRY_MS, undefined, { signal: quit.signal }).catch(() => undefined);
-      }
-    }
-  })();
+  // If it cannot open, Maestro's own screens still work, and it keeps trying.
+  const stopSocket = keepServing({ path: socketPath(), methods: agentMethods(engine, () => latest), log });
 
   return async () => {
-    quit.abort();
     engine.stop();
-    await opening;
-    await closeSocket?.();
+    await stopSocket();
   };
 }

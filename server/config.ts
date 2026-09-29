@@ -5,18 +5,12 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { ConfigSchema, type MaestroConfig } from "../shared/contracts";
-import { configPath } from "./paths";
+import { configPath, expandHome } from "./paths";
 
-export { configPath };
+export { configPath, expandHome };
 
 export function defaultConfig(): MaestroConfig {
   return { workRoot: join(homedir(), "maestro"), provider: "claude", modeId: null, isolation: "worktree" };
-}
-
-export function expandHome(path: string): string {
-  if (path === "~") return homedir();
-  if (path.startsWith("~/")) return join(homedir(), path.slice(2));
-  return path;
 }
 
 export class ConfigError extends Error {
