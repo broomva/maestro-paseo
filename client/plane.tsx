@@ -8,10 +8,11 @@ import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import type { Scoreboard, WorkItem } from "../shared/contracts";
-import { GROUP_COPY, GROUP_ORDER, PLAIN_VOICE } from "../shared/states";
+import { GROUP_COPY, GROUP_ORDER, type Group, PLAIN_VOICE } from "../shared/states";
 import { WorkDetail } from "./detail";
 import { ago, basename, duration, errorText, plural } from "./format";
 import { useWorkList } from "./hooks";
+import { useIntent } from "./intent";
 import { NewWork } from "./new-work";
 import { Button, Card, IconButton, Notice, radius, StateDot, space, toneColor, useText } from "./ui";
 
@@ -20,6 +21,12 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const text = useText(theme);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [filter, setFilter] = useState<Group | null>(null);
+  useIntent((intent) => {
+    if (intent.kind === "select") setSelected(intent.id);
+    else if (intent.kind === "new") setCreating(true);
+    else setFilter(intent.group);
+  });
   const compact = layout.compact;
   const pad = compact ? space[4] : space[6];
 
@@ -109,33 +116,41 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
               </View>
             </Card>
           ) : (
-            GROUP_ORDER.map((group) => {
-              const rows = items.filter((item) => item.group === group);
-              if (rows.length === 0) return null;
-              return (
-                <View key={group} style={{ gap: space[2] }}>
-                  <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[2], flexWrap: "wrap" }}>
-                    <Text style={[text.body, { fontWeight: "600" }]} accessibilityRole="header">
-                      {GROUP_COPY[group].title}
-                    </Text>
-                    <Text style={[text.small, text.tabular]}>{rows.length}</Text>
-                    <Text style={text.small}>{GROUP_COPY[group].hint}</Text>
-                  </View>
-                  <View style={{ gap: space[1] }}>
-                    {rows.map((item) => (
-                      <WorkRow
-                        key={item.id}
-                        theme={theme}
-                        item={item}
-                        selected={item.id === current}
-                        compact={compact}
-                        onPress={() => setSelected(item.id)}
-                      />
-                    ))}
-                  </View>
+            <>
+              {filter ? (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
+                  <Text style={text.muted}>Showing {GROUP_COPY[filter].title} only</Text>
+                  <Button theme={theme} label="Show all work" compact={compact} onPress={() => setFilter(null)} />
                 </View>
-              );
-            })
+              ) : null}
+              {GROUP_ORDER.filter((group) => filter === null || group === filter).map((group) => {
+                const rows = items.filter((item) => item.group === group);
+                if (rows.length === 0) return null;
+                return (
+                  <View key={group} style={{ gap: space[2] }}>
+                    <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[2], flexWrap: "wrap" }}>
+                      <Text style={[text.body, { fontWeight: "600" }]} accessibilityRole="header">
+                        {GROUP_COPY[group].title}
+                      </Text>
+                      <Text style={[text.small, text.tabular]}>{rows.length}</Text>
+                      <Text style={text.small}>{GROUP_COPY[group].hint}</Text>
+                    </View>
+                    <View style={{ gap: space[1] }}>
+                      {rows.map((item) => (
+                        <WorkRow
+                          key={item.id}
+                          theme={theme}
+                          item={item}
+                          selected={item.id === current}
+                          compact={compact}
+                          onPress={() => setSelected(item.id)}
+                        />
+                      ))}
+                    </View>
+                  </View>
+                );
+              })}
+            </>
           )}
         </>
       )}
