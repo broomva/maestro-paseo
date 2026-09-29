@@ -1,5 +1,6 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { WorkPanel } from "./client/agent-panel";
+import { requestIntent } from "./client/intent";
 import { MaestroSurface } from "./client/plane";
 import { MaestroSettings } from "./client/settings";
 import { adoptAgent } from "./shared/contracts";
@@ -28,6 +29,28 @@ export default function contribute(client: PluginClientContext) {
     keywords: ["work", "gate", "needs you"],
     context: "global",
     onSelect: ({ openSurface }) => openSurface("maestro"),
+  });
+  client.addCommandCenterItem({
+    id: "new-work",
+    title: "New Maestro work",
+    icon: "Plus",
+    keywords: ["work", "dispatch", "brief", "task"],
+    context: "global",
+    onSelect: ({ openSurface }) => {
+      requestIntent({ kind: "new" });
+      openSurface("maestro");
+    },
+  });
+  client.addCommandCenterItem({
+    id: "needs-you",
+    title: "What needs you in Maestro",
+    icon: "Inbox",
+    keywords: ["gate", "review", "approve", "needs you"],
+    context: "global",
+    onSelect: ({ openSurface }) => {
+      requestIntent({ kind: "filter", group: "review" });
+      openSurface("maestro");
+    },
   });
   client.addCommandCenterItem({
     id: "track-session",
