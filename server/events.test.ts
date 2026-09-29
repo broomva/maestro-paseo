@@ -265,12 +265,21 @@ describe("a decision inside its undo window", () => {
       { ts: at(13), type: "stopped", actor: "human", agentId: "a1" },
       { ts: at(13), type: "state", actor: "human", from: "running", to: "blocked", reason: "You stopped the run" },
     ];
+    // Settled decisions read as made; only the open one still counts down.
     expect(toWireEvents(events).map(({ text, detail }) => [text, detail])).toEqual([
-      ["Sending it back in 10s", "Add a test"],
+      ["You sent it back", "Add a test"],
       ["Undone", "Send back"],
-      ["Approving in 10s", null],
+      ["You approved", null],
       ["Approve did not take effect", "The agent is waiting on a question. Answer it first."],
       ["You stopped the run", null],
     ]);
+    expect(toWireEvents([{ ...made, token: "open" }]).map((event) => event.text)).toEqual(["Approving in 10s"]);
+    // Applied: the decision reads as made, then when it took effect, with the state change folded in.
+    const applied: WorkEvent[] = [
+      made,
+      { ts: at(11), type: "gate", actor: "human", verdict: "approve", note: "", token: "d1" },
+      { ts: at(11), type: "state", actor: "human", from: "review", to: "done", reason: null },
+    ];
+    expect(toWireEvents(applied).map((event) => event.text)).toEqual(["You approved", "Took effect"]);
   });
 });

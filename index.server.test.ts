@@ -231,8 +231,12 @@ test("decisions left from before a restart apply on load, or once a client arriv
   try {
     // On load, with no client yet: the cancel asks nothing of the session and applies.
     expect(await until(canceled, "canceled")).toBe("canceled");
-    // The approval must ask whether the session is working again, so it waits for a client.
-    expect(await state(approved)).toBe("review");
+    // The approval must ask whether the session is working again, so it waits for a client:
+    // still waiting a while later, not merely not reached yet by the sweep.
+    for (let i = 0; i < 15; i += 1) {
+      expect(await state(approved)).toBe("review");
+      await new Promise((r) => setTimeout(r, 20));
+    }
     const created = hooks.get("agent.created");
     if (!created) throw new Error("agent.created is not subscribed");
     await created({ agent: { id: "someone" } }, { paseo: fake.paseo, signal: new AbortController().signal });

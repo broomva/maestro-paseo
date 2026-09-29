@@ -102,7 +102,7 @@ export function MaestroSettings({ theme }: PluginSurfaceProps) {
         <SettingsCard>
           <SettingsSelect
             label="New work"
-            hint="Used when you do not choose. Checks decide only when the work has a check command."
+            hint="New work starts with this choice. Checks decide only when the work has a check command."
             value={draft.defaultGate}
             options={[
               { label: "You approve", value: "human" },
@@ -112,7 +112,7 @@ export function MaestroSettings({ theme }: PluginSurfaceProps) {
           />
           <SettingsSwitch
             label="Archive the workspace on approve"
-            hint="When an approval takes effect, the run's worktree goes away. The branch stays as the receipt."
+            hint="When an approval takes effect, the run's worktree goes away, unless it has uncommitted changes. The branch stays as the receipt."
             value={draft.archiveOnApprove}
             onValueChange={(archiveOnApprove) => patch({ archiveOnApprove })}
           />

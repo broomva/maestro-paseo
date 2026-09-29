@@ -176,6 +176,43 @@ describe("what a session is offered", () => {
     engine.stop();
   });
 
+  test("create at the cap answers with the queued item and why; the retry is a dispatch, not a duplicate", async () => {
+    const { repo, ok, ask, engine, fake, config } = await setup();
+    config.concurrencyCap = 1;
+    await ok("work.create", { title: "First", repo, dispatch: true });
+    const response = await ask("work.create", { title: "Second", repo, dispatch: true });
+    if (!response.ok) throw new Error(response.error);
+    const { item, notice } = response.output as { item: WorkItem; notice: string | null };
+    expect(item.group).toBe("queued");
+    expect(notice).toContain("At capacity: 1 running. It stays queued.");
+    // The session holds the id, so it retries the dispatch, which refuses again without adding anything.
+    const retry = await ask("work.dispatch", { id: item.id });
+    expect(!retry.ok && retry.error).toBe("At capacity: 1 running. It stays queued.");
+    expect((await engine.list()).items.map((entry) => entry.title).sort()).toEqual(["First", "Second"]);
+    expect(fake.created).toHaveLength(1);
+  });
+
+  test("a session's list never makes one of your decisions take effect", async () => {
+    const { repo, ok, engine, fake, config } = await setup();
+    const { item } = await ok("work.create", { title: "Decided", repo, dispatch: true });
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, []);
+    // Decided a minute ago by an instance that went down: overdue now.
+    const earlier = new Engine({
+      now: () => new Date(Date.now() - 60_000),
+      config: async () => config,
+      log: () => {},
+      timer: () => () => undefined,
+    });
+    await earlier.verdict(fake.paseo, item.id, "approve", "");
+    const listed = (await ok("work.list")) as unknown as { items: WorkItem[] };
+    expect(listed.items[0]).toMatchObject({ state: "review", pending: { verdict: "approve", remainingMs: 0 } });
+    // Your own read applies it.
+    const mine = await engine.list(fake.paseo);
+    expect(mine.items[0]).toMatchObject({ state: "done", pending: null });
+  });
+
   test("work a session creates is human-gated even when new work defaults to checks deciding", async () => {
     const { repo, ok, config } = await setup();
     config.defaultGate = "auto";

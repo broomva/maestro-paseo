@@ -5,7 +5,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { type PluginSurfaceProps, usePaseo } from "@getpaseo/plugin/client";
 import { ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import type { CheckResult, Pending, WorkEventWire, WorkItem } from "../shared/contracts";
 import { ChangeText, WithChange } from "./changed";
@@ -160,10 +160,20 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
     textAlignVertical: "top" as const,
   };
 
-  // A decision you made that has not taken effect: the one verb left is taking it back.
-  if (item.pending) {
-    return <PendingDecision item={item} pending={item.pending} theme={theme} compact={compact} />;
-  }
+  // A decision you made that has not taken effect sits on top. It replaces only the gate's own
+  // verbs: answering a question, stopping a run, or unblocking stay where they are.
+  const pendingCard = item.pending ? (
+    <PendingDecision item={item} pending={item.pending} theme={theme} compact={compact} />
+  ) : null;
+  const withPending = (node: ReactNode) =>
+    pendingCard ? (
+      <View style={{ gap: space[3] }}>
+        {pendingCard}
+        {node}
+      </View>
+    ) : (
+      node
+    );
 
   if (item.state === "review" && item.permission) {
     const { requestId } = item.permission;
@@ -182,7 +192,7 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
         setAnswering(false);
       }
     };
-    return (
+    return withPending(
       <Card theme={theme}>
         <Text style={text.label}>The agent is asking</Text>
         <Text style={text.body}>{item.look?.ask ?? item.permission.title}</Text>
@@ -204,11 +214,12 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
             onPress={() => void answer(false)}
           />
         </View>
-      </Card>
+      </Card>,
     );
   }
 
   if (item.state === "review") {
+    if (pendingCard) return pendingCard;
     const look = item.look;
     return (
       <Card theme={theme}>
@@ -320,7 +331,7 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   }
 
   if (item.state === "blocked") {
-    return (
+    return withPending(
       <Card theme={theme}>
         <Text style={text.label}>Stuck</Text>
         <Text style={text.body}>{item.reason ?? "The run stopped without a reason."}</Text>
@@ -351,7 +362,7 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
             onPress={() => verbs.cancel.mutate({ id: item.id }, { onError: fail })}
           />
         </View>
-      </Card>
+      </Card>,
     );
   }
 
@@ -382,16 +393,22 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   }
 
   if (item.state === "running") {
-    return (
+    // While checks run the session is already done: nothing to stop, and the checks decide where it lands.
+    const stoppable = item.phase !== "checking";
+    return withPending(
       <View style={{ gap: space[3] }}>
         <Text style={text.muted}>
           {item.phase === "checking"
             ? "The run finished. Checks are running in its worktree."
             : `Working${item.worker?.provider ? ` with ${item.worker.provider}` : ""}. It comes back to you when the run ends.`}
         </Text>
-        {confirmStop === item.id ? (
+        {!stoppable ? null : confirmStop === item.id ? (
           <Card theme={theme}>
-            <Text style={text.body}>Stopping archives the session. The branch and its commits stay.</Text>
+            <Text style={text.body}>
+              {item.worker?.branch
+                ? "Stopping archives the session. The branch and its commits stay."
+                : "Stopping archives the session."}
+            </Text>
             <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
               <Button
                 theme={theme}
@@ -423,11 +440,11 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
             />
           </View>
         )}
-      </View>
+      </View>,
     );
   }
 
-  return item.verdict ? <Text style={text.muted}>{item.verdict}</Text> : null;
+  return withPending(item.verdict ? <Text style={text.muted}>{item.verdict}</Text> : null);
 }
 
 const PENDING_WORDS: Record<Pending["verdict"], string> = {

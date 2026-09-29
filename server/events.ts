@@ -159,6 +159,12 @@ export function pendingDecision(events: readonly WorkEvent[]): PendingDecision |
   };
 }
 
+/** The events recorded after the decision with this token was made. */
+export function eventsSince(events: readonly WorkEvent[], token: string): WorkEvent[] {
+  const made = events.findIndex((event) => event.type === "gate.pending" && event.token === token);
+  return made < 0 ? [] : events.slice(made + 1);
+}
+
 /** Whether the latest decision made at the gate has taken effect. */
 export function decisionApplied(events: readonly WorkEvent[]): boolean {
   const made = lastOf(events, "gate.pending");
@@ -348,10 +354,16 @@ export const DECISION_WORDS: Record<Verdict, { verb: string; doing: string; done
  */
 export function toWireEvents(events: readonly WorkEvent[]): WorkEventWire[] {
   const out: WorkEventWire[] = [];
+  // Decisions that were applied, undone or dropped: their countdown is over, so they read as made.
+  const settled = new Set(
+    events.flatMap((event) =>
+      event.type === "gate" || event.type === "gate.undone" || event.type === "gate.dropped" ? [event.token] : [],
+    ),
+  );
   events.forEach((event, index) => {
     const previous = events[index - 1];
     if (event.type === "state" && previous && CAUSES.has(previous.type)) return;
-    const wire = toWireEvent(event);
+    const wire = toWireEvent(event, event.type === "gate.pending" && settled.has(event.token));
     if (wire) out.push(wire);
   });
   return out;
@@ -363,7 +375,8 @@ function byline(origin: Origin): string | null {
   return origin.by ? `by session ${origin.by.slice(0, 8)}` : "by a session";
 }
 
-export function toWireEvent(event: WorkEvent): WorkEventWire | null {
+/** One receipt. `settled`: for a decision, whether it was applied, undone or dropped since. */
+export function toWireEvent(event: WorkEvent, settled = false): WorkEventWire | null {
   const base = { ts: event.ts, actor: event.actor };
   switch (event.type) {
     case "created":
@@ -414,8 +427,12 @@ export function toWireEvent(event: WorkEvent): WorkEventWire | null {
       return word ? { ...base, type: event.type, text: word, detail: event.reason } : null;
     }
     case "gate":
+      // A decision made in the undo window was already receipted when you made it; this is when it landed.
+      if (event.token) return { ...base, type: event.type, text: "Took effect", detail: null };
       return { ...base, type: event.type, text: DECISION_WORDS[event.verdict].done, detail: event.note || null };
     case "gate.pending": {
+      if (settled)
+        return { ...base, type: event.type, text: DECISION_WORDS[event.verdict].done, detail: event.note || null };
       const seconds = Math.max(0, Math.round((ms(event.effectiveAt) - ms(event.ts)) / 1000));
       return {
         ...base,

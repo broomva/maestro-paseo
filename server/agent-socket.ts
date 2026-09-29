@@ -91,7 +91,8 @@ export function agentMethods(engine: Engine, paseo: () => Paseo | null): Readonl
     return id;
   };
   return new Map<string, AgentMethod>([
-    ["work.list", method(z.object({}), () => engine.list(paseo() ?? undefined))],
+    // Read-only for your decisions: a session listing work never makes one take effect.
+    ["work.list", method(z.object({}), () => engine.list(paseo() ?? undefined, { decide: false }))],
     ["work.get", method(ById, ({ id }) => engine.get(id))],
     [
       "work.create",
@@ -106,7 +107,7 @@ export function agentMethods(engine: Engine, paseo: () => Paseo | null): Readonl
             "A session cannot write a done check: checks run as you, outside any session's permissions, so they come from the person who owns this Maestro.",
           );
         }
-        return { item: await engine.create(paseo(), input, origin(caller)) };
+        return engine.createWork(paseo(), input, origin(caller));
       }),
     ],
     [

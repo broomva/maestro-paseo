@@ -72,7 +72,7 @@ export default function contribute(host: PluginServerContext) {
   server.handle(readWorkFile, ({ id, name }) => records.file(id, name));
   server.handle(createWork, async (input, { paseo }) => {
     const gate = input.gate ?? (await engine.settings()).defaultGate;
-    return { item: await engine.create(paseo, { ...input, gate }) };
+    return engine.createWork(paseo, { ...input, gate });
   });
   server.handle(dispatchWork, ({ id }, { paseo }) => engine.dispatch(paseo, id).then((item) => ({ item })));
   server.handle(decideWork, ({ id, verdict, note }, { paseo }) =>

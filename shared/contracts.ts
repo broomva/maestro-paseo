@@ -184,7 +184,8 @@ export const createWork = defineRpc({
     initiative: z.string(),
     dispatch: z.boolean(),
   }),
-  output: ItemResult,
+  /** `notice`: why work asked to dispatch was created but not started (the concurrency cap). */
+  output: ItemResult.extend({ notice: z.string().nullable() }),
 });
 
 export const dispatchWork = defineRpc({ name: "work.dispatch", input: ById, output: ItemResult });
