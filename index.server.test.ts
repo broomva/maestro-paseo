@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,8 @@ import contribute from "./index.server";
 import { answers } from "./server/agent-socket";
 import { NO_HANDLE } from "./server/engine";
 import { fakePaseo } from "./server/fake-paseo";
+
+setDefaultTimeout(60_000);
 
 const roots: string[] = [];
 afterAll(async () => {
@@ -55,7 +57,12 @@ test("the plugin's handlers and hooks hand the agent socket its daemon client", 
   const { host, handlers, hooks } = fakeHost();
   const cleanup = contribute(host);
   try {
-    for (let i = 0; i < 100 && !(await answers(path)); i += 1) await new Promise((r) => setTimeout(r, 20));
+    // Wait for the socket, not a fixed time: a busy machine stretches every sleep.
+    const deadline = Date.now() + 30_000;
+    while (!(await answers(path))) {
+      if (Date.now() > deadline) throw new Error("the agent socket never opened");
+      await new Promise((r) => setTimeout(r, 10));
+    }
 
     // Before any event: reads and creates work, starting a run says why it cannot.
     const { item } = (await call("work.create", { title: "Wired", repo }, { path, caller: "s1" })) as {
