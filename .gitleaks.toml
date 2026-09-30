@@ -1,0 +1,25 @@
+# gitleaks configuration: the default rules, plus one narrow allowlist.
+#
+# Pen design files (*.pen) carry a top-level "fileToken". It is a random UUIDv4
+# that Pen mints locally (crypto.randomUUID) as the document's identity. Pen sends
+# it to its share service only when the owner shares a design, and those calls
+# authenticate with the owner's separate auth token; a share gets its own shareId
+# and shareToken. The fileToken on its own grants nothing. generic-api-key flags it
+# only because of the key name.
+#
+# Checked 2026-09-30 (BRO-2670) against Pen 1.2.14's app bundle, and against Pen's
+# local state: no share was ever created for docs/design/new-work.pen.
+#
+# The allowlist matches one line shape only: a "fileToken" key holding a UUIDv4.
+# Any other finding, in a .pen file or anywhere, and a fileToken that is not a
+# UUIDv4, is still reported. It deliberately has no `paths` entry: gitleaks
+# 8.30 skips an allowlisted path outright, whatever `condition` says, which
+# hid a real token planted in a .pen file when this was tested.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Pen document fileToken: a UUIDv4 document id, not a credential"
+regexTarget = "line"
+regexes = ['''^\s*"fileToken": "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",?\s*$''']
