@@ -698,11 +698,12 @@ export class Engine {
     if (this.closed || this.armed.has(token)) return;
     const wait = delay ?? Math.max(0, Date.parse(effectiveAt) - this.now().getTime());
     const cancel = this.timer(async () => {
-      this.armed.delete(token);
       const outcome = await this.applyPending(paseo, id, token, dir).catch((error) => {
         this.log(`applying the decision on ${id}: ${(error as Error).message}`);
         return "settled" as const;
       });
+      // Armed until its apply settles, so a sweep meanwhile never arms a second timer for it.
+      if (this.armed.get(token) === cancel) this.armed.delete(token);
       // Fired before the clock reached it: wait out the rest.
       if (outcome === "early") this.arm(id, token, effectiveAt, paseo, dir);
       if (outcome === "waiting") this.arm(id, token, effectiveAt, paseo, dir, CLIENT_WAIT_MS);
@@ -745,26 +746,35 @@ export class Engine {
               (error) => (error as Error).message,
             );
       let outcome = "settled" as ApplyOutcome;
+      /** Whether the decision's follow-through (waking the session, archiving) is still owed. */
+      let followThrough = true;
       const updated = await store.mutate(
         id,
         (item): Mutation | null => {
           // Undone (or applied elsewhere) while the session was being asked.
           if (pendingDecision(item.events)?.token !== token) return null;
           const since = eventsSince(item.events, token);
+          const wentOn = since.some((event) => WENT_ON.has(event.type));
           const applied: WorkEvent = { ts: this.stamp(), type: "gate", actor: "human", verdict, note, token };
-          // The state landed and its receipts did not (a write torn by a crash): it took effect; record that.
-          if (item.contract.state === target && !since.some((event) => event.type === "state")) {
+          const receipts: WorkEvent[] = [
+            applied,
+            { ts: applied.ts, type: "state", actor: "human", from: "review", to: target, reason: null },
+          ];
+          // The state landed and its receipts did not (a write torn by a crash, which also lost the
+          // follow-through). With nothing since, finish it: record it and follow through.
+          const landed = item.contract.state === target && !since.some((event) => event.type === "state");
+          if (landed && !wentOn) {
             outcome = "applied";
-            return {
-              events: [
-                applied,
-                { ts: applied.ts, type: "state", actor: "human", from: "review", to: target, reason: null },
-              ],
-            };
+            return { events: receipts };
           }
-          const reason = since.some((event) => WENT_ON.has(event.type))
-            ? RUN_WENT_ON
-            : (busy ?? gateRefusal(item, verdict, true));
+          // The run went on after a torn write. A closed state cannot be reopened, so the receipts say it
+          // closed, and nothing else is done. A send back's note is never delivered to a run that moved on.
+          if (landed && isTerminal(target)) {
+            outcome = "applied";
+            followThrough = false;
+            return { events: [...receipts, this.note(`${RUN_WENT_ON} Nothing else was done.`)] };
+          }
+          const reason = wentOn ? RUN_WENT_ON : (busy ?? gateRefusal(item, verdict, true));
           if (reason) {
             outcome = "dropped";
             return { events: [{ ts: this.stamp(), type: "gate.dropped", actor: "maestro", verdict, token, reason }] };
@@ -780,7 +790,7 @@ export class Engine {
         },
         current.dir,
       );
-      if (outcome !== "applied") return outcome;
+      if (outcome !== "applied" || !followThrough) return outcome;
       if (verdict === "revise" && paseo) {
         await this.wake(
           paseo,

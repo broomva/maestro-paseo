@@ -1789,3 +1789,109 @@ describe("round 2 of review: client, cap and stop", () => {
     expect((await engine.get(item.id)).item).toMatchObject({ state: "review", pending: null });
   });
 });
+
+describe("round 3 of review", () => {
+  test("a torn send back followed by a turn is dropped: the note never reaches a run that went on", async () => {
+    const { create, engine, fake, timers, store } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "revise", "Rename the flag");
+    // The write tore after the state landed; then the session started a turn of its own.
+    await store.mutate(item.id, () => ({ patch: { state: "running" } }));
+    await engine.onTurnStarted({ id: "agent-1" });
+    tickMs(UNDO_MS);
+    await timers.fire();
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "running", pending: null });
+    expect(events.at(-1)).toMatchObject({ text: "Send back did not take effect", detail: RUN_WENT_ON });
+    expect(events.map((event) => event.text)).not.toContain("Took effect");
+    expect(fake.sent).toHaveLength(0);
+  });
+
+  test("a torn approval followed by a turn stays closed, says the run went on, and archives nothing", async () => {
+    const { create, engine, fake, timers, store } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    cleanWorktree(item.worker?.cwd);
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await store.mutate(item.id, () => ({ patch: { state: "done" } }));
+    // Done cannot reopen, but the session still ended another turn after you decided.
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-2");
+    tickMs(UNDO_MS);
+    await timers.fire();
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "done", pending: null, verdict: "You approved" });
+    expect(events.slice(-4).map((event) => event.text)).toEqual([
+      "You approved",
+      "Turn finished",
+      "Took effect",
+      `${RUN_WENT_ON} Nothing else was done.`,
+    ]);
+    expect(fake.archivedWorkspaces).toEqual([]);
+  });
+
+  test("a torn cancel followed by a turn stays canceled and says the run went on", async () => {
+    const { create, engine, fake, timers, store } = await setup();
+    const item = await create();
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");
+    await engine.verdict(fake.paseo, item.id, "block", "");
+    await store.mutate(item.id, () => ({ patch: { state: "canceled" } }));
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-2");
+    tickMs(UNDO_MS);
+    await timers.fire();
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "canceled", pending: null });
+    expect(events.slice(-3).map((event) => event.text)).toEqual([
+      "Turn finished",
+      "Took effect",
+      `${RUN_WENT_ON} Nothing else was done.`,
+    ]);
+    expect(events.map((event) => event.text)).not.toContain("Cancel work did not take effect");
+  });
+
+  test("a sweep while a timer's apply is in flight arms nothing more; one timer is left after", async () => {
+    const { create, engine: first, fake, config, store } = await setup();
+    const item = await create();
+    await endTurn(first, fake);
+    first.stop();
+    let hold = false;
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const timers = fakeTimers();
+    const engine = new Engine({
+      now: () => new Date(clock),
+      config: async () => {
+        if (hold) {
+          entered();
+          await held;
+        }
+        return config;
+      },
+      log: () => {},
+      timer: timers.timer,
+    });
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    const { items } = await store.scan();
+    // The timer fires before the clock gets there, and its apply is held open.
+    hold = true;
+    const firing = timers.fire();
+    await inside;
+    await engine.sweep(fake.paseo, items);
+    expect(timers.live()).toHaveLength(0);
+    hold = false;
+    release();
+    await firing;
+    // The apply found it early and waits out the rest: exactly one timer.
+    expect(timers.live().map((timer) => timer.ms)).toEqual([UNDO_MS]);
+  });
+});
