@@ -6,6 +6,8 @@ import { z } from "zod";
 import { GATE_MODES, GROUP_ORDER, KINDS, ORCH_STATES, VERDICTS } from "./states";
 
 /** Bounds on what a work may pass to a provider as feature values. */
+export const ISOLATIONS = ["worktree", "directory"] as const;
+
 export const FEATURE_LIMITS = { keys: 32, chars: 200 } as const;
 
 /** A provider feature's value: a toggle is a boolean, a select is an option id or null. */
@@ -93,6 +95,17 @@ export const WorkItemSchema = z.object({
   look: LookSchema.nullable(),
   permission: PermissionSchema.nullable(),
   checks: z.array(CheckSpecSchema),
+  /** How this work's next run starts, as chosen in the composer; absent fields mean Settings. */
+  run: z
+    .object({
+      isolation: z.enum(ISOLATIONS).optional(),
+      provider: z.string().optional(),
+      modeId: z.string().optional(),
+      thinkingOptionId: z.string().optional(),
+      featureValues: FeatureValuesSchema.optional(),
+    })
+    .nullable()
+    .optional(),
   /** The latest move into review, as its index in the event log; kept after the work leaves review. */
   landing: z.number().int().optional(),
 });
@@ -132,8 +145,6 @@ export const ScoreboardSchema = z.object({
   weekByInitiative: z.array(z.object({ initiative: z.string().nullable(), unsupervisedMs: z.number() })).default([]),
 });
 export type Scoreboard = z.infer<typeof ScoreboardSchema>;
-
-export const ISOLATIONS = ["worktree", "directory"] as const;
 
 export const ConfigSchema = z.object({
   workRoot: z.string().min(1),

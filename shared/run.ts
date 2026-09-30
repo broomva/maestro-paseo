@@ -25,3 +25,33 @@ export function describeRun(run: RunShape): string {
   const terms = runTerms(run);
   return terms.length > 0 ? `${run.provider} (${terms.join(", ")})` : run.provider;
 }
+
+/** Modes that let a run edit files and run commands without asking first (Claude's and Codex's). */
+export const PROMPT_FREE_MODES: ReadonlySet<string> = new Set(["bypassPermissions", "full-access"]);
+
+export function skipsPrompts(modeId: string | null | undefined): boolean {
+  return modeId != null && PROMPT_FREE_MODES.has(modeId);
+}
+
+/**
+ * What the Queued card says before Dispatch: how the run will start, and a
+ * warning when its mode skips permission prompts. Settings fills what is unset.
+ */
+export function queuedRunLine(
+  run:
+    | { provider?: string; modeId?: string; thinkingOptionId?: string; featureValues?: FeatureValues }
+    | null
+    | undefined,
+): {
+  line: string;
+  warning: string | null;
+} {
+  if (!run) return { line: "Runs with your Settings defaults.", warning: null };
+  const described = describeRun({ ...run, provider: run.provider ?? "the Settings provider" });
+  return {
+    line: `Runs with ${described}.`,
+    warning: skipsPrompts(run.modeId)
+      ? "This run skips permission prompts: it can edit files and run commands without asking."
+      : null,
+  };
+}

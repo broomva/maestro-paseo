@@ -34,6 +34,19 @@ export function toWire(item: StoredWork, now: number): WorkItem {
     look: lookOf(contract.state, events, now),
     permission: contract.state === "review" ? pendingPermission(events) : null,
     checks: contract.checks.map(({ name, run }) => ({ name, run })),
+    run: runChoices(contract),
     landing: lastLanding(events) ?? undefined,
   };
+}
+
+/** The run choices stored on the work, or null when every one is left to Settings. */
+function runChoices(contract: StoredWork["contract"]): NonNullable<WorkItem["run"]> | null {
+  const run: NonNullable<WorkItem["run"]> = {};
+  if (contract.isolation) run.isolation = contract.isolation;
+  if (contract.provider) run.provider = contract.provider;
+  if (contract.modeId) run.modeId = contract.modeId;
+  if (contract.thinkingOptionId) run.thinkingOptionId = contract.thinkingOptionId;
+  if (contract.featureValues && Object.keys(contract.featureValues).length > 0)
+    run.featureValues = contract.featureValues;
+  return Object.keys(run).length > 0 ? run : null;
 }

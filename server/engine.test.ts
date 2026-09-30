@@ -931,6 +931,8 @@ describe("the composer's choices", () => {
   test("what the work did not choose comes from Settings at dispatch time", async () => {
     const { engine, fake, repo, config } = await setup();
     const item = await engine.create(fake.paseo, { ...draft(repo), title: "Defaults", thinkingOptionId: "low" });
+    // Before Dispatch, the Queued card shows only what the work itself chose.
+    expect(item.run).toEqual({ thinkingOptionId: "low" });
     config.modeId = "bypassPermissions";
     config.isolation = "worktree";
     const running = await engine.dispatch(fake.paseo, item.id);

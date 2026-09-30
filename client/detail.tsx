@@ -8,6 +8,7 @@ import { ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-n
 import { useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import type { CheckResult, WorkEventWire, WorkItem } from "../shared/contracts";
+import { queuedRunLine } from "../shared/run";
 import { ChangeText, WithChange } from "./changed";
 import { FilesSection } from "./files";
 import { ago, basename, errorText } from "./format";
@@ -353,9 +354,20 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   }
 
   if (item.state === "proposed" || item.state === "reviewing" || item.state === "triggered") {
+    const queued = queuedRunLine(item.run);
     return (
       <Card theme={theme}>
-        <Text style={text.body}>Queued. Dispatching starts an agent in a fresh worktree on its own run branch.</Text>
+        <Text style={text.body}>
+          {item.run?.isolation === "directory"
+            ? "Queued. Dispatching starts an agent in the repository itself."
+            : "Queued. Dispatching starts an agent in a fresh worktree on its own run branch."}
+        </Text>
+        <Text style={text.muted}>{queued.line}</Text>
+        {queued.warning ? (
+          <Notice theme={theme} tone="warn">
+            {queued.warning}
+          </Notice>
+        ) : null}
         <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
           <Button
             theme={theme}
