@@ -112,7 +112,7 @@ export function MaestroSettings({ theme }: PluginSurfaceProps) {
           />
           <SettingsSwitch
             label="Archive the workspace on approve"
-            hint="When an approval takes effect, the run's worktree goes away, unless it has uncommitted changes. The branch stays as the receipt."
+            hint="When an approval takes effect, the run's worktree goes away, unless it has uncommitted changes or cannot be checked. The branch stays as the receipt."
             value={draft.archiveOnApprove}
             onValueChange={(archiveOnApprove) => patch({ archiveOnApprove })}
           />

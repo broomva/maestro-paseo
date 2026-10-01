@@ -18,6 +18,7 @@
 // not observe never closes work on its own.
 
 import { randomUUID } from "node:crypto";
+import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { MaestroConfig, WorkItem } from "../shared/contracts";
@@ -53,7 +54,7 @@ import {
 import { briefOf } from "./frontmatter";
 import { describePermission, type PermissionLike } from "./permissions";
 import { type Paseo, startRun } from "./runs";
-import { type Mutation, placement, type StoredWork, WorkStore } from "./store";
+import { type Mutation, placement, type StoredWork, WorkStore, withLock } from "./store";
 import { toWire } from "./wire";
 import { worktreeStatus } from "./worktree";
 
@@ -178,6 +179,20 @@ export interface EngineOptions {
   client?: () => Paseo | null;
   /** Schedules the undo window. Tests pass their own, driven by the same clock as `now`. */
   timer?: Timer;
+  /** The longest one daemon call made while holding an item's claim may take. Tests pass a short one. */
+  claimWaitMs?: number;
+}
+
+/** See EngineOptions.claimWaitMs. */
+export const CLAIM_WAIT_MS = 30_000;
+
+/** `work()`, or a rejection once `ms` pass: a claim never waits on the daemon for ever. */
+function within<T>(work: () => Promise<T>, ms: number): Promise<T> {
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    handle = setTimeout(() => reject(new Error(`Paseo did not answer within ${Math.round(ms / 100) / 10}s`)), ms);
+  });
+  return Promise.race([Promise.resolve().then(work), late]).finally(() => clearTimeout(handle));
 }
 
 /** Why a decision cannot be made (or, when it comes due, applied) on this item right now. */
@@ -242,6 +257,7 @@ export class Engine {
   private lastReconcile = 0;
   private readonly client: () => Paseo | null;
   private readonly timer: Timer;
+  private readonly claimWaitMs: number;
   /** Pending decisions with a timer armed, by token, to the timer's cancel. */
   private readonly armed = new Map<string, () => void>();
   /** Decisions being applied right now, by token, so a timer and a sweep never apply one twice. */
@@ -257,6 +273,7 @@ export class Engine {
     this.landed = options.landed ?? (() => undefined);
     this.client = options.client ?? (() => null);
     this.timer = options.timer ?? realTimer;
+    this.claimWaitMs = options.claimWaitMs ?? CLAIM_WAIT_MS;
   }
 
   /** The settings runs start from, as this engine reads them. */
@@ -835,23 +852,80 @@ export class Engine {
     const { workspaceId, branch } = worker;
     if (!branch || !workspaceId) return record("Kept the workspace: Maestro did not create it.");
     if (!paseo) return record(`Could not archive the workspace: ${NO_HANDLE} The approval stands.`);
-    // Archiving removes the worktree's files. Work that was never committed stays, and so does the worktree.
-    const status = worker.cwd ? await worktreeStatus(worker.cwd) : { error: "no worktree folder is recorded" };
-    if ("error" in status) {
-      return record(`Kept the worktree: could not check it for uncommitted changes (${status.error}).`);
-    }
-    if (status.dirty) return record("Kept the worktree: it has uncommitted changes.");
-    const failure = await Promise.resolve()
-      .then(() => paseo.workspaces.archive(workspaceId))
-      .then(
-        (result) => result?.error ?? null,
-        (error) => (error instanceof Error ? error.message : String(error)),
-      );
+    // The claim is the item's lock, the one every mutation of it takes, so the receipt is written after it is released.
     return record(
-      failure
-        ? `Could not archive the workspace: ${failure}. The approval stands.`
-        : `Archived the workspace. The branch ${branch} stays.`,
+      await withLock(item.contract.id, () => this.archiveClaimed(paseo, item, { ...worker, workspaceId, branch })),
     );
+  }
+
+  /**
+   * Archive a run's worktree only if it is clean, read twice under the
+   * item's claim; the receipt it returns says what happened and why.
+   *
+   * The claim is the item's lock: while it is held every change Maestro
+   * makes to this item's files (a decision, a hook's receipt, a dispatch's
+   * binding) waits. It does not stop the session or a person typing into it,
+   * so under it, twice: the session must be idle, and the worktree, read
+   * with git pinned to the run's own entry in the repository
+   * (server/worktree.ts), must be clean. The second read is the last thing
+   * before the archive, and anything different from the first (a new file,
+   * a commit) keeps the worktree. Every daemon call under the claim gives up
+   * after claimWaitMs, so a daemon that never answers cannot hold it.
+   *
+   * The race that remains: a write that lands after the second read returns
+   * and before Paseo has removed the files (one daemon round trip, plus the
+   * removal) is lost with them. Nothing here can close it: the read is git's
+   * and the removal is Paseo's, and no lock both of them honour exists. An
+   * archive that gives up at claimWaitMs may still land later, which widens
+   * that window by as long. A process the session left running in the
+   * background is not a turn, so the idle check does not see it; only the
+   * two reads do.
+   */
+  private async archiveClaimed(
+    paseo: Paseo,
+    item: StoredWork,
+    { agentId, workspaceId, branch, cwd }: { agentId: string; workspaceId: string; branch: string; cwd: string | null },
+  ): Promise<string> {
+    const repo = item.contract.repo;
+    const cannot = (why: string) => `Kept the worktree: could not check it for uncommitted changes (${why}).`;
+    if (!cwd) return cannot("no worktree folder is recorded");
+    if (!repo) return cannot("the work names no repository");
+    // Paseo's record of the workspace, when it has one, must name the folder Maestro recorded.
+    const described = await within(() => paseo.workspaces.ref(workspaceId).refresh(), this.claimWaitMs).catch(
+      () => null,
+    );
+    const directory = described?.workspaceDirectory;
+    if (directory && (await realpath(directory).catch(() => directory)) !== (await realpath(cwd).catch(() => cwd))) {
+      return cannot("Paseo records the workspace at another folder");
+    }
+    /** A digest of a clean worktree read while the session was idle, or the receipt that keeps it. */
+    const read = async (): Promise<{ digest: string } | { keep: string }> => {
+      const snapshot = await within(() => paseo.agents.ref(agentId).refresh(), this.claimWaitMs).then(
+        (value) => ({ value }),
+        (error: Error) => ({ error: error.message }),
+      );
+      if ("error" in snapshot)
+        return { keep: `Kept the worktree: could not ask whether the session is idle (${snapshot.error}).` };
+      if (snapshot.value?.agent.status === "running")
+        return { keep: "Kept the worktree: the session is working again." };
+      const status = await worktreeStatus({ repo, cwd, branch });
+      if ("error" in status) return { keep: cannot(status.error) };
+      if (status.dirty) return { keep: "Kept the worktree: it has uncommitted changes." };
+      return { digest: status.digest };
+    };
+    const first = await read();
+    if ("keep" in first) return first.keep;
+    // Re-verify, immediately before the archive: the first read may have raced a write.
+    const second = await read();
+    if ("keep" in second) return second.keep;
+    if (second.digest !== first.digest) return "Kept the worktree: it changed while it was being checked.";
+    const failure = await within(() => paseo.workspaces.archive(workspaceId), this.claimWaitMs).then(
+      (result) => result?.error ?? null,
+      (error) => (error instanceof Error ? error.message : String(error)),
+    );
+    return failure
+      ? `Could not archive the workspace: ${failure}. The approval stands.`
+      : `Archived the workspace. The branch ${branch} stays.`;
   }
 
   async unblock(paseo: Paseo, id: string, note: string): Promise<WorkItem> {

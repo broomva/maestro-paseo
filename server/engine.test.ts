@@ -1,7 +1,8 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { chmodSync, existsSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { MaestroConfig } from "../shared/contracts";
 import type { Verdict } from "../shared/states";
 import { defaultConfig } from "./config";
@@ -9,6 +10,7 @@ import { CHECKING, CLIENT_WAIT_MS, Engine, RUN_WENT_ON, type Timer, UNDO_MS } fr
 import { fakePaseo } from "./fake-paseo";
 import type { Paseo } from "./runs";
 import { EVENTS_FILE, WORK_FILE, WorkStore } from "./store";
+import { gitEnv } from "./worktree";
 
 /** A real agent is idle once its turn ends; the fixture has to say so too. */
 async function endTurn(
@@ -30,15 +32,30 @@ const tickMs = (ms: number) => {
   clock += ms;
 };
 
-/** Makes a run's worktree a real git repository with nothing uncommitted, as a clean run leaves it. */
-function cleanWorktree(cwd: string | null | undefined): string {
-  if (!cwd) throw new Error("the run has no worktree");
-  const env: Record<string, string> = {};
-  for (const [name, value] of Object.entries(process.env))
-    if (value !== undefined && !name.startsWith("GIT_")) env[name] = value;
-  const run = Bun.spawnSync(["git", "init", "-q", cwd], { env });
-  if (run.exitCode !== 0) throw new Error(run.stderr.toString());
-  return cwd;
+/** git for fixtures, with none of this machine's config (no signing, no hooks). */
+function git(cwd: string, ...args: string[]): string {
+  const run = Bun.spawnSync(["git", "-C", cwd, "-c", "user.email=t@example.com", "-c", "user.name=t", ...args], {
+    env: gitEnv() as Record<string, string>,
+  });
+  if (run.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${run.stderr.toString()}`);
+  return run.stdout.toString();
+}
+
+/**
+ * Makes a run's folder what Paseo makes it: a worktree of the work's repository
+ * on the run's branch, with nothing uncommitted. The repository gets one commit
+ * the first time.
+ */
+function cleanWorktree(repo: string, worker: { cwd: string | null; branch: string | null } | null | undefined): string {
+  if (!worker?.cwd || !worker.branch) throw new Error("the run has no worktree");
+  if (!existsSync(join(repo, ".git"))) {
+    git(repo, "init", "-q");
+    writeFileSync(join(repo, "a.txt"), "hello\n");
+    git(repo, "add", "a.txt");
+    git(repo, "commit", "-q", "-m", "init");
+  }
+  git(repo, "worktree", "add", "-q", "-b", worker.branch, worker.cwd);
+  return worker.cwd;
 }
 
 /** Timers the test fires by hand, after moving the same clock the engine reads. */
@@ -86,6 +103,7 @@ async function setup(overrides: Partial<MaestroConfig> = {}) {
     config: async () => config,
     log: process.env.DEBUG ? console.log : () => {},
     timer: timers.timer,
+    claimWaitMs: 200,
   });
   const fake = fakePaseo();
   /** Decide at the gate and let the undo window run out. */
@@ -1206,9 +1224,9 @@ describe("concurrency cap", () => {
 
 describe("archive on approve", () => {
   test("an approval archives the run's workspace; the branch stays", async () => {
-    const { create, engine, fake, decide } = await setup({ archiveOnApprove: true });
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
     const item = await create();
-    cleanWorktree(item.worker?.cwd);
+    cleanWorktree(repo, item.worker);
     await endTurn(engine, fake);
     expect((await decide(item.id, "approve")).state).toBe("done");
     expect(fake.archivedWorkspaces).toEqual(["ws-1"]);
@@ -1217,15 +1235,15 @@ describe("archive on approve", () => {
   });
 
   test("off by default, and never on a send back or a cancel", async () => {
-    const { create, engine, fake, decide, config } = await setup();
+    const { create, engine, fake, decide, config, repo } = await setup();
     const item = await create();
-    cleanWorktree(item.worker?.cwd);
+    cleanWorktree(repo, item.worker);
     await endTurn(engine, fake);
     expect((await decide(item.id, "approve")).state).toBe("done");
     expect(fake.archivedWorkspaces).toEqual([]);
     config.archiveOnApprove = true;
     const other = await create();
-    cleanWorktree(other.worker?.cwd);
+    cleanWorktree(repo, other.worker);
     await endTurn(engine, fake, [], "agent-2");
     await decide(other.id, "revise", "again");
     await endTurn(engine, fake, [], "agent-2");
@@ -1234,9 +1252,9 @@ describe("archive on approve", () => {
   });
 
   test("a failed archive is a receipt and the approval stands", async () => {
-    const { create, engine, fake, decide } = await setup({ archiveOnApprove: true });
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
     const item = await create();
-    cleanWorktree(item.worker?.cwd);
+    cleanWorktree(repo, item.worker);
     await endTurn(engine, fake);
     fake.paseo.workspaces.archive = async () => {
       throw new Error("worktree has changes");
@@ -1248,7 +1266,7 @@ describe("archive on approve", () => {
 
     // The daemon can also answer with an error instead of throwing.
     const other = await create();
-    cleanWorktree(other.worker?.cwd);
+    cleanWorktree(repo, other.worker);
     await endTurn(engine, fake, [], "agent-2");
     fake.paseo.workspaces.archive = (async (workspaceId: string) => ({
       requestId: "r",
@@ -1282,9 +1300,9 @@ describe("archive on approve", () => {
   });
 
   test("a worktree with uncommitted changes is kept, and so is one that cannot be checked", async () => {
-    const { create, engine, fake, decide } = await setup({ archiveOnApprove: true });
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
     const dirty = await create();
-    const cwd = cleanWorktree(dirty.worker?.cwd);
+    const cwd = cleanWorktree(repo, dirty.worker);
     await Bun.write(join(cwd, "notes.txt"), "not committed");
     await endTurn(engine, fake);
     expect((await decide(dirty.id, "approve")).state).toBe("done");
@@ -1298,6 +1316,137 @@ describe("archive on approve", () => {
       "Kept the worktree: could not check it for uncommitted changes (",
     );
     expect(fake.archivedWorkspaces).toEqual([]);
+  });
+
+  test("a worktree whose .git points at a decoy matching its files is kept: git reads the run's own entry", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    const cwd = cleanWorktree(repo, item.worker);
+    await Bun.write(join(cwd, "notes.txt"), "not committed\n");
+    // The session's own repository, whose one commit holds exactly what the worktree holds.
+    const decoy = join(dirname(repo), "decoy");
+    git(dirname(repo), "init", "-q", decoy);
+    await Bun.write(join(decoy, "a.txt"), "hello\n");
+    await Bun.write(join(decoy, "notes.txt"), "not committed\n");
+    git(decoy, "add", "-A");
+    git(decoy, "commit", "-q", "-m", "decoy");
+    writeFileSync(join(cwd, ".git"), `gitdir: ${join(decoy, ".git")}\n`);
+    // The attack is live: git that follows the folder's .git reads the uncommitted work as clean.
+    expect(git(cwd, "status", "--porcelain")).toBe("");
+    await endTurn(engine, fake);
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect(fake.archivedWorkspaces).toEqual([]);
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe(
+      "Kept the worktree: could not check it for uncommitted changes (its .git does not point at its own entry in the repository).",
+    );
+  });
+
+  test("a write that lands while the worktree is read keeps it: it is read again just before the archive", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    const cwd = cleanWorktree(repo, item.worker);
+    await endTurn(engine, fake);
+    const real = Bun.which("git");
+    if (!real) throw new Error("git is not on PATH");
+    // A git whose first status answers clean, and then the session writes a file.
+    const bin = join(dirname(repo), "bin");
+    const wrote = join(dirname(repo), "wrote");
+    await Bun.write(
+      join(bin, "git"),
+      [
+        "#!/bin/sh",
+        `"${real}" "$@"`,
+        "code=$?",
+        `case "$*" in *status*) [ -e "${wrote}" ] || { : > "${wrote}"; echo late > "${cwd}/late.txt"; };; esac`,
+        "exit $code",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(join(bin, "git"), 0o755);
+    const saved = process.env.PATH;
+    process.env.PATH = `${bin}:${saved ?? ""}`;
+    try {
+      expect((await decide(item.id, "approve")).state).toBe("done");
+    } finally {
+      process.env.PATH = saved;
+    }
+    expect(existsSync(wrote)).toBe(true);
+    expect(fake.archivedWorkspaces).toEqual([]);
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe("Kept the worktree: it has uncommitted changes.");
+  });
+
+  test("a session that is working again, or that cannot be asked, keeps the worktree", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    await endTurn(engine, fake);
+    // The approval applied with the session idle; it starts working again once the claim is taken.
+    fake.paseo.workspaces.ref = ((_id: string) => ({
+      refresh: async () => {
+        const agent = fake.agents.get("agent-1");
+        if (agent) agent.status = "running";
+        return null;
+      },
+    })) as unknown as typeof fake.paseo.workspaces.ref;
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe("Kept the worktree: the session is working again.");
+
+    const other = await create();
+    cleanWorktree(repo, other.worker);
+    await endTurn(engine, fake, [], "agent-2");
+    const ref = fake.paseo.agents.ref;
+    let asked = 0;
+    // The decision and its apply each ask once; the claim's ask never comes back.
+    fake.paseo.agents.ref = ((id: string) => ({
+      ...ref(id),
+      refresh: () => (++asked > 2 ? new Promise(() => undefined) : ref(id).refresh()),
+    })) as unknown as typeof ref;
+    fake.paseo.workspaces.ref = ((_id: string) => ({
+      refresh: async () => null,
+    })) as unknown as typeof fake.paseo.workspaces.ref;
+    expect((await decide(other.id, "approve")).state).toBe("done");
+    expect((await engine.get(other.id)).events.at(-1)?.text).toBe(
+      "Kept the worktree: could not ask whether the session is idle (Paseo did not answer within 0.2s).",
+    );
+    expect(fake.archivedWorkspaces).toEqual([]);
+  });
+
+  test("Paseo's record naming another folder keeps the worktree", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    await endTurn(engine, fake);
+    fake.paseo.workspaces.ref = ((_id: string) => ({
+      refresh: async () => ({ workspaceDirectory: repo }),
+    })) as unknown as typeof fake.paseo.workspaces.ref;
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect(fake.archivedWorkspaces).toEqual([]);
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe(
+      "Kept the worktree: could not check it for uncommitted changes (Paseo records the workspace at another folder).",
+    );
+    // Naming the same folder, it archives.
+    const other = await create();
+    const cwd = cleanWorktree(repo, other.worker);
+    await endTurn(engine, fake, [], "agent-2");
+    fake.paseo.workspaces.ref = ((_id: string) => ({
+      refresh: async () => ({ workspaceDirectory: cwd }),
+    })) as unknown as typeof fake.paseo.workspaces.ref;
+    expect((await decide(other.id, "approve")).state).toBe("done");
+    expect(fake.archivedWorkspaces).toEqual(["ws-2"]);
+  });
+
+  test("an archive Paseo never answers releases the claim and says so", async () => {
+    const { create, engine, fake, decide, repo, store } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    await endTurn(engine, fake);
+    fake.paseo.workspaces.archive = () => new Promise(() => undefined);
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe(
+      "Could not archive the workspace: Paseo did not answer within 0.2s. The approval stands.",
+    );
+    // The item's lock is free: a later change to it goes through.
+    await store.mutate(item.id, () => ({ events: [] }));
   });
 });
 
@@ -1809,9 +1958,9 @@ describe("round 3 of review", () => {
   });
 
   test("a torn approval followed by a turn stays closed, says the run went on, and archives nothing", async () => {
-    const { create, engine, fake, timers, store } = await setup({ archiveOnApprove: true });
+    const { create, engine, fake, timers, store, repo } = await setup({ archiveOnApprove: true });
     const item = await create();
-    cleanWorktree(item.worker?.cwd);
+    cleanWorktree(repo, item.worker);
     const agent = fake.agents.get("agent-1");
     if (agent) agent.status = "idle";
     await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");

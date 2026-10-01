@@ -2,6 +2,18 @@
 // anything removes the worktree. Archiving a worktree deletes its files; only
 // the branch survives, so uncommitted changes would be lost with it.
 //
+// Git is pinned to the run's own repository. The folder's `.git` is a file the
+// session can rewrite: pointed at a decoy repository whose commit matches the
+// folder, git that follows it reads the folder as clean, and the archive then
+// deletes the work. So nothing here follows it. The repository the work names
+// (the contract's repo, yours) gives the common git dir; under its
+// `worktrees/`, exactly one entry must name this folder's `.git` and have HEAD
+// on the branch Maestro recorded, and its `commondir` must lead back to that
+// same repository. Git then runs with that entry as `--git-dir` and the folder
+// as `--work-tree`. The folder's own `.git` must point at that entry too: a
+// worktree whose pointer was moved is not one this can vouch for. Any mismatch
+// is "cannot check".
+//
 // The worktree is the session's: anything in it, the repository's own config
 // and attributes included, may have been written by the agent, and git runs
 // commands that config names, as the daemon's user. So git runs here with each
@@ -25,8 +37,25 @@
 // two gets it run. Git has no switch that turns every filter off.
 
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 
-export type WorktreeStatus = { dirty: boolean } | { error: string };
+/** What Maestro recorded when it started the run: the work's repository, the worktree Paseo made, its branch. */
+export interface RunWorktree {
+  /** The work's repository, as the contract names it. Yours, so trusted. */
+  repo: string;
+  /** The run's worktree folder. */
+  cwd: string;
+  /** The run's branch, `run/<hex>`. */
+  branch: string;
+}
+
+/**
+ * Clean or not, with a digest of everything status said (the branch's commit
+ * included), so two reads can be compared. Or why it could not be checked.
+ */
+export type WorktreeStatus = { dirty: boolean; digest: string } | { error: string };
 
 /** Turns off each command a repository's config could make these git calls run. */
 export const HARDENING: readonly string[] = [
@@ -57,11 +86,17 @@ export function gitEnv(): NodeJS.ProcessEnv {
 
 type GitResult = { ok: true; stdout: string } | { ok: false; code: number | null; message: string };
 
-function git(cwd: string, args: readonly string[], env: NodeJS.ProcessEnv, timeoutMs: number): Promise<GitResult> {
+/** `scope` says which repository: `-C <repo>`, or an explicit git dir and work tree. */
+function git(
+  scope: readonly string[],
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<GitResult> {
   return new Promise((resolve) => {
     execFile(
       "git",
-      ["-C", cwd, ...HARDENING, ...args],
+      [...scope, ...HARDENING, ...args],
       { env, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, encoding: "utf8" },
       (error, stdout, stderr) => {
         if (!error) {
@@ -100,28 +135,90 @@ function neutralDrivers(listing: string): NodeJS.ProcessEnv {
   return env;
 }
 
+/** The path with every link resolved, or null when it is not there. */
+const real = (path: string) => realpath(path).catch(() => null);
+
+/** A small file's contents, or null when it cannot be read. */
+const text = (path: string) => readFile(path, "utf8").catch(() => null);
+
+/** A path git wrote into a file, resolved from the folder git counts it from (git may write it relative). */
+const named = (from: string, contents: string) => resolve(from, contents.replace(/\r?\n$/, ""));
+
 /**
- * `git status --porcelain` in `cwd`, hardened as above: tracked edits, staged
- * changes and untracked files all count as uncommitted. Each git call has
- * `timeoutMs` to answer.
+ * The run's own entry under the repository's `worktrees/`, found from what was
+ * recorded and never from the folder's `.git`; see the top of this file.
  */
-export async function worktreeStatus(cwd: string, timeoutMs = 10_000): Promise<WorktreeStatus> {
+async function pin(
+  run: RunWorktree,
+  timeoutMs: number,
+): Promise<{ gitDir: string; workTree: string } | { error: string }> {
+  const common = await git(
+    ["-C", run.repo],
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    gitEnv(),
+    timeoutMs,
+  );
+  if (!common.ok) return { error: `the repository cannot be read: ${common.message}` };
+  const commonDir = await real(common.stdout.trim());
+  const workTree = await real(run.cwd);
+  if (!commonDir) return { error: "the repository's git folder is not there" };
+  if (!workTree) return { error: "the worktree folder is not there" };
+  const entries: string[] = [];
+  const root = join(commonDir, "worktrees");
+  for (const name of await readdir(root).catch(() => [] as string[])) {
+    const entry = join(root, name);
+    const gitdir = await text(join(entry, "gitdir"));
+    if (gitdir === null) continue;
+    const dotGit = named(entry, gitdir);
+    if (basename(dotGit) === ".git" && (await real(dirname(dotGit))) === workTree) entries.push(entry);
+  }
+  if (entries.length === 0) return { error: "the repository has no worktree at this folder" };
+  if (entries.length > 1) return { error: "the repository names this folder as more than one worktree" };
+  const gitDir = await real(entries[0] as string);
+  if (!gitDir) return { error: "the repository's entry for this worktree is not there" };
+  if ((await text(join(gitDir, "HEAD"))) !== `ref: refs/heads/${run.branch}\n`) {
+    return { error: `it is not on its branch ${run.branch}` };
+  }
+  const commondir = await text(join(gitDir, "commondir"));
+  if (commondir === null || (await real(named(gitDir, commondir))) !== commonDir) {
+    return { error: "its entry in the repository leads to another repository" };
+  }
+  // The folder's own pointer: a plain file (not a link, not a folder) naming that same entry.
+  const dotGit = join(workTree, ".git");
+  const pointer = (await lstat(dotGit).catch(() => null))?.isFile() ? await text(dotGit) : null;
+  const target = pointer?.startsWith("gitdir: ") ? await real(named(workTree, pointer.slice("gitdir: ".length))) : null;
+  if (target !== gitDir) return { error: "its .git does not point at its own entry in the repository" };
+  return { gitDir, workTree };
+}
+
+/**
+ * `git status` on the run's worktree, pinned and hardened as above: tracked
+ * edits, staged changes and untracked files all count as uncommitted. Each
+ * git call has `timeoutMs` to answer.
+ */
+export async function worktreeStatus(run: RunWorktree, timeoutMs = 10_000): Promise<WorktreeStatus> {
+  const pinned = await pin(run, timeoutMs);
+  if ("error" in pinned) return pinned;
+  const scope = ["-C", pinned.workTree, `--git-dir=${pinned.gitDir}`, `--work-tree=${pinned.workTree}`];
   const base = gitEnv();
   // `git config` reads the same config sources status will, and runs nothing. Exit 1: no driver defined.
-  const drivers = await git(cwd, ["config", "--null", "--name-only", "--get-regexp", "^filter\\."], base, timeoutMs);
+  const drivers = await git(scope, ["config", "--null", "--name-only", "--get-regexp", "^filter\\."], base, timeoutMs);
   if (!drivers.ok && drivers.code !== 1) return { error: drivers.message };
   const env = { ...base, ...neutralDrivers(drivers.ok ? drivers.stdout : "") };
-  const index = await git(cwd, ["ls-files", "--stage", "-z"], env, timeoutMs);
+  const index = await git(scope, ["ls-files", "--stage", "-z"], env, timeoutMs);
   if (!index.ok) return { error: index.message };
   if (index.stdout.split("\0").some((entry) => entry.startsWith("160000 "))) {
     return { error: "it has submodules, which are not checked" };
   }
+  // v2 with --branch: a header line per fact (the commit, the branch), then one record per change.
   const status = await git(
-    cwd,
-    ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=all"],
+    scope,
+    ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all"],
     env,
     timeoutMs,
   );
   if (!status.ok) return { error: status.message };
-  return { dirty: status.stdout.trim().length > 0 };
+  const dirty = status.stdout.split("\0").some((record) => record.length > 0 && !record.startsWith("# "));
+  const digest = createHash("sha256").update(`${pinned.gitDir}\0${status.stdout}`).digest("hex");
+  return { dirty, digest };
 }
