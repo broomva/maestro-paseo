@@ -84,8 +84,10 @@ export type WorkEvent = Base &
     | { type: "stopped"; actor: "human"; agentId: string | null }
     | { type: "note"; actor: Actor; text: string }
     // The loop putting work in Needs you (server/loop.ts). An event alone, never a state
-    // change; anything else that happens to the work after it clears it (flagOf).
-    | { type: "loop.flagged"; actor: "maestro"; kind: FlagKind; reason: string }
+    // change; anything else that happens to the work after it clears it (flagOf). A quiet
+    // flag carries `since`: when the run last did anything, by Maestro's events or by its
+    // session's own activity, whichever is later (absent on flags raised before it was kept).
+    | { type: "loop.flagged"; actor: "maestro"; kind: FlagKind; reason: string; since?: string }
   );
 
 export type WorkEventType = WorkEvent["type"];

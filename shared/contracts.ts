@@ -381,8 +381,17 @@ export const WakeEntrySchema = z.object({
   deferred: z.array(Named.extend({ reason: z.string() })),
   /** At your gate (a result to judge), stuck, and asking a question. */
   needsYou: z.object({ gate: z.number(), stuck: z.number(), asking: z.number() }),
-  /** Running work with no event for 30 minutes or more. */
+  /**
+   * Running work with nothing new for 30 minutes or more, by Maestro's events
+   * and by its session's own activity; `minutes` counts from the later of the two.
+   */
   quiet: z.array(Named.extend({ minutes: z.number() })),
+  /**
+   * Running work quiet by Maestro's events whose session could not be asked
+   * how recently it worked (`reason`), so it was not flagged quiet. Absent on
+   * entries written before the session was asked.
+   */
+  unasked: z.array(Named.extend({ reason: z.string() })).default([]),
   /**
    * The flags this wake raised: only those it wrote, so a work already
    * flagged the same way is not listed again. Absent on entries written

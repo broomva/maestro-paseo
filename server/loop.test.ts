@@ -8,7 +8,8 @@ import { defaultConfig } from "./config";
 import { type CreateInput, Engine, MODED_BY_YOU, PROMPT_FREE, type Timer } from "./engine";
 import { LOOP } from "./events";
 import { fakePaseo } from "./fake-paseo";
-import { ALREADY_WAKING, AT_RUN_CAP, FAILED_BEFORE, Loop, NOT_CONNECTED, QUIET_MS } from "./loop";
+import { sessionActiveAt } from "./flags";
+import { ALREADY_WAKING, ASK_NOT_CONNECTED, AT_RUN_CAP, FAILED_BEFORE, Loop, NOT_CONNECTED, QUIET_MS } from "./loop";
 import type { Paseo } from "./runs";
 import { WorkStore } from "./store";
 import { WakeLog } from "./wake-log";
@@ -67,7 +68,8 @@ async function setup(overrides: Partial<MaestroConfig> = {}) {
     timer: fakeTimers().timer,
     claimWaitMs: 200,
   });
-  const fake = fakePaseo();
+  // Sessions are stamped by the same clock, so one that does nothing is as quiet as its work.
+  const fake = fakePaseo({ now: () => new Date(clock) });
   const client: { paseo: Paseo | null } = { paseo: fake.paseo };
   const timers = fakeTimers();
   const logs: string[] = [];
@@ -80,6 +82,7 @@ async function setup(overrides: Partial<MaestroConfig> = {}) {
       timer: timers.timer,
       wakeLog,
       log: (message) => logs.push(message),
+      askMs: 100,
     });
   /** Queued work, created as you create it in Maestro. */
   const queue = (title: string, extra: Partial<CreateInput> = {}) =>
@@ -118,6 +121,7 @@ function ranAt(wokeAt: number, extra: Partial<WakeEntry> = {}): WakeEntry {
     deferred: [],
     needsYou: { gate: 0, stuck: 0, asking: 0 },
     quiet: [],
+    unasked: [],
     flagged: [],
     narrative: ["Woke on a scheduled check.", "Did nothing new this tick."],
     ...extra,
@@ -527,6 +531,7 @@ describe("flags in Needs you", () => {
     const { loop, queue, engine, fake, store } = await setup({ concurrencyCap: null });
     const running = await queue("Long one");
     await engine.dispatch(fake.paseo, running.id);
+    const dispatchedAt = new Date(clock).toISOString();
     tickMinutes(1);
     const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
     tickMinutes(1);
@@ -568,8 +573,10 @@ describe("flags in Needs you", () => {
         text: "Flagged for you by the loop",
         detail: reason,
       });
+      // A quiet flag keeps when the run last did anything, so its reason counts on from there.
+      const since = kind === "quiet" ? { since: dispatchedAt } : {};
       expect(await flags(store, item.id)).toEqual([
-        { ts: entry.wokeAt, type: "loop.flagged", actor: "maestro", kind, reason },
+        { ts: entry.wokeAt, type: "loop.flagged", actor: "maestro", kind, reason, ...since },
       ]);
       // A flag is not a change of state.
       expect(wire.state).toBe(item.id === running.id ? "running" : "proposed");
@@ -699,6 +706,105 @@ describe("flags in Needs you", () => {
       { id: stuck.id, group: "blocked", flag: null },
       { id: bypass.id, group: "queued", flag: { kind: "yours", reason: PROMPTS, at: new Date(clock).toISOString() } },
     ]);
+  });
+});
+
+describe("quiet asks the session", () => {
+  const minutesAgo = (minutes: number) => new Date(clock - minutes * 60_000);
+
+  test("a long turn still at work is not quiet: its session's own activity says so", async () => {
+    const { loop, queue, engine, fake } = await setup();
+    const item = await queue("Long turn");
+    await engine.dispatch(fake.paseo, item.id);
+    tickMinutes(45);
+    // No event in Maestro for 45 minutes: the turn started and has not ended. The session wrote 2 minutes ago.
+    fake.setLastActivityAt("agent-1", minutesAgo(2));
+    fake.refreshed.length = 0;
+    const entry = await loop.wake("timer");
+    expect(fake.refreshed).toContain("agent-1");
+    expect(entry.quiet).toEqual([]);
+    expect(entry.flagged).toEqual([]);
+    expect(entry.unasked).toEqual([]);
+    expect(entry.narrative.join("\n")).not.toContain("quiet");
+    expect((await engine.get(item.id)).item.flag).toBeNull();
+  });
+
+  test("a run idle by both clocks is quiet, counted from the later of the two", async () => {
+    const { loop, queue, engine, fake } = await setup();
+    const item = await queue("Idle one");
+    await engine.dispatch(fake.paseo, item.id);
+    tickMinutes(10);
+    fake.setLastActivityAt("agent-1", new Date(clock));
+    tickMinutes(35);
+    const entry = await loop.wake("timer");
+    // Maestro's events say 45 minutes; the session last did something 35 minutes ago.
+    expect(entry.quiet).toEqual([{ id: item.id, title: item.title, minutes: 35 }]);
+    expect(entry.flagged).toEqual([
+      { id: item.id, title: item.title, kind: "quiet", reason: "Quiet for 35 minutes, worth a look." },
+    ]);
+    tickMinutes(2);
+    expect((await engine.get(item.id)).item.flag?.reason).toBe("Quiet for 37 minutes, worth a look.");
+  });
+
+  test("a session that cannot be asked is not flagged quiet, and the wake says why", async () => {
+    const { loop, queue, engine, fake } = await setup();
+    const item = await queue("Long one");
+    await engine.dispatch(fake.paseo, item.id);
+    tickMinutes(45);
+    const ref = fake.paseo.agents.ref;
+    fake.paseo.agents.ref = ((id: string) => ({
+      ...ref(id),
+      refresh: () => Promise.reject(new Error("daemon busy")),
+    })) as unknown as typeof ref;
+    const entry = await loop.wake("timer");
+    expect(entry.quiet).toEqual([]);
+    expect(entry.flagged).toEqual([]);
+    expect(entry.unasked).toEqual([{ id: item.id, title: item.title, reason: "daemon busy" }]);
+    expect(entry.narrative).toEqual([
+      "Woke on a scheduled check.",
+      "Could not ask the session, so not flagged quiet:",
+      "  Long one: daemon busy.",
+      "Did nothing new this tick.",
+    ]);
+    expect((await engine.get(item.id)).item.flag).toBeNull();
+  });
+
+  test("a session that never answers is given up on, bounded, and not flagged", async () => {
+    const { loop, queue, engine, fake } = await setup();
+    const item = await queue("Long one");
+    await engine.dispatch(fake.paseo, item.id);
+    tickMinutes(45);
+    // A read now reconciles; the wake's own read, at the same time, does not, so only its question hangs.
+    await engine.list(fake.paseo);
+    const ref = fake.paseo.agents.ref;
+    fake.paseo.agents.ref = ((id: string) => ({
+      ...ref(id),
+      refresh: () => new Promise(() => undefined),
+    })) as unknown as typeof ref;
+    const entry = await loop.wake("timer");
+    expect(entry.unasked).toEqual([{ id: item.id, title: item.title, reason: "Paseo did not answer within 0.1s" }]);
+    expect(entry.flagged).toEqual([]);
+  });
+
+  test("with no Paseo client there is no session to ask, so nothing is flagged quiet", async () => {
+    const { loop, queue, engine, fake, client } = await setup();
+    const item = await queue("Long one");
+    await engine.dispatch(fake.paseo, item.id);
+    tickMinutes(45);
+    client.paseo = null;
+    const entry = await loop.wake("manual");
+    expect(entry.unasked).toEqual([{ id: item.id, title: item.title, reason: ASK_NOT_CONNECTED }]);
+    expect(entry.flagged).toEqual([]);
+    expect(entry.narrative).toContain(NOT_CONNECTED);
+  });
+
+  test("the session's activity is read from lastActivityAt when the snapshot names it, else updatedAt", () => {
+    const at = "2026-09-22T09:00:00.000Z";
+    expect(sessionActiveAt({ updatedAt: at })).toBe(Date.parse(at));
+    expect(sessionActiveAt({ lastActivityAt: at, updatedAt: "2026-09-22T08:00:00.000Z" })).toBe(Date.parse(at));
+    expect(sessionActiveAt({ lastActivityAt: "garbage", updatedAt: at })).toBe(Date.parse(at));
+    expect(sessionActiveAt({})).toBeNull();
+    expect(sessionActiveAt({ updatedAt: 12 })).toBeNull();
   });
 });
 

@@ -28,6 +28,7 @@ function entry(n: number, extra: Partial<WakeEntry> = {}): WakeEntry {
     deferred: [],
     needsYou: { gate: 0, stuck: 0, asking: 0 },
     quiet: [],
+    unasked: [],
     flagged: [],
     narrative: ["Woke on a scheduled check.", "Did nothing new this tick."],
     ...extra,
@@ -59,6 +60,16 @@ test("an entry keeps the flags its wake raised; one written before flags existed
   const raised = [{ id: "w1", title: "Bypass", kind: "yours" as const, reason: "Start it yourself: x." }];
   await log.append(entry(2, { flagged: raised }));
   expect((await log.recent(2)).map((one) => one.flagged)).toEqual([raised, []]);
+  expect(logs).toEqual([]);
+});
+
+test("an entry keeps the sessions it could not ask; one written before it asked reads with none", async () => {
+  const { path, logs, log } = await fresh();
+  const { unasked: _, ...older } = entry(1);
+  await writeFile(path, `${JSON.stringify(older)}\n`);
+  const unasked = [{ id: "w1", title: "Long one", reason: "Paseo did not answer within 10s" }];
+  await log.append(entry(2, { unasked }));
+  expect((await log.recent(2)).map((one) => one.unasked)).toEqual([unasked, []]);
   expect(logs).toEqual([]);
 });
 

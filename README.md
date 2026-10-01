@@ -186,7 +186,10 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
   they show in Maestro's Needs you (the chip, the board's column, the header count) with the
   reason on the card and in the detail: queued work it leaves to you ("Start it yourself: ..."),
   a start it tried that failed ("Could not start: ..."), and a run quiet for 30 minutes or more
-  ("Quiet for N minutes, worth a look"). Each flag is one `loop.flagged` receipt, written only
+  ("Quiet for N minutes, worth a look"). Maestro hears only turn boundaries, so a run is quiet only
+  when its session has done nothing for as long too: the wake asks Paseo for the session's last
+  activity (bounded at 10 s), and a long turn that is still working is not flagged. A session
+  that cannot be asked is not flagged either; the wake says so. Each flag is one `loop.flagged` receipt, written only
   when the work's current flag is not already of that kind, so a wake every minute adds nothing.
   Anything else that happens to the work (your dispatch or cancel, a turn, a state change, a
   note) clears it, and the loop does not try a failed start again until then. Waiting at the run
@@ -194,7 +197,8 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
   a desktop notification.
 - **Every wake leaves a receipt.** One line per wake in `wake-log.jsonl` beside the config
   (override with `MAESTRO_PASEO_WAKE_LOG`): why it woke, what it started, what it left alone and
-  why, what needs you, running work quiet for 30 minutes or more, and the flags it raised. It
+  why, what needs you, running work quiet for 30 minutes or more, sessions it could not ask, and
+  the flags it raised. It
   keeps the newest 500 once it passes 1000 lines. The next wake is due a period after the last one
   there, so a restart keeps the cadence.
 - **One wake at a time.** A wake asked for while one runs is recorded as skipped, not queued. With

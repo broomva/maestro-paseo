@@ -9,6 +9,12 @@ export interface FakeAgent {
   id: string;
   cwd: string;
   status: "idle" | "running" | "error" | "closed";
+  /**
+   * When the session last did anything, as the daemon's refresh() reports it
+   * (`updatedAt`; Paseo's app calls it lastActivityAt). Stamped when the agent
+   * is created; setLastActivityAt moves it.
+   */
+  updatedAt?: string;
   workspaceId: string;
   provider: string;
   title: string | null;
@@ -18,7 +24,13 @@ export interface FakeAgent {
   lastError?: string;
 }
 
-export function fakePaseo() {
+export interface FakePaseoOptions {
+  /** The clock agents are stamped with; tests that move a clock of their own pass it. */
+  now?: () => Date;
+}
+
+export function fakePaseo(options: FakePaseoOptions = {}) {
+  const now = options.now ?? (() => new Date());
   const agents = new Map<string, FakeAgent>();
   const sent: Array<{ agentId: string; text: string }> = [];
   const created: Array<Record<string, unknown>> = [];
@@ -51,6 +63,7 @@ export function fakePaseo() {
           id,
           cwd: directory,
           status: "running",
+          updatedAt: now().toISOString(),
           workspaceId: `ws-${n}`,
           provider: "claude",
           title: null,
@@ -131,6 +144,12 @@ export function fakePaseo() {
     },
     placeWorktreesIn: (folder: string) => {
       worktreeRoot = folder;
+    },
+    /** The session did something at `at` (a tool call, a line of output): what refresh() reports from now. */
+    setLastActivityAt: (agentId: string, at: Date | string) => {
+      const agent = agents.get(agentId);
+      if (!agent) throw new Error(`no fake agent ${agentId}`);
+      agent.updatedAt = typeof at === "string" ? at : at.toISOString();
     },
   };
 }

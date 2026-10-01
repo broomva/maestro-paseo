@@ -14,7 +14,11 @@
 //      (leftToYou), which keeps its own reason after the cap as before it.
 //      Work whose start the loop tried and that failed is not tried again
 //      while that flag stands: it is yours until something happens to it;
-//   4. counts what needs you, and names running work quiet for 30 minutes;
+//   4. counts what needs you, and names running work quiet for 30 minutes:
+//      Maestro sees only turn boundaries, so work quiet by its events is
+//      quiet only if its session, asked (bounded, ASK_MS), has done nothing
+//      for as long; when the session cannot be asked it is not flagged, and
+//      the entry says why (`unasked`);
 //   5. flags, in Maestro's Needs you, what it leaves to you, what it could
 //      not start, and what has gone quiet (server/flags.ts): one event per
 //      work, and none while the same flag already stands;
@@ -33,9 +37,9 @@
 import { randomUUID } from "node:crypto";
 import type { FlagKind, WakeEntry, WorkItem } from "../shared/contracts";
 import { isDispatchable } from "../shared/states";
-import { AtCapacity, type Engine, leftToYou, realTimer, type Timer, UserError } from "./engine";
+import { AtCapacity, type Engine, leftToYou, realTimer, type Timer, UserError, within } from "./engine";
 import { LOOP } from "./events";
-import { failedReason, minutesWords, QUIET_MS, quietReason, sentence, yoursReason } from "./flags";
+import { failedReason, minutesWords, QUIET_MS, quietReason, sentence, sessionActiveAt, yoursReason } from "./flags";
 import type { Paseo } from "./runs";
 import { WakeLog } from "./wake-log";
 
@@ -57,13 +61,21 @@ export const ALREADY_WAKING = "another check was already running";
 /** How many entries loop.get returns. */
 export const RECENT = 20;
 
+/** The longest a wake waits for a session to say when it last worked. */
+export const ASK_MS = 10_000;
+
+/** Why a session could not be asked: the plugin has no Paseo client yet. */
+export const ASK_NOT_CONNECTED = "Paseo has not connected to Maestro yet";
+
 /** The longest delay a timer holds (setTimeout's limit); a later wake is armed again when it fires. */
 const MAX_DELAY_MS = 2 ** 31 - 1;
 
 type Cause = WakeEntry["cause"];
 type Named = { id: string; title: string };
-/** A flag this wake means to raise, written once the walk is done. */
-type Raise = { item: WorkItem; kind: FlagKind; reason: string };
+/** A flag this wake means to raise, written once the walk is done; `since` for quiet (Engine.flag). */
+type Raise = { item: WorkItem; kind: FlagKind; reason: string; since?: string };
+/** Running work quiet by Maestro's events, and when it last did anything by them. */
+type Silent = { item: WorkItem; last: number };
 
 export interface LoopOptions {
   engine: Engine;
@@ -75,6 +87,8 @@ export interface LoopOptions {
   /** The wake log; defaults to `wake-log.jsonl` beside the config. */
   wakeLog?: WakeLog;
   log?: (message: string) => void;
+  /** How long a wake waits for one session to say when it last worked; tests pass a short one. */
+  askMs?: number;
 }
 
 /**
@@ -93,6 +107,12 @@ export function narrate(entry: Omit<WakeEntry, "narrative" | "tickId" | "wokeAt"
     ...entry.quiet.map((run) => `${run.title} has been quiet ${minutesWords(run.minutes)}, worth a look.`),
   ];
   if (needs.length > 0) lines.push("Needs you:", ...needs.map((line) => `  ${line}`));
+  if (entry.unasked.length > 0) {
+    lines.push(
+      "Could not ask the session, so not flagged quiet:",
+      ...entry.unasked.map((run) => `  ${run.title}: ${sentence(run.reason)}`),
+    );
+  }
   if (entry.dispatched.length > 0) {
     lines.push("Did:", ...entry.dispatched.map((work) => `  Started ${work.title}.`));
   } else {
@@ -123,6 +143,7 @@ export class Loop {
   private readonly timer: Timer;
   private readonly wakeLog: WakeLog;
   private readonly log: (message: string) => void;
+  private readonly askMs: number;
   private cancel: (() => void) | null = null;
   private nextAt: Date | null = null;
   /** The lease: true while a wake runs. Set before the wake's first await, so two can never both run. */
@@ -148,6 +169,7 @@ export class Loop {
     this.timer = options.timer ?? realTimer;
     this.log = options.log ?? ((message) => console.log(`[maestro] ${message}`));
     this.wakeLog = options.wakeLog ?? new WakeLog(undefined, this.log);
+    this.askMs = options.askMs ?? ASK_MS;
   }
 
   /** The loop now: its period (null: off), the next wake, whether one is running, the newest wakes first. */
@@ -258,6 +280,7 @@ export class Loop {
       deferred: [],
       needsYou: { gate: 0, stuck: 0, asking: 0 },
       quiet: [],
+      unasked: [],
       flagged: [],
       narrative: [],
     };
@@ -277,6 +300,7 @@ export class Loop {
     }
     const now = Date.parse(entry.wokeAt);
     const raise: Raise[] = [];
+    const silent: Silent[] = [];
     for (const item of items) {
       if (item.state === "review") {
         if (item.phase === "asking") entry.needsYou.asking += 1;
@@ -285,13 +309,11 @@ export class Loop {
         entry.needsYou.stuck += 1;
       } else if (item.state === "running") {
         // lastEventAt skips the loop's own flags (server/wire.ts), so a flag never resets this clock.
-        const silent = now - Date.parse(item.lastEventAt ?? item.updatedAt);
-        if (silent >= QUIET_MS) {
-          entry.quiet.push({ ...named(item), minutes: Math.floor(silent / 60_000) });
-          raise.push({ item, kind: "quiet", reason: quietReason(silent) });
-        }
+        const last = Date.parse(item.lastEventAt ?? item.updatedAt);
+        if (now - last >= QUIET_MS) silent.push({ item, last });
       }
     }
+    await this.askQuiet(paseo, silent, now, entry, raise);
     if (!paseo) {
       this.missedClient = cause === "timer";
       notes.push(NOT_CONNECTED);
@@ -304,11 +326,57 @@ export class Loop {
     return entry;
   }
 
+  /**
+   * Of the running work quiet by Maestro's events, name and flag the runs
+   * whose sessions have done nothing for as long. Maestro hears only turn
+   * boundaries, so a long turn still at work has no event for a while: its
+   * session's own activity (sessionActiveAt) says it is not quiet. Quiet
+   * counts from the later of the two. A session that cannot be asked is not
+   * flagged, and the entry says why.
+   */
+  private async askQuiet(
+    paseo: Paseo | null,
+    silent: readonly Silent[],
+    now: number,
+    entry: WakeEntry,
+    raise: Raise[],
+  ): Promise<void> {
+    const asked = await Promise.all(
+      silent.map(async (run) => ({ ...run, session: await this.askSession(paseo, run.item) })),
+    );
+    for (const { item, last, session } of asked) {
+      if ("error" in session) {
+        entry.unasked.push({ ...named(item), reason: session.error });
+        continue;
+      }
+      const since = Math.max(last, session.at);
+      const quiet = now - since;
+      if (quiet < QUIET_MS) continue;
+      entry.quiet.push({ ...named(item), minutes: Math.floor(quiet / 60_000) });
+      raise.push({ item, kind: "quiet", reason: quietReason(quiet), since: new Date(since).toISOString() });
+    }
+  }
+
+  /** When the run's session last did anything, as the daemon says, or why it could not be asked. */
+  private async askSession(paseo: Paseo | null, item: WorkItem): Promise<{ at: number } | { error: string }> {
+    if (!paseo) return { error: ASK_NOT_CONNECTED };
+    const agentId = item.worker?.agentId;
+    if (!agentId) return { error: "no session is recorded for the run" };
+    try {
+      const snapshot = await within(() => paseo.agents.ref(agentId).refresh(), this.askMs);
+      if (!snapshot) return { error: "Paseo has no record of the session" };
+      const at = sessionActiveAt(snapshot.agent);
+      return at === null ? { error: "the session did not say when it last worked" } : { at };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   /** Write the flags this wake raised; the engine writes each only when the work's current flag is another kind. */
   private async raiseFlags(raise: readonly Raise[], entry: WakeEntry): Promise<void> {
-    for (const { item, kind, reason } of raise) {
+    for (const { item, kind, reason, since } of raise) {
       try {
-        if (await this.engine.flag(item, kind, reason)) entry.flagged.push({ ...named(item), kind, reason });
+        if (await this.engine.flag(item, kind, reason, since)) entry.flagged.push({ ...named(item), kind, reason });
       } catch (error) {
         this.log(`the loop could not flag ${item.id}: ${(error as Error).message}`);
       }

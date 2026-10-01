@@ -39,6 +39,7 @@ import {
   checkOutcome,
   decisionApplied,
   eventsSince,
+  type FlaggedEvent,
   flagOf,
   lastOf,
   latestChecks,
@@ -219,8 +220,8 @@ export { leftToYou, MODED_BY_YOU, PROMPT_FREE } from "./runs";
 /** See EngineOptions.claimWaitMs. */
 export const CLAIM_WAIT_MS = 30_000;
 
-/** `work()`, or a rejection once `ms` pass: a claim never waits on the daemon for ever. */
-function within<T>(work: () => Promise<T>, ms: number): Promise<T> {
+/** `work()`, or a rejection once `ms` pass: a claim, or a wake, never waits on the daemon for ever. */
+export function within<T>(work: () => Promise<T>, ms: number): Promise<T> {
   let handle: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => {
     handle = setTimeout(() => reject(new Error(`Paseo did not answer within ${Math.round(ms / 100) / 10}s`)), ms);
@@ -489,9 +490,10 @@ export class Engine {
    * event, no state change, written under the work's lock. Only while the
    * reason still stands on the work as its files are now, and only when its
    * current flag is not already of this kind, so a wake every minute adds
-   * nothing. Returns whether it wrote one.
+   * nothing. Returns whether it wrote one. `since` (quiet only): when the
+   * run last did anything, so the reason keeps counting from there.
    */
-  async flag(item: Pick<WorkItem, "id" | "path">, kind: FlagKind, reason: string): Promise<boolean> {
+  async flag(item: Pick<WorkItem, "id" | "path">, kind: FlagKind, reason: string, since?: string): Promise<boolean> {
     const { store, config } = await this.store();
     let wrote = false;
     await store.mutate(
@@ -500,7 +502,15 @@ export class Engine {
         if (flagOf(fresh.events)?.kind === kind) return null;
         if (!flagStands(kind, fresh, this.now().getTime(), config)) return null;
         wrote = true;
-        return { events: [{ ts: this.stamp(), type: "loop.flagged", actor: "maestro", kind, reason }] };
+        const flagged: FlaggedEvent = {
+          ts: this.stamp(),
+          type: "loop.flagged",
+          actor: "maestro",
+          kind,
+          reason,
+          ...(since ? { since } : {}),
+        };
+        return { events: [flagged] };
       },
       join(store.root, item.path),
     );

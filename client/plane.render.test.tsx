@@ -278,6 +278,7 @@ const wakeEntry = (tickId: string, minutesAgo: number, extra: Partial<WakeEntry>
   deferred: [],
   needsYou: { gate: 0, stuck: 0, asking: 0 },
   quiet: [],
+  unasked: [],
   flagged: [],
   narrative: ["Woke on a scheduled check.", "Did nothing new this tick."],
   ...extra,
