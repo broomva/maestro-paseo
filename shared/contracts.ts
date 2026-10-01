@@ -71,6 +71,21 @@ export const PHASES = ["working", "checking", "asking"] as const;
 export const DiffStatSchema = z.object({ additions: z.number(), deletions: z.number() });
 export type DiffStat = z.infer<typeof DiffStatSchema>;
 
+/** The run choices Settings can fill when a work leaves them unset. Thinking and features are the work's alone. */
+export const SETTINGS_FIELDS = ["provider", "isolation", "modeId"] as const;
+
+export const NextRunSchema = z.object({
+  /** `provider` or `provider/model`; a bare provider takes its default model at dispatch. */
+  provider: z.string(),
+  isolation: z.enum(ISOLATIONS),
+  modeId: z.string().nullable(),
+  thinkingOptionId: z.string().nullable(),
+  featureValues: FeatureValuesSchema.nullable(),
+  /** The fields above that came from Settings because the work left them unset. */
+  fromSettings: z.array(z.enum(SETTINGS_FIELDS)),
+});
+export type NextRun = z.infer<typeof NextRunSchema>;
+
 export const WorkItemSchema = z.object({
   id: z.string(),
   path: z.string(),
@@ -95,17 +110,12 @@ export const WorkItemSchema = z.object({
   look: LookSchema.nullable(),
   permission: PermissionSchema.nullable(),
   checks: z.array(CheckSpecSchema),
-  /** How this work's next run starts, as chosen in the composer; absent fields mean Settings. */
-  run: z
-    .object({
-      isolation: z.enum(ISOLATIONS).optional(),
-      provider: z.string().optional(),
-      modeId: z.string().optional(),
-      thinkingOptionId: z.string().optional(),
-      featureValues: FeatureValuesSchema.optional(),
-    })
-    .nullable()
-    .optional(),
+  /**
+   * How the next run would start: the work's choices with Settings filling the
+   * rest, computed by the same function dispatch uses (server/runs.ts
+   * runSettings). Absent only on items built without Settings, such as test fixtures.
+   */
+  nextRun: NextRunSchema.nullable().optional(),
   /** The latest move into review, as its index in the event log; kept after the work leaves review. */
   landing: z.number().int().optional(),
 });

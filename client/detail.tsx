@@ -8,7 +8,7 @@ import { ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-n
 import { useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import type { CheckResult, WorkEventWire, WorkItem } from "../shared/contracts";
-import { queuedRunLine } from "../shared/run";
+import { nextRunCopy } from "../shared/run";
 import { ChangeText, WithChange } from "./changed";
 import { FilesSection } from "./files";
 import { ago, basename, errorText } from "./format";
@@ -318,10 +318,17 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   }
 
   if (item.state === "blocked") {
+    const restart = nextRunCopy(item.nextRun, "stuck");
     return (
       <Card theme={theme}>
         <Text style={text.label}>Stuck</Text>
         <Text style={text.body}>{item.reason ?? "The run stopped without a reason."}</Text>
+        <Text style={text.muted}>{restart.line}</Text>
+        {restart.warning ? (
+          <Notice theme={theme} tone="warn">
+            {restart.warning}
+          </Notice>
+        ) : null}
         <TextInput
           value={note}
           onChangeText={setNote}
@@ -354,15 +361,10 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   }
 
   if (item.state === "proposed" || item.state === "reviewing" || item.state === "triggered") {
-    const queued = queuedRunLine(item.run);
+    const queued = nextRunCopy(item.nextRun, "queued");
     return (
       <Card theme={theme}>
-        <Text style={text.body}>
-          {item.run?.isolation === "directory"
-            ? "Queued. Dispatching starts an agent in the repository itself."
-            : "Queued. Dispatching starts an agent in a fresh worktree on its own run branch."}
-        </Text>
-        <Text style={text.muted}>{queued.line}</Text>
+        <Text style={text.body}>{queued.line}</Text>
         {queued.warning ? (
           <Notice theme={theme} tone="warn">
             {queued.warning}

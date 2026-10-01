@@ -4,7 +4,7 @@
 // the binding is visible from Paseo itself.
 
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
-import type { MaestroConfig, Worker } from "../shared/contracts";
+import type { MaestroConfig, NextRun, Worker } from "../shared/contracts";
 import { runFolder } from "./folders";
 import { briefOf } from "./frontmatter";
 import { type StoredWork, slugify } from "./store";
@@ -73,18 +73,39 @@ export function providerFamily(selection: string): string {
 /**
  * How this item's runs start: what the work chose, else Settings. A mode is a
  * provider's own, so the Settings mode applies only while the run uses the
- * Settings provider; thinking and features are the work's alone.
+ * Settings provider; thinking and features are the work's alone. Dispatch
+ * starts from this, and the wire shows it as `nextRun`, so the card and the
+ * run cannot disagree.
  */
 export function runSettings(config: MaestroConfig, item: StoredWork) {
   const contract = item.contract;
   const selection = contract.provider ?? config.provider;
   const sameProvider = providerFamily(selection) === providerFamily(config.provider);
+  const modeId = contract.modeId ?? (sameProvider ? config.modeId : null);
+  const fromSettings: NextRun["fromSettings"] = [];
+  if (!contract.provider) fromSettings.push("provider");
+  if (!contract.isolation) fromSettings.push("isolation");
+  if (!contract.modeId && modeId) fromSettings.push("modeId");
   return {
     selection,
     isolation: contract.isolation ?? config.isolation,
-    modeId: contract.modeId ?? (sameProvider ? config.modeId : null),
+    modeId,
     thinkingOptionId: contract.thinkingOptionId,
     featureValues: contract.featureValues,
+    fromSettings,
+  };
+}
+
+/** runSettings in the wire's shape: what the cards show before Dispatch or Unblock. */
+export function nextRun(config: MaestroConfig, item: StoredWork): NextRun {
+  const run = runSettings(config, item);
+  return {
+    provider: run.selection,
+    isolation: run.isolation,
+    modeId: run.modeId ?? null,
+    thinkingOptionId: run.thinkingOptionId ?? null,
+    featureValues: run.featureValues ? { ...run.featureValues } : null,
+    fromSettings: run.fromSettings,
   };
 }
 

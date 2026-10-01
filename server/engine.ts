@@ -14,6 +14,7 @@
 import { isAbsolute } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { MaestroConfig, RunChoices, WorkItem } from "../shared/contracts";
+import { skipsPrompts } from "../shared/run";
 import { GROUP_ORDER, isDispatchable, isTerminal, landingState, type Verdict } from "../shared/states";
 import { runChecks } from "./checks";
 import { loadConfig } from "./config";
@@ -170,7 +171,8 @@ function startRefusal(item: StoredWork, origin: Origin): string | null {
   const state = item.contract.state;
   if (origin.actor === "agent") {
     if (!isDispatchable(state)) return "A session can start only queued work. Stuck work is unblocked in Maestro.";
-    return item.contract.modeId ? MODED_BY_YOU : null;
+    // auto_accept is a mode by another name: it skips the prompts too (shared/run.ts).
+    return item.contract.modeId || skipsPrompts({ featureValues: item.contract.featureValues }) ? MODED_BY_YOU : null;
   }
   if (isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events))) return null;
   return "Only queued or stuck work can be dispatched.";
@@ -306,7 +308,7 @@ export class Engine {
     scoreboard: ReturnType<typeof scoreboard>;
     warnings: string[];
   }> {
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     let { items, warnings } = await store.scan();
     this.index(store, items);
     if (paseo && this.now().getTime() - this.lastReconcile > RECONCILE_MS) {
@@ -319,7 +321,7 @@ export class Engine {
     const now = this.now();
     const dayStart = new Date(now);
     dayStart.setHours(0, 0, 0, 0);
-    const wire = items.map((item) => toWire(item, now.getTime()));
+    const wire = items.map((item) => toWire(item, now.getTime(), config));
     wire.sort(
       (a, b) => GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group) || b.updatedAt.localeCompare(a.updatedAt),
     );
@@ -337,10 +339,10 @@ export class Engine {
   }
 
   async get(id: string) {
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     const item = await store.findById(id);
     return {
-      item: toWire(item, this.now().getTime()),
+      item: toWire(item, this.now().getTime(), config),
       brief: briefOf(item.work.body),
       events: toWireEvents(item.events),
       checkResults: latestChecks(item.events),
@@ -348,9 +350,9 @@ export class Engine {
   }
 
   async forAgent(agentId: string): Promise<WorkItem | null> {
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     const item = await this.findByAgent(store, agentId);
-    return item ? toWire(item, this.now().getTime()) : null;
+    return item ? toWire(item, this.now().getTime(), config) : null;
   }
 
   // ── Human verbs ────────────────────────────────────────────────────────────
@@ -391,7 +393,7 @@ export class Engine {
       if (!paseo) throw new UserError(`Created ${item.contract.id}, but it cannot be dispatched yet: ${NO_HANDLE}`);
       return this.dispatch(paseo, item.contract.id, origin);
     }
-    return toWire(item, this.now().getTime());
+    return toWire(item, this.now().getTime(), config);
   }
 
   async dispatch(paseo: Paseo, id: string, origin: Origin = BY_HUMAN): Promise<WorkItem> {
@@ -458,7 +460,7 @@ export class Engine {
       }
       this.dirs(store.root).set(worker.agentId, bound.dir);
       await this.flush(worker.agentId);
-      return toWire(await store.fresh(id, bound.dir), this.now().getTime());
+      return toWire(await store.fresh(id, bound.dir), this.now().getTime(), config);
     } finally {
       this.dispatching.delete(id);
       // With no dispatch left in flight nothing else can bind a queued agent: settle every queue now.
@@ -482,7 +484,7 @@ export class Engine {
   }
 
   async verdict(paseo: Paseo | undefined, id: string, verdict: Verdict, note: string): Promise<WorkItem> {
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     const trimmed = note.trim();
     if (verdict === "revise" && !trimmed) throw new UserError("Say what should change before sending it back.");
     const current = await store.findById(id);
@@ -508,10 +510,10 @@ export class Engine {
       },
       current.dir,
     );
-    if (verdict !== "revise" || !paseo) return toWire(updated, this.now().getTime());
+    if (verdict !== "revise" || !paseo) return toWire(updated, this.now().getTime(), config);
     return this.wake(
       paseo,
-      store,
+      { store, config },
       updated,
       `Changes requested before this is done:\n\n${trimmed}\n\nMake the changes, commit them, and end with the Decided and Ask sections again.`,
     );
@@ -519,7 +521,7 @@ export class Engine {
 
   async unblock(paseo: Paseo, id: string, note: string): Promise<WorkItem> {
     if (this.dispatching.has(id)) throw new UserError("A run is already starting for this work.");
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     const item = await store.findById(id);
     if (item.contract.state !== "blocked") throw new UserError("Only stuck work can be unblocked.");
     const worker = workerOf(item.events);
@@ -546,7 +548,7 @@ export class Engine {
     );
     return this.wake(
       paseo,
-      store,
+      { store, config },
       updated,
       trimmed || "Continue where you stopped. End with the Decided and Ask sections.",
     );
@@ -554,7 +556,7 @@ export class Engine {
 
   async cancel(id: string): Promise<WorkItem> {
     if (this.dispatching.has(id)) throw new UserError("A run is starting for this work. Cancel it once it is running.");
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     const current = await store.findById(id);
     const unbound = current.contract.state === "running" && !workerOf(current.events);
     if (unbound) {
@@ -583,7 +585,7 @@ export class Engine {
       },
       current.dir,
     );
-    return toWire(updated, this.now().getTime());
+    return toWire(updated, this.now().getTime(), config);
   }
 
   /** Track a session that was started by hand, so its end lands at the gate. */
@@ -599,11 +601,11 @@ export class Engine {
   }
 
   private async adoptOnce(paseo: Paseo, agentId: string, title: string, origin: Origin): Promise<WorkItem> {
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     const { items } = await store.scan();
     this.index(store, items);
     const existing = items.find((item) => workerOf(item.events)?.agentId === agentId);
-    if (existing) return toWire(existing, this.now().getTime());
+    if (existing) return toWire(existing, this.now().getTime(), config);
     const snapshot = await paseo.agents.ref(agentId).refresh();
     if (!snapshot) throw new UserError("That session no longer exists.");
     const agent = snapshot.agent;
@@ -639,22 +641,27 @@ export class Engine {
       created.dir,
     );
     this.dirs(store.root).set(agentId, running.dir);
-    if (agent.status === "running") return toWire(running, this.now().getTime());
+    if (agent.status === "running") return toWire(running, this.now().getTime(), config);
     const landed = await store.mutate(
       id,
       () => ({ to: "review", reason: "The session was idle when tracked" }),
       running.dir,
     );
-    return toWire(landed, this.now().getTime());
+    return toWire(landed, this.now().getTime(), config);
   }
 
   /** Prompt the session of work that just moved to running; a failed send parks it as stuck. */
-  private async wake(paseo: Paseo, store: WorkStore, item: StoredWork, text: string): Promise<WorkItem> {
+  private async wake(
+    paseo: Paseo,
+    { store, config }: { store: WorkStore; config: MaestroConfig },
+    item: StoredWork,
+    text: string,
+  ): Promise<WorkItem> {
     const worker = workerOf(item.events);
     try {
       if (!worker) throw new Error("no session is bound");
       await paseo.agents.ref(worker.agentId).send(text);
-      return toWire(item, this.now().getTime());
+      return toWire(item, this.now().getTime(), config);
     } catch (error) {
       const reason = `Could not reach the session: ${(error as Error).message}`;
       const stuck = await store.mutate(
@@ -662,7 +669,7 @@ export class Engine {
         (fresh) => (fresh.contract.state === "running" ? { to: "blocked", reason } : null),
         item.dir,
       );
-      return toWire(stuck, this.now().getTime());
+      return toWire(stuck, this.now().getTime(), config);
     }
   }
 

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MaestroConfig } from "../shared/contracts";
+import { nextRunCopy } from "../shared/run";
 import { Engine, MODED_BY_YOU } from "./engine";
 import { fakePaseo } from "./fake-paseo";
 import type { Paseo } from "./runs";
@@ -931,8 +932,15 @@ describe("the composer's choices", () => {
   test("what the work did not choose comes from Settings at dispatch time", async () => {
     const { engine, fake, repo, config } = await setup();
     const item = await engine.create(fake.paseo, { ...draft(repo), title: "Defaults", thinkingOptionId: "low" });
-    // Before Dispatch, the Queued card shows only what the work itself chose.
-    expect(item.run).toEqual({ thinkingOptionId: "low" });
+    // The work's own choice, and Settings for the rest, as Settings stand now.
+    expect(item.nextRun).toEqual({
+      provider: "claude",
+      isolation: "worktree",
+      modeId: null,
+      thinkingOptionId: "low",
+      featureValues: null,
+      fromSettings: ["provider", "isolation"],
+    });
     config.modeId = "bypassPermissions";
     config.isolation = "worktree";
     const running = await engine.dispatch(fake.paseo, item.id);
@@ -941,6 +949,58 @@ describe("the composer's choices", () => {
     expect(running.worker?.branch).toMatch(/^run\//);
     // The receipt records the mode the agent really got, wherever it came from.
     expect(running.worker).toMatchObject({ modeId: "bypassPermissions", thinkingOptionId: "low", featureValues: null });
+  });
+
+  test("a Settings mode the work did not override shows on the Queued and Stuck cards, warned, as dispatch uses it", async () => {
+    const { engine, fake, repo } = await setup({ modeId: "bypassPermissions" });
+    const item = await engine.create(fake.paseo, { ...draft(repo), title: "Inherits", provider: "claude/opus" });
+    const shown = [(await engine.list()).items.find((entry) => entry.id === item.id), (await engine.get(item.id)).item];
+    for (const wire of shown) {
+      expect(wire?.nextRun).toEqual({
+        provider: "claude/opus",
+        isolation: "worktree",
+        modeId: "bypassPermissions",
+        thinkingOptionId: null,
+        featureValues: null,
+        fromSettings: ["isolation", "modeId"],
+      });
+      const queued = nextRunCopy(wire?.nextRun, "queued");
+      expect(queued.line).toContain("mode bypassPermissions (from Settings)");
+      expect(queued.warning).toContain("skips permission prompts");
+    }
+    await engine.dispatch(fake.paseo, item.id);
+    expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({
+      provider: "claude/opus",
+      modeId: "bypassPermissions",
+    });
+    // The session goes away: Unblock starts a new run, with the same Settings mode, and the Stuck card says so first.
+    await engine.onArchived({ id: "agent-1" });
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.archivedAt = new Date().toISOString();
+    const stuck = (await engine.get(item.id)).item;
+    expect(stuck.state).toBe("blocked");
+    expect(nextRunCopy(stuck.nextRun, "stuck").warning).toContain("would skip permission prompts");
+    await engine.unblock(fake.paseo, item.id, "");
+    expect(fake.created).toHaveLength(2);
+    expect((fake.created[1] as { config: Record<string, unknown> }).config).toMatchObject({
+      modeId: "bypassPermissions",
+    });
+  });
+
+  test("auto_accept the work chose warns on the card, and a session may not start the work", async () => {
+    const { engine, fake, repo } = await setup({ provider: "opencode/big" });
+    const item = await engine.create(fake.paseo, {
+      ...draft(repo),
+      title: "OpenCode",
+      featureValues: { auto_accept: true },
+    });
+    expect(nextRunCopy((await engine.get(item.id)).item.nextRun, "queued").warning).toContain(
+      "skips permission prompts",
+    );
+    await expect(engine.dispatch(fake.paseo, item.id, { actor: "agent", by: "session-1" })).rejects.toThrow(
+      MODED_BY_YOU,
+    );
+    expect(fake.created).toHaveLength(0);
   });
 
   test("a Settings mode belongs to the Settings provider; work on another provider does not inherit it", async () => {
