@@ -407,6 +407,46 @@ describe("the changed line", () => {
   });
 });
 
+describe("before a verb that can start a run", () => {
+  const fromSettings = (extra: Partial<NonNullable<WorkItem["nextRun"]>> = {}) => ({
+    provider: "claude",
+    isolation: "worktree" as const,
+    modeId: "bypassPermissions",
+    thinkingOptionId: null,
+    featureValues: null,
+    fromSettings: ["provider" as const, "isolation" as const, "modeId" as const],
+    ...extra,
+  });
+
+  test("a queued item whose mode comes only from Settings says so and warns before Dispatch", async () => {
+    items = [...fixture(), work("q", "proposed", { nextRun: fromSettings() })];
+    const view = await mount(<WorkDetail id="q" theme={theme} compact={false} navigation={undefined} />);
+    expect(view.text()).toContain("Runs with claude (from Settings): mode bypassPermissions (from Settings).");
+    expect(view.text()).toContain("This run skips permission prompts");
+    expect(view.byLabel("Dispatch")).not.toBeNull();
+  });
+
+  test("a stuck item says Unblock may start a new run with the Settings mode, and warns", async () => {
+    items = [
+      ...fixture(),
+      work("s", "blocked", { worker: worker("s", null), reason: "The session was archived", nextRun: fromSettings() }),
+    ];
+    const view = await mount(<WorkDetail id="s" theme={theme} compact={false} navigation={undefined} />);
+    expect(view.text()).toContain(
+      "If the session is gone, Unblock starts a new run in a fresh worktree on its own run branch (from Settings), with claude (from Settings): mode bypassPermissions (from Settings).",
+    );
+    expect(view.text()).toContain("That new run would skip permission prompts");
+    expect(view.byLabel("Unblock")).not.toBeNull();
+  });
+
+  test("a run that asks before it acts carries no warning", async () => {
+    items = [...fixture(), work("p", "proposed", { nextRun: fromSettings({ modeId: "acceptEdits" }) })];
+    const view = await mount(<WorkDetail id="p" theme={theme} compact={false} navigation={undefined} />);
+    expect(view.text()).toContain("mode acceptEdits (from Settings)");
+    expect(view.text()).not.toContain("skip");
+  });
+});
+
 describe("views and filters", () => {
   test("a filter intent checks its chip, opens the feed and drops the scope", async () => {
     const view = await mount(surface(false));

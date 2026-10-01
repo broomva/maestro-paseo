@@ -28,7 +28,8 @@ async function setup(options: { landed?: EngineOptions["landed"] } = {}) {
   const root = await mkdtemp(join(tmpdir(), "maestro-gate-card-"));
   roots.push(root);
   const repo = join(root, "repo");
-  await mkdir(repo);
+  // A git repository as far as Maestro checks: runs branch a worktree from it.
+  await mkdir(join(repo, ".git"), { recursive: true });
   const config: MaestroConfig = {
     ...defaultConfig(),
     workRoot: join(root, "work"),

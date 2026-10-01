@@ -1,13 +1,15 @@
 // StoredWork -> the WorkItem the surfaces render. Pure: every derived field
-// comes from the contract plus the event log.
+// comes from the contract plus the event log, and `nextRun` from Settings too.
 
-import type { WorkItem } from "../shared/contracts";
+import type { MaestroConfig, WorkItem } from "../shared/contracts";
 import { groupOf } from "../shared/states";
 import { lookOf, pendingDecision, pendingPermission, phaseOf, reasonOf, verdictOf, workerOf } from "./events";
 import { lastLanding } from "./gate-card";
+import { nextRun } from "./runs";
 import { placement, type StoredWork } from "./store";
 
-export function toWire(item: StoredWork, now: number): WorkItem {
+/** `config` is the Settings this read used: `nextRun` fills the work's unset run choices from it. */
+export function toWire(item: StoredWork, now: number, config: MaestroConfig): WorkItem {
   const { contract, events } = item;
   const last = events[events.length - 1];
   const created = events.find((event) => event.type === "created");
@@ -35,6 +37,7 @@ export function toWire(item: StoredWork, now: number): WorkItem {
     look: lookOf(contract.state, events, now),
     permission: contract.state === "review" ? pendingPermission(events) : null,
     checks: contract.checks.map(({ name, run }) => ({ name, run })),
+    nextRun: nextRun(config, item),
     landing: lastLanding(events) ?? undefined,
     pending: decision
       ? {

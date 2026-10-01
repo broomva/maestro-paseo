@@ -6,6 +6,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defaultConfig } from "../../server/config";
 import { WorkStore } from "../../server/store";
 import { toWire } from "../../server/wire";
 import { groupOf, type OrchState, transition, type Verdict } from "../../shared/states";
@@ -24,7 +25,9 @@ async function seeded() {
   const seeds = buildSeeds(now, { checkout: "/repo/checkout", platform: "/repo/platform", infra: "/repo/infra" });
   await writeSeeds(root, seeds, now);
   const { items, warnings } = await new WorkStore(root, () => now).scan();
-  const wire = new Map(items.map((item) => [item.contract.id, toWire(item, now.getTime())]));
+  const wire = new Map(
+    items.map((item) => [item.contract.id, toWire(item, now.getTime(), { ...defaultConfig(), workRoot: root })]),
+  );
   return { seeds, wire, warnings };
 }
 

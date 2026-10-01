@@ -40,7 +40,8 @@ test("the plugin's handlers and hooks hand the agent socket its daemon client", 
   const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
   roots.push(root);
   const repo = join(root, "repo");
-  await mkdir(repo);
+  // A git repository as far as Maestro checks: runs branch a worktree from it.
+  await mkdir(join(repo, ".git"), { recursive: true });
   const config = join(root, "config.json");
   await writeFile(
     config,
@@ -101,7 +102,7 @@ test("undo, stop and the default gate are wired through the plugin's handlers", 
   const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
   roots.push(root);
   const repo = join(root, "repo");
-  await mkdir(repo);
+  await mkdir(join(repo, ".git"), { recursive: true });
   const config = join(root, "config.json");
   // Written before these settings existed, except the default gate.
   await writeFile(
@@ -182,7 +183,7 @@ test("decisions left from before a restart apply on load, or once a client arriv
   const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
   roots.push(root);
   const repo = join(root, "repo");
-  await mkdir(repo);
+  await mkdir(join(repo, ".git"), { recursive: true });
   const config = join(root, "config.json");
   await writeFile(config, JSON.stringify({ workRoot: join(root, "work"), provider: "claude/test-model" }));
   const fake = fakePaseo();

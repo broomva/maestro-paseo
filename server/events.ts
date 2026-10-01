@@ -3,7 +3,17 @@
 // is one line. Nothing here is a percentage, and nothing is stored twice:
 // the worker, the look at the gate and the scoreboard are all computed.
 
-import type { CheckResult, Look, Permission, Scoreboard, WeekDay, WorkEventWire, Worker } from "../shared/contracts";
+import type {
+  CheckResult,
+  FeatureValues,
+  Look,
+  Permission,
+  Scoreboard,
+  WeekDay,
+  WorkEventWire,
+  Worker,
+} from "../shared/contracts";
+import { describeRun } from "../shared/run";
 import type { OrchState, Verdict } from "../shared/states";
 
 export type Actor = "human" | "agent" | "maestro";
@@ -31,6 +41,10 @@ export type WorkEvent = Base &
         provider: string;
         branch: string | null;
         cwd: string | null;
+        /** What the agent was started with beyond the provider; absent on older receipts. */
+        modeId?: string | null;
+        thinkingOptionId?: string | null;
+        featureValues?: FeatureValues | null;
       } & Origin)
     | { type: "turn.started"; actor: "agent"; agentId: string }
     | {
@@ -109,6 +123,10 @@ export function workerOf(events: readonly WorkEvent[]): Worker | null {
     provider: bind.provider,
     branch: bind.branch,
     cwd: bind.cwd,
+    modeId: bind.modeId ?? null,
+    thinkingOptionId: bind.thinkingOptionId ?? null,
+    featureValues: bind.featureValues ?? null,
+    startedWith: describeRun(bind),
   };
 }
 
@@ -386,7 +404,9 @@ export function toWireEvent(event: WorkEvent, settled = false): WorkEventWire | 
         ...base,
         type: event.type,
         text: "Dispatched",
-        detail: [event.provider, event.branch ? `on ${event.branch}` : null, byline(event)].filter(Boolean).join(" "),
+        detail: [describeRun(event), event.branch ? `on ${event.branch}` : null, byline(event)]
+          .filter(Boolean)
+          .join(" "),
       };
     case "adopted":
       return {

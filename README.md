@@ -76,8 +76,12 @@ maestro mine                   # the work this session is running
   `gate: human`.
 - **A session cannot write a done check.** Checks run as you, with no session and no permission
   prompt in the loop, so they come from you: add one to the work's `_work.md` (`done.check`).
-- **A dispatch runs in the mode you configured.** That is no more than a session can already do:
-  Paseo's own `create_agent` tool, which every session holds, starts an agent in any mode.
+- **A dispatch runs in the mode you configured.** Work a session creates carries none of the run
+  choices the composer offers you (provider, isolation, mode, thinking, features), so it runs as
+  Settings say. That is no more than a session can already do: Paseo's own `create_agent` tool,
+  which every session holds, starts an agent in any mode.
+- **A mode you chose for one work is yours to use.** A session cannot start work that carries its
+  own mode: it is told "This work runs in a mode you chose; start it yourself."
 - **Receipts say which session it said it was.** Everything done through the socket is recorded as
   an agent's (`actor: agent`), never yours, reads "by session 1a2b3c4d" in the receipts, and never
   counts as you stepping in on the scoreboard. The id is the `PASEO_AGENT_ID` the client reports;
@@ -98,7 +102,7 @@ plugin cannot add tools to an agent. Every session has a shell.
 ## The work file
 
 `_work.md` is Maestro's work contract, field for field, so the Maestro runtime can read files
-written here. Two keys are added beside it, and Maestro's parser ignores keys it does not know.
+written here. Paseo keys are added beside it, and Maestro's parser ignores keys it does not know.
 
 ```markdown
 ---
@@ -111,13 +115,28 @@ done:
 created: 2026-09-22
 updated: 2026-09-22
 repo: /Users/you/code/project     # where runs happen (added)
-provider: claude/claude-sonnet-5  # optional per-item override (added)
+provider: claude/claude-sonnet-5  # optional: the provider, with or without a model (added)
+isolation: worktree               # optional: worktree or directory (added)
+mode: acceptEdits                 # optional: the provider's mode id (added)
+thinking: high                    # optional: the model's thinking level (added)
+features:                         # optional: the provider's feature toggles (added)
+  fast_mode: true
 ---
 
 # Persist run transcripts
 
 Store the full transcript on each run so reviews do not need the live session.
 ```
+
+The optional keys are what the New work composer chose. An absent one means Settings, read at
+dispatch time; the Settings mode applies only while the run uses the Settings provider, since a
+mode belongs to one provider. A title left blank in the composer takes the brief's first line.
+
+Runs start only in a repository the work changes: never your home folder, the work folder, a folder
+holding it, or one inside it. With `isolation: worktree` the folder must be a git repository. The
+folder is checked when you create the work and again before every run starts, however it starts
+(dispatch, unblock, or restarting work tracked from a session), so a hand-edited `repo:` or a
+session tracked in such a folder can be recorded, but no run starts there.
 
 Folders nest: `<root>/<initiative>/<project>/<item>/_work.md`. The nesting is the grouping.
 Edits keep the author's comments and key order. `_events.jsonl` is append-only. A file that does
@@ -150,6 +169,9 @@ under a human gate reaches Done without an approve verdict.
 
 ## The agent's instructions
 
+The receipt of each dispatch, and the detail pane, say how the agent was started: provider, mode,
+thinking level and features.
+
 Each dispatch sends the title, the brief, the checks, and three rules: commit on the run branch,
 do not merge or push unless asked, and end with `## Decided` and `## Ask` sections. Those two
 sections become the look at the gate. If the agent skips them, the gate still works; the look
@@ -167,8 +189,8 @@ this one does:
   yours.
 - The agent socket is mode 0600 in your config folder, and serves only the verbs above.
 
-Choosing a permissive provider mode (for example `bypassPermissions`) is what makes runs
-unsupervised; it is off by default.
+Choosing a permissive provider mode (for example `bypassPermissions`), per work in the composer or
+for all runs in Settings, is what makes runs unsupervised; it is off by default.
 
 ## Configuration
 
@@ -181,7 +203,7 @@ it answers, and the other keeps retrying every ten seconds, which its plugin log
 |---|---|---|
 | `workRoot` | `~/maestro` | Where work folders live |
 | `provider` | `claude` | Provider, optionally with a model: `claude/claude-sonnet-5` |
-| `modeId` | none | Provider mode for runs; empty means the provider default |
+| `modeId` | none | Provider mode for runs; empty means the provider default. It applies only while a run uses the Settings provider: work that chose another provider starts in that provider's default mode |
 | `isolation` | `worktree` | `worktree` for a fresh branch per run, `directory` to run in the repo |
 
 ## Development

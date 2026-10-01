@@ -1,12 +1,13 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { MaestroConfig } from "../shared/contracts";
+import { nextRunCopy } from "../shared/run";
 import type { Verdict } from "../shared/states";
 import { defaultConfig } from "./config";
-import { CHECKING, CLIENT_WAIT_MS, Engine, RUN_WENT_ON, STOPPED, type Timer, UNDO_MS } from "./engine";
+import { CHECKING, CLIENT_WAIT_MS, Engine, MODED_BY_YOU, RUN_WENT_ON, STOPPED, type Timer, UNDO_MS } from "./engine";
 import { fakePaseo } from "./fake-paseo";
 import type { Paseo } from "./runs";
 import { EVENTS_FILE, WORK_FILE, WorkStore } from "./store";
@@ -48,7 +49,8 @@ function git(cwd: string, ...args: string[]): string {
  */
 function cleanWorktree(repo: string, worker: { cwd: string | null; branch: string | null } | null | undefined): string {
   if (!worker?.cwd || !worker.branch) throw new Error("the run has no worktree");
-  if (!existsSync(join(repo, ".git"))) {
+  // setup() marks the repository with a bare .git folder; a real one has a HEAD.
+  if (!existsSync(join(repo, ".git", "HEAD"))) {
     git(repo, "init", "-q");
     writeFileSync(join(repo, "a.txt"), "hello\n");
     git(repo, "add", "a.txt");
@@ -89,7 +91,8 @@ async function setup(overrides: Partial<MaestroConfig> = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "maestro-engine-")));
   roots.push(root);
   const repo = join(root, "repo");
-  await mkdir(repo);
+  // A git repository as far as Maestro checks: runs branch a worktree from it.
+  await mkdir(join(repo, ".git"), { recursive: true });
   const config: MaestroConfig = {
     ...defaultConfig(),
     workRoot: join(root, "work"),
@@ -2129,5 +2132,386 @@ describe("round 3 of review", () => {
     await firing;
     // The apply found it early and waits out the rest: exactly one timer.
     expect(timers.live().map((timer) => timer.ms)).toEqual([UNDO_MS]);
+  });
+});
+
+describe("the composer's choices", () => {
+  const draft = (repo: string) => ({
+    brief: "Store the transcript on each run.\n\nDone when the detail pane renders it.",
+    repo,
+    gate: "human" as const,
+    check: "",
+    initiative: "",
+    dispatch: false,
+  });
+
+  test("a blank title takes the brief's first line; the brief stays whole", async () => {
+    const { engine, fake, repo } = await setup();
+    const item = await engine.create(fake.paseo, { ...draft(repo), title: "  " });
+    expect(item.title).toBe("Store the transcript on each run.");
+    expect(item.path).toBe("store-the-transcript-on-each-run");
+    expect((await engine.get(item.id)).brief).toBe(
+      "Store the transcript on each run.\n\nDone when the detail pane renders it.",
+    );
+    const untitled = await engine.create(fake.paseo, draft(repo));
+    expect(untitled.title).toBe("Store the transcript on each run.");
+  });
+
+  test("no brief and no title is refused before anything is written", async () => {
+    const { engine, fake, repo, config } = await setup();
+    await expect(engine.create(fake.paseo, { ...draft(repo), title: "", brief: " \n " })).rejects.toThrow(
+      "Write a brief, or at least a title",
+    );
+    expect((await new WorkStore(config.workRoot).scan()).items).toHaveLength(0);
+  });
+
+  test("a dispatch starts the agent the way the work chose, over Settings", async () => {
+    const { engine, fake, repo, config } = await setup({ modeId: "bypassPermissions", isolation: "worktree" });
+    const item = await engine.create(fake.paseo, {
+      ...draft(repo),
+      title: "Chosen",
+      provider: "codex/gpt-5.5",
+      isolation: "directory",
+      modeId: "full-access",
+      thinkingOptionId: "high",
+      featureValues: { fast: true, plan: false },
+      dispatch: true,
+    });
+    const options = fake.created[0] as { config: Record<string, unknown> };
+    expect(options.config).toEqual({
+      provider: "codex/gpt-5.5",
+      modeId: "full-access",
+      thinkingOptionId: "high",
+      featureValues: { fast: true, plan: false },
+    });
+    expect(item.worker).toMatchObject({ provider: "codex/gpt-5.5", branch: null, cwd: repo });
+    const file = await readFile(join(config.workRoot, item.path, WORK_FILE), "utf8");
+    expect(file).toContain("isolation: directory");
+    expect(file).toContain("mode: full-access");
+  });
+
+  test("what the work did not choose comes from Settings at dispatch time", async () => {
+    const { engine, fake, repo, config } = await setup();
+    const item = await engine.create(fake.paseo, { ...draft(repo), title: "Defaults", thinkingOptionId: "low" });
+    // The work's own choice, and Settings for the rest, as Settings stand now.
+    expect(item.nextRun).toEqual({
+      provider: "claude",
+      isolation: "worktree",
+      modeId: null,
+      thinkingOptionId: "low",
+      featureValues: null,
+      fromSettings: ["provider", "isolation"],
+    });
+    config.modeId = "bypassPermissions";
+    config.isolation = "worktree";
+    const running = await engine.dispatch(fake.paseo, item.id);
+    const options = fake.created[0] as { config: Record<string, unknown> };
+    expect(options.config).toEqual({ provider: "claude/sonnet", modeId: "bypassPermissions", thinkingOptionId: "low" });
+    expect(running.worker?.branch).toMatch(/^run\//);
+    // The receipt records the mode the agent really got, wherever it came from.
+    expect(running.worker).toMatchObject({ modeId: "bypassPermissions", thinkingOptionId: "low", featureValues: null });
+  });
+
+  test("a Settings mode the work did not override shows on the Queued and Stuck cards, warned, as dispatch uses it", async () => {
+    const { engine, fake, repo } = await setup({ modeId: "bypassPermissions" });
+    const item = await engine.create(fake.paseo, { ...draft(repo), title: "Inherits", provider: "claude/opus" });
+    const shown = [(await engine.list()).items.find((entry) => entry.id === item.id), (await engine.get(item.id)).item];
+    for (const wire of shown) {
+      expect(wire?.nextRun).toEqual({
+        provider: "claude/opus",
+        isolation: "worktree",
+        modeId: "bypassPermissions",
+        thinkingOptionId: null,
+        featureValues: null,
+        fromSettings: ["isolation", "modeId"],
+      });
+      const queued = nextRunCopy(wire?.nextRun, "queued");
+      expect(queued.line).toContain("mode bypassPermissions (from Settings)");
+      expect(queued.warning).toContain("skips permission prompts");
+    }
+    await engine.dispatch(fake.paseo, item.id);
+    expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({
+      provider: "claude/opus",
+      modeId: "bypassPermissions",
+    });
+    // The session goes away: Unblock starts a new run, with the same Settings mode, and the Stuck card says so first.
+    await engine.onArchived({ id: "agent-1" });
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.archivedAt = new Date().toISOString();
+    const stuck = (await engine.get(item.id)).item;
+    expect(stuck.state).toBe("blocked");
+    expect(nextRunCopy(stuck.nextRun, "stuck").warning).toContain("would skip permission prompts");
+    await engine.unblock(fake.paseo, item.id, "");
+    expect(fake.created).toHaveLength(2);
+    expect((fake.created[1] as { config: Record<string, unknown> }).config).toMatchObject({
+      modeId: "bypassPermissions",
+    });
+  });
+
+  test("auto_accept the work chose warns on the card, and a session may not start the work", async () => {
+    const { engine, fake, repo } = await setup({ provider: "opencode/big" });
+    const item = await engine.create(fake.paseo, {
+      ...draft(repo),
+      title: "OpenCode",
+      featureValues: { auto_accept: true },
+    });
+    expect(nextRunCopy((await engine.get(item.id)).item.nextRun, "queued").warning).toContain(
+      "skips permission prompts",
+    );
+    await expect(engine.dispatch(fake.paseo, item.id, { actor: "agent", by: "session-1" })).rejects.toThrow(
+      MODED_BY_YOU,
+    );
+    expect(fake.created).toHaveLength(0);
+  });
+
+  test("a Settings mode belongs to the Settings provider; work on another provider does not inherit it", async () => {
+    const { engine, fake, repo } = await setup({ provider: "claude", modeId: "bypassPermissions" });
+    await engine.create(fake.paseo, { ...draft(repo), title: "Codex", provider: "codex/gpt-5.5", dispatch: true });
+    await engine.create(fake.paseo, { ...draft(repo), title: "Opus", provider: "claude/opus", dispatch: true });
+    const configs = fake.created.map((options) => (options as { config: Record<string, unknown> }).config);
+    expect(configs).toEqual([{ provider: "codex/gpt-5.5" }, { provider: "claude/opus", modeId: "bypassPermissions" }]);
+  });
+
+  test("work a session creates carries none of the run choices: how runs start stays yours", async () => {
+    const { engine, fake, repo, config } = await setup();
+    const item = await engine.create(
+      fake.paseo,
+      {
+        ...draft(repo),
+        title: "From a session",
+        provider: "codex/gpt-5.5",
+        isolation: "directory",
+        modeId: "bypassPermissions",
+        thinkingOptionId: "max",
+        featureValues: { fast: true },
+        dispatch: true,
+      },
+      { actor: "agent", by: "session-1" },
+    );
+    const file = await readFile(join(config.workRoot, item.path, WORK_FILE), "utf8");
+    for (const key of ["provider:", "isolation:", "mode:", "thinking:", "features:"]) expect(file).not.toContain(key);
+    const options = fake.created[0] as { config: Record<string, unknown> };
+    expect(options.config).toEqual({ provider: "claude/sonnet" });
+    expect(item.worker?.branch).toMatch(/^run\//);
+  });
+});
+
+describe("a mode you chose is yours to use", () => {
+  const moded = (repo: string) => ({
+    title: "Moded",
+    brief: "Trim the cache.",
+    repo,
+    gate: "human" as const,
+    check: "",
+    initiative: "",
+    dispatch: false,
+    modeId: "bypassPermissions",
+    thinkingOptionId: "high",
+    featureValues: { fast_mode: true },
+  });
+  const session = { actor: "agent" as const, by: "session-1" };
+
+  test("a session cannot start work that carries a mode you chose; nothing starts", async () => {
+    const { engine, fake, repo } = await setup();
+    const item = await engine.create(fake.paseo, moded(repo));
+    await expect(engine.dispatch(fake.paseo, item.id, session)).rejects.toThrow(MODED_BY_YOU);
+    expect(fake.created).toHaveLength(0);
+    expect((await engine.get(item.id)).item.state).toBe("proposed");
+  });
+
+  test("you start it, and the receipt says how it was started", async () => {
+    const { engine, fake, repo } = await setup();
+    const item = await engine.create(fake.paseo, moded(repo));
+    const running = await engine.dispatch(fake.paseo, item.id);
+    expect(running.state).toBe("running");
+    expect(running.worker).toMatchObject({
+      provider: "claude/sonnet",
+      modeId: "bypassPermissions",
+      thinkingOptionId: "high",
+      featureValues: { fast_mode: true },
+      startedWith: "claude/sonnet (mode bypassPermissions, thinking high, fast_mode on)",
+    });
+    const receipt = (await engine.get(item.id)).events.find((event) => event.type === "dispatched");
+    expect(receipt?.detail).toStartWith("claude/sonnet (mode bypassPermissions, thinking high, fast_mode on) on run/");
+  });
+
+  test("a session still starts queued work that has no mode of its own", async () => {
+    const { engine, fake, repo } = await setup({ modeId: "acceptEdits" });
+    const item = await engine.create(fake.paseo, { ...moded(repo), modeId: undefined });
+    const running = await engine.dispatch(fake.paseo, item.id, session);
+    expect(running.worker?.modeId).toBe("acceptEdits");
+  });
+});
+
+describe("where runs may start", () => {
+  const plain = (repo: string) => ({
+    title: "Where",
+    brief: "",
+    repo,
+    gate: "human" as const,
+    check: "",
+    initiative: "",
+    dispatch: false,
+  });
+
+  test("never the work folder, a folder holding it, or one inside it; nothing is written", async () => {
+    const { engine, fake, config } = await setup();
+    const inside = join(config.workRoot, "repo-in-work");
+    await mkdir(join(inside, ".git"), { recursive: true });
+    const holder = join(config.workRoot, "..");
+    await mkdir(join(holder, ".git"), { recursive: true });
+    await expect(engine.create(fake.paseo, plain(config.workRoot))).rejects.toThrow("holds the work folder");
+    await expect(engine.create(fake.paseo, plain(holder))).rejects.toThrow("holds the work folder");
+    await expect(engine.create(fake.paseo, plain(inside))).rejects.toThrow("inside the work folder");
+    expect((await new WorkStore(config.workRoot).scan()).items).toHaveLength(0);
+  });
+
+  test("a symlink to the folder holding the work folder is the same folder", async () => {
+    const { engine, fake, config } = await setup();
+    const holder = join(config.workRoot, "..");
+    await mkdir(join(holder, ".git"), { recursive: true });
+    const link = join(holder, "alias");
+    await symlink(holder, link);
+    await expect(engine.create(fake.paseo, plain(link))).rejects.toThrow("holds the work folder");
+  });
+
+  test("never your home folder", async () => {
+    const { engine, fake } = await setup();
+    await expect(engine.create(fake.paseo, plain(homedir()))).rejects.toThrow("home folder");
+    await expect(engine.create(fake.paseo, plain("~"))).rejects.toThrow("home folder");
+  });
+
+  test("a new worktree per run needs a git repository; running in the folder itself does not", async () => {
+    const { engine, fake, config } = await setup();
+    const folder = join(config.workRoot, "..", "plain");
+    await mkdir(folder);
+    await expect(engine.create(fake.paseo, plain(folder))).rejects.toThrow("is not a git repository");
+    const item = await engine.create(fake.paseo, { ...plain(folder), isolation: "directory", dispatch: true });
+    expect(item.worker).toMatchObject({ branch: null, cwd: folder });
+  });
+
+  test("Settings isolation decides for work that did not choose", async () => {
+    const { engine, fake, config } = await setup({ isolation: "directory" });
+    const folder = join(config.workRoot, "..", "plain");
+    await mkdir(folder);
+    expect((await engine.create(fake.paseo, plain(folder))).state).toBe("proposed");
+    await expect(engine.create(fake.paseo, { ...plain(folder), isolation: "worktree" })).rejects.toThrow(
+      "is not a git repository",
+    );
+  });
+});
+
+describe("every run passes the folder check, whichever verb starts it", () => {
+  /** Paseo refuses to start anything, and says where it was asked to: nothing reaches a real folder. */
+  function recordStarts(fake: ReturnType<typeof fakePaseo>) {
+    const attempted: string[] = [];
+    fake.paseo.workspaces.create = (async (options: { source: { cwd: string } }) => {
+      attempted.push(options.source.cwd);
+      throw new Error("a run would have started");
+    }) as unknown as typeof fake.paseo.workspaces.create;
+    fake.paseo.workspaces.open = (async (cwd: unknown) => {
+      attempted.push(String(cwd));
+      throw new Error("a run would have started");
+    }) as unknown as typeof fake.paseo.workspaces.open;
+    return attempted;
+  }
+  const draft = (repo: string) => ({
+    title: "Guarded",
+    brief: "",
+    repo,
+    gate: "human" as const,
+    check: "",
+    initiative: "",
+    dispatch: false,
+  });
+
+  test("dispatch: a _work.md hand-edited to your home folder is refused, and the receipt says why", async () => {
+    const { engine, fake, repo, config } = await setup();
+    // A bare `~` is YAML's null (no repo at all); these are the spellings that name home.
+    for (const spelling of ['"~"', "~/"]) {
+      const item = await engine.create(fake.paseo, { ...draft(repo), title: `Home ${spelling}` });
+      const file = join(config.workRoot, item.path, WORK_FILE);
+      await writeFile(file, (await readFile(file, "utf8")).replace(`repo: ${repo}`, `repo: ${spelling}`));
+      const attempted = recordStarts(fake);
+      await expect(engine.dispatch(fake.paseo, item.id)).rejects.toThrow(
+        "This work's folder is your home folder; set a repository to run it in.",
+      );
+      expect(attempted).toEqual([]);
+      const after = await engine.get(item.id);
+      expect(after.item.state).toBe("proposed");
+      expect(after.events.at(-1)?.text).toContain("your home folder");
+    }
+  });
+
+  test("adopt: tracking a session in your home folder is allowed; restarting it there is not", async () => {
+    const { engine, fake } = await setup();
+    fake.agents.set("manual", {
+      id: "manual",
+      cwd: homedir(),
+      status: "running",
+      workspaceId: "ws-x",
+      provider: "claude",
+      title: "Tidy the dotfiles",
+      archivedAt: null,
+      pendingPermissions: [],
+      activeTurn: null,
+    });
+    const item = await engine.adopt(fake.paseo, "manual", "");
+    expect(item).toMatchObject({ state: "running", repo: homedir() });
+    await engine.onArchived({ id: "manual" });
+    const agent = fake.agents.get("manual");
+    if (agent) agent.archivedAt = new Date().toISOString();
+    expect((await engine.get(item.id)).item.state).toBe("blocked");
+    const attempted = recordStarts(fake);
+    await expect(engine.unblock(fake.paseo, item.id, "")).rejects.toThrow(
+      "This work's folder is your home folder; set a repository to run it in.",
+    );
+    expect(attempted).toEqual([]);
+    expect((await engine.get(item.id)).item.state).toBe("blocked");
+  });
+
+  test("dispatch: a folder that is not a git repository under worktree isolation is refused at dispatch time", async () => {
+    const { engine, fake, config } = await setup({ isolation: "directory" });
+    const folder = join(config.workRoot, "..", "plain");
+    await mkdir(folder);
+    const item = await engine.create(fake.paseo, draft(folder));
+    config.isolation = "worktree";
+    const attempted = recordStarts(fake);
+    await expect(engine.dispatch(fake.paseo, item.id)).rejects.toThrow(
+      "This work's folder is not a git repository, and each run gets a new worktree",
+    );
+    expect(attempted).toEqual([]);
+    config.isolation = "directory";
+    await expect(engine.dispatch(fake.paseo, item.id)).rejects.toThrow("a run would have started");
+    expect(attempted).toEqual([folder]);
+    // The work's own isolation, hand-edited, is what the check reads; Settings still says directory.
+    const own = await engine.create(fake.paseo, { ...draft(folder), title: "Own worktree" });
+    const file = join(config.workRoot, own.path, WORK_FILE);
+    await writeFile(
+      file,
+      (await readFile(file, "utf8")).replace(`repo: ${folder}`, `repo: ${folder}\nisolation: worktree`),
+    );
+    await expect(engine.dispatch(fake.paseo, own.id)).rejects.toThrow("is not a git repository");
+    expect(attempted).toEqual([folder]);
+  });
+
+  test("dispatch: a folder moved into the work folder, or holding it, is refused", async () => {
+    const { engine, fake, repo, config } = await setup();
+    const inside = await engine.create(fake.paseo, { ...draft(repo), title: "Inside" });
+    const holding = await engine.create(fake.paseo, { ...draft(repo), title: "Holding" });
+    const nested = join(config.workRoot, "nested-repo");
+    await mkdir(join(nested, ".git"), { recursive: true });
+    const holder = join(config.workRoot, "..");
+    for (const [item, target] of [
+      [inside, nested],
+      [holding, holder],
+    ] as const) {
+      const file = join(config.workRoot, item.path, WORK_FILE);
+      await writeFile(file, (await readFile(file, "utf8")).replace(`repo: ${repo}`, `repo: ${target}`));
+    }
+    const attempted = recordStarts(fake);
+    await expect(engine.dispatch(fake.paseo, inside.id)).rejects.toThrow("is inside the work folder");
+    await expect(engine.dispatch(fake.paseo, holding.id)).rejects.toThrow("holds the work folder");
+    expect(attempted).toEqual([]);
   });
 });

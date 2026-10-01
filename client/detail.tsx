@@ -8,6 +8,7 @@ import { ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-n
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { type CheckResult, NOT_STOPPED, type Pending, type WorkEventWire, type WorkItem } from "../shared/contracts";
+import { nextRunCopy } from "../shared/run";
 import { ChangeText, WithChange } from "./changed";
 import { FilesSection } from "./files";
 import { ago, basename, errorText } from "./format";
@@ -74,7 +75,11 @@ export function WorkDetail({
           {item.title}
         </Text>
         {where ? <Text style={text.muted}>{where}</Text> : null}
-        {item.worker?.branch ? <Text style={text.mono}>{item.worker.branch}</Text> : null}
+        {item.worker ? (
+          <Text style={text.mono}>
+            {[item.worker.branch, item.worker.startedWith ?? item.worker.provider].filter(Boolean).join(" · ")}
+          </Text>
+        ) : null}
       </View>
 
       <Verbs item={item} theme={theme} compact={compact} />
@@ -337,10 +342,17 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   }
 
   if (item.state === "blocked") {
+    const restart = nextRunCopy(item.nextRun, "stuck");
     return withPending(
       <Card theme={theme}>
         <Text style={text.label}>Stuck</Text>
         <Text style={text.body}>{item.reason ?? "The run stopped without a reason."}</Text>
+        <Text style={text.muted}>{restart.line}</Text>
+        {restart.warning ? (
+          <Notice theme={theme} tone="warn">
+            {restart.warning}
+          </Notice>
+        ) : null}
         <TextInput
           value={note}
           onChangeText={setNote}
@@ -373,9 +385,15 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   }
 
   if (item.state === "proposed" || item.state === "reviewing" || item.state === "triggered") {
+    const queued = nextRunCopy(item.nextRun, "queued");
     return (
       <Card theme={theme}>
-        <Text style={text.body}>Queued. Dispatching starts an agent in a fresh worktree on its own run branch.</Text>
+        <Text style={text.body}>{queued.line}</Text>
+        {queued.warning ? (
+          <Notice theme={theme} tone="warn">
+            {queued.warning}
+          </Notice>
+        ) : null}
         <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
           <Button
             theme={theme}

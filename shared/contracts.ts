@@ -5,12 +5,33 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { GATE_MODES, GROUP_ORDER, KINDS, ORCH_STATES, VERDICTS } from "./states";
 
+/** Bounds on what a work may pass to a provider as feature values. */
+export const ISOLATIONS = ["worktree", "directory"] as const;
+
+export const FEATURE_LIMITS = { keys: 32, chars: 200 } as const;
+
+/** A provider feature's value: a toggle is a boolean, a select is an option id or null. */
+export const FeatureValueSchema = z.union([z.string().max(FEATURE_LIMITS.chars), z.number(), z.boolean(), z.null()]);
+export type FeatureValue = z.infer<typeof FeatureValueSchema>;
+export const FeatureValuesSchema = z
+  .record(z.string().min(1).max(FEATURE_LIMITS.chars), FeatureValueSchema)
+  .refine((values) => Object.keys(values).length <= FEATURE_LIMITS.keys, {
+    message: `At most ${FEATURE_LIMITS.keys} feature values`,
+  });
+export type FeatureValues = z.infer<typeof FeatureValuesSchema>;
+
 export const WorkerSchema = z.object({
   agentId: z.string(),
   workspaceId: z.string().nullable(),
   provider: z.string(),
   branch: z.string().nullable(),
   cwd: z.string().nullable(),
+  /** How the run was started, beyond the provider; absent on runs recorded before these were kept. */
+  modeId: z.string().nullable().optional(),
+  thinkingOptionId: z.string().nullable().optional(),
+  featureValues: FeatureValuesSchema.nullable().optional(),
+  /** The same, in words: `claude/opus (mode bypassPermissions, thinking high)`. */
+  startedWith: z.string().optional(),
 });
 export type Worker = z.infer<typeof WorkerSchema>;
 
@@ -50,6 +71,21 @@ export const PHASES = ["working", "checking", "asking"] as const;
 export const DiffStatSchema = z.object({ additions: z.number(), deletions: z.number() });
 export type DiffStat = z.infer<typeof DiffStatSchema>;
 
+/** The run choices Settings can fill when a work leaves them unset. Thinking and features are the work's alone. */
+export const SETTINGS_FIELDS = ["provider", "isolation", "modeId"] as const;
+
+export const NextRunSchema = z.object({
+  /** `provider` or `provider/model`; a bare provider takes its default model at dispatch. */
+  provider: z.string(),
+  isolation: z.enum(ISOLATIONS),
+  modeId: z.string().nullable(),
+  thinkingOptionId: z.string().nullable(),
+  featureValues: FeatureValuesSchema.nullable(),
+  /** The fields above that came from Settings because the work left them unset. */
+  fromSettings: z.array(z.enum(SETTINGS_FIELDS)),
+});
+export type NextRun = z.infer<typeof NextRunSchema>;
+
 /**
  * A decision at the gate that has not taken effect yet. It applies when the
  * undo window closes, unless it is undone first.
@@ -88,6 +124,12 @@ export const WorkItemSchema = z.object({
   look: LookSchema.nullable(),
   permission: PermissionSchema.nullable(),
   checks: z.array(CheckSpecSchema),
+  /**
+   * How the next run would start: the work's choices with Settings filling the
+   * rest, computed by the same function dispatch uses (server/runs.ts
+   * runSettings). Absent only on items built without Settings, such as test fixtures.
+   */
+  nextRun: NextRunSchema.nullable().optional(),
   /** The latest move into review, as its index in the event log; kept after the work leaves review. */
   landing: z.number().int().optional(),
   pending: PendingSchema.nullable(),
@@ -128,8 +170,6 @@ export const ScoreboardSchema = z.object({
   weekByInitiative: z.array(z.object({ initiative: z.string().nullable(), unsupervisedMs: z.number() })).default([]),
 });
 export type Scoreboard = z.infer<typeof ScoreboardSchema>;
-
-export const ISOLATIONS = ["worktree", "directory"] as const;
 
 const CAP = "The concurrency cap is a whole number of runs, 1 or more, or empty for no cap";
 
@@ -172,10 +212,27 @@ export const getWork = defineRpc({
   }),
 });
 
+export type Isolation = (typeof ISOLATIONS)[number];
+
+/**
+ * How one work item's runs start, chosen in the composer. Every field is
+ * optional: an absent one means the Settings value at dispatch time.
+ */
+export const RunChoicesSchema = z.object({
+  isolation: z.enum(ISOLATIONS).optional(),
+  /** `provider` or `provider/model`, as Settings takes it. */
+  provider: z.string().trim().min(1).optional(),
+  modeId: z.string().trim().min(1).optional(),
+  thinkingOptionId: z.string().trim().min(1).optional(),
+  featureValues: FeatureValuesSchema.optional(),
+});
+export type RunChoices = z.infer<typeof RunChoicesSchema>;
+
 export const createWork = defineRpc({
   name: "work.create",
-  input: z.object({
-    title: z.string().trim().min(1, "Give the work a title"),
+  input: RunChoicesSchema.extend({
+    /** Optional: a blank title takes the brief's first line. */
+    title: z.string().optional(),
     brief: z.string(),
     repo: z.string().trim().min(1, "Choose where the work runs"),
     /** Omitted: the configured default gate. */
@@ -186,6 +243,13 @@ export const createWork = defineRpc({
   }),
   /** `notice`: why work asked to dispatch was created but not started (the concurrency cap). */
   output: ItemResult.extend({ notice: z.string().nullable() }),
+});
+
+/** A folder as the daemon sees it: `~` expanded, and whether runs can branch from it. */
+export const inspectFolder = defineRpc({
+  name: "folder.inspect",
+  input: z.object({ path: z.string() }),
+  output: z.object({ path: z.string(), directory: z.boolean(), git: z.boolean() }),
 });
 
 export const dispatchWork = defineRpc({ name: "work.dispatch", input: ById, output: ItemResult });

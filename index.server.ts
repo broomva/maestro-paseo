@@ -3,6 +3,7 @@ import { agentMethods, keepServing } from "./server/agent-socket";
 import { attentionOf } from "./server/attention";
 import { loadConfig, saveConfig } from "./server/config";
 import { Engine } from "./server/engine";
+import { inspectFolder as inspect } from "./server/folders";
 import { GateCards } from "./server/gate-card";
 import { socketPath } from "./server/paths";
 import { Records } from "./server/records";
@@ -16,6 +17,7 @@ import {
   dispatchWork,
   getConfig,
   getWork,
+  inspectFolder,
   listWork,
   setConfig,
   stopWork,
@@ -88,6 +90,7 @@ export default function contribute(host: PluginServerContext) {
     engine.adopt(paseo, agentId, title).then((item) => ({ item })),
   );
   server.handle(workForAgent, ({ agentId }) => engine.forAgent(agentId).then((item) => ({ item })));
+  server.handle(inspectFolder, ({ path }) => inspect(path));
   server.handle(getConfig, () => loadConfig());
   server.handle(setConfig, (input) => saveConfig(input));
 

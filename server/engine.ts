@@ -21,7 +21,8 @@ import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
-import { type MaestroConfig, NOT_STOPPED, type WorkItem } from "../shared/contracts";
+import { type MaestroConfig, NOT_STOPPED, type RunChoices, type WorkItem } from "../shared/contracts";
+import { skipsPrompts } from "../shared/run";
 import {
   GROUP_ORDER,
   isDispatchable,
@@ -32,7 +33,7 @@ import {
   verdictTarget,
 } from "../shared/states";
 import { runChecks } from "./checks";
-import { expandHome, loadConfig } from "./config";
+import { loadConfig } from "./config";
 import {
   BY_HUMAN,
   checkOutcome,
@@ -51,7 +52,8 @@ import {
   type WorkEvent,
   workerOf,
 } from "./events";
-import { briefOf } from "./frontmatter";
+import { inspectFolder, repoRefusal } from "./folders";
+import { briefOf, type RunKeys, workTitle } from "./frontmatter";
 import { describePermission, type PermissionLike } from "./permissions";
 import { type Paseo, startRun } from "./runs";
 import { type Mutation, placement, type StoredWork, WorkStore, withLock } from "./store";
@@ -183,6 +185,31 @@ export interface EngineOptions {
   claimWaitMs?: number;
 }
 
+/** What work.create takes: the work, where it runs, how it is judged, and optionally how its runs start. */
+export type CreateInput = RunChoices & {
+  /** Blank takes the brief's first line. */
+  title?: string;
+  brief: string;
+  repo: string;
+  gate: "human" | "auto";
+  check: string;
+  initiative: string;
+  dispatch: boolean;
+};
+
+/** Only the run choices that were made: an absent one means Settings at dispatch. */
+function runKeys(input: RunChoices): RunKeys {
+  const keys: RunKeys = {};
+  if (input.provider?.trim()) keys.provider = input.provider.trim();
+  if (input.isolation) keys.isolation = input.isolation;
+  if (input.modeId?.trim()) keys.modeId = input.modeId.trim();
+  if (input.thinkingOptionId?.trim()) keys.thinkingOptionId = input.thinkingOptionId.trim();
+  if (input.featureValues && Object.keys(input.featureValues).length > 0) keys.featureValues = input.featureValues;
+  return keys;
+}
+
+export const MODED_BY_YOU = "This work runs in a mode you chose; start it yourself.";
+
 /** See EngineOptions.claimWaitMs. */
 export const CLAIM_WAIT_MS = 30_000;
 
@@ -221,14 +248,20 @@ export const CLIENT_WAIT_MS = 5_000;
 type ApplyOutcome = "applied" | "dropped" | "early" | "waiting" | "settled";
 
 /**
- * Work a dispatch may start from: queued, stuck, or a run with no session
- * recorded. A session may start only queued work: restarting stuck work is
- * unblocking, and that is yours.
+ * Why this caller may not start this work, or null. You may start queued or
+ * stuck work, or a run with no session recorded. A session may start only
+ * queued work (restarting stuck work is unblocking, and that is yours), and
+ * never work that carries a mode you chose for it: the mode is yours to use.
  */
-function canDispatch(item: StoredWork, origin: Origin): boolean {
+function startRefusal(item: StoredWork, origin: Origin): string | null {
   const state = item.contract.state;
-  if (origin.actor === "agent") return isDispatchable(state);
-  return isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events));
+  if (origin.actor === "agent") {
+    if (!isDispatchable(state)) return "A session can start only queued work. Stuck work is unblocked in Maestro.";
+    // auto_accept is a mode by another name: it skips the prompts too (shared/run.ts).
+    return item.contract.modeId || skipsPrompts({ featureValues: item.contract.featureValues }) ? MODED_BY_YOU : null;
+  }
+  if (isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events))) return null;
+  return "Only queued or stuck work can be dispatched.";
 }
 
 export class Engine {
@@ -386,7 +419,7 @@ export class Engine {
     scoreboard: ReturnType<typeof scoreboard>;
     warnings: string[];
   }> {
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     let { items, warnings } = await store.scan();
     this.index(store, items);
     if (paseo && this.now().getTime() - this.lastReconcile > RECONCILE_MS) {
@@ -403,7 +436,7 @@ export class Engine {
     const now = this.now();
     const dayStart = new Date(now);
     dayStart.setHours(0, 0, 0, 0);
-    const wire = items.map((item) => toWire(item, now.getTime()));
+    const wire = items.map((item) => toWire(item, now.getTime(), config));
     wire.sort(
       (a, b) => GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group) || b.updatedAt.localeCompare(a.updatedAt),
     );
@@ -421,10 +454,10 @@ export class Engine {
   }
 
   async get(id: string) {
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     const item = await store.findById(id);
     return {
-      item: toWire(item, this.now().getTime()),
+      item: toWire(item, this.now().getTime(), config),
       brief: briefOf(item.work.body),
       events: toWireEvents(item.events),
       checkResults: latestChecks(item.events),
@@ -432,41 +465,50 @@ export class Engine {
   }
 
   async forAgent(agentId: string): Promise<WorkItem | null> {
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     const item = await this.findByAgent(store, agentId);
-    return item ? toWire(item, this.now().getTime()) : null;
+    return item ? toWire(item, this.now().getTime(), config) : null;
   }
 
   // ── Human verbs ────────────────────────────────────────────────────────────
 
-  async create(
-    paseo: Paseo | null,
-    input: {
-      title: string;
-      brief: string;
-      repo: string;
-      gate: "human" | "auto";
-      check: string;
-      initiative: string;
-      dispatch: boolean;
-    },
-    origin: Origin = BY_HUMAN,
-  ): Promise<WorkItem> {
+  async create(paseo: Paseo | null, input: CreateInput, origin: Origin = BY_HUMAN): Promise<WorkItem> {
+    const title = workTitle(input.title, input.brief);
+    if (!title) throw new UserError("Write a brief, or at least a title.");
     if (input.gate === "auto" && !input.check.trim()) {
       throw new UserError("Letting checks decide needs a check command.");
     }
-    const repo = expandHome(input.repo.trim());
+    // How runs start is yours alone: work a session creates runs as Settings say, so no
+    // session can file work that dispatches with a mode that skips permissions.
+    const run = origin.actor === "agent" ? undefined : runKeys(input);
+    const folder = await inspectFolder(input.repo);
+    const repo = folder.path;
     if (!isAbsolute(repo)) throw new UserError("Use an absolute path for the repository.");
-    const { stat } = await import("node:fs/promises");
-    const info = await stat(repo).catch(() => null);
-    if (!info?.isDirectory()) throw new UserError(`No folder at ${repo}.`);
-    const { store } = await this.store();
-    const item = await store.create({ ...input, repo, now: this.now(), origin });
+    if (!folder.directory) throw new UserError(`No folder at ${repo}.`);
+    const { store, config } = await this.store();
+    const refusal = await repoRefusal(repo, config.workRoot);
+    if (refusal) throw new UserError(refusal);
+    if ((run?.isolation ?? config.isolation) === "worktree" && !folder.git) {
+      throw new UserError(
+        `${repo} is not a git repository, and each run gets a new worktree. Choose a repository, or run in the folder itself.`,
+      );
+    }
+    const item = await store.create({
+      title,
+      brief: input.brief,
+      repo,
+      gate: input.gate,
+      check: input.check,
+      initiative: input.initiative,
+      now: this.now(),
+      origin,
+      run,
+    });
     if (input.dispatch) {
       if (!paseo) throw new UserError(`Created ${item.contract.id}, but it cannot be dispatched yet: ${NO_HANDLE}`);
       return this.dispatch(paseo, item.contract.id, origin);
     }
-    return toWire(item, this.now().getTime());
+    return toWire(item, this.now().getTime(), config);
   }
 
   /**
@@ -500,13 +542,8 @@ export class Engine {
     try {
       const { store, config } = await this.store();
       const item = await store.findById(id);
-      if (!canDispatch(item, origin)) {
-        throw new UserError(
-          origin.actor === "agent"
-            ? "A session can start only queued work. Stuck work is unblocked in Maestro."
-            : "Only queued or stuck work can be dispatched.",
-        );
-      }
+      const refusal = startRefusal(item, origin);
+      if (refusal) throw new UserError(refusal);
       this.checkCapacity(item, ahead, await this.running(store), config.concurrencyCap);
       let worker: Awaited<ReturnType<typeof startRun>>;
       try {
@@ -522,7 +559,7 @@ export class Engine {
         bound = await store.mutate(
           id,
           (fresh) => {
-            if (!canDispatch(fresh, origin)) throw new UserError("The work changed while the run was starting.");
+            if (startRefusal(fresh, origin)) throw new UserError("The work changed while the run was starting.");
             return {
               to: "running",
               actor: origin.actor,
@@ -564,7 +601,7 @@ export class Engine {
       }
       this.dirs(store.root).set(worker.agentId, bound.dir);
       await this.flush(worker.agentId);
-      return toWire(await store.fresh(id, bound.dir), this.now().getTime());
+      return toWire(await store.fresh(id, bound.dir), this.now().getTime(), config);
     } finally {
       this.dispatching.delete(id);
       this.admitted.delete(id);
@@ -618,7 +655,7 @@ export class Engine {
    * counts now, when you decide.
    */
   async verdict(paseo: Paseo | null | undefined, id: string, verdict: Verdict, note: string): Promise<WorkItem> {
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     const trimmed = note.trim();
     if (verdict === "revise" && !trimmed) throw new UserError("Say what should change before sending it back.");
     const current = await store.findById(id);
@@ -650,12 +687,12 @@ export class Engine {
       current.dir,
     );
     this.arm(id, token, effectiveAt, paseo ?? null, updated.dir);
-    return toWire(updated, this.now().getTime());
+    return toWire(updated, this.now().getTime(), config);
   }
 
   /** Take back a decision that has not taken effect yet. */
   async undo(id: string): Promise<WorkItem> {
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     const current = await store.findById(id);
     let token: string | null = null;
     const updated = await store.mutate(
@@ -679,7 +716,7 @@ export class Engine {
       current.dir,
     );
     if (token) this.disarm(token);
-    return toWire(updated, this.now().getTime());
+    return toWire(updated, this.now().getTime(), config);
   }
 
   /**
@@ -811,7 +848,7 @@ export class Engine {
       if (verdict === "revise" && paseo) {
         await this.wake(
           paseo,
-          store,
+          { store, config },
           updated,
           `Changes requested before this is done:\n\n${note}\n\nMake the changes, commit them, and end with the Decided and Ask sections again.`,
         );
@@ -974,7 +1011,7 @@ export class Engine {
 
   async unblock(paseo: Paseo, id: string, note: string): Promise<WorkItem> {
     if (this.dispatching.has(id)) throw new UserError("A run is already starting for this work.");
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     const item = await store.findById(id);
     if (item.contract.state !== "blocked") throw new UserError("Only stuck work can be unblocked.");
     const worker = workerOf(item.events);
@@ -1001,7 +1038,7 @@ export class Engine {
     );
     return this.wake(
       paseo,
-      store,
+      { store, config },
       updated,
       trimmed || "Continue where you stopped. End with the Decided and Ask sections.",
     );
@@ -1013,7 +1050,7 @@ export class Engine {
    */
   async cancel(id: string, paseo?: Paseo | null): Promise<WorkItem> {
     if (this.dispatching.has(id)) throw new UserError("A run is starting for this work. Cancel it once it is running.");
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     const current = await store.findById(id);
     if (current.contract.state === "review") return this.verdict(paseo, id, "block", "");
     const unbound = current.contract.state === "running" && !workerOf(current.events);
@@ -1040,7 +1077,7 @@ export class Engine {
       },
       current.dir,
     );
-    return toWire(updated, this.now().getTime());
+    return toWire(updated, this.now().getTime(), config);
   }
 
   /**
@@ -1055,7 +1092,7 @@ export class Engine {
    */
   async stopRun(paseo: Paseo, id: string, { discard = false }: { discard?: boolean } = {}): Promise<WorkItem> {
     if (this.dispatching.has(id)) throw new UserError("A run is starting for this work. Stop it once it is running.");
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     const current = await store.findById(id);
     const refusal = (item: StoredWork): string | null => {
       if (item.contract.state !== "running") return "Only running work can be stopped.";
@@ -1085,7 +1122,7 @@ export class Engine {
       },
       current.dir,
     );
-    if (!worker) return toWire(stopped, this.now().getTime());
+    if (!worker) return toWire(stopped, this.now().getTime(), config);
     try {
       await paseo.agents.ref(worker.agentId).archive();
     } catch (error) {
@@ -1104,7 +1141,7 @@ export class Engine {
         .catch(() => undefined);
       throw new UserError(`Could not stop the session: ${message}`);
     }
-    return toWire(await store.load(stopped.dir), this.now().getTime());
+    return toWire(await store.load(stopped.dir), this.now().getTime(), config);
   }
 
   /** Track a session that was started by hand, so its end lands at the gate. */
@@ -1120,11 +1157,11 @@ export class Engine {
   }
 
   private async adoptOnce(paseo: Paseo, agentId: string, title: string, origin: Origin): Promise<WorkItem> {
-    const { store } = await this.store();
+    const { store, config } = await this.store();
     const { items } = await store.scan();
     this.index(store, items);
     const existing = items.find((item) => workerOf(item.events)?.agentId === agentId);
-    if (existing) return toWire(existing, this.now().getTime());
+    if (existing) return toWire(existing, this.now().getTime(), config);
     const snapshot = await paseo.agents.ref(agentId).refresh();
     if (!snapshot) throw new UserError("That session no longer exists.");
     const agent = snapshot.agent;
@@ -1160,22 +1197,27 @@ export class Engine {
       created.dir,
     );
     this.dirs(store.root).set(agentId, running.dir);
-    if (agent.status === "running") return toWire(running, this.now().getTime());
+    if (agent.status === "running") return toWire(running, this.now().getTime(), config);
     const landed = await store.mutate(
       id,
       () => ({ to: "review", reason: "The session was idle when tracked" }),
       running.dir,
     );
-    return toWire(landed, this.now().getTime());
+    return toWire(landed, this.now().getTime(), config);
   }
 
   /** Prompt the session of work that just moved to running; a failed send parks it as stuck. */
-  private async wake(paseo: Paseo, store: WorkStore, item: StoredWork, text: string): Promise<WorkItem> {
+  private async wake(
+    paseo: Paseo,
+    { store, config }: { store: WorkStore; config: MaestroConfig },
+    item: StoredWork,
+    text: string,
+  ): Promise<WorkItem> {
     const worker = workerOf(item.events);
     try {
       if (!worker) throw new Error("no session is bound");
       await paseo.agents.ref(worker.agentId).send(text);
-      return toWire(item, this.now().getTime());
+      return toWire(item, this.now().getTime(), config);
     } catch (error) {
       const reason = `Could not reach the session: ${(error as Error).message}`;
       const stuck = await store.mutate(
@@ -1183,7 +1225,7 @@ export class Engine {
         (fresh) => (fresh.contract.state === "running" ? { to: "blocked", reason } : null),
         item.dir,
       );
-      return toWire(stuck, this.now().getTime());
+      return toWire(stuck, this.now().getTime(), config);
     }
   }
 
