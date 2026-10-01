@@ -27,6 +27,7 @@ import {
   View,
 } from "react-native";
 import { type Isolation, inspectFolder } from "../shared/contracts";
+import { SKIPS_WARNING, skipsPrompts } from "../shared/run";
 import type { GateMode } from "../shared/states";
 import {
   type AgentDraft,
@@ -44,6 +45,7 @@ import {
   type ModelDef,
   modelKey,
   modeShown,
+  modeWanted,
   pillLabel,
   resolveModel,
   shortPath,
@@ -193,6 +195,8 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
   const [menu, setMenu] = useState<MenuId | null>(null);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** The prompt-free run a first Dispatch was pressed for; the next Dispatch of the same run starts it. */
+  const [armed, setArmed] = useState<string | null>(null);
   const briefRef = useRef<NativeTextInput>(null);
   const searchRef = useRef<NativeTextInput>(null);
 
@@ -288,12 +292,13 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
     staleTime: STALE_MS,
   });
   const modeList: ModeDef[] = modes.data?.modes ?? entry?.modes ?? [];
-  const mode = modeShown(modeList, {
+  const modeInput = {
     picked: agent.modeId,
     shownFamily,
     settings: config ? { provider: config.provider, modeId: config.modeId } : null,
     providerDefault: entry?.defaultModeId ?? null,
-  });
+  };
+  const mode = modeShown(modeList, modeInput);
 
   const thinking = thinkingShown(shownModelDef, agent.thinkingOptionId);
   const pills = agentPillLabels({
@@ -333,6 +338,19 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
   const featureList: FeatureDef[] = features.data?.features ?? [];
   const featureError = features.isError ? errorText(features.error) : (features.data?.error ?? null);
 
+  // ── Does the run skip permission prompts? The mode it would use, picked or from Settings, read
+  // against this provider's own mode list (shared/run.ts), and every feature as it would start. ──
+  const runModeId = modeWanted(modeInput);
+  const runFeatures = {
+    ...Object.fromEntries(featureList.map((feature) => [feature.id, feature.value])),
+    ...agent.featureValues,
+  };
+  const unattended =
+    shownFamily !== null &&
+    skipsPrompts({ provider: shownFamily, modeId: runModeId, featureValues: runFeatures }, modeList);
+  const runKey = JSON.stringify([selection, runModeId, runFeatures]);
+  const confirming = unattended && armed === runKey;
+
   // ── Initiatives in use ─────────────────────────────────────────────────────
   const initiatives = initiativesOf(list.data?.items ?? []);
   const typed = query.trim();
@@ -344,10 +362,20 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
   // ── Submit ─────────────────────────────────────────────────────────────────
   const ready = canSubmit({ title, brief, repo }) && !folderProblem;
   const pending = verbs.create.isPending;
+  /** Every Dispatch, button or return, comes here: a prompt-free run takes a second press. */
   const submit = (dispatch: boolean) => {
     if (!ready || pending) return;
+    if (dispatch && unattended && !confirming) {
+      setMenu(null);
+      setArmed(runKey);
+      return;
+    }
+    send(dispatch);
+  };
+  const send = (dispatch: boolean) => {
     setMenu(null);
     setError(null);
+    setArmed(null);
     verbs.create.mutate(
       createInput({ title, brief, repo, check, gate, initiative, isolation }, agent, shown, dispatch),
       {
@@ -1019,7 +1047,7 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
           </Pressable>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Dispatch"
+            accessibilityLabel={confirming ? "Confirm dispatch" : "Dispatch"}
             accessibilityState={{ disabled: !ready || pending, busy: pending }}
             disabled={!ready || pending}
             onPress={() => submit(true)}
@@ -1041,7 +1069,7 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
                 fontWeight: "600",
               }}
             >
-              Dispatch
+              {confirming ? "Confirm dispatch" : "Dispatch"}
             </Text>
             {pending ? (
               <ActivityIndicator size="small" color={theme.colors.accentForeground} />
@@ -1055,6 +1083,16 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
           </Pressable>
         </View>
       </View>
+
+      {unattended ? (
+        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[2], paddingHorizontal: space[1] }}>
+          <Icon name="TriangleAlert" size={14} color={theme.colors.statusWarning} />
+          <Text style={[text.small, { flex: 1 }]}>
+            {SKIPS_WARNING}
+            {confirming ? " Dispatch again to start it." : ""}
+          </Text>
+        </View>
+      ) : null}
 
       {featureError ? (
         <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[2], paddingHorizontal: space[1] }}>

@@ -26,28 +26,74 @@ export function describeRun(run: RunShape): string {
   return terms.length > 0 ? `${run.provider} (${terms.join(", ")})` : run.provider;
 }
 
+/** A mode as a provider list gives it. `isUnattended` is Paseo's own flag for a mode that never asks. */
+export interface ModeFlag {
+  id: string;
+  isUnattended?: boolean;
+}
+
 /**
- * What lets a run edit files and run commands without asking first. Sources,
- * in Paseo (dedebbfc5) packages/server/src/server/agent/providers/:
- * - `bypassPermissions`: Claude's mode, "Skip all permission prompts" (claude/agent.ts:344).
- * - `full-access`: Codex's mode, "without additional prompts" (codex-app-server-agent.ts:238);
- *   OpenCode reads the same id as its legacy full-access mode and turns auto_accept on
- *   (opencode-agent.ts:143, :250 and :262).
- * - `auto_accept` on: OpenCode's feature, "Automatically approves OpenCode tool permission
- *   prompts" (opencode-agent.ts:167; unattended when true or "true", :287-291), and the
- *   same toggle on ACP providers (acp-agent.ts:129 and :818).
+ * The modes Paseo marks `isUnattended`, by provider, for a provider list that
+ * does not carry the flag. Paseo 0.8.0's does not: the flag lives on its
+ * provider manifest, but the wire schema for a mode (protocol messages.ts:303,
+ * AgentModeSchema) has no such field, so snapshot() and listModes() parse it
+ * away. Lines are Paseo dedebbfc5 packages/protocol/src/provider-manifest.ts;
+ * shared/run.test.ts holds this map to the pinned @getpaseo/protocol manifest.
  */
-export const PROMPT_FREE_MODES: ReadonlySet<string> = new Set(["bypassPermissions", "full-access"]);
+export const UNATTENDED_MODES: ReadonlyMap<string, readonly string[]> = new Map([
+  ["claude", ["bypassPermissions"]], // provider-manifest.ts:73, "Skip all permission prompts"
+  ["codex", ["full-access"]], // provider-manifest.ts:99
+  ["copilot", ["allow-all"]], // provider-manifest.ts:124
+  ["omp", ["full"]], // provider-manifest.ts:152 (also OMP's default mode, :255)
+  // Not marked in the manifest: OpenCode reads Codex's id as its legacy full-access mode and turns
+  // auto_accept on (server/src/server/agent/providers/opencode-agent.ts:143, :250 and :262).
+  ["opencode", ["full-access"]],
+]);
+
+/**
+ * The features that approve on their own when on: OpenCode's auto_accept,
+ * "Automatically approves OpenCode tool permission prompts" (opencode-agent.ts:167;
+ * unattended when true or "true", :287-291), and the same toggle on ACP
+ * providers (acp-agent.ts:129 and :818).
+ */
 export const PROMPT_FREE_FEATURES: ReadonlySet<string> = new Set(["auto_accept"]);
 
-export function skipsPrompts(run: Pick<RunShape, "modeId" | "featureValues">): boolean {
-  if (run.modeId != null && PROMPT_FREE_MODES.has(run.modeId)) return true;
+/**
+ * Whether a provider's mode runs without permission prompts. Paseo's own flag
+ * decides when the provider list carries it: Paseo sets it only on the mode
+ * that never asks, so on a list where any mode has it, a mode without it asks.
+ * Otherwise UNATTENDED_MODES decides, and a provider it does not know is read
+ * against every provider's modes, so a custom wrapper of a known agent warns.
+ */
+export function modeSkipsPrompts(
+  provider: string | null | undefined,
+  modeId: string | null | undefined,
+  modes?: readonly ModeFlag[] | null,
+): boolean {
+  if (!modeId) return false;
+  if (modes?.some((mode) => mode.isUnattended !== undefined)) {
+    const listed = modes.find((mode) => mode.id === modeId);
+    if (listed) return listed.isUnattended === true;
+  }
+  const family = (provider ?? "").trim().split("/")[0] ?? "";
+  const known = UNATTENDED_MODES.get(family) ?? [...UNATTENDED_MODES.values()].flat();
+  return known.includes(modeId);
+}
+
+/** Whether a run edits files and runs commands without asking: its mode (above) or an auto-approving feature. */
+export function skipsPrompts(
+  run: { provider?: string | null } & Pick<RunShape, "modeId" | "featureValues">,
+  modes?: readonly ModeFlag[] | null,
+): boolean {
+  if (modeSkipsPrompts(run.provider, run.modeId, modes)) return true;
   return Object.entries(run.featureValues ?? {}).some(
     ([id, value]) => PROMPT_FREE_FEATURES.has(id) && (value === true || value === "true"),
   );
 }
 
 const SKIPS = "it can edit files and run commands without asking.";
+/** What the composer and the Queued card say before a Dispatch that skips the prompts. */
+export const SKIPS_WARNING = `This run skips permission prompts: ${SKIPS}`;
 
 /**
  * What a card says before a verb that can start a run: Dispatch on a Queued
@@ -83,7 +129,7 @@ export function nextRunCopy(
   return card === "queued"
     ? {
         line: `Queued. Dispatching starts an agent ${where}. Runs with ${how}.`,
-        warning: skips ? `This run skips permission prompts: ${SKIPS}` : null,
+        warning: skips ? SKIPS_WARNING : null,
       }
     : {
         line: `If the session is gone, Unblock starts a new run ${where}, with ${how}.`,

@@ -97,23 +97,26 @@ export function thinkingShown(model: ModelDef | null, picked: string | null): Ch
   );
 }
 
+export interface ModeInput {
+  picked: string | null;
+  shownFamily: string | null;
+  settings: { provider: string; modeId: string | null } | null;
+  providerDefault: string | null;
+}
+
 /**
- * The mode the pill shows: the pick, else the Settings mode while the run
+ * The mode a run would use: the pick, else the Settings mode while the run
  * uses the Settings provider (the server's rule), else the provider default.
  */
-export function modeShown(
-  modes: readonly ModeDef[],
-  input: {
-    picked: string | null;
-    shownFamily: string | null;
-    settings: { provider: string; modeId: string | null } | null;
-    providerDefault: string | null;
-  },
-): ModeDef | null {
-  const { picked, shownFamily, settings, providerDefault } = input;
+export function modeWanted({ picked, shownFamily, settings, providerDefault }: ModeInput): string | null {
   const fromSettings =
     settings?.modeId && shownFamily !== null && family(settings.provider) === shownFamily ? settings.modeId : null;
-  const wanted = picked ?? fromSettings ?? providerDefault;
+  return picked ?? fromSettings ?? providerDefault;
+}
+
+/** The mode the pill shows: modeWanted, when the provider lists it. */
+export function modeShown(modes: readonly ModeDef[], input: ModeInput): ModeDef | null {
+  const wanted = modeWanted(input);
   return modes.find((mode) => mode.id === wanted) ?? null;
 }
 

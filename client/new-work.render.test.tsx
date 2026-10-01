@@ -23,6 +23,7 @@ import { afterAll, afterEach, describe, expect, mock, spyOn, test } from "bun:te
 import { Window } from "happy-dom";
 import type { ReactNode } from "react";
 import type { WorkItem } from "../shared/contracts";
+import { FAKE_PROVIDERS } from "../shared/fake-providers";
 
 const SLOW = 30_000;
 const it = (name: string, run: () => Promise<void>) => test(name, run, SLOW);
@@ -112,11 +113,15 @@ const MODES = [
 
 /** What each provider read answers; a test replaces any of them. */
 interface Reads {
+  snapshot: () => Promise<unknown>;
   listModels: () => Promise<unknown>;
   listModes: () => Promise<unknown>;
   listFeatures: () => Promise<unknown>;
 }
 const answers = (): Reads => ({
+  snapshot: async () => ({
+    entries: [{ provider: "claude", status: "ready", enabled: true, label: "Claude", defaultModeId: "default" }],
+  }),
   listModels: async () => ({ provider: "claude", models: [OPUS, HAIKU], fetchedAt: "", requestId: "" }),
   listModes: async () => ({ provider: "claude", modes: MODES, fetchedAt: "", requestId: "" }),
   listFeatures: async () => ({
@@ -138,16 +143,19 @@ const paseo = {
     }),
   },
   providers: {
-    snapshot: async () => ({
-      entries: [{ provider: "claude", status: "ready", enabled: true, label: "Claude", defaultModeId: "default" }],
-    }),
+    snapshot: () => reads.snapshot(),
     listModels: () => reads.listModels(),
     listModes: () => reads.listModes(),
     listFeatures: () => reads.listFeatures(),
   },
 };
 
-const settings = { workRoot: "/work", provider: "claude/haiku", modeId: null, isolation: "worktree" };
+const settings: { workRoot: string; provider: string; modeId: string | null; isolation: string } = {
+  workRoot: "/work",
+  provider: "claude/haiku",
+  modeId: null,
+  isolation: "worktree",
+};
 const created: Record<string, unknown>[] = [];
 const inspected: string[] = [];
 const item = (id: string): WorkItem => ({
@@ -286,6 +294,7 @@ afterEach(() => {
   created.length = 0;
   inspected.length = 0;
   settings.provider = "claude/haiku";
+  settings.modeId = null;
   const logged = consoleError.mock.calls.map((args) => String(args[0]));
   consoleError.mockClear();
   expect(logged).toEqual([]);
@@ -393,6 +402,57 @@ describe("what Dispatch sends", () => {
     await view.type(view.one('textarea[aria-label="Brief"]'), "Another");
     await view.key(view.one('textarea[aria-label="Brief"]'), "Enter");
     expect(created.map((input) => input.dispatch)).toEqual([false, true]);
+  });
+
+  it("every mode the provider list marks unattended warns before Dispatch, from Settings too; no other mode does", async () => {
+    const SKIPS = "This run skips permission prompts";
+    reads.snapshot = async () => ({ entries: FAKE_PROVIDERS });
+    const seen: [string, string, boolean][] = [];
+    for (const { provider, modes } of FAKE_PROVIDERS) {
+      reads.listModes = async () => ({ provider, modes, fetchedAt: "", requestId: "" });
+      for (const mode of modes) {
+        settings.provider = provider;
+        settings.modeId = mode.id;
+        const view = await mount(pane());
+        expect(view.pillText("Mode")).toBe(mode.label);
+        seen.push([provider, mode.id, view.text().includes(SKIPS)]);
+        mounted.pop()?.();
+      }
+    }
+    expect(seen).toEqual(
+      FAKE_PROVIDERS.flatMap(({ provider, modes }) =>
+        modes.map((mode): [string, string, boolean] => [provider, mode.id, mode.isUnattended === true]),
+      ),
+    );
+  });
+
+  it("a prompt-free Dispatch asks a second press, by button or by return; queueing does not", async () => {
+    const view = await mount(pane());
+    const brief = () => view.one('textarea[aria-label="Brief"]');
+    await view.type(brief(), "Trim the cache");
+    expect(view.text()).not.toContain("skips permission prompts");
+    await view.press(view.pill("Mode"));
+    await view.press(view.all('[role="menuitemradio"]')[1]);
+    expect(view.pillText("Mode")).toBe("Bypass");
+    // The warning stands next to Dispatch before it is pressed.
+    expect(view.text()).toContain(
+      "This run skips permission prompts: it can edit files and run commands without asking.",
+    );
+    await view.key(brief(), "Enter");
+    expect(created).toHaveLength(0);
+    expect(view.one('[aria-label="Confirm dispatch"]')).not.toBeNull();
+    await view.key(brief(), "Enter");
+    expect(created.map((input) => [input.modeId, input.dispatch])).toEqual([["bypassPermissions", true]]);
+
+    await view.type(brief(), "Trim it again");
+    await view.press(view.one('[aria-label="Dispatch"]'));
+    expect(created).toHaveLength(1);
+    await view.press(view.one('[aria-label="Confirm dispatch"]'));
+    expect(created.map((input) => input.dispatch)).toEqual([true, true]);
+
+    await view.type(brief(), "Queue this one");
+    await view.key(brief(), "Enter", { metaKey: true });
+    expect(created.map((input) => input.dispatch)).toEqual([true, true, false]);
   });
 
   it("Dispatch stays off until there is a brief or a title", async () => {

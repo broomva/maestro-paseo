@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { AGENT_PROVIDER_DEFINITIONS } from "@getpaseo/protocol/provider-manifest";
 import type { NextRun } from "./contracts";
+import { FAKE_PROVIDERS, WIRE_PROVIDERS } from "./fake-providers";
 import { describeRun, nextRunCopy, runTerms, skipsPrompts } from "./run";
 
 describe("how a run was started, in words", () => {
@@ -35,10 +37,55 @@ const next = (extra: Partial<NextRun> = {}): NextRun => ({
 
 describe("what skips permission prompts", () => {
   test("Claude's bypassPermissions and Codex's full-access", () => {
-    expect(skipsPrompts({ modeId: "bypassPermissions" })).toBe(true);
-    expect(skipsPrompts({ modeId: "full-access" })).toBe(true);
-    expect(skipsPrompts({ modeId: "acceptEdits" })).toBe(false);
-    expect(skipsPrompts({ modeId: null, featureValues: null })).toBe(false);
+    expect(skipsPrompts({ provider: "claude", modeId: "bypassPermissions" })).toBe(true);
+    expect(skipsPrompts({ provider: "codex/gpt-5.5", modeId: "full-access" })).toBe(true);
+    expect(skipsPrompts({ provider: "claude", modeId: "acceptEdits" })).toBe(false);
+    expect(skipsPrompts({ provider: "claude", modeId: null, featureValues: null })).toBe(false);
+  });
+
+  // Each provider's modes, as [provider, mode, does it skip prompts]: what the list says, then what we read.
+  const marked = (providers: typeof FAKE_PROVIDERS) =>
+    providers.flatMap(({ provider, modes }) => modes.map((mode) => [provider, mode.id, mode.isUnattended === true]));
+
+  test("every mode the provider list marks isUnattended, and no other, read from the list itself", () => {
+    const read = FAKE_PROVIDERS.flatMap(({ provider, modes }) =>
+      modes.map((mode) => [provider, mode.id, skipsPrompts({ provider, modeId: mode.id }, modes)]),
+    );
+    expect(read).toEqual(marked(FAKE_PROVIDERS));
+    // The fixture holds the cases this guards: Copilot's allow-all, OMP's full, and a custom provider's.
+    expect(read.filter(([, , skips]) => skips).map(([provider, mode]) => `${provider}:${mode}`)).toEqual([
+      "claude:bypassPermissions",
+      "codex:full-access",
+      "copilot:allow-all",
+      "omp:full",
+      "acme:yolo",
+    ]);
+  });
+
+  test("the Queued card warns on every built-in one when the wire drops the flag, as Paseo 0.8.0's does", () => {
+    const builtin = (providers: typeof FAKE_PROVIDERS) => providers.filter(({ source }) => source === "builtin");
+    const warned = builtin(WIRE_PROVIDERS).flatMap(({ provider, modes }) =>
+      modes.map((mode) => [
+        provider,
+        mode.id,
+        nextRunCopy(next({ provider: `${provider}/some-model`, modeId: mode.id }), "queued").warning !== null,
+      ]),
+    );
+    expect(warned).toEqual(marked(builtin(FAKE_PROVIDERS)));
+  });
+
+  test("the fallback holds every mode the pinned @getpaseo/protocol marks isUnattended, and no other", () => {
+    const read = AGENT_PROVIDER_DEFINITIONS.flatMap((definition) =>
+      definition.modes.map((mode) => [
+        definition.id,
+        mode.id,
+        skipsPrompts({ provider: definition.id, modeId: mode.id }),
+      ]),
+    );
+    const pinned = AGENT_PROVIDER_DEFINITIONS.flatMap((definition) =>
+      definition.modes.map((mode) => [definition.id, mode.id, mode.isUnattended === true]),
+    );
+    expect(read).toEqual(pinned);
   });
 
   test("OpenCode's and ACP's auto_accept, on as true or as \"true\"; off, or another feature, does not", () => {
