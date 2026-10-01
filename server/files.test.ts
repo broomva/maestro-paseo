@@ -33,9 +33,27 @@ afterAll(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+describe("a work folder that leads outside the work root", () => {
+  test("is refused, whether the item folder is a symlink or sits under one", async () => {
+    const elsewhere = await mkdtemp(join(tmpdir(), "maestro-elsewhere-"));
+    try {
+      await writeFile(join(elsewhere, "ssh-key"), "not for Maestro\n");
+      const linked = join(root, "hawthorne", "linked-work");
+      await symlink(elsewhere, linked);
+      await expect(listFiles(root, linked)).rejects.toThrow("outside the work root");
+      await expect(readText(root, linked, "ssh-key")).rejects.toThrow("outside the work root");
+      const parent = join(root, "linked-initiative");
+      await symlink(elsewhere, parent);
+      await expect(listFiles(root, parent)).rejects.toThrow("outside the work root");
+    } finally {
+      await rm(elsewhere, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("the files in a work folder", () => {
   test("lists the plain files directly in it: no hidden files, subfolders or links out of it", async () => {
-    const files = await listFiles(folder);
+    const files = await listFiles(root, folder);
     expect(files.map((file) => file.name)).toEqual([
       "_work.md",
       "alias.md",
@@ -51,16 +69,16 @@ describe("the files in a work folder", () => {
   });
 
   test("reads a text file", async () => {
-    expect(await readText(folder, "notes.md")).toEqual({
+    expect(await readText(root, folder, "notes.md")).toEqual({
       name: "notes.md",
       text: "Decided: store it on the Run record.\n",
       truncated: false,
     });
-    expect((await readText(folder, "empty.txt")).text).toBe("");
+    expect((await readText(root, folder, "empty.txt")).text).toBe("");
   });
 
   test("a link that stays inside the folder is read", async () => {
-    expect((await readText(folder, "alias.md")).text).toContain("Run record");
+    expect((await readText(root, folder, "alias.md")).text).toContain("Run record");
   });
 });
 
@@ -78,18 +96,18 @@ describe("path safety", () => {
     ["x".repeat(256), "1 to 255"],
   ])("refuses %p", async (name, why) => {
     expect(unsafeName(name)).toContain(why);
-    await expect(readText(folder, name)).rejects.toThrow(why);
+    await expect(readText(root, folder, name)).rejects.toThrow(why);
   });
 
   test("a symlink that leads out of the folder is refused, not read", async () => {
-    await expect(readText(folder, "escape.txt")).rejects.toThrow("points outside the work folder");
-    await expect(readText(folder, "prefix.md")).rejects.toThrow("points outside the work folder");
+    await expect(readText(root, folder, "escape.txt")).rejects.toThrow("points outside the work folder");
+    await expect(readText(root, folder, "prefix.md")).rejects.toThrow("points outside the work folder");
   });
 
   test("a folder is not a file, and a missing or dangling name says so", async () => {
-    await expect(readText(folder, "sub")).rejects.toThrow("is not a file");
-    await expect(readText(folder, "nope.md")).rejects.toThrow("No file named nope.md");
-    await expect(readText(folder, "dangling.md")).rejects.toThrow("No file named dangling.md");
+    await expect(readText(root, folder, "sub")).rejects.toThrow("is not a file");
+    await expect(readText(root, folder, "nope.md")).rejects.toThrow("No file named nope.md");
+    await expect(readText(root, folder, "dangling.md")).rejects.toThrow("No file named dangling.md");
   });
 
   test("a plain name is fine", () => {
@@ -100,15 +118,15 @@ describe("path safety", () => {
 
 describe("text only, and only so much of it", () => {
   test("a file with a NUL byte is binary, and refused", async () => {
-    await expect(readText(folder, "image.png")).rejects.toThrow("binary");
+    await expect(readText(root, folder, "image.png")).rejects.toThrow("binary");
   });
 
   test("bytes that are not UTF-8 are refused", async () => {
-    await expect(readText(folder, "latin1.txt")).rejects.toThrow("not UTF-8");
+    await expect(readText(root, folder, "latin1.txt")).rejects.toThrow("not UTF-8");
   });
 
   test("a file over 64 KB is cut at 64 KB and says so", async () => {
-    const read = await readText(folder, "big.log");
+    const read = await readText(root, folder, "big.log");
     expect(read.truncated).toBe(true);
     expect(read.text).toHaveLength(FILE_READ_BYTES);
   });
@@ -117,7 +135,7 @@ describe("text only, and only so much of it", () => {
     // Two ASCII bytes, then U+10348 (four bytes each): a 9-byte cut lands inside the second one.
     const name = "wide.txt";
     await writeFile(join(folder, name), `ab${"\u{10348}".repeat(10)}`);
-    const read = await readText(folder, name, 9);
+    const read = await readText(root, folder, name, 9);
     expect(read.truncated).toBe(true);
     expect(read.text).toBe("ab\u{10348}");
     await rm(join(folder, name));

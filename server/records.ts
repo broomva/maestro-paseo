@@ -60,13 +60,15 @@ export class Records {
   }
 
   async files(id: string): Promise<{ files: WorkFile[] }> {
+    const { workRoot } = await this.config();
     const item = await (await this.store()).findById(id);
-    return { files: await listFiles(item.dir) };
+    return { files: await listFiles(workRoot, item.dir) };
   }
 
   async file(id: string, name: string): Promise<{ name: string; text: string; truncated: boolean }> {
+    const { workRoot } = await this.config();
     const item = await (await this.store()).findById(id);
-    return readText(item.dir, name);
+    return readText(workRoot, item.dir, name);
   }
 
   /** work.list with each item's changed line filled in. Never fails or slows the list. */

@@ -30,10 +30,21 @@ function inside(folder: string, path: string): boolean {
  * The file `name` in `dir`, resolved through any symlink, or a refusal. The
  * returned path has no symlinks left in it, so what is opened is what was checked.
  */
-async function resolveIn(dir: string, name: string): Promise<{ folder: string; path: string }> {
+/**
+ * The work folder with every symlink resolved, refused unless it still lies
+ * under the work root (itself resolved). An item folder that is a symlink, or
+ * sits under one, would otherwise carry every check below somewhere else.
+ */
+async function folderIn(root: string, dir: string): Promise<string> {
+  const [base, folder] = await Promise.all([realpath(root), realpath(dir)]);
+  if (!inside(base, folder)) throw new UserError("This work's folder points outside the work root, so it is not read.");
+  return folder;
+}
+
+async function resolveIn(root: string, dir: string, name: string): Promise<{ folder: string; path: string }> {
   const problem = unsafeName(name);
   if (problem) throw new UserError(problem);
-  const folder = await realpath(dir);
+  const folder = await folderIn(root, dir);
   let path: string;
   try {
     path = await realpath(join(folder, name));
@@ -46,8 +57,8 @@ async function resolveIn(dir: string, name: string): Promise<{ folder: string; p
 }
 
 /** The regular files directly in `dir`, by name. Hidden files and links out of the folder are left out. */
-export async function listFiles(dir: string): Promise<WorkFile[]> {
-  const folder = await realpath(dir);
+export async function listFiles(root: string, dir: string): Promise<WorkFile[]> {
+  const folder = await folderIn(root, dir);
   const entries = await readdir(folder, { withFileTypes: true });
   const files: WorkFile[] = [];
   for (const entry of entries) {
@@ -81,11 +92,12 @@ function wholeCharacters(bytes: Uint8Array): Uint8Array {
  * NUL byte or bytes that are not UTF-8 is binary, and refused.
  */
 export async function readText(
+  root: string,
   dir: string,
   name: string,
   limit: number = FILE_READ_BYTES,
 ): Promise<{ name: string; text: string; truncated: boolean }> {
-  const { path } = await resolveIn(dir, name);
+  const { path } = await resolveIn(root, dir, name);
   // O_NOFOLLOW: if the last segment was swapped for a symlink since it was checked, the open fails.
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch((error) => {
     if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new UserError(`${name} changed while it was read.`);
