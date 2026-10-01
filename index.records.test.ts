@@ -21,7 +21,8 @@ test("work.list and work.get carry the changed line; History and files are serve
   const root = await mkdtemp(join(tmpdir(), "maestro-rec-"));
   roots.push(root);
   const repo = join(root, "repo");
-  await mkdir(repo);
+  // A git repository as far as Maestro checks: runs branch a worktree from it.
+  await mkdir(join(repo, ".git"), { recursive: true });
   const config = join(root, "config.json");
   await writeFile(
     config,
