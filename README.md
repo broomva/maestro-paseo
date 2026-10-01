@@ -72,7 +72,8 @@ maestro mine                   # the work this session is running
 ```
 
 - **Sessions get the noun and the verb, never the gate.** Approve, send back, unblock, cancel,
-  settings and the loop are not served on the socket; a session that asks is told they are yours. A session
+  leaving a quiet run running, settings and the loop are not served on the socket; a session that
+  asks is told they are yours. A session
   starts only queued work (restarting stuck work is unblocking), and work it creates is always
   `gate: human`.
 - **A session cannot write a done check.** Checks run as you, with no session and no permission
@@ -194,7 +195,9 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
   that cannot be asked is not flagged either; the wake says so. Each flag is one `loop.flagged` receipt, written only
   when the work's current flag is not already of that kind, so a wake every minute adds nothing.
   Anything else that happens to the work (your dispatch or cancel, a turn, a state change, a
-  note) clears it, and the loop does not try a failed start again until then. Waiting at the run
+  note) clears it, and the loop does not try a failed start again until then. A quiet run's
+  notice offers **Leave it running**: your receipt ("You left it running", a look), which clears
+  the flag and restarts the quiet clock. It is yours alone, never on the agent socket. Waiting at the run
   cap is not flagged: that work starts when a slot frees. Flags go through Maestro and Paseo, never
   a desktop notification.
 - **Every wake leaves a receipt.** One line per wake in `wake-log.jsonl` beside the config

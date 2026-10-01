@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { MaestroConfig, WakeEntry } from "../shared/contracts";
 import { attentionOf } from "./attention";
 import { defaultConfig } from "./config";
-import { type CreateInput, Engine, MODED_BY_YOU, PROMPT_FREE, type Timer } from "./engine";
+import { type CreateInput, Engine, MODED_BY_YOU, NOT_QUIET, PROMPT_FREE, type Timer } from "./engine";
 import { LOOP } from "./events";
 import { fakePaseo } from "./fake-paseo";
 import { sessionActiveAt } from "./flags";
@@ -805,6 +805,56 @@ describe("quiet asks the session", () => {
     expect(sessionActiveAt({ lastActivityAt: "garbage", updatedAt: at })).toBe(Date.parse(at));
     expect(sessionActiveAt({})).toBeNull();
     expect(sessionActiveAt({ updatedAt: 12 })).toBeNull();
+  });
+});
+
+describe("Leave it running", () => {
+  test("clears a quiet flag as your receipt, a look, and the quiet clock counts from it", async () => {
+    const { loop, queue, engine, fake } = await setup();
+    const item = await queue("Long one");
+    await engine.dispatch(fake.paseo, item.id);
+    tickMinutes(30);
+    expect((await loop.wake("timer")).flagged.map((flag) => flag.kind)).toEqual(["quiet"]);
+    const looks = (await engine.list()).scoreboard.looks;
+    tickMinutes(5);
+    const left = await engine.leaveRunning(item.id);
+    expect(left).toMatchObject({ state: "running", flag: null });
+    const { events } = await engine.get(item.id);
+    expect(events.at(-1)).toEqual({
+      ts: new Date(clock).toISOString(),
+      type: "flag.dismissed",
+      actor: "human",
+      text: "You left it running",
+      detail: "Quiet for 30 minutes, worth a look.",
+    });
+    expect((await engine.list()).scoreboard.looks).toBe(looks + 1);
+    // The session stays as quiet as it was: only your receipt moved the clock.
+    tickMinutes(29);
+    expect((await loop.wake("timer")).quiet).toEqual([]);
+    tickMinutes(1);
+    const again = await loop.wake("timer");
+    expect(again.quiet).toEqual([{ id: item.id, title: item.title, minutes: 30 }]);
+    expect(again.flagged.map((flag) => flag.kind)).toEqual(["quiet"]);
+  });
+
+  test("is refused on anything but a running run flagged quiet, and changes nothing", async () => {
+    const { loop, queue, engine, fake, store } = await setup();
+    const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
+    const running = await queue("Running");
+    await engine.dispatch(fake.paseo, running.id);
+    await loop.wake("manual");
+    expect((await engine.get(bypass.id)).item.flag?.kind).toBe("yours");
+    // A flag you clear by acting (dispatch or cancel) has no dismiss; a run that is not quiet has nothing to dismiss.
+    for (const id of [bypass.id, running.id]) {
+      const before = (await store.findById(id)).events.length;
+      await expect(engine.leaveRunning(id)).rejects.toThrow(NOT_QUIET);
+      expect((await store.findById(id)).events).toHaveLength(before);
+    }
+    tickMinutes(30);
+    await loop.wake("manual");
+    await engine.leaveRunning(running.id);
+    // Once left running, it is not flagged any more: a second press is refused.
+    await expect(engine.leaveRunning(running.id)).rejects.toThrow(NOT_QUIET);
   });
 });
 

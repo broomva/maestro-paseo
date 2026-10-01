@@ -11,7 +11,7 @@ import { Engine, NO_HANDLE } from "./engine";
 import { parseEvents } from "./events";
 import { fakePaseo } from "./fake-paseo";
 import type { Paseo } from "./runs";
-import { EVENTS_FILE } from "./store";
+import { EVENTS_FILE, WorkStore } from "./store";
 
 // These tests spawn processes, build a bundle and move megabytes through a socket.
 // On a loaded machine that can take far longer than Bun's 5s default; no
@@ -187,6 +187,29 @@ describe("what a session is offered", () => {
     }
     // Nothing was started on the session's behalf.
     expect(fake.created).toEqual([]);
+  });
+
+  test("leaving a quiet run running is refused: the flag is yours to clear", async () => {
+    const { repo, ok, ask, engine, config } = await setup();
+    const { item } = await ok("work.create", { title: "Long one", repo, dispatch: true });
+    // The loop's quiet flag on the run, as a wake writes it.
+    await new WorkStore(config.workRoot).mutate(item.id, () => ({
+      events: [
+        {
+          ts: new Date().toISOString(),
+          type: "loop.flagged",
+          actor: "maestro",
+          kind: "quiet",
+          reason: "Quiet for 30 minutes, worth a look.",
+        },
+      ],
+    }));
+    expect((await engine.get(item.id)).item.flag?.kind).toBe("quiet");
+    const response = await ask("work.leave-running", { id: item.id });
+    expect(response.ok).toBe(false);
+    expect(!response.ok && response.error).toContain("work.leave-running is yours alone");
+    // The flag stands: nothing was written for the session.
+    expect((await engine.get(item.id)).item.flag?.kind).toBe("quiet");
   });
 
   test("create at the cap answers with the queued item and why; the retry is a dispatch, not a duplicate", async () => {

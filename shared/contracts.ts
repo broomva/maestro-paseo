@@ -313,6 +313,14 @@ export const stopWork = defineRpc({
 /** How a Stop refused because it would delete work that is not committed begins. */
 export const NOT_STOPPED = "Not stopped:";
 
+/**
+ * Leave a run the loop flagged as quiet running: yours alone, never on the
+ * agent socket. It writes your receipt, which clears the flag and restarts the
+ * quiet clock from now. Refused unless the work is running with a quiet flag.
+ * A `yours` or `failed` flag clears when you act on the work (dispatch, cancel).
+ */
+export const leaveRunning = defineRpc({ name: "work.leave-running", input: ById, output: ItemResult });
+
 export const adoptAgent = defineRpc({
   name: "work.adopt",
   input: z.object({ agentId: z.string().min(1), title: z.string() }),

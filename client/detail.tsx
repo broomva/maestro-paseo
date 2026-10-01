@@ -83,11 +83,7 @@ export function WorkDetail({
       </View>
 
       {/* The loop flagged it: why it is in Needs you though it is not at your gate or stuck. */}
-      {item.flag ? (
-        <Notice theme={theme} tone="warn">
-          {item.flag.reason}
-        </Notice>
-      ) : null}
+      {item.flag ? <FlagNotice item={item} theme={theme} compact={compact} /> : null}
 
       <Verbs item={item} theme={theme} compact={compact} />
 
@@ -135,6 +131,39 @@ export function WorkDetail({
         {item.path}/_work.md
       </Text>
     </ScrollView>
+  );
+}
+
+/**
+ * Why the loop flagged the work. A quiet run offers Leave it running, which
+ * writes your receipt and clears the flag; a `yours` or `failed` flag clears
+ * when you dispatch or cancel, so it offers nothing of its own.
+ */
+function FlagNotice({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; compact: boolean }) {
+  const verbs = useVerbs();
+  const toast = useToast();
+  const quiet = item.flag?.kind === "quiet" && item.state === "running";
+  return (
+    <Notice
+      theme={theme}
+      tone="warn"
+      action={
+        quiet ? (
+          <Button
+            theme={theme}
+            icon="Check"
+            label="Leave it running"
+            compact={compact}
+            busy={verbs.leaveRunning.isPending}
+            onPress={() =>
+              verbs.leaveRunning.mutate({ id: item.id }, { onError: (error) => toast.error(errorText(error)) })
+            }
+          />
+        ) : undefined
+      }
+    >
+      {item.flag?.reason}
+    </Notice>
   );
 }
 

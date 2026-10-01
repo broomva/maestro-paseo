@@ -88,6 +88,9 @@ export type WorkEvent = Base &
     // flag carries `since`: when the run last did anything, by Maestro's events or by its
     // session's own activity, whichever is later (absent on flags raised before it was kept).
     | { type: "loop.flagged"; actor: "maestro"; kind: FlagKind; reason: string; since?: string }
+    // You looked at a run the loop flagged as quiet and left it running (Engine.leaveRunning).
+    // Like any event after a flag it clears it, and the quiet clock counts from it.
+    | { type: "flag.dismissed"; actor: "human"; kind: FlagKind; reason: string }
   );
 
 export type WorkEventType = WorkEvent["type"];
@@ -522,6 +525,8 @@ export function toWireEvent(event: WorkEvent, settled = false): WorkEventWire | 
       return { ...base, type: event.type, text: event.text, detail: null };
     case "loop.flagged":
       return { ...base, type: event.type, text: "Flagged for you by the loop", detail: event.reason };
+    case "flag.dismissed":
+      return { ...base, type: event.type, text: "You left it running", detail: event.reason };
   }
 }
 
@@ -535,6 +540,8 @@ const HUMAN_LOOKS = new Set<WorkEventType>([
   "dispatched",
   "adopted",
   "permission.resolved",
+  // You checked a quiet run and chose to leave it be: a decision about the run, so a look.
+  "flag.dismissed",
 ]);
 
 /**

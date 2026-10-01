@@ -14,6 +14,7 @@ import {
   getConfig,
   getLoop,
   getWork,
+  leaveRunning,
   listWork,
   setConfig,
   stopWork,
@@ -84,6 +85,7 @@ export function useVerbs() {
     undo: useRpc(undoWork),
     stop: useRpc(stopWork),
     adopt: useRpc(adoptAgent),
+    leaveRunning: useRpc(leaveRunning),
     saveConfig: useRpc(setConfig),
     wake: useRpc(wakeLoop),
   };
@@ -96,6 +98,7 @@ export function useVerbs() {
     undo: useMutation({ mutationFn: rpc.undo, onSettled: refresh }),
     stop: useMutation({ mutationFn: rpc.stop, onSettled: refresh }),
     adopt: useMutation({ mutationFn: rpc.adopt, onSettled: refresh }),
+    leaveRunning: useMutation({ mutationFn: rpc.leaveRunning, onSettled: refresh }),
     saveConfig: useMutation({ mutationFn: rpc.saveConfig, onSettled: refresh }),
     wake: useMutation({ mutationFn: () => rpc.wake({}), onSettled: refresh }),
   };

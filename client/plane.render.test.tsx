@@ -617,6 +617,24 @@ describe("work the loop flagged", () => {
     expect(view.byLabel(`Needs you, ${count}`)).not.toBeNull();
   });
 
+  test("a quiet run's notice offers Leave it running, which asks the host; other flags offer nothing of their own", async () => {
+    const quiet = { kind: "quiet" as const, reason: "Quiet for 41 minutes, worth a look.", at: yours.at };
+    items = [...flagged(), work("z", "running", { worker: worker("z", "maestro/z-1"), phase: "working", flag: quiet })];
+    const view = await mount(<WorkDetail id="z" theme={theme} compact={false} navigation={undefined} />);
+    const [alert] = view.all('[role="alert"]');
+    expect(alert?.textContent).toContain(quiet.reason);
+    const leave = alert?.querySelector('[aria-label="Leave it running"]');
+    expect(leave).not.toBeNull();
+    await view.press(leave);
+    expect(calls.filter((call) => call.method === "work.leave-running").map((call) => call.input)).toEqual([
+      { id: "z" },
+    ]);
+    // A start left to you clears when you dispatch or cancel: its notice has no verb of its own.
+    await view.rerender(<WorkDetail id="y" theme={theme} compact={false} navigation={undefined} />);
+    expect(view.byLabel("Leave it running")).toBeNull();
+    expect(view.all('[role="alert"]').map((el) => el.textContent)).toContain(yours.reason);
+  });
+
   test("the detail says why, as a warning Notice; unflagged work has none", async () => {
     items = flagged();
     const view = await mount(<WorkDetail id="y" theme={theme} compact={false} navigation={undefined} />);

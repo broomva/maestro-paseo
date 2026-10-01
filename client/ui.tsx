@@ -289,10 +289,13 @@ export function Notice({
   theme,
   tone,
   children,
+  action,
 }: {
   theme: PluginTheme;
   tone: "danger" | "warn";
   children: ReactNode;
+  /** A verb that answers the notice, under its words. */
+  action?: ReactNode;
 }) {
   const color = tone === "danger" ? theme.colors.statusDanger : theme.colors.statusWarning;
   return (
@@ -310,7 +313,14 @@ export function Notice({
       }}
     >
       <Icon name={tone === "danger" ? "CircleAlert" : "TriangleAlert"} size={16} color={color} />
-      <Text style={{ flex: 1, color: theme.colors.foreground, fontSize: size.sm, lineHeight: 20 }}>{children}</Text>
+      {action ? (
+        <View style={{ flex: 1, gap: space[2] }}>
+          <Text style={{ color: theme.colors.foreground, fontSize: size.sm, lineHeight: 20 }}>{children}</Text>
+          <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>{action}</View>
+        </View>
+      ) : (
+        <Text style={{ flex: 1, color: theme.colors.foreground, fontSize: size.sm, lineHeight: 20 }}>{children}</Text>
+      )}
     </View>
   );
 }

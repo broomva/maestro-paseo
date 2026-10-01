@@ -164,6 +164,9 @@ export const STOPPED = "You stopped the run";
 /** Why work Stop flipped to stuck went back to running: its worktree changed between Stop's two reads. */
 export const STOP_RACED = "The worktree changed while Stop checked it";
 
+/** Why Leave it running is refused: only a running run with the loop's quiet flag on it is left running. */
+export const NOT_QUIET = "Only a run the loop flagged as quiet can be left running.";
+
 /** Why Stop is refused while checks run: the session is done, and the checks decide where the work lands. */
 export const CHECKING = "The run already finished and its checks are running. When they report, it lands with you.";
 
@@ -515,6 +518,30 @@ export class Engine {
       join(store.root, item.path),
     );
     return wrote;
+  }
+
+  /**
+   * You looked at a run the loop flagged as quiet and left it running: your
+   * receipt, which clears the flag (flagOf) and restarts the quiet clock from
+   * now (lastActivityOf), so the loop flags it again only after another
+   * QUIET_MS with nothing from Maestro or its session. Checked under the
+   * work's lock: refused unless it is still running with a quiet flag.
+   */
+  async leaveRunning(id: string): Promise<WorkItem> {
+    const { store, config } = await this.store();
+    const current = await store.findById(id);
+    const updated = await store.mutate(
+      id,
+      (fresh) => {
+        const flag = flagOf(fresh.events);
+        if (fresh.contract.state !== "running" || flag?.kind !== "quiet") throw new UserError(NOT_QUIET);
+        return {
+          events: [{ ts: this.stamp(), type: "flag.dismissed", actor: "human", kind: flag.kind, reason: flag.reason }],
+        };
+      },
+      current.dir,
+    );
+    return toWire(updated, this.now().getTime(), config);
   }
 
   // ── Human verbs ────────────────────────────────────────────────────────────

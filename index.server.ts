@@ -20,6 +20,7 @@ import {
   getLoop,
   getWork,
   inspectFolder,
+  leaveRunning,
   listWork,
   setConfig,
   stopWork,
@@ -90,6 +91,8 @@ export default function contribute(host: PluginServerContext) {
   server.handle(unblockWork, ({ id, note }, { paseo }) => engine.unblock(paseo, id, note).then((item) => ({ item })));
   server.handle(cancelWork, ({ id }, { paseo }) => engine.cancel(id, paseo).then((item) => ({ item })));
   server.handle(undoWork, ({ id }) => engine.undo(id).then((item) => ({ item })));
+  // Yours alone, like the gate: never on the agent socket (server/agent-socket.ts GATE_METHODS).
+  server.handle(leaveRunning, ({ id }) => engine.leaveRunning(id).then((item) => ({ item })));
   server.handle(stopWork, ({ id, discard }, { paseo }) =>
     engine.stopRun(paseo, id, { discard: discard === true }).then((item) => ({ item })),
   );
