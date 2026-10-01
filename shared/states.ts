@@ -99,6 +99,9 @@ export const GROUP_COPY: Record<Group, { title: PlainVoice; hint: string }> = {
   done: { title: "Done", hint: "The branch is the receipt" },
 };
 
+/** The Queued hint while the loop is on (Settings, loopMinutes): it, not only you, starts that work. */
+export const QUEUED_LOOP_HINT = "The loop starts these on its next wake, under the run cap";
+
 const LEGAL: Record<OrchState, readonly OrchState[]> = {
   proposed: ["reviewing", "triggered", "running", "canceled"],
   reviewing: ["triggered", "running", "canceled"],

@@ -878,6 +878,26 @@ describe("the loop", () => {
   });
 });
 
+describe("the Queued hint", () => {
+  const LOOP_HINT = "The loop starts these on its next wake, under the run cap";
+  const YOURS_HINT = "Ready when you dispatch it";
+
+  for (const [on, shown, hidden] of [
+    [false, YOURS_HINT, LOOP_HINT],
+    [true, LOOP_HINT, YOURS_HINT],
+  ] as const) {
+    test(`with the loop ${on ? "on" : "off"}, the feed, the list and the board say "${shown}"`, async () => {
+      if (on) loopState = { ...loopOff(), minutes: 15, nextAt: new Date(Date.now() + 9 * 60_000).toISOString() };
+      const view = await mount(surface(false));
+      for (const tab of [0, 2, 1]) {
+        await view.press(view.tabs()[tab]);
+        expect(view.text()).toContain(shown);
+        expect(view.text()).not.toContain(hidden);
+      }
+    });
+  }
+});
+
 describe("Settings", () => {
   const settingsScreen = () => (
     <MaestroSettings theme={theme} host={{ id: "h", label: "h" }} layout={{ compact: false, platform: "web" }} />

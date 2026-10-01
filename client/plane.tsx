@@ -13,7 +13,7 @@ import { ChangeScope } from "./changed";
 import { WorkDetail } from "./detail";
 import { errorText, plural } from "./format";
 import { HistoryView } from "./history";
-import { useWorkList } from "./hooks";
+import { useLoop, useWorkList } from "./hooks";
 import { useIntent } from "./intent";
 import { LoopControl, LoopPanel } from "./loop";
 import { NewWork } from "./new-work";
@@ -38,6 +38,8 @@ import { Button, Card, IconButton, Notice, space, useText } from "./ui";
 
 export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps) {
   const list = useWorkList();
+  // The same read as the loop control's (one query): whether the loop is on words the Queued hint.
+  const loopOn = useLoop().data?.minutes != null;
   const text = useText(theme);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -178,11 +180,11 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
               ) : shown.length === 0 && view !== "board" ? (
                 <Text style={text.muted}>{emptyText(filter)}</Text>
               ) : view === "board" ? (
-                <BoardView {...pick} items={shown} />
+                <BoardView {...pick} items={shown} loopOn={loopOn} />
               ) : view === "list" ? (
-                <ListView {...pick} items={shown} />
+                <ListView {...pick} items={shown} loopOn={loopOn} />
               ) : (
-                <FeedView {...pick} items={shown} />
+                <FeedView {...pick} items={shown} loopOn={loopOn} />
               )}
             </>
           )}

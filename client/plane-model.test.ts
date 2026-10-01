@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { WorkItem } from "../shared/contracts";
-import { groupOf, type OrchState } from "../shared/states";
+import { GROUP_ORDER, groupOf, type OrchState, QUEUED_LOOP_HINT } from "../shared/states";
 import {
   applyFilter,
   boardColumns,
@@ -14,6 +14,7 @@ import {
   FILTERS,
   filterLabel,
   flagText,
+  groupHint,
   groupsOf,
   initiatives,
   inScope,
@@ -190,6 +191,22 @@ describe("feed and board", () => {
     expect(columns.map((column) => column.items.map((item) => item.id))).toEqual([["q"], [], ["r", "s"], []]);
     expect(columns[1]?.hint).toBe("Dispatched and live in a worktree");
     expect(columns[2]?.hint).toBe("At your gate, stuck or flagged");
+  });
+
+  test("the Queued hint says the loop starts that work while the loop is on; no other hint changes", () => {
+    expect(groupHint("queued", false)).toBe("Ready when you dispatch it");
+    expect(groupHint("queued", true)).toBe(QUEUED_LOOP_HINT);
+    expect(QUEUED_LOOP_HINT).toBe("The loop starts these on its next wake, under the run cap");
+    for (const group of GROUP_ORDER.filter((group) => group !== "queued")) {
+      expect(groupHint(group, true)).toBe(groupHint(group, false));
+    }
+    expect(boardColumns([], false).map((column) => column.hint)).toEqual([
+      "Ready when you dispatch it",
+      "Dispatched and live in a worktree",
+      "At your gate, stuck or flagged",
+      "The branch is the receipt",
+    ]);
+    expect(boardColumns([], true)[0]?.hint).toBe(QUEUED_LOOP_HINT);
   });
 
   test("work the loop flagged leaves its own column for Needs you, after review and stuck", () => {

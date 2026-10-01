@@ -2,7 +2,7 @@
 // count, and the words on each card. No React here, so every rule is tested.
 
 import type { Worker, WorkItem } from "../shared/contracts";
-import { GROUP_COPY, GROUP_ORDER, type Group, PLAIN_VOICE } from "../shared/states";
+import { GROUP_COPY, GROUP_ORDER, type Group, PLAIN_VOICE, QUEUED_LOOP_HINT } from "../shared/states";
 import { agoWords, basename, plural } from "./format";
 
 export const VIEWS = [
@@ -116,6 +116,14 @@ export function scopeLabel(initiative: Initiative): string {
   return initiative.needsYou > 0 ? `${base}, ${initiative.needsYou} waiting on you` : base;
 }
 
+/**
+ * A group's subtitle, in the feed, the list and the board alike. Queued says
+ * who starts it: you, or, while the loop is on, the loop at its next wake.
+ */
+export function groupHint(group: Group, loopOn: boolean): string {
+  return group === "queued" && loopOn ? QUEUED_LOOP_HINT : GROUP_COPY[group].hint;
+}
+
 /** Non-empty groups in attention order. */
 export function groupsOf(items: readonly WorkItem[]): { group: Group; items: WorkItem[] }[] {
   return GROUP_ORDER.map((group) => ({ group, items: items.filter((item) => item.group === group) })).filter(
@@ -131,25 +139,28 @@ export interface Column {
   items: WorkItem[];
 }
 
-const COLUMNS: readonly Omit<Column, "items">[] = [
-  { id: "queued", title: GROUP_COPY.queued.title, hint: GROUP_COPY.queued.hint, groups: ["queued"] },
-  { id: "running", title: GROUP_COPY.running.title, hint: GROUP_COPY.running.hint, groups: ["running"] },
-  {
-    id: "needs-you",
-    title: GROUP_COPY.review.title,
-    hint: "At your gate, stuck or flagged",
-    groups: ["review", "blocked"],
-  },
-  { id: "done", title: GROUP_COPY.done.title, hint: GROUP_COPY.done.hint, groups: ["done"] },
+const COLUMNS: readonly Omit<Column, "items" | "hint">[] = [
+  { id: "queued", title: GROUP_COPY.queued.title, groups: ["queued"] },
+  { id: "running", title: GROUP_COPY.running.title, groups: ["running"] },
+  { id: "needs-you", title: GROUP_COPY.review.title, groups: ["review", "blocked"] },
+  { id: "done", title: GROUP_COPY.done.title, groups: ["done"] },
 ];
+
+const COLUMN_HINT: Record<Column["id"], (loopOn: boolean) => string> = {
+  queued: (loopOn) => groupHint("queued", loopOn),
+  running: (loopOn) => groupHint("running", loopOn),
+  "needs-you": () => "At your gate, stuck or flagged",
+  done: (loopOn) => groupHint("done", loopOn),
+};
 
 /**
  * Four columns, always present so work moves across a fixed frame. Needs you
  * lists review, then stuck, then work the loop flagged, which it takes from
- * its own column: each item shows once.
+ * its own column: each item shows once. `loopOn` words the Queued hint.
  */
-export function boardColumns(items: readonly WorkItem[]): Column[] {
-  return COLUMNS.map((column) => {
+export function boardColumns(items: readonly WorkItem[], loopOn = false): Column[] {
+  return COLUMNS.map((frame) => {
+    const column = { ...frame, hint: COLUMN_HINT[frame.id](loopOn) };
     const own = column.groups.flatMap((group) => items.filter((item) => item.group === group));
     if (column.id !== "needs-you") return { ...column, items: own.filter((item) => !needsHand(item)) };
     return {

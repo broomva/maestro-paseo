@@ -14,6 +14,7 @@ import {
   changedVisible,
   crumb,
   flagText,
+  groupHint,
   groupsOf,
   stateText,
   stuckText,
@@ -22,8 +23,20 @@ import {
 import { radius, StateDot, StateLabel, space, useText, webAria } from "./ui";
 
 type Selectable = { theme: PluginTheme; selected: string | null; onSelect: (id: string) => void };
+/** A plane's work, and whether the loop is on, which words the Queued hint. */
+type Plane = Selectable & { items: WorkItem[]; loopOn: boolean };
 
-function GroupHeader({ theme, group, count }: { theme: PluginTheme; group: Group; count: number }) {
+function GroupHeader({
+  theme,
+  group,
+  count,
+  loopOn,
+}: {
+  theme: PluginTheme;
+  group: Group;
+  count: number;
+  loopOn: boolean;
+}) {
   const text = useText(theme);
   return (
     <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[2], flexWrap: "wrap" }}>
@@ -31,17 +44,17 @@ function GroupHeader({ theme, group, count }: { theme: PluginTheme; group: Group
         {GROUP_COPY[group].title}
       </Text>
       <Text style={[text.small, text.tabular]}>{count}</Text>
-      <Text style={text.small}>{GROUP_COPY[group].hint}</Text>
+      <Text style={text.small}>{groupHint(group, loopOn)}</Text>
     </View>
   );
 }
 
-export function FeedView({ items, ...pick }: Selectable & { items: WorkItem[] }) {
+export function FeedView({ items, loopOn, ...pick }: Plane) {
   return (
     <>
       {groupsOf(items).map(({ group, items: rows }) => (
         <View key={group} style={{ gap: space[2] }}>
-          <GroupHeader theme={pick.theme} group={group} count={rows.length} />
+          <GroupHeader theme={pick.theme} group={group} count={rows.length} loopOn={loopOn} />
           <View style={{ gap: space[2] }}>
             {rows.map((item) => (
               <WorkCard key={item.id} {...pick} item={item} />
@@ -53,11 +66,11 @@ export function FeedView({ items, ...pick }: Selectable & { items: WorkItem[] })
   );
 }
 
-export function BoardView({ items, ...pick }: Selectable & { items: WorkItem[] }) {
+export function BoardView({ items, loopOn, ...pick }: Plane) {
   const text = useText(pick.theme);
   return (
     <ScrollView horizontal contentContainerStyle={{ flexGrow: 1, gap: space[3] }}>
-      {boardColumns(items).map((column) => (
+      {boardColumns(items, loopOn).map((column) => (
         <View key={column.id} style={{ flex: 1, minWidth: 220, gap: space[2] }}>
           <View style={{ gap: 2 }}>
             <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[2] }}>
@@ -79,12 +92,12 @@ export function BoardView({ items, ...pick }: Selectable & { items: WorkItem[] }
   );
 }
 
-export function ListView({ items, ...pick }: Selectable & { items: WorkItem[] }) {
+export function ListView({ items, loopOn, ...pick }: Plane) {
   return (
     <>
       {groupsOf(items).map(({ group, items: rows }) => (
         <View key={group} style={{ gap: space[1] }}>
-          <GroupHeader theme={pick.theme} group={group} count={rows.length} />
+          <GroupHeader theme={pick.theme} group={group} count={rows.length} loopOn={loopOn} />
           {rows.map((item) => (
             <ListRow key={item.id} {...pick} item={item} />
           ))}
