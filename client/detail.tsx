@@ -115,7 +115,7 @@ export function WorkDetail({
         </View>
       ) : null}
 
-      <FilesSection id={item.id} theme={theme} />
+      <FilesSection key={item.id} id={item.id} theme={theme} />
 
       <Receipts theme={theme} events={events} />
 

@@ -17,7 +17,8 @@ export const WAIT_MS = 750;
 /** A read still running after this is abandoned, so the next list can start another. */
 export const GIVE_UP_MS = 10_000;
 const PAGE = 200;
-const MAX_PAGES = 10;
+/** A runaway guard only: the walk follows the cursor to its end. */
+const MAX_PAGES = 1_000;
 
 type Stats = ReadonlyMap<string, DiffStat | null>;
 type Workspaces = Pick<Paseo["workspaces"], "list">;
@@ -95,6 +96,7 @@ export class ChangedCache {
   private async pages(client: Workspaces): Promise<Stats> {
     const stats = new Map<string, DiffStat | null>();
     let cursor: string | undefined;
+    const seen = new Set<string>();
     for (let page = 0; page < MAX_PAGES; page += 1) {
       const result = await client.list({ page: { limit: PAGE, ...(cursor ? { cursor } : {}) } });
       for (const entry of result.entries ?? []) {
@@ -106,9 +108,15 @@ export class ChangedCache {
             : null,
         );
       }
-      cursor = result.pageInfo?.nextCursor ?? undefined;
-      if (!cursor) break;
+      const next = result.pageInfo?.nextCursor ?? undefined;
+      if (!next) return stats;
+      // A daemon that hands back a cursor it already gave would loop forever.
+      if (seen.has(next)) break;
+      seen.add(next);
+      cursor = next;
     }
+    // Stopped short (a repeated cursor or the guard): workspaces not read stay unknown.
+    console.warn("[maestro] the workspace list did not end; some changed lines read as unknown");
     return stats;
   }
 

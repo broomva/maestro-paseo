@@ -143,4 +143,26 @@ describe("the changed line, read on the server", () => {
     ]);
     expect((await new ChangedCache().fill(paseo, items))[0]?.changed).toBeNull();
   });
+
+  test("follows the workspace list to its end, past the old ten-page stop", async () => {
+    const pages: Page[] = Array.from({ length: 12 }, (_, i) => ({
+      entries: [{ id: `ws-${i}`, diffStat: { additions: i, deletions: 0 } }],
+      pageInfo: { nextCursor: i < 11 ? String(i + 1) : null },
+    }));
+    const { paseo, calls } = daemon(pages);
+    const filled = await new ChangedCache().fill(paseo, [onWorkspace("late", "ws-11")]);
+    expect(calls).toHaveLength(12);
+    expect(filled[0]?.changed).toEqual({ additions: 11, deletions: 0 });
+  });
+
+  test("a daemon that repeats a cursor does not loop forever", async () => {
+    const pages: Page[] = [
+      { entries: [{ id: "ws-a", diffStat: { additions: 1, deletions: 1 } }], pageInfo: { nextCursor: "1" } },
+      { entries: [], pageInfo: { nextCursor: "1" } },
+    ];
+    const { paseo, calls } = daemon(pages);
+    const filled = await new ChangedCache().fill(paseo, [onWorkspace("a", "ws-a")]);
+    expect(calls.length).toBeLessThanOrEqual(3);
+    expect(filled[0]?.changed).toEqual({ additions: 1, deletions: 1 });
+  });
 });

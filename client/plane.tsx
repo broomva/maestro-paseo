@@ -50,7 +50,8 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
       // A filter opened from elsewhere means that group across all work, where its chips show.
       setFilter(intent.group);
       setScope(null);
-      setView((view) => (view === "board" ? "feed" : view));
+      // The Board splits by state and History lists receipts: neither applies the chips.
+      setView((view) => (view === "board" || view === "history" ? "feed" : view));
     }
   });
   const compact = layout.compact;
