@@ -6,7 +6,7 @@
 // Needs you, Done, Standing).
 //
 // Paseo owns execution, so the transition graph differs from the Maestro
-// runtime's in two documented places:
+// runtime's in three documented places:
 //   1. review -> running. A clean run parks at review; "Send back" wakes the
 //      same Paseo agent with a note instead of queueing a fresh dispatch. A
 //      permission request also parks at review and returns to running once it
@@ -14,8 +14,9 @@
 //   2. cancel from proposed, triggered or blocked. Maestro routes this through
 //      an audited human override; here it is the "Cancel work" verb, recorded
 //      in the event log as a human action.
-//   3. review -> blocked, only when the session behind a pending question is
-//      gone: nobody is left to answer, so the work is stuck, not waiting.
+//   3. review -> blocked, only while a question is pending: when the session
+//      behind it is gone (nobody is left to answer, so the work is stuck, not
+//      waiting), or when you stop the run instead of answering it.
 // The invariant that matters is kept exactly: under gate:human nothing reaches
 // done without an approve verdict.
 

@@ -300,7 +300,8 @@ export const cancelWork = defineRpc({ name: "work.cancel", input: ById, output: 
 export const undoWork = defineRpc({ name: "work.undo", input: ById, output: ItemResult });
 
 /**
- * Stop a running run: its session is archived and the work is stuck, with the branch kept.
+ * Stop a running run, or one paused on the agent's question: its session is archived and the
+ * work is stuck, with the branch kept.
  * Refused, with a message that starts NOT_STOPPED, while the run's worktree holds work that
  * is not committed; `discard: true` stops it anyway, once you have confirmed that loss.
  */

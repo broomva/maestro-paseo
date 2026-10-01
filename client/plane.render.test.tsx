@@ -314,9 +314,14 @@ const settingsFixture = (): MaestroConfig => ({
   loopMinutes: null,
 });
 let settings = settingsFixture();
+/** What work.stop refuses with when it is not told to discard, as the host does for a worktree with uncommitted work. */
+let stopRefusal: string | null = null;
 const calls: { method: string; input: unknown }[] = [];
 const invoke = async (method: string, input: unknown) => {
   calls.push({ method, input });
+  if (method === "work.stop" && stopRefusal && !(input as { discard?: boolean }).discard) {
+    throw new Error(stopRefusal);
+  }
   if (method === "loop.get") return loopState;
   if (method === "loop.wake") return nextWake();
   if (method === "config.get") return settings;
@@ -432,6 +437,11 @@ async function mount(node: ReactNode, options: { state?: PluginClientStateSource
       await step(owner, () => root.render(wrap(next)));
       await step(owner, () => new Promise<void>((resolve) => setTimeout(resolve, 20)));
     },
+    /** Every query asks again now, as the 4 s poll would: how a change to the fixture reaches a mounted surface. */
+    refetch: async () => {
+      await step(owner, () => client.invalidateQueries());
+      await step(owner, () => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    },
     rings: () => [...container.querySelectorAll("div")].filter((el) => el.style.transform.includes("scale")),
   };
 }
@@ -462,6 +472,7 @@ afterEach(async () => {
   loopState = loopOff();
   nextWake = () => wakeEntry("w-now", 0, { cause: "manual" });
   settings = settingsFixture();
+  stopRefusal = null;
   calls.length = 0;
   setReduced(true);
   // The message and its first argument: React's act warning names the component there ("An update to %s").
@@ -657,6 +668,91 @@ describe("work the loop flagged", () => {
     expect(view.byLabel("Dispatch")).not.toBeNull();
     await view.rerender(<WorkDetail id="d" theme={theme} compact={false} navigation={undefined} />);
     expect(view.text()).not.toContain(yours.reason);
+    expect(view.all('[role="alert"]')).toHaveLength(0);
+  });
+});
+
+describe("Stop run", () => {
+  const permission = { requestId: "r1", title: "Run a command", detail: "rm -rf dist" };
+  const asking = (id: string, extra: Partial<WorkItem> = {}) =>
+    work(id, "review", {
+      worker: worker(id, `maestro/${id}-1`),
+      phase: "asking",
+      permission,
+      look: { ran: "4m unsupervised · 1 turn · paused on a question", decided: [], ask: "Run a command: rm -rf dist" },
+      ...extra,
+    });
+  const detail = (id: string) => <WorkDetail id={id} theme={theme} compact={false} navigation={undefined} />;
+  const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
+  const move = (id: string, next: WorkItem) => {
+    items = items.map((item) => (item.id === id ? next : item));
+  };
+  const CONFIRM = "Stopping archives the session. The branch and its commits stay.";
+  const CONFIRM_ASKING =
+    "Stopping archives the session and leaves its question unanswered. The branch and its commits stay.";
+
+  test("the asking card offers Stop run and Cancel work beside Allow and Deny, and each asks the host", async () => {
+    items = [...fixture(), asking("k")];
+    const view = await mount(detail("k"));
+    expect(view.text()).toContain("The agent is asking");
+    for (const label of ["Allow", "Deny", "Stop run", "Cancel work"]) expect(view.byLabel(label)).not.toBeNull();
+
+    await view.press(view.byLabel("Cancel work"));
+    expect(sent("work.cancel")).toEqual([{ id: "k" }]);
+
+    // Stop confirms first, as it does for a working run, and says the question goes unanswered.
+    await view.press(view.byLabel("Stop run"));
+    expect(view.text()).toContain(CONFIRM_ASKING);
+    expect(view.byLabel("Keep it waiting")).not.toBeNull();
+    expect(view.byLabel("Cancel work")).toBeNull();
+    expect(sent("work.stop")).toEqual([]);
+    await view.press(view.byLabel("Stop run"));
+    expect(sent("work.stop")).toEqual([{ id: "k" }]);
+    expect(view.text()).not.toContain(CONFIRM_ASKING);
+  });
+
+  test("a Stop at the question that would delete uncommitted work asks again, and Discard and stop says so", async () => {
+    stopRefusal =
+      "Not stopped: the worktree has 2 paths not committed (edits, new or ignored files), and stopping archives it, which deletes them. Stop again and confirm to discard them.";
+    items = [...fixture(), asking("k")];
+    const view = await mount(detail("k"));
+    await view.press(view.byLabel("Stop run"));
+    await view.press(view.byLabel("Stop run"));
+    expect(view.text()).toContain("the worktree has 2 paths not committed");
+    await view.press(view.byLabel("Discard and stop"));
+    expect(sent("work.stop")).toEqual([{ id: "k" }, { id: "k", discard: true }]);
+  });
+
+  test("with a decision in its undo window, the asking card keeps Stop run and drops Cancel work", async () => {
+    items = [
+      ...fixture(),
+      asking("k", {
+        pending: {
+          verdict: "block",
+          note: "",
+          decidedAt: new Date().toISOString(),
+          effectiveAt: new Date(Date.now() + 9_000).toISOString(),
+          remainingMs: 9_000,
+        },
+      }),
+    ];
+    const view = await mount(detail("k"));
+    expect(view.text()).toContain("Canceling the work in");
+    expect(view.byLabel("Stop run")).not.toBeNull();
+    expect(view.byLabel("Cancel work")).toBeNull();
+  });
+
+  test("an open confirm survives the run asking a question, and the question being answered", async () => {
+    const view = await mount(detail("c"));
+    await view.press(view.byLabel("Stop run"));
+    expect(view.text()).toContain(CONFIRM);
+    move("c", asking("c"));
+    await view.refetch();
+    expect(view.text()).toContain("The agent is asking");
+    expect(view.text()).toContain(CONFIRM_ASKING);
+    move("c", fixture().find((item) => item.id === "c") as WorkItem);
+    await view.refetch();
+    expect(view.text()).toContain(CONFIRM);
     expect(view.all('[role="alert"]')).toHaveLength(0);
   });
 });

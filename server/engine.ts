@@ -186,6 +186,9 @@ export const NOT_QUIET = "Only a run the loop flagged as quiet can be left runni
 /** Why Stop is refused while checks run: the session is done, and the checks decide where the work lands. */
 export const CHECKING = "The run already finished and its checks are running. When they report, it lands with you.";
 
+/** Why Stop is refused outside a live run: only a session that is working, or asking you something, has anything to stop. */
+export const NOT_STOPPABLE = "Only a run that is working, or asking you something, can be stopped.";
+
 /** Runs `run` once after `ms` and returns what cancels it. */
 export type Timer = (run: () => Promise<void>, ms: number) => () => void;
 
@@ -1245,7 +1248,16 @@ export class Engine {
   }
 
   /**
-   * Stop a running run. Paseo has no stop that keeps the session, so this
+   * Stop a running run, or one paused at the gate on the agent's question
+   * (review with a permission pending: the session is alive and waiting, so
+   * there is something to stop). Stopping a question moves the work from
+   * review to stuck, a move the transition table allows (shared/states.ts),
+   * and the `stopped` receipt ends the question (pendingPermission), so the
+   * card stops offering Allow and Deny. If the archive then fails, the work
+   * goes back to running like any other stop, and the next reconcile finds
+   * the session still asking and moves it to the gate again.
+   *
+   * Paseo has no stop that keeps the session, so this
    * archives it; the branch and its commits stay. Work in the worktree that is
    * not committed would go with it, so Stop refuses, saying how much, unless
    * `discard` says to go ahead (see stopLoss). The work is stuck with the
@@ -1280,9 +1292,11 @@ export class Engine {
     const { store, config } = await this.store();
     const current = await store.findById(id);
     const refusal = (item: StoredWork): string | null => {
-      if (item.contract.state !== "running") return "Only running work can be stopped.";
+      const phase = phaseOf(item.contract.state, item.events);
       // The session already finished; stopping now would only strand the checks' result.
-      if (phaseOf(item.contract.state, item.events) === "checking") return CHECKING;
+      if (phase === "checking") return CHECKING;
+      // Working, or paused on its question at the gate: either way the session is alive, and Stop archives it.
+      if (phase !== "working" && phase !== "asking") return NOT_STOPPABLE;
       return null;
     };
     const early = refusal(current);

@@ -148,7 +148,12 @@ export function workerOf(events: readonly WorkEvent[]): Worker | null {
   };
 }
 
-/** A permission the bound agent asked for that nothing has answered yet. */
+/**
+ * A permission the bound agent asked for that nothing has answered yet. A
+ * Stop ends it too: the session that asked is being archived, so nobody is
+ * left to answer. If the archive then fails, the run goes back to running and
+ * the next reconcile records the question again from the session itself.
+ */
 export function pendingPermission(events: readonly WorkEvent[]): Permission | null {
   const asked = lastOf(events, "permission.asked");
   if (!asked) return null;
@@ -157,7 +162,8 @@ export function pendingPermission(events: readonly WorkEvent[]): Permission | nu
     (event) =>
       (event.type === "permission.resolved" && event.requestId === asked.requestId) ||
       event.type === "turn.ended" ||
-      event.type === "dispatched",
+      event.type === "dispatched" ||
+      event.type === "stopped",
   );
   return answered ? null : { requestId: asked.requestId, title: asked.title, detail: asked.detail };
 }

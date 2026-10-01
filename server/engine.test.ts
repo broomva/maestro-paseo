@@ -7,7 +7,17 @@ import type { MaestroConfig } from "../shared/contracts";
 import { nextRunCopy } from "../shared/run";
 import type { Verdict } from "../shared/states";
 import { defaultConfig } from "./config";
-import { CHECKING, CLIENT_WAIT_MS, Engine, MODED_BY_YOU, RUN_WENT_ON, STOPPED, type Timer, UNDO_MS } from "./engine";
+import {
+  CHECKING,
+  CLIENT_WAIT_MS,
+  Engine,
+  MODED_BY_YOU,
+  NOT_STOPPABLE,
+  RUN_WENT_ON,
+  STOPPED,
+  type Timer,
+  UNDO_MS,
+} from "./engine";
 import { fakePaseo } from "./fake-paseo";
 import type { Paseo } from "./runs";
 import { EVENTS_FILE, WORK_FILE, WorkStore } from "./store";
@@ -1716,14 +1726,146 @@ describe("stop run", () => {
     expect((await engine.cancel(item.id)).state).toBe("canceled");
   });
 
-  test("only running work can be stopped", async () => {
+  test("only a run that is working or asking can be stopped", async () => {
     const { create, engine, fake } = await setup();
     const queued = await create({ dispatch: false });
-    await expect(engine.stopRun(fake.paseo, queued.id)).rejects.toThrow("Only running work can be stopped.");
+    await expect(engine.stopRun(fake.paseo, queued.id)).rejects.toThrow(NOT_STOPPABLE);
     const item = await create();
     await endTurn(engine, fake);
-    await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow("Only running work can be stopped.");
+    // At the gate with no question pending, the session is done: nothing to stop.
+    await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow(NOT_STOPPABLE);
     expect(fake.archived).toEqual([]);
+  });
+
+  /** The bound session asks for permission, and the daemon says it is still waiting on that answer. */
+  async function ask(engine: Engine, fake: ReturnType<typeof fakePaseo>, requestId = "p1") {
+    await engine.onPermissionRequested(
+      { id: "agent-1" },
+      { id: requestId, name: "Bash", title: "Run a command", description: "rm -rf dist" },
+    );
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.pendingPermissions = [{ id: requestId, name: "Bash" }];
+  }
+
+  test("a run paused on the agent's question stops: stuck with Stop's reason, the session archived, the question gone", async () => {
+    const { create, engine, fake, repo } = await setup();
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    await ask(engine, fake);
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "review",
+      phase: "asking",
+      permission: { requestId: "p1" },
+    });
+    const counter = countWorktreeReads(fake);
+    const stuck = await engine.stopRun(fake.paseo, item.id);
+    expect(stuck).toMatchObject({ state: "blocked", reason: STOPPED, phase: null, permission: null });
+    // The worktree guard ran as it does for a working run: once before the flip, once under the claim.
+    expect(counter.reads).toBe(2);
+    expect(fake.archived).toEqual(["agent-1"]);
+    expect(fake.archivedWorkspaces).toEqual([]);
+
+    // What the archive sets off (the question closing, the turn ending, the archive) only adds receipts.
+    await engine.onPermissionResolved({ id: "agent-1" }, "p1");
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "canceled", reason: "archived" }, []);
+    await engine.onArchived({ id: "agent-1" });
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "blocked", reason: STOPPED, phase: null, permission: null, look: null });
+    const texts = events.map((event) => event.text);
+    expect(texts).toContain("You stopped the run");
+    // Stop ended the question: nothing answered it, and no receipt says it was.
+    expect(texts).not.toContain("Permission answered");
+    expect(texts.at(-1)).toBe("The session was archived");
+
+    // Unblock starts a fresh run: the session is gone.
+    expect((await engine.unblock(fake.paseo, item.id, "")).state).toBe("running");
+    expect(fake.created).toHaveLength(2);
+  });
+
+  test("Stop at the question keeps the worktree guard: refused while work is not committed, still asking; discard stops it", async () => {
+    const { create, engine, fake, repo } = await setup();
+    const item = await create();
+    const cwd = cleanWorktree(repo, item.worker);
+    writeFileSync(join(cwd, "notes.txt"), "draft\n");
+    await ask(engine, fake);
+    await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow(
+      "Not stopped: the worktree has 1 path not committed (edits, new or ignored files)",
+    );
+    expect(fake.archived).toEqual([]);
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "review", phase: "asking" });
+    expect(await engine.stopRun(fake.paseo, item.id, DISCARD)).toMatchObject({
+      state: "blocked",
+      reason: STOPPED,
+      permission: null,
+    });
+    expect(fake.archived).toEqual(["agent-1"]);
+  });
+
+  test("a question answered while Stop checked the worktree turns it into a stop of the working run", async () => {
+    const { create, engine, fake, repo } = await setup();
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    await ask(engine, fake);
+    // Answered in the session after Stop's first read and before its flip: the flip re-reads the item.
+    const mutate = WorkStore.prototype.mutate;
+    WorkStore.prototype.mutate = async function (this: WorkStore, ...args: Parameters<WorkStore["mutate"]>) {
+      WorkStore.prototype.mutate = mutate;
+      await engine.onPermissionResolved({ id: "agent-1" }, "p1");
+      return mutate.apply(this, args);
+    };
+    try {
+      expect(await engine.stopRun(fake.paseo, item.id)).toMatchObject({ state: "blocked", reason: STOPPED });
+    } finally {
+      WorkStore.prototype.mutate = mutate;
+    }
+    const { events } = await engine.get(item.id);
+    // Each state change folds into the receipt that caused it.
+    expect(events.map((event) => event.text).slice(-3)).toEqual([
+      "Asked for permission",
+      "Permission answered",
+      "You stopped the run",
+    ]);
+    expect(fake.archived).toEqual(["agent-1"]);
+  });
+
+  test("a failed archive at the question puts the run back, and the next reconcile finds the question again", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await ask(engine, fake);
+    const ref = fake.paseo.agents.ref;
+    fake.paseo.agents.ref = ((id: string) => ({
+      ...ref(id),
+      archive: async () => {
+        throw new Error("daemon busy");
+      },
+    })) as unknown as typeof ref;
+    await expect(engine.stopRun(fake.paseo, item.id, DISCARD)).rejects.toThrow(
+      "Could not stop the session: daemon busy",
+    );
+    fake.paseo.agents.ref = ref;
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "running", permission: null });
+    // The session is still waiting on p1: the reconcile records the question again and parks it at the gate.
+    tick(1);
+    await engine.list(fake.paseo);
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "review",
+      phase: "asking",
+      permission: { requestId: "p1" },
+    });
+    expect(fake.archived).toEqual([]);
+  });
+
+  test("Cancel work while the agent asks waits out the undo window, then closes the work", async () => {
+    const { create, engine, fake, timers } = await setup();
+    const item = await create();
+    await ask(engine, fake);
+    expect(await engine.cancel(item.id, fake.paseo)).toMatchObject({
+      state: "review",
+      pending: { verdict: "block" },
+    });
+    tickMs(UNDO_MS);
+    await timers.fire();
+    expect((await engine.get(item.id)).item.state).toBe("canceled");
   });
 
   test("a failed archive puts the run back and says why", async () => {
