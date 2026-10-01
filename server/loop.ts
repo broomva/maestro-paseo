@@ -177,10 +177,10 @@ export class Loop {
   }
 
   /** The plugin has its first Paseo client. A scheduled wake that had none started nothing: run one now. */
-  connected(): void {
-    if (!this.missedClient || this.stopped) return;
+  connected(): Promise<void> {
+    if (!this.missedClient || this.stopped) return Promise.resolve();
     this.missedClient = false;
-    void this.onTimer(null);
+    return this.onTimer(null);
   }
 
   /**

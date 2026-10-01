@@ -55,7 +55,7 @@ export default function contribute(host: PluginServerContext) {
     latest = paseo;
     if (!first) return;
     void engine.sweep(paseo).catch((error) => log(`applying due decisions: ${(error as Error).message}`));
-    loop.connected();
+    void loop.connected();
   };
   const server: Pick<PluginServerContext, "handle" | "on"> = {
     handle: (contract, handler) =>
