@@ -27,7 +27,8 @@ those, and nothing Paseo already does.
 
 ## What you get in Paseo
 
-- **Maestro** in the sidebar: all work, attention first (Needs you, Stuck, Running, Queued, Done),
+- **Maestro** in the sidebar: all work, attention first (Needs you, Running, Queued, Done; Needs you
+  holds work at your gate, stuck work and work the loop flagged, the same set the header count counts),
   the unsupervised-hours scoreboard, and a detail pane with the verb each item needs.
 - **Work** panel beside any agent: the work it is running, or a button to track it.
 - **Command Center**: *Open Maestro*, and *Track this session in Maestro* on an agent.
@@ -183,7 +184,8 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
   of its own, are left alone with the reason. It never touches stuck work, and never stops, sends
   back, or decides anything.
 - **What it leaves to you lands in Needs you.** A wake flags three things on the work itself, so
-  they show in Maestro's Needs you (the chip, the board's column, the header count) with the
+  they show in Maestro's Needs you (the feed's and the list's section, the chip, the board's
+  column, the header count, `maestro ls`; one definition, `shared/needs-you.ts`) with the
   reason on the card and in the detail: queued work it leaves to you ("Start it yourself: ..."),
   a start it tried that failed ("Could not start: ..."), and a run quiet for 30 minutes or more
   ("Quiet for N minutes, worth a look"). Maestro hears only turn boundaries, so a run is quiet only

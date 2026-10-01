@@ -162,6 +162,8 @@ const { MaestroSurface } = await import("./plane");
 const { WorkDetail } = await import("./detail");
 const { requestIntent, resetIntents, takeIntent } = await import("./intent");
 const { MaestroSettings } = await import("./settings");
+const { attentionOf } = await import("../server/attention");
+const { headerFace, needsYou } = await import("./header-count");
 const { linkSettings } = await import("./settings-link");
 
 function setReduced(value: boolean) {
@@ -475,7 +477,7 @@ afterAll(async () => {
 describe("the changed line", () => {
   test("a surface without client state renders, logs once, and shows no changed stat", async () => {
     const view = await mount(surface(false));
-    expect(view.text()).toContain("2 need you · 1 stuck · 1 running");
+    expect(view.text()).toContain("3 need you · 1 running");
     expect(view.text()).toContain("hawthorne › core");
     expect(view.text()).toContain("maestro/a-1");
     expect(view.text()).not.toMatch(/\+\d+ −\d+/);
@@ -567,10 +569,10 @@ describe("work the loop flagged", () => {
   test("is in Needs you: the summary, its chip, and the board's column, with the reason on its card", async () => {
     items = flagged();
     const view = await mount(surface(false));
-    expect(view.text()).toContain("3 need you · 1 stuck · 1 running");
+    expect(view.text()).toContain("4 need you · 1 running");
     const card = view.byLabel(`Work y, Queued, ${yours.reason}, updated 12 minutes ago`);
     expect(card?.textContent).toContain(yours.reason);
-    await view.press(view.byLabel("Needs you, 3"));
+    await view.press(view.byLabel("Needs you, 4"));
     expect(view.text()).toContain("Work y");
     expect(view.text()).not.toContain("Work d");
     await view.press(view.tabs()[1]);
@@ -583,6 +585,36 @@ describe("work the loop flagged", () => {
     // It left the Queued column: only once on the board.
     expect(text.match(/Work y/g)).toHaveLength(1);
     expect(text.indexOf("Work d")).toBeLessThan(needsYou);
+  });
+
+  test("the feed's Needs you lists stuck and flagged work with its reasons, as many as the header counts", async () => {
+    const quiet = { kind: "quiet" as const, reason: "Quiet for 41 minutes, worth a look.", at: yours.at };
+    items = [
+      ...fixture(),
+      work("y", "proposed", { flag: yours }),
+      work("z", "running", { worker: worker("z", "maestro/z-1"), phase: "working", flag: quiet }),
+    ];
+    const view = await mount(surface(false));
+    // The header count, as Paseo's header shows it: work.attention's waiting, counted by the header.
+    const count = needsYou(attentionOf(items, Date.now()).waiting).length;
+    expect(headerFace(count).label).toBe("5 need you");
+    const heading = view.all('[role="heading"]').find((el) => el.textContent === "Needs you");
+    const header = heading?.parentElement;
+    const section = header?.parentElement;
+    expect(header?.textContent).toBe(`Needs you${count}At your gate, stuck or flagged`);
+    const cards = [...(section?.querySelectorAll('[role="button"]') ?? [])].map((el) => el.getAttribute("aria-label"));
+    expect(cards).toHaveLength(count);
+    expect(cards.map((label) => label?.split(",")[0])).toEqual(["Work a", "Work g", "Work b", "Work y", "Work z"]);
+    for (const reason of ["Needs a Linear scope", yours.reason, quiet.reason]) {
+      expect(section?.textContent).toContain(reason);
+    }
+    // Listed once: not again under Queued, Running or Stuck.
+    for (const title of ["Work y", "Work z", "Work b"])
+      expect(view.text().match(new RegExp(title, "g"))).toHaveLength(1);
+    expect(view.all('[role="heading"]').map((el) => el.textContent)).not.toContain("Stuck");
+    expect(view.text()).toContain("5 need you · 1 running");
+    // The chip the header opens holds the same work.
+    expect(view.byLabel(`Needs you, ${count}`)).not.toBeNull();
   });
 
   test("the detail says why, as a warning Notice; unflagged work has none", async () => {
@@ -605,7 +637,7 @@ describe("views and filters", () => {
     await act(async () => requestIntent({ kind: "filter", group: "review" }));
     await settle();
     expect(view.tabs()[0]?.getAttribute("aria-selected")).toBe("true");
-    expect(view.pressed("Needs you, 2")).toBe("true");
+    expect(view.pressed("Needs you, 3")).toBe("true");
     expect(view.pressed("All work")).toBe("true");
     expect(view.text()).toContain("Work a");
     expect(view.text()).not.toContain("Work c");
@@ -695,7 +727,7 @@ describe("History", () => {
     await settle(50);
     expect(view.tabs()[3]?.getAttribute("aria-selected")).toBe("true");
     // History has its own chips; the state filter is not one of them.
-    expect(view.byLabel("Needs you, 2")).toBeNull();
+    expect(view.byLabel("Needs you, 3")).toBeNull();
     const headers = () => view.all('[role="heading"]').map((el) => el.textContent);
     expect(headers()).toContain("Today");
     expect(headers()).toContain("Yesterday");
