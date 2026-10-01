@@ -23,7 +23,7 @@ import {
   wakeLoop,
   workForAgent,
 } from "../shared/contracts";
-import { LOOP_DUE_POLL_MS, LOOP_POLL_MS, type LoopState, loopDue } from "./loop-model";
+import { type LoopState, loopPollMs } from "./loop-model";
 
 const KEY = ["maestro"] as const;
 const POLL_MS = 4000;
@@ -56,14 +56,15 @@ export function useConfig() {
 /**
  * The loop's state (loop.get): its period, its next wake, whether one runs,
  * and the newest wakes. Asked every 30 s, every 5 s while a wake is due or
- * running; React Query stops asking once nothing that reads it is mounted.
+ * running, and never later than the next wake (loopPollMs); React Query
+ * stops asking once nothing that reads it is mounted.
  */
 export function useLoop() {
   const get = useRpc(getLoop);
   return useQuery({
     queryKey: [...KEY, "loop"],
     queryFn: (): Promise<LoopState> => get({}),
-    refetchInterval: (query) => (loopDue(query.state.data ?? null, Date.now()) ? LOOP_DUE_POLL_MS : LOOP_POLL_MS),
+    refetchInterval: (query) => loopPollMs(query.state.data ?? null, Date.now()),
   });
 }
 

@@ -14,6 +14,17 @@ export function linkSettings(open: () => void): () => void {
   };
 }
 
+/**
+ * Links the plugin context's opener for Settings screen `id`, only when the
+ * host really has one: an older host's context has no openSettings, and
+ * linking a call to it would offer a press that throws.
+ */
+export function linkSettingsOf(context: { openSettings?: (id: string) => void }, id: string): () => void {
+  const open = context.openSettings;
+  if (typeof open !== "function") return () => undefined;
+  return linkSettings(() => open.call(context, id));
+}
+
 /** Opens Maestro's Settings, or null when nothing can. */
 export function settingsOpener(): (() => void) | null {
   return opener;

@@ -8,6 +8,7 @@ import {
   loopDue,
   loopMinutesOf,
   loopOptions,
+  loopPollMs,
   loopValue,
   periodText,
   skippedText,
@@ -57,6 +58,17 @@ describe("the loop control", () => {
     expect(loopDue({ minutes: null, nextAt: null, ticking: true }, now)).toBe(true);
     expect(loopDue({ minutes: null, nextAt: null, ticking: false }, now)).toBe(false);
     expect(loopDue(null, now)).toBe(false);
+  });
+
+  test("asks again no later than the next wake: a 30 s poll never overshoots a wake 12 s away", () => {
+    const seconds = (s: number) => new Date(now + s * 1000).toISOString();
+    expect(loopPollMs({ minutes: 15, nextAt: seconds(12), ticking: false }, now)).toBe(12_250);
+    expect(loopPollMs({ minutes: 15, nextAt: at(12), ticking: false }, now)).toBe(30_000);
+    expect(loopPollMs({ minutes: 15, nextAt: seconds(0.1), ticking: false }, now)).toBe(1_000);
+    expect(loopPollMs({ minutes: 15, nextAt: at(-1), ticking: false }, now)).toBe(5_000);
+    expect(loopPollMs({ minutes: null, nextAt: null, ticking: true }, now)).toBe(5_000);
+    expect(loopPollMs({ minutes: null, nextAt: null, ticking: false }, now)).toBe(30_000);
+    expect(loopPollMs(null, now)).toBe(30_000);
   });
 
   test("waits read in minutes, then hours and minutes", () => {

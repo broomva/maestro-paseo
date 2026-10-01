@@ -47,6 +47,20 @@ export function loopDue(loop: Pick<LoopState, "minutes" | "nextAt" | "ticking"> 
   return loop.ticking || (loop.minutes !== null && loop.nextAt !== null && Date.parse(loop.nextAt) <= now);
 }
 
+/**
+ * How long until the control asks again: every LOOP_DUE_POLL_MS while a wake
+ * is due or running, else every LOOP_POLL_MS, but never past the next wake,
+ * so the face turns to "Waking…" when the wake starts rather than up to a
+ * whole poll later. The read lands a moment after the wake is due, and never
+ * sooner than a second from now.
+ */
+export function loopPollMs(loop: Pick<LoopState, "minutes" | "nextAt" | "ticking"> | null, now: number): number {
+  if (loopDue(loop, now)) return LOOP_DUE_POLL_MS;
+  if (!loop || loop.minutes === null || !loop.nextAt) return LOOP_POLL_MS;
+  const untilDue = Date.parse(loop.nextAt) - now + 250;
+  return Math.min(LOOP_POLL_MS, Math.max(1_000, untilDue));
+}
+
 /** "every 15 minutes", "every minute": the same words Settings offers. */
 export function everyWords(minutes: number): string {
   return minutes === 1 ? "every minute" : `every ${minutes} minutes`;
