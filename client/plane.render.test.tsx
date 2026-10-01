@@ -156,7 +156,14 @@ const { act } = await import("react");
 const { createRoot } = require("react-dom/client") as {
   createRoot(container: unknown): { render(node: ReactNode): void; unmount(): void };
 };
-const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
+const { QueryClient, QueryClientProvider, notifyManager } = await import("@tanstack/react-query");
+// Queries here refetch on an interval (4 s for the work reads), and under load a test outlives one:
+// the refetch's answer then updates a component outside any act scope (FilesSection's files read
+// failed three CI runs that way, and 10 of 12 local runs under parallel load). Every update React
+// Query delivers goes through act instead, as TanStack's testing notes advise; afterAll restores it.
+notifyManager.setNotifyFunction((notify) => {
+  act(notify);
+});
 const { PaseoApiProvider, PluginClientStateProvider, PluginRpcProvider } = await import("@getpaseo/plugin/client/host");
 const { MaestroSurface } = await import("./plane");
 const { WorkDetail } = await import("./detail");
@@ -469,6 +476,9 @@ afterAll(async () => {
   await unmountAll();
   resetIntents();
   consoleError.mockRestore();
+  notifyManager.setNotifyFunction((notify) => {
+    notify();
+  });
   mock.restore();
   mock.module(KIT, () => realKit);
   mock.module(UI, () => realUi);
