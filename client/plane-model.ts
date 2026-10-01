@@ -30,14 +30,25 @@ export function filterLabel(filter: Filter): string {
   return filter === "all" ? "All" : GROUP_COPY[filter].title;
 }
 
+/**
+ * Whether an item is under a chip: its own group's, and Needs you too when the
+ * loop flagged it, so the chip the header count opens lists what it counted.
+ */
+export function inFilter(item: Pick<WorkItem, "group" | "flag">, filter: Filter): boolean {
+  return filter === "all" || item.group === filter || (filter === "review" && Boolean(item.flag));
+}
+
 export function countFilters(items: readonly WorkItem[]): Record<Filter, number> {
   const counts: Record<Filter, number> = { all: items.length, review: 0, blocked: 0, running: 0, queued: 0, done: 0 };
-  for (const item of items) counts[item.group] += 1;
+  for (const item of items) {
+    counts[item.group] += 1;
+    if (item.group !== "review" && inFilter(item, "review")) counts.review += 1;
+  }
   return counts;
 }
 
 export function applyFilter(items: readonly WorkItem[], filter: Filter): WorkItem[] {
-  return filter === "all" ? [...items] : items.filter((item) => item.group === filter);
+  return items.filter((item) => inFilter(item, filter));
 }
 
 /** A chip shows when it has work or is selected, so a filter opened from elsewhere is never hidden. */
@@ -62,8 +73,13 @@ export function emptyText(filter: Filter): string {
   }
 }
 
-/** Review and stuck work both wait on a person: the board's Needs you column and the scope badge. */
-export const needsHand = (item: WorkItem): boolean => item.group === "review" || item.group === "blocked";
+/**
+ * Work that waits on a person: at your gate, stuck, or flagged by the loop (a
+ * start it left to you or could not make, a run gone quiet). The board's Needs
+ * you column, the scope badge and the header count.
+ */
+export const needsHand = (item: Pick<WorkItem, "group" | "flag">): boolean =>
+  item.group === "review" || item.group === "blocked" || Boolean(item.flag);
 
 export interface Initiative {
   name: string;
@@ -118,16 +134,29 @@ export interface Column {
 const COLUMNS: readonly Omit<Column, "items">[] = [
   { id: "queued", title: GROUP_COPY.queued.title, hint: GROUP_COPY.queued.hint, groups: ["queued"] },
   { id: "running", title: GROUP_COPY.running.title, hint: GROUP_COPY.running.hint, groups: ["running"] },
-  { id: "needs-you", title: GROUP_COPY.review.title, hint: "At your gate or stuck", groups: ["review", "blocked"] },
+  {
+    id: "needs-you",
+    title: GROUP_COPY.review.title,
+    hint: "At your gate, stuck or flagged",
+    groups: ["review", "blocked"],
+  },
   { id: "done", title: GROUP_COPY.done.title, hint: GROUP_COPY.done.hint, groups: ["done"] },
 ];
 
-/** Four columns, always present so work moves across a fixed frame. Needs you lists review before stuck. */
+/**
+ * Four columns, always present so work moves across a fixed frame. Needs you
+ * lists review, then stuck, then work the loop flagged, which it takes from
+ * its own column: each item shows once.
+ */
 export function boardColumns(items: readonly WorkItem[]): Column[] {
-  return COLUMNS.map((column) => ({
-    ...column,
-    items: column.groups.flatMap((group) => items.filter((item) => item.group === group)),
-  }));
+  return COLUMNS.map((column) => {
+    const own = column.groups.flatMap((group) => items.filter((item) => item.group === group));
+    if (column.id !== "needs-you") return { ...column, items: own.filter((item) => !needsHand(item)) };
+    return {
+      ...column,
+      items: [...own, ...items.filter((item) => needsHand(item) && !column.groups.includes(item.group))],
+    };
+  });
 }
 
 /** "initiative › project", the project falling back to the repo's folder name. */
@@ -153,6 +182,11 @@ export function stuckText(item: WorkItem): string | null {
   return item.reason || "The run stopped without a reason.";
 }
 
+/** Why the loop flagged it for you, or null. */
+export function flagText(item: Pick<WorkItem, "flag">): string | null {
+  return item.flag?.reason ?? null;
+}
+
 export type DiffStat = { additions: number; deletions: number };
 
 /** The changed row shows only when it has something to say: a branch or a stat actually read. */
@@ -168,9 +202,9 @@ export function changeLabel(stat: DiffStat): string {
   return `${plural(stat.additions, "line")} added, ${stat.deletions} removed`;
 }
 
-/** What a screen reader hears for a card or row: title, state, where, why it is stuck, and when. */
+/** What a screen reader hears for a card or row: title, state, where, why it is stuck or flagged, and when. */
 export function cardLabel(item: WorkItem, now = Date.now()): string {
-  return [item.title, stateText(item), crumb(item), stuckText(item), agoWords(item.updatedAt, now)]
+  return [item.title, stateText(item), crumb(item), stuckText(item), flagText(item), agoWords(item.updatedAt, now)]
     .filter(Boolean)
     .join(", ");
 }

@@ -167,6 +167,15 @@ describe("the header count", () => {
     ]);
     expect(face(fake.headers[0] as Registered)).toMatchObject({ label: "2 need you", icon: "Inbox", visible: true });
 
+    // Work the loop flagged is counted with the rest.
+    const flag = { kind: "quiet" as const, reason: "Quiet for 31 minutes, worth a look.", at: "2026-09-29T09:30:00Z" };
+    fake.state.attention = {
+      waiting: [waiting("r"), waiting("b", "blocked"), { ...waiting("q", "running"), flag }],
+      sessions: [],
+    };
+    await clock.advance(REFRESH.everyMs);
+    expect(face(fake.headers[0] as Registered)).toMatchObject({ label: "3 need you", visible: true });
+
     fake.state.attention = { waiting: [], sessions: [] };
     await clock.advance(REFRESH.everyMs);
     expect(live(fake.headers).map((entry) => face(entry).visible)).toEqual([false, false]);

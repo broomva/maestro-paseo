@@ -13,6 +13,7 @@ import {
   cardLabel,
   changedVisible,
   crumb,
+  flagText,
   groupsOf,
   stateText,
   stuckText,
@@ -93,10 +94,26 @@ export function ListView({ items, ...pick }: Selectable & { items: WorkItem[] })
   );
 }
 
+/** One line on a card that says why it needs a hand: stuck, or flagged by the loop. */
+function Why({ theme, children }: { theme: PluginTheme; children: string }) {
+  const text = useText(theme);
+  return (
+    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[1] }}>
+      <View style={{ paddingTop: 2 }}>
+        <Icon name="CircleAlert" size={13} color={theme.colors.statusWarning} />
+      </View>
+      <Text style={[text.small, { flex: 1 }]} numberOfLines={2}>
+        {children}
+      </Text>
+    </View>
+  );
+}
+
 function WorkCard({ theme, item, selected, onSelect }: Selectable & { item: WorkItem }) {
   const text = useText(theme);
   const place = crumb(item);
   const stuck = stuckText(item);
+  const flagged = flagText(item);
   const worker = workerText(item.worker);
   const branch = item.worker?.branch ?? null;
   const isSelected = item.id === selected;
@@ -125,16 +142,8 @@ function WorkCard({ theme, item, selected, onSelect }: Selectable & { item: Work
       <Text style={[text.body, { fontWeight: "500" }]} numberOfLines={2}>
         {item.title}
       </Text>
-      {stuck ? (
-        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[1] }}>
-          <View style={{ paddingTop: 2 }}>
-            <Icon name="CircleAlert" size={13} color={theme.colors.statusWarning} />
-          </View>
-          <Text style={[text.small, { flex: 1 }]} numberOfLines={2}>
-            {stuck}
-          </Text>
-        </View>
-      ) : null}
+      {stuck ? <Why theme={theme}>{stuck}</Why> : null}
+      {flagged ? <Why theme={theme}>{flagged}</Why> : null}
       <View style={{ flexDirection: "row", alignItems: "center", gap: space[3], flexWrap: "wrap" }}>
         <StateLabel theme={theme} state={item.state} label={stateText(item)} />
         {worker ? <Text style={text.small}>{worker}</Text> : null}

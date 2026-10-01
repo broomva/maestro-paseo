@@ -13,9 +13,11 @@ import {
   emptyText,
   FILTERS,
   filterLabel,
+  flagText,
   groupsOf,
   initiatives,
   inScope,
+  needsHand,
   resolveScope,
   scopeLabel,
   stateText,
@@ -56,6 +58,13 @@ function work(id: string, state: OrchState, extra: Partial<WorkItem> = {}): Work
   };
 }
 
+const yoursFlag = {
+  kind: "yours" as const,
+  reason: "Start it yourself: it runs without permission prompts.",
+  at: "2026-09-29T11:05:00Z",
+};
+const quietFlag = { kind: "quiet" as const, reason: "Quiet for 40 minutes, worth a look.", at: "2026-09-29T11:00:00Z" };
+
 const plane = [
   work("a", "review", { initiative: "hawthorne", project: "core" }),
   work("b", "blocked", { initiative: "hawthorne", project: "db", reason: "Needs a Linear scope" }),
@@ -93,6 +102,14 @@ describe("filters", () => {
     expect(applyFilter(plane, "all")).toHaveLength(7);
   });
 
+  test("the Needs you chip counts and lists work the loop flagged too; its own chip still has it", () => {
+    const flagged = [...plane, work("y", "proposed", { flag: yoursFlag }), work("z", "running", { flag: quietFlag })];
+    expect(countFilters(flagged)).toEqual({ all: 9, review: 3, blocked: 1, running: 2, queued: 3, done: 2 });
+    expect(applyFilter(flagged, "review").map((item) => item.id)).toEqual(["a", "y", "z"]);
+    expect(applyFilter(flagged, "queued").map((item) => item.id)).toEqual(["d", "e", "y"]);
+    expect(applyFilter(flagged, "blocked").map((item) => item.id)).toEqual(["b"]);
+  });
+
   test("empty chips hide unless selected; All always shows", () => {
     const counts = countFilters([work("x", "running")]);
     expect(visibleFilters(counts, "all")).toEqual(["all", "running"]);
@@ -120,6 +137,16 @@ describe("initiative scope", () => {
   test("open over total, with a badge for work waiting on a person", () => {
     expect(initiatives(plane)).toEqual([
       { name: "genesis", open: 1, total: 2, needsYou: 0 },
+      { name: "hawthorne", open: 3, total: 4, needsYou: 2 },
+    ]);
+  });
+
+  test("the badge counts work the loop flagged, which waits on a person too", () => {
+    expect(needsHand(work("y", "proposed", { flag: yoursFlag }))).toBe(true);
+    expect(needsHand(work("z", "running", { flag: quietFlag }))).toBe(true);
+    expect(needsHand(work("c", "running"))).toBe(false);
+    expect(initiatives([...plane, work("y", "proposed", { initiative: "genesis", flag: yoursFlag })])).toEqual([
+      { name: "genesis", open: 2, total: 3, needsYou: 1 },
       { name: "hawthorne", open: 3, total: 4, needsYou: 2 },
     ]);
   });
@@ -162,12 +189,30 @@ describe("feed and board", () => {
     expect(columns.map((column) => column.title)).toEqual(["Queued", "Running", "Needs you", "Done"]);
     expect(columns.map((column) => column.items.map((item) => item.id))).toEqual([["q"], [], ["r", "s"], []]);
     expect(columns[1]?.hint).toBe("Dispatched and live in a worktree");
-    expect(columns[2]?.hint).toBe("At your gate or stuck");
+    expect(columns[2]?.hint).toBe("At your gate, stuck or flagged");
   });
 
-  test("the board places every item exactly once", () => {
-    const placed = boardColumns(plane).flatMap((column) => column.items.map((item) => item.id));
-    expect(placed.sort()).toEqual(plane.map((item) => item.id).sort());
+  test("work the loop flagged leaves its own column for Needs you, after review and stuck", () => {
+    const columns = boardColumns([
+      work("quiet", "running", { flag: quietFlag }),
+      work("s", "blocked"),
+      work("yours", "proposed", { flag: yoursFlag }),
+      work("r", "review"),
+      work("q", "proposed"),
+      work("c", "running"),
+    ]);
+    expect(columns.map((column) => column.items.map((item) => item.id))).toEqual([
+      ["q"],
+      ["c"],
+      ["r", "s", "quiet", "yours"],
+      [],
+    ]);
+  });
+
+  test("the board places every item exactly once, flagged work too", () => {
+    const flagged = [...plane, work("y", "proposed", { flag: yoursFlag }), work("z", "running", { flag: quietFlag })];
+    const placed = boardColumns(flagged).flatMap((column) => column.items.map((item) => item.id));
+    expect(placed.sort()).toEqual(flagged.map((item) => item.id).sort());
   });
 });
 
@@ -228,8 +273,20 @@ describe("card words", () => {
     expect(cardLabel(work("x", "running"), now)).toBe("Work x, Running, updated 12 minutes ago");
   });
 
+  test("a flagged card says why the loop flagged it, in the card and in its spoken label", () => {
+    const now = Date.parse("2026-09-29T11:12:00Z");
+    const item = work("y", "proposed", { flag: yoursFlag });
+    expect(flagText(item)).toBe(yoursFlag.reason);
+    expect(flagText(work("x", "proposed"))).toBeNull();
+    expect(cardLabel(item, now)).toBe(
+      "Work y, Queued, Start it yourself: it runs without permission prompts., updated 12 minutes ago",
+    );
+  });
+
   test("the header puts what needs a person first", () => {
     expect(summaryText(plane)).toBe("1 needs you · 1 stuck · 1 running");
+    // A flagged run needs you and is still running.
+    expect(summaryText([...plane, work("z", "running", { flag: quietFlag })])).toBe("2 need you · 1 stuck · 2 running");
     expect(summaryText([work("x", "review"), work("y", "review")])).toBe("2 need you");
     expect(summaryText([work("x", "done")])).toBe("Nothing needs you");
     expect(summaryText([])).toBe("No work yet");

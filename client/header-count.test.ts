@@ -15,6 +15,30 @@ describe("the header count", () => {
     expect(needsYou(items).map((item) => item.id)).toEqual(["r", "b"]);
   });
 
+  test("counts work the loop flagged too, whatever its group", () => {
+    const at = "2026-09-29T09:30:00.000Z";
+    const items = [
+      fakeWork("r", "review"),
+      fakeWork("yours", "proposed", null, { flag: { kind: "yours", reason: "Start it yourself: x.", at } }),
+      fakeWork("failed", "triggered", null, { flag: { kind: "failed", reason: "Could not start: x.", at } }),
+      fakeWork("quiet", "running", null, {
+        flag: { kind: "quiet", reason: "Quiet for 31 minutes, worth a look.", at },
+      }),
+      fakeWork("q", "proposed"),
+      fakeWork("run", "running"),
+    ];
+    expect(needsYou(items).map((item) => item.id)).toEqual(["r", "yours", "failed", "quiet"]);
+    // One flagged item alone opens it; with others it opens Needs you, whose chip lists it too.
+    expect(needsYouTarget([items[3] as (typeof items)[number], fakeWork("x", "running")])).toEqual({
+      kind: "select",
+      id: "quiet",
+    });
+    expect(needsYouTarget([fakeWork("b", "blocked"), items[1] as (typeof items)[number]])).toEqual({
+      kind: "filter",
+      group: "review",
+    });
+  });
+
   test("says it in words, singular and plural", () => {
     expect(needsYouLabel(1)).toBe("1 needs you");
     expect(needsYouLabel(3)).toBe("3 need you");
