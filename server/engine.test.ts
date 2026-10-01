@@ -1656,6 +1656,25 @@ describe("stop run", () => {
     expect((await engine.get(item.id)).item.state).toBe("running");
   });
 
+  test("an archive that does not answer under the claim gives up at claimWaitMs and puts the run back", async () => {
+    const { create, engine, fake, repo } = await setup();
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    const ref = fake.paseo.agents.ref;
+    fake.paseo.agents.ref = ((id: string) => ({
+      ...ref(id),
+      archive: () => new Promise(() => undefined),
+    })) as unknown as typeof ref;
+    await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow(
+      "Could not stop the session: Paseo did not answer within 0.2s",
+    );
+    const { item: after } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "running", reason: null });
+    // The claim was released: the item still takes changes.
+    await endTurn(engine, fake);
+    expect((await engine.get(item.id)).item.state).toBe("review");
+  });
+
   test("stopped work can be canceled", async () => {
     const { create, engine, fake } = await setup();
     const item = await create();

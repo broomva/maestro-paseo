@@ -220,9 +220,17 @@ describe("a wake", () => {
     const d = await queue("D, triggered");
     await store.mutate(d.id, () => ({ to: "triggered" }));
     tickMinutes(1);
+    const tried: string[] = [];
+    const dispatch = engine.dispatch.bind(engine);
+    engine.dispatch = ((paseo, id, origin) => {
+      tried.push(id);
+      return dispatch(paseo, id, origin);
+    }) as typeof engine.dispatch;
 
     const entry = await loop.wake("manual");
     expect(entry.cause).toBe("manual");
+    // Once dispatch refuses at the cap, the rest of the queue is not tried.
+    expect(tried).toEqual([d.id, a.id, b.id]);
     expect(entry.dispatched).toEqual([
       { id: d.id, title: d.title },
       { id: a.id, title: a.title },
