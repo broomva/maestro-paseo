@@ -3,7 +3,7 @@
 // is one line. Nothing here is a percentage, and nothing is stored twice:
 // the worker, the look at the gate and the scoreboard are all computed.
 
-import type { CheckResult, Look, Permission, Scoreboard, WorkEventWire, Worker } from "../shared/contracts";
+import type { CheckResult, Look, Permission, Scoreboard, WeekDay, WorkEventWire, Worker } from "../shared/contracts";
 import type { OrchState, Verdict } from "../shared/states";
 
 export type Actor = "human" | "agent" | "maestro";
@@ -393,8 +393,14 @@ function merge(intervals: Array<[number, number]>): Array<[number, number]> {
   return out;
 }
 
-export function scoreboard(logs: ReadonlyArray<readonly WorkEvent[]>, now: number, dayStart: number): Scoreboard {
-  const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+/** One local day, from its midnight to the next (23 or 25 hours when the clocks change). */
+function dayBoard(
+  logs: ReadonlyArray<readonly WorkEvent[]>,
+  now: number,
+  dayStart: number,
+  end?: number,
+): Omit<Scoreboard, "week" | "weekByInitiative"> {
+  const dayEnd = end ?? dayStart + 24 * 60 * 60 * 1000;
   const clipped = merge(
     logs
       .flatMap((events) => runningIntervals(events, now))
@@ -421,4 +427,83 @@ export function scoreboard(logs: ReadonlyArray<readonly WorkEvent[]>, now: numbe
     })),
     notches: notches.map((t) => (t - dayStart) / span),
   };
+}
+
+// ── The week behind today ────────────────────────────────────────────────────
+
+/** The same local time of day, `days` calendar days away: from a midnight, the midnight that many days off. */
+export function shiftDays(at: number, days: number): number {
+  const date = new Date(at);
+  date.setDate(date.getDate() + days);
+  return date.getTime();
+}
+
+/** The local calendar day holding `at`, as YYYY-MM-DD. */
+export function localDate(at: number): string {
+  const date = new Date(at);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/**
+ * Today's scoreboard and the week behind it: the last seven local days, today
+ * last. Every day is scored by the same rules from the same logs. `dayStart`
+ * is today's local midnight; `initiatives` names each log's initiative (null
+ * for none), in the order of `logs`.
+ */
+export function scoreboard(
+  logs: ReadonlyArray<readonly WorkEvent[]>,
+  now: number,
+  dayStart: number,
+  initiatives: ReadonlyArray<string | null> = [],
+): Scoreboard {
+  const week: WeekDay[] = [];
+  for (let back = 6; back >= 0; back -= 1) {
+    const start = shiftDays(dayStart, -back);
+    const day = dayBoard(logs, now, start, shiftDays(dayStart, 1 - back));
+    week.push({
+      date: localDate(start),
+      unsupervisedMs: day.unsupervisedMs,
+      looks: day.looks,
+      longestRunMs: day.longestRunMs,
+    });
+  }
+  const tomorrow = shiftDays(dayStart, 1);
+  return {
+    ...dayBoard(logs, now, dayStart, tomorrow),
+    week,
+    weekByInitiative: byInitiative(logs, initiatives, now, shiftDays(dayStart, -6), tomorrow),
+  };
+}
+
+/** Running time per initiative in [from, to), overlapping runs counted once within each; most first. */
+function byInitiative(
+  logs: ReadonlyArray<readonly WorkEvent[]>,
+  initiatives: ReadonlyArray<string | null>,
+  now: number,
+  from: number,
+  to: number,
+): Array<{ initiative: string | null; unsupervisedMs: number }> {
+  const intervals = new Map<string | null, Array<[number, number]>>();
+  logs.forEach((events, index) => {
+    const initiative = initiatives[index] ?? null;
+    const list = intervals.get(initiative) ?? [];
+    list.push(...runningIntervals(events, now));
+    intervals.set(initiative, list);
+  });
+  return [...intervals]
+    .map(([initiative, list]) => ({
+      initiative,
+      unsupervisedMs: merge(
+        list.map(([a, b]): [number, number] => [Math.max(a, from), Math.min(b, to)]).filter(([a, b]) => b > a),
+      ).reduce((sum, [a, b]) => sum + (b - a), 0),
+    }))
+    .filter((entry) => entry.unsupervisedMs > 0)
+    .sort(
+      (a, b) =>
+        b.unsupervisedMs - a.unsupervisedMs ||
+        // On a tie, named initiatives by name, and work outside any last.
+        Number(a.initiative === null) - Number(b.initiative === null) ||
+        (a.initiative ?? "").localeCompare(b.initiative ?? ""),
+    );
 }

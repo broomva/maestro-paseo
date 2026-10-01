@@ -34,7 +34,7 @@ import {
 import { briefOf } from "./frontmatter";
 import { describePermission, type PermissionLike } from "./permissions";
 import { type Paseo, startRun } from "./runs";
-import { type Mutation, type StoredWork, WorkStore } from "./store";
+import { type Mutation, placement, type StoredWork, WorkStore } from "./store";
 import { toWire } from "./wire";
 
 /** Why a verb that starts or reads a session cannot run: the plugin has not been handed a Paseo client yet. */
@@ -299,6 +299,7 @@ export class Engine {
         items.map((item) => item.events),
         now.getTime(),
         dayStart.getTime(),
+        items.map((item) => placement(item.rel).initiative),
       ),
       warnings,
     };
