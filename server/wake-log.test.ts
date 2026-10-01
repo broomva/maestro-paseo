@@ -28,6 +28,7 @@ function entry(n: number, extra: Partial<WakeEntry> = {}): WakeEntry {
     deferred: [],
     needsYou: { gate: 0, stuck: 0, asking: 0 },
     quiet: [],
+    flagged: [],
     narrative: ["Woke on a scheduled check.", "Did nothing new this tick."],
     ...extra,
   };

@@ -6,6 +6,7 @@
 import type {
   CheckResult,
   FeatureValues,
+  FlagKind,
   Look,
   Permission,
   Scoreboard,
@@ -82,6 +83,9 @@ export type WorkEvent = Base &
     | { type: "unblocked"; actor: "human"; note: string }
     | { type: "stopped"; actor: "human"; agentId: string | null }
     | { type: "note"; actor: Actor; text: string }
+    // The loop putting work in Needs you (server/loop.ts). An event alone, never a state
+    // change; anything else that happens to the work after it clears it (flagOf).
+    | { type: "loop.flagged"; actor: "maestro"; kind: FlagKind; reason: string }
   );
 
 export type WorkEventType = WorkEvent["type"];
@@ -179,6 +183,34 @@ export function pendingDecision(events: readonly WorkEvent[]): PendingDecision |
     decidedAt: made.ts,
     effectiveAt: made.effectiveAt,
   };
+}
+
+export type FlaggedEvent = Extract<WorkEvent, { type: "loop.flagged" }>;
+
+/**
+ * The loop's current flag on this work: its latest `loop.flagged`, provided
+ * no event other than another flag follows it. Anything else that happens to
+ * the work clears it: your dispatch or cancel, a turn, a state change, a note.
+ * Since flags are all that may follow it, that is the last event, when that
+ * event is a flag.
+ */
+export function flagOf(events: readonly WorkEvent[]): FlaggedEvent | null {
+  const last = events[events.length - 1];
+  return last?.type === "loop.flagged" ? last : null;
+}
+
+/**
+ * The latest event that is not the loop's flag: when something last happened
+ * to the work. A flag is the loop's remark about the work, not a change to
+ * it, so it never moves this, and a flag cannot reset the quiet clock that
+ * raised it.
+ */
+export function lastActivityOf(events: readonly WorkEvent[]): WorkEvent | null {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event && event.type !== "loop.flagged") return event;
+  }
+  return null;
 }
 
 /** The events recorded after the decision with this token was made. */
@@ -486,6 +518,8 @@ export function toWireEvent(event: WorkEvent, settled = false): WorkEventWire | 
       return { ...base, type: event.type, text: "You unblocked it", detail: event.note || null };
     case "note":
       return { ...base, type: event.type, text: event.text, detail: null };
+    case "loop.flagged":
+      return { ...base, type: event.type, text: "Flagged for you by the loop", detail: event.reason };
   }
 }
 

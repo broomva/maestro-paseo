@@ -23,7 +23,7 @@ function PillContent() {
 }
 
 type Waiting = Attention["waiting"][number];
-const waiting = (id: string, group: Waiting["group"] = "review"): Waiting => ({ id, group });
+const waiting = (id: string, group: Waiting["group"] = "review"): Waiting => ({ id, group, flag: null });
 const session = (workId: string, state: OrchState, agentId = "a1", workspaceId: string | null = "ws1") => ({
   workId,
   title: `Work ${workId}`,

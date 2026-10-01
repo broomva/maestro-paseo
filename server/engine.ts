@@ -19,9 +19,9 @@
 
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
-import { type MaestroConfig, type NextRun, NOT_STOPPED, type RunChoices, type WorkItem } from "../shared/contracts";
+import { type FlagKind, type MaestroConfig, NOT_STOPPED, type RunChoices, type WorkItem } from "../shared/contracts";
 import { skipsPrompts } from "../shared/run";
 import {
   GROUP_ORDER,
@@ -39,6 +39,7 @@ import {
   checkOutcome,
   decisionApplied,
   eventsSince,
+  flagOf,
   lastOf,
   latestChecks,
   type Origin,
@@ -52,10 +53,11 @@ import {
   type WorkEvent,
   workerOf,
 } from "./events";
+import { flagStands } from "./flags";
 import { inspectFolder, repoRefusal } from "./folders";
 import { briefOf, type RunKeys, workTitle } from "./frontmatter";
 import { describePermission, type PermissionLike } from "./permissions";
-import { nextRun, type Paseo, startRun } from "./runs";
+import { leftToYou, MODED_BY_YOU, nextRun, type Paseo, startRun } from "./runs";
 import { type Mutation, placement, type StoredWork, WorkStore, withLock } from "./store";
 import { toWire } from "./wire";
 import { type WorktreeStatus, worktreeStatus } from "./worktree";
@@ -211,23 +213,8 @@ function runKeys(input: RunChoices): RunKeys {
   return keys;
 }
 
-export const MODED_BY_YOU = "This work runs in a mode you chose; start it yourself.";
-
-/** Why the loop leaves queued work to you: its run would edit files and run commands without asking. */
-export const PROMPT_FREE = "runs without permission prompts; start it yourself";
-
-/**
- * Why the loop must leave this work for you to start, read from how its next
- * run would start (server/runs.ts nextRun, Settings included), or null. A run
- * that skips permission prompts, by a mode (the work's or Settings') or an
- * auto-approving feature, is never the loop's to start; nor is work you gave
- * a mode of its own, which is yours to use.
- */
-export function leftToYou(next: NextRun): string | null {
-  if (skipsPrompts(next)) return PROMPT_FREE;
-  if (next.modeId && !next.fromSettings.includes("modeId")) return MODED_BY_YOU;
-  return null;
-}
+// Who must start a run lives beside how it starts (server/runs.ts); the loop and its tests read it here.
+export { leftToYou, MODED_BY_YOU, PROMPT_FREE } from "./runs";
 
 /** See EngineOptions.claimWaitMs. */
 export const CLAIM_WAIT_MS = 30_000;
@@ -493,6 +480,31 @@ export class Engine {
     const { store, config } = await this.store();
     const item = await this.findByAgent(store, agentId);
     return item ? toWire(item, this.now().getTime(), config) : null;
+  }
+
+  // ── The loop's flags ───────────────────────────────────────────────────────
+
+  /**
+   * Put work in Needs you for the loop (server/flags.ts): one `loop.flagged`
+   * event, no state change, written under the work's lock. Only while the
+   * reason still stands on the work as its files are now, and only when its
+   * current flag is not already of this kind, so a wake every minute adds
+   * nothing. Returns whether it wrote one.
+   */
+  async flag(item: Pick<WorkItem, "id" | "path">, kind: FlagKind, reason: string): Promise<boolean> {
+    const { store, config } = await this.store();
+    let wrote = false;
+    await store.mutate(
+      item.id,
+      (fresh) => {
+        if (flagOf(fresh.events)?.kind === kind) return null;
+        if (!flagStands(kind, fresh, this.now().getTime(), config)) return null;
+        wrote = true;
+        return { events: [{ ts: this.stamp(), type: "loop.flagged", actor: "maestro", kind, reason }] };
+      },
+      join(store.root, item.path),
+    );
+    return wrote;
   }
 
   // ── Human verbs ────────────────────────────────────────────────────────────

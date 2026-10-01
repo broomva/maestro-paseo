@@ -200,6 +200,7 @@ const item = (id: string): WorkItem => ({
   permission: null,
   checks: [],
   pending: null,
+  flag: null,
 });
 const invoke = async (method: string, input: unknown) => {
   switch (method) {

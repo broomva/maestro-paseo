@@ -117,6 +117,7 @@ function ranAt(wokeAt: number, extra: Partial<WakeEntry> = {}): WakeEntry {
     deferred: [],
     needsYou: { gate: 0, stuck: 0, asking: 0 },
     quiet: [],
+    flagged: [],
     narrative: ["Woke on a scheduled check.", "Did nothing new this tick."],
     ...extra,
   };
@@ -462,6 +463,8 @@ describe("a wake", () => {
       "Needs you:",
       "  Long one has been quiet 30 minutes, worth a look.",
       "Did nothing new this tick.",
+      "Flagged for you:",
+      "  Long one.",
     ]);
   });
 

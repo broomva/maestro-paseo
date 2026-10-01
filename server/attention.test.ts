@@ -24,8 +24,8 @@ describe("work.attention", () => {
       now,
     );
     expect(waiting).toEqual([
-      { id: "r", group: "review" },
-      { id: "b", group: "blocked" },
+      { id: "r", group: "review", flag: null },
+      { id: "b", group: "blocked", flag: null },
     ]);
   });
 

@@ -100,6 +100,19 @@ export const PendingSchema = z.object({
 });
 export type Pending = z.infer<typeof PendingSchema>;
 
+/**
+ * Why the loop put work in Needs you, raised by a wake: queued work it leaves
+ * to you to start (`yours`), a start it tried that failed (`failed`), or a run
+ * quiet for 30 minutes or more (`quiet`). Being deferred at the run cap is
+ * not one: that work starts when a slot frees.
+ */
+export const FLAG_KINDS = ["yours", "failed", "quiet"] as const;
+export type FlagKind = (typeof FLAG_KINDS)[number];
+
+/** The loop's current flag on a work: its kind, the reason in words, and when the loop raised it. */
+export const FlagSchema = z.object({ kind: z.enum(FLAG_KINDS), reason: z.string(), at: z.string() });
+export type Flag = z.infer<typeof FlagSchema>;
+
 export const WorkItemSchema = z.object({
   id: z.string(),
   path: z.string(),
@@ -133,6 +146,11 @@ export const WorkItemSchema = z.object({
   /** The latest move into review, as its index in the event log; kept after the work leaves review. */
   landing: z.number().int().optional(),
   pending: PendingSchema.nullable(),
+  /**
+   * The loop's flag: this work needs you though it is not at your gate or
+   * stuck. Null once anything else happens to the work (server/events.ts flagOf).
+   */
+  flag: FlagSchema.nullable(),
 });
 export type WorkItem = z.infer<typeof WorkItemSchema>;
 
@@ -322,14 +340,15 @@ export const setConfig = defineRpc({
 /**
  * What the header count and the composer pills show, read from the work files
  * alone: it never reconciles against sessions, so polling it costs no agent
- * round trips. `waiting` is the work at your gate or stuck; `sessions` are the
- * workers of work that is live or changed in the last day.
+ * round trips. `waiting` is the work that needs you: at your gate or stuck
+ * first, then work the loop flagged (`flag`, null for the others); `sessions`
+ * are the workers of work that is live or changed in the last day.
  */
 export const attentionWork = defineRpc({
   name: "work.attention",
   input: z.object({}),
   output: z.object({
-    waiting: z.array(z.object({ id: z.string(), group: z.enum(GROUP_ORDER) })),
+    waiting: z.array(z.object({ id: z.string(), group: z.enum(GROUP_ORDER), flag: FlagSchema.nullable() })),
     sessions: z.array(
       z.object({
         workId: z.string(),
@@ -349,10 +368,10 @@ const Named = z.object({ id: z.string(), title: z.string() });
 
 /**
  * One wake of the loop, as its log keeps it: why it woke, what it started,
- * what it left alone and why, what needs you, and which runs have gone quiet.
- * `narrative` is the same in plain words, one line each. A wake asked for
- * while another ran is `skipped` (the reason), with empty lists and zero
- * counts: read `skipped` first.
+ * what it left alone and why, what needs you, which runs have gone quiet, and
+ * the flags it raised in Needs you. `narrative` is the same in plain words,
+ * one line each. A wake asked for while another ran is `skipped` (the
+ * reason), with empty lists and zero counts: read `skipped` first.
  */
 export const WakeEntrySchema = z.object({
   tickId: z.string(),
@@ -364,6 +383,12 @@ export const WakeEntrySchema = z.object({
   needsYou: z.object({ gate: z.number(), stuck: z.number(), asking: z.number() }),
   /** Running work with no event for 30 minutes or more. */
   quiet: z.array(Named.extend({ minutes: z.number() })),
+  /**
+   * The flags this wake raised: only those it wrote, so a work already
+   * flagged the same way is not listed again. Absent on entries written
+   * before flags existed.
+   */
+  flagged: z.array(Named.extend({ kind: z.enum(FLAG_KINDS), reason: z.string() })).default([]),
   narrative: z.array(z.string()),
   skipped: z.string().optional(),
 });

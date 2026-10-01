@@ -11,10 +11,16 @@
 //      run cap, the folder checks and the start refusal are dispatch's own.
 //      The first refusal at the cap defers it and the rest of the queue "at
 //      the run cap", except work the loop would never start whatever the cap
-//      (leftToYou), which keeps its own reason after the cap as before it;
+//      (leftToYou), which keeps its own reason after the cap as before it.
+//      Work whose start the loop tried and that failed is not tried again
+//      while that flag stands: it is yours until something happens to it;
 //   4. counts what needs you, and names running work quiet for 30 minutes;
-//   5. writes one wake-log entry (server/wake-log.ts) that says all of it.
-// It never stops, sends back or decides anything: those stay yours.
+//   5. flags, in Maestro's Needs you, what it leaves to you, what it could
+//      not start, and what has gone quiet (server/flags.ts): one event per
+//      work, and none while the same flag already stands;
+//   6. writes one wake-log entry (server/wake-log.ts) that says all of it.
+// It never stops, sends back or decides anything: those stay yours. Being
+// deferred at the run cap is not flagged: that work starts when a slot frees.
 //
 // Off unless Settings give it a period (loopMinutes). The next wake is due a
 // period after the last one the log records, so a restart keeps the cadence.
@@ -25,15 +31,18 @@
 // while the wake is still running.
 
 import { randomUUID } from "node:crypto";
-import type { WakeEntry, WorkItem } from "../shared/contracts";
+import type { FlagKind, WakeEntry, WorkItem } from "../shared/contracts";
 import { isDispatchable } from "../shared/states";
 import { AtCapacity, type Engine, leftToYou, realTimer, type Timer, UserError } from "./engine";
 import { LOOP } from "./events";
+import { failedReason, minutesWords, QUIET_MS, quietReason, sentence, yoursReason } from "./flags";
 import type { Paseo } from "./runs";
 import { WakeLog } from "./wake-log";
 
-/** Running work with no event for this long is named in the wake log as worth a look. */
-export const QUIET_MS = 30 * 60_000;
+export { QUIET_MS };
+
+/** Why queued work was left: the loop tried to start it before and could not, and flagged it for you. */
+export const FAILED_BEFORE = "it could not start before; start it yourself";
 
 /** Why queued work was left: dispatch refused it at the run cap, so the rest of the queue waits too. */
 export const AT_RUN_CAP = "at the run cap";
@@ -53,6 +62,8 @@ const MAX_DELAY_MS = 2 ** 31 - 1;
 
 type Cause = WakeEntry["cause"];
 type Named = { id: string; title: string };
+/** A flag this wake means to raise, written once the walk is done. */
+type Raise = { item: WorkItem; kind: FlagKind; reason: string };
 
 export interface LoopOptions {
   engine: Engine;
@@ -65,11 +76,6 @@ export interface LoopOptions {
   wakeLog?: WakeLog;
   log?: (message: string) => void;
 }
-
-const minutes = (count: number) => (count === 1 ? "1 minute" : `${count} minutes`);
-
-/** A reason as the end of a sentence: a full stop unless it already ends in one. */
-const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
 
 /**
  * The wake in plain words: why it woke, anything that kept it from working,
@@ -84,7 +90,7 @@ export function narrate(entry: Omit<WakeEntry, "narrative" | "tickId" | "wokeAt"
     ...(gate > 0 ? [`${gate} waiting at your gate.`] : []),
     ...(asking > 0 ? [`${asking} asking you a question.`] : []),
     ...(stuck > 0 ? [`${stuck} stuck.`] : []),
-    ...entry.quiet.map((run) => `${run.title} has been quiet ${minutes(run.minutes)}, worth a look.`),
+    ...entry.quiet.map((run) => `${run.title} has been quiet ${minutesWords(run.minutes)}, worth a look.`),
   ];
   if (needs.length > 0) lines.push("Needs you:", ...needs.map((line) => `  ${line}`));
   if (entry.dispatched.length > 0) {
@@ -94,6 +100,9 @@ export function narrate(entry: Omit<WakeEntry, "narrative" | "tickId" | "wokeAt"
   }
   if (entry.deferred.length > 0) {
     lines.push("Left alone:", ...entry.deferred.map((work) => `  ${work.title}: ${sentence(work.reason)}`));
+  }
+  if (entry.flagged.length > 0) {
+    lines.push("Flagged for you:", ...entry.flagged.map((work) => `  ${sentence(work.title)}`));
   }
   return lines;
 }
@@ -249,6 +258,7 @@ export class Loop {
       deferred: [],
       needsYou: { gate: 0, stuck: 0, asking: 0 },
       quiet: [],
+      flagged: [],
       narrative: [],
     };
   }
@@ -266,6 +276,7 @@ export class Loop {
       return entry;
     }
     const now = Date.parse(entry.wokeAt);
+    const raise: Raise[] = [];
     for (const item of items) {
       if (item.state === "review") {
         if (item.phase === "asking") entry.needsYou.asking += 1;
@@ -273,8 +284,12 @@ export class Loop {
       } else if (item.state === "blocked") {
         entry.needsYou.stuck += 1;
       } else if (item.state === "running") {
+        // lastEventAt skips the loop's own flags (server/wire.ts), so a flag never resets this clock.
         const silent = now - Date.parse(item.lastEventAt ?? item.updatedAt);
-        if (silent >= QUIET_MS) entry.quiet.push({ ...named(item), minutes: Math.floor(silent / 60_000) });
+        if (silent >= QUIET_MS) {
+          entry.quiet.push({ ...named(item), minutes: Math.floor(silent / 60_000) });
+          raise.push({ item, kind: "quiet", reason: quietReason(silent) });
+        }
       }
     }
     if (!paseo) {
@@ -282,25 +297,45 @@ export class Loop {
       notes.push(NOT_CONNECTED);
     } else {
       this.missedClient = false;
-      await this.startQueued(paseo, items, entry);
+      await this.startQueued(paseo, items, entry, raise);
     }
+    await this.raiseFlags(raise, entry);
     entry.narrative = narrate(entry, notes);
     return entry;
+  }
+
+  /** Write the flags this wake raised; the engine writes each only when the work's current flag is another kind. */
+  private async raiseFlags(raise: readonly Raise[], entry: WakeEntry): Promise<void> {
+    for (const { item, kind, reason } of raise) {
+      try {
+        if (await this.engine.flag(item, kind, reason)) entry.flagged.push({ ...named(item), kind, reason });
+      } catch (error) {
+        this.log(`the loop could not flag ${item.id}: ${(error as Error).message}`);
+      }
+    }
   }
 
   /**
    * Walk the queue in order: leave alone what is yours to start, start the
    * rest until dispatch says the cap is reached, then defer the rest "at the
    * run cap". What is yours keeps its own reason after the cap too: the loop
-   * never starts it, so the cap is not why it waits.
+   * never starts it, so the cap is not why it waits. The same holds for work
+   * it could not start before, while that flag stands. What it leaves to you
+   * and what fails to start go on `raise`.
    */
-  private async startQueued(paseo: Paseo, items: readonly WorkItem[], entry: WakeEntry): Promise<void> {
+  private async startQueued(paseo: Paseo, items: readonly WorkItem[], entry: WakeEntry, raise: Raise[]): Promise<void> {
     const queue = items.filter((item) => isDispatchable(item.state)).sort(queueOrder);
     let capped = false;
     for (const item of queue) {
       const left = item.nextRun ? leftToYou(item.nextRun) : null;
       if (left) {
         entry.deferred.push({ ...named(item), reason: left });
+        raise.push({ item, kind: "yours", reason: yoursReason(left) });
+        continue;
+      }
+      // Tried before and flagged for you: not tried again until something happens to the work.
+      if (item.flag?.kind === "failed") {
+        entry.deferred.push({ ...named(item), reason: FAILED_BEFORE });
         continue;
       }
       if (capped) {
@@ -319,6 +354,7 @@ export class Loop {
         const message = error instanceof Error ? error.message : String(error);
         if (!(error instanceof UserError)) this.log(`the loop could not start ${item.id}: ${message}`);
         entry.deferred.push({ ...named(item), reason: `could not start: ${message}` });
+        raise.push({ item, kind: "failed", reason: failedReason(message) });
       }
     }
   }

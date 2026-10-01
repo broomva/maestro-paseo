@@ -5,6 +5,7 @@
 
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { MaestroConfig, NextRun, Worker } from "../shared/contracts";
+import { skipsPrompts } from "../shared/run";
 import { runFolder } from "./folders";
 import { briefOf } from "./frontmatter";
 import { type StoredWork, slugify } from "./store";
@@ -107,6 +108,25 @@ export function nextRun(config: MaestroConfig, item: StoredWork): NextRun {
     featureValues: run.featureValues ? { ...run.featureValues } : null,
     fromSettings: run.fromSettings,
   };
+}
+
+/** Why a session or the loop leaves work to you: it carries a mode you chose for it. */
+export const MODED_BY_YOU = "This work runs in a mode you chose; start it yourself.";
+
+/** Why the loop leaves queued work to you: its run would edit files and run commands without asking. */
+export const PROMPT_FREE = "runs without permission prompts; start it yourself";
+
+/**
+ * Why the loop must leave this work for you to start, read from how its next
+ * run would start (nextRun, Settings included), or null. A run that skips
+ * permission prompts, by a mode (the work's or Settings') or an
+ * auto-approving feature, is never the loop's to start; nor is work you gave
+ * a mode of its own, which is yours to use.
+ */
+export function leftToYou(next: NextRun): string | null {
+  if (skipsPrompts(next)) return PROMPT_FREE;
+  if (next.modeId && !next.fromSettings.includes("modeId")) return MODED_BY_YOU;
+  return null;
 }
 
 export async function startRun(paseo: Paseo, config: MaestroConfig, item: StoredWork): Promise<Worker> {
