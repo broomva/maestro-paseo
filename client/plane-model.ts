@@ -2,7 +2,8 @@
 // count, and the words on each card. No React here, so every rule is tested.
 
 import type { Worker, WorkItem } from "../shared/contracts";
-import { GROUP_COPY, GROUP_ORDER, type Group, PLAIN_VOICE } from "../shared/states";
+import { needsHand, needsYouOf, sectionOf } from "../shared/needs-you";
+import { GROUP_COPY, GROUP_ORDER, type Group, PLAIN_VOICE, QUEUED_LOOP_HINT } from "../shared/states";
 import { agoWords, basename, plural } from "./format";
 
 export const VIEWS = [
@@ -31,24 +32,27 @@ export function filterLabel(filter: Filter): string {
 }
 
 /**
- * Whether an item is under a chip: its own group's, and Needs you too when the
- * loop flagged it, so the chip the header count opens lists what it counted.
+ * Whether an item is under a chip. The chips follow the sections (sectionOf):
+ * Needs you, Running, Queued and Done each hold exactly what their section
+ * lists, so flagged or stuck work is under Needs you and under no state chip.
+ * Stuck narrows Needs you to its stuck work. All holds everything, which is
+ * the four sections together, since each item is in exactly one.
  */
 export function inFilter(item: Pick<WorkItem, "group" | "flag">, filter: Filter): boolean {
-  return filter === "all" || item.group === filter || (filter === "review" && Boolean(item.flag));
-}
-
-export function countFilters(items: readonly WorkItem[]): Record<Filter, number> {
-  const counts: Record<Filter, number> = { all: items.length, review: 0, blocked: 0, running: 0, queued: 0, done: 0 };
-  for (const item of items) {
-    counts[item.group] += 1;
-    if (item.group !== "review" && inFilter(item, "review")) counts.review += 1;
-  }
-  return counts;
+  if (filter === "all") return true;
+  return filter === "blocked" ? item.group === "blocked" : sectionOf(item) === filter;
 }
 
 export function applyFilter(items: readonly WorkItem[], filter: Filter): WorkItem[] {
   return items.filter((item) => inFilter(item, filter));
+}
+
+/** Each chip's count: the length of what its filter shows (applyFilter), so the two cannot disagree. */
+export function countFilters(items: readonly WorkItem[]): Record<Filter, number> {
+  return Object.fromEntries(FILTERS.map((filter) => [filter, applyFilter(items, filter).length])) as Record<
+    Filter,
+    number
+  >;
 }
 
 /** A chip shows when it has work or is selected, so a filter opened from elsewhere is never hidden. */
@@ -73,13 +77,8 @@ export function emptyText(filter: Filter): string {
   }
 }
 
-/**
- * Work that waits on a person: at your gate, stuck, or flagged by the loop (a
- * start it left to you or could not make, a run gone quiet). The board's Needs
- * you column, the scope badge and the header count.
- */
-export const needsHand = (item: Pick<WorkItem, "group" | "flag">): boolean =>
-  item.group === "review" || item.group === "blocked" || Boolean(item.flag);
+/** What needs you, as every surface counts it (shared/needs-you.ts). */
+export { needsHand, needsYouOf, sectionOf };
 
 export interface Initiative {
   name: string;
@@ -116,47 +115,55 @@ export function scopeLabel(initiative: Initiative): string {
   return initiative.needsYou > 0 ? `${base}, ${initiative.needsYou} waiting on you` : base;
 }
 
-/** Non-empty groups in attention order. */
+/**
+ * A group's subtitle, in the feed, the list and the board alike. Queued says
+ * who starts it: you, or, while the loop is on, the loop at its next wake.
+ */
+export function groupHint(group: Group, loopOn: boolean): string {
+  return group === "queued" && loopOn ? QUEUED_LOOP_HINT : GROUP_COPY[group].hint;
+}
+
+/**
+ * The feed's and the list's sections, non-empty, in attention order. Needs
+ * you holds what needs you (at your gate, stuck, then flagged), as the board's
+ * column and the header count do, so stuck and flagged work is listed there
+ * and not again under its own group.
+ */
 export function groupsOf(items: readonly WorkItem[]): { group: Group; items: WorkItem[] }[] {
-  return GROUP_ORDER.map((group) => ({ group, items: items.filter((item) => item.group === group) })).filter(
-    (entry) => entry.items.length > 0,
-  );
+  return GROUP_ORDER.map((group) => ({
+    group,
+    items: group === "review" ? needsYouOf(items) : items.filter((item) => sectionOf(item) === group),
+  })).filter((entry) => entry.items.length > 0);
 }
 
 export interface Column {
   id: "queued" | "running" | "needs-you" | "done";
   title: string;
   hint: string;
-  groups: readonly Group[];
   items: WorkItem[];
 }
 
-const COLUMNS: readonly Omit<Column, "items">[] = [
-  { id: "queued", title: GROUP_COPY.queued.title, hint: GROUP_COPY.queued.hint, groups: ["queued"] },
-  { id: "running", title: GROUP_COPY.running.title, hint: GROUP_COPY.running.hint, groups: ["running"] },
-  {
-    id: "needs-you",
-    title: GROUP_COPY.review.title,
-    hint: "At your gate, stuck or flagged",
-    groups: ["review", "blocked"],
-  },
-  { id: "done", title: GROUP_COPY.done.title, hint: GROUP_COPY.done.hint, groups: ["done"] },
+/** The board's columns, left to right, and the section each one shows. */
+const COLUMNS: readonly { id: Column["id"]; group: Group }[] = [
+  { id: "queued", group: "queued" },
+  { id: "running", group: "running" },
+  { id: "needs-you", group: "review" },
+  { id: "done", group: "done" },
 ];
 
 /**
  * Four columns, always present so work moves across a fixed frame. Needs you
  * lists review, then stuck, then work the loop flagged, which it takes from
- * its own column: each item shows once.
+ * its own column: each item shows once, in the section the feed puts it in
+ * (sectionOf). `loopOn` words the Queued hint.
  */
-export function boardColumns(items: readonly WorkItem[]): Column[] {
-  return COLUMNS.map((column) => {
-    const own = column.groups.flatMap((group) => items.filter((item) => item.group === group));
-    if (column.id !== "needs-you") return { ...column, items: own.filter((item) => !needsHand(item)) };
-    return {
-      ...column,
-      items: [...own, ...items.filter((item) => needsHand(item) && !column.groups.includes(item.group))],
-    };
-  });
+export function boardColumns(items: readonly WorkItem[], loopOn = false): Column[] {
+  return COLUMNS.map(({ id, group }) => ({
+    id,
+    title: GROUP_COPY[group].title,
+    hint: groupHint(group, loopOn),
+    items: group === "review" ? needsYouOf(items) : items.filter((item) => sectionOf(item) === group),
+  }));
 }
 
 /** "initiative › project", the project falling back to the repo's folder name. */
@@ -209,13 +216,17 @@ export function cardLabel(item: WorkItem, now = Date.now()): string {
     .join(", ");
 }
 
-/** The header line: what needs a person first, then what is moving. */
+/**
+ * The header line: what needs a person, then what is moving, each counted as
+ * its section lists it. Stuck and flagged work is in "need you" (as in the
+ * header count), and a flagged run is not counted again as running.
+ */
 export function summaryText(items: readonly WorkItem[]): string {
-  const counts = countFilters(items);
+  const needs = needsYouOf(items).length;
+  const running = items.filter((item) => sectionOf(item) === "running").length;
   const parts = [
-    counts.review ? `${counts.review} ${counts.review === 1 ? "needs" : "need"} you` : null,
-    counts.blocked ? `${counts.blocked} stuck` : null,
-    counts.running ? `${counts.running} running` : null,
+    needs ? `${needs} ${needs === 1 ? "needs" : "need"} you` : null,
+    running ? `${running} running` : null,
   ].filter(Boolean);
   return parts.join(" · ") || (items.length ? "Nothing needs you" : "No work yet");
 }

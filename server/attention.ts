@@ -3,21 +3,20 @@
 // open client can poll it without costing an agent round trip per item. Pure.
 
 import type { Attention, WorkItem } from "../shared/contracts";
-import { isAttention, isTerminal } from "../shared/states";
+import { needsYouOf } from "../shared/needs-you";
+import { isTerminal } from "../shared/states";
 
 /** How long finished work keeps its pill: long enough to see it closed, not forever. */
 export const RECENT_MS = 24 * 60 * 60 * 1000;
 
 /**
- * `waiting`: work at your gate or stuck first, then work the loop flagged,
- * each in the list's order. Sessions keep the list's order (attention first),
- * which the pills rely on when two items name one session.
+ * `waiting`: what needs you (shared/needs-you.ts), at your gate, then stuck,
+ * then flagged by the loop, each in the list's order. Sessions keep the list's
+ * order (attention first), which the pills rely on when two items name one
+ * session.
  */
 export function attentionOf(items: readonly WorkItem[], now: number): Attention {
-  const waiting = [
-    ...items.filter((item) => isAttention(item.state)),
-    ...items.filter((item) => !isAttention(item.state) && item.flag),
-  ].map(({ id, group, flag }) => ({ id, group, flag }));
+  const waiting = needsYouOf(items).map(({ id, group, flag }) => ({ id, group, flag }));
   const sessions: Attention["sessions"] = [];
   for (const item of items) {
     const worker = item.worker;

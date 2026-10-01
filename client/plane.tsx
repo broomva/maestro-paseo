@@ -13,8 +13,9 @@ import { ChangeScope } from "./changed";
 import { WorkDetail } from "./detail";
 import { errorText, plural } from "./format";
 import { HistoryView } from "./history";
-import { useWorkList } from "./hooks";
+import { useLoop, useWorkList } from "./hooks";
 import { useIntent } from "./intent";
+import { LoopControl, LoopPanel } from "./loop";
 import { NewWork } from "./new-work";
 import { FilterRow, ScopeRow, ViewSwitch } from "./plane-controls";
 import {
@@ -37,12 +38,15 @@ import { Button, Card, IconButton, Notice, space, useText } from "./ui";
 
 export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps) {
   const list = useWorkList();
+  // The same read as the loop control's (one query): whether the loop is on words the Queued hint.
+  const loopOn = useLoop().data?.minutes != null;
   const text = useText(theme);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [chosenView, setView] = useState<PlaneView>("feed");
   const [filter, setFilter] = useState<Filter>("all");
   const [chosenScope, setScope] = useState<string | null>(null);
+  const [loopOpen, setLoopOpen] = useState(false);
   useIntent((intent) => {
     if (intent.kind === "select") setSelected(intent.id);
     else if (intent.kind === "new") setCreating(true);
@@ -94,23 +98,29 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
 
   const listPane = (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: pad, gap: space[5] }}>
-      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[3] }}>
-        <View style={{ flex: 1, gap: space[1] }}>
-          <Text style={text.heading} accessibilityRole="header">
-            Maestro
-          </Text>
-          <Text style={text.muted}>{summaryText(items)}</Text>
+      <View style={{ gap: space[2] }}>
+        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[3] }}>
+          <View style={{ flex: 1, gap: space[1] }}>
+            <Text style={text.heading} accessibilityRole="header">
+              Maestro
+            </Text>
+            <Text style={text.muted}>{summaryText(items)}</Text>
+          </View>
+          <IconButton theme={theme} icon="RefreshCw" label="Refresh work" onPress={() => void list.refetch()} />
+          <Button
+            theme={theme}
+            variant="primary"
+            icon="Plus"
+            label="New work"
+            compact={compact}
+            onPress={() => setCreating(true)}
+          />
         </View>
-        <IconButton theme={theme} icon="RefreshCw" label="Refresh work" onPress={() => void list.refetch()} />
-        <Button
-          theme={theme}
-          variant="primary"
-          icon="Plus"
-          label="New work"
-          compact={compact}
-          onPress={() => setCreating(true)}
-        />
+        {/* Its own row, the pane's full width: beside the buttons a phone wraps "Next wake in 15 min". */}
+        <LoopControl theme={theme} open={loopOpen} onToggle={() => setLoopOpen((open) => !open)} />
       </View>
+
+      {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
 
       <ViewSwitch theme={theme} view={view} onView={chooseView} views={viewsFor(compact)} />
 
@@ -171,11 +181,11 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
               ) : shown.length === 0 && view !== "board" ? (
                 <Text style={text.muted}>{emptyText(filter)}</Text>
               ) : view === "board" ? (
-                <BoardView {...pick} items={shown} />
+                <BoardView {...pick} items={shown} loopOn={loopOn} />
               ) : view === "list" ? (
-                <ListView {...pick} items={shown} />
+                <ListView {...pick} items={shown} loopOn={loopOn} />
               ) : (
-                <FeedView {...pick} items={shown} />
+                <FeedView {...pick} items={shown} loopOn={loopOn} />
               )}
             </>
           )}

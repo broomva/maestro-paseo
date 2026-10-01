@@ -5,10 +5,11 @@ import { join } from "node:path";
 import type { MaestroConfig, WakeEntry } from "../shared/contracts";
 import { attentionOf } from "./attention";
 import { defaultConfig } from "./config";
-import { type CreateInput, Engine, MODED_BY_YOU, PROMPT_FREE, type Timer } from "./engine";
+import { type CreateInput, Engine, MODED_BY_YOU, NOT_QUIET, PROMPT_FREE, type Timer } from "./engine";
 import { LOOP } from "./events";
 import { fakePaseo } from "./fake-paseo";
-import { ALREADY_WAKING, AT_RUN_CAP, FAILED_BEFORE, Loop, NOT_CONNECTED, QUIET_MS } from "./loop";
+import { ACTIVE_AGAIN, quietCleared, sessionActiveAt } from "./flags";
+import { ALREADY_WAKING, ASK_NOT_CONNECTED, AT_RUN_CAP, FAILED_BEFORE, Loop, NOT_CONNECTED, QUIET_MS } from "./loop";
 import type { Paseo } from "./runs";
 import { WorkStore } from "./store";
 import { WakeLog } from "./wake-log";
@@ -67,7 +68,8 @@ async function setup(overrides: Partial<MaestroConfig> = {}) {
     timer: fakeTimers().timer,
     claimWaitMs: 200,
   });
-  const fake = fakePaseo();
+  // Sessions are stamped by the same clock, so one that does nothing is as quiet as its work.
+  const fake = fakePaseo({ now: () => new Date(clock) });
   const client: { paseo: Paseo | null } = { paseo: fake.paseo };
   const timers = fakeTimers();
   const logs: string[] = [];
@@ -80,6 +82,7 @@ async function setup(overrides: Partial<MaestroConfig> = {}) {
       timer: timers.timer,
       wakeLog,
       log: (message) => logs.push(message),
+      askMs: 100,
     });
   /** Queued work, created as you create it in Maestro. */
   const queue = (title: string, extra: Partial<CreateInput> = {}) =>
@@ -118,7 +121,9 @@ function ranAt(wokeAt: number, extra: Partial<WakeEntry> = {}): WakeEntry {
     deferred: [],
     needsYou: { gate: 0, stuck: 0, asking: 0 },
     quiet: [],
+    unasked: [],
     flagged: [],
+    cleared: [],
     narrative: ["Woke on a scheduled check.", "Did nothing new this tick."],
     ...extra,
   };
@@ -348,10 +353,13 @@ describe("a wake", () => {
       {
         id: first.id,
         title: first.title,
-        reason: "could not start: Could not start the run: provider list unavailable",
+        reason: "could not start: provider list unavailable",
       },
     ]);
     expect(entry.dispatched).toEqual([{ id: later.id, title: later.title }]);
+    // The narrative says it once, too.
+    expect(entry.narrative).toContain("  First: could not start: provider list unavailable.");
+    expect(entry.narrative.join("\n")).not.toContain("Could not start the run");
   });
 
   test("a wake asked for while one runs is recorded as skipped, not queued", async () => {
@@ -527,6 +535,7 @@ describe("flags in Needs you", () => {
     const { loop, queue, engine, fake, store } = await setup({ concurrencyCap: null });
     const running = await queue("Long one");
     await engine.dispatch(fake.paseo, running.id);
+    const dispatchedAt = new Date(clock).toISOString();
     tickMinutes(1);
     const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
     tickMinutes(1);
@@ -568,8 +577,10 @@ describe("flags in Needs you", () => {
         text: "Flagged for you by the loop",
         detail: reason,
       });
+      // A quiet flag keeps when the run last did anything, so its reason counts on from there.
+      const since = kind === "quiet" ? { since: dispatchedAt } : {};
       expect(await flags(store, item.id)).toEqual([
-        { ts: entry.wokeAt, type: "loop.flagged", actor: "maestro", kind, reason },
+        { ts: entry.wokeAt, type: "loop.flagged", actor: "maestro", kind, reason, ...since },
       ]);
       // A flag is not a change of state.
       expect(wire.state).toBe(item.id === running.id ? "running" : "proposed");
@@ -699,6 +710,399 @@ describe("flags in Needs you", () => {
       { id: stuck.id, group: "blocked", flag: null },
       { id: bypass.id, group: "queued", flag: { kind: "yours", reason: PROMPTS, at: new Date(clock).toISOString() } },
     ]);
+  });
+});
+
+describe("quiet asks the session", () => {
+  const minutesAgo = (minutes: number) => new Date(clock - minutes * 60_000);
+
+  test("a long turn still at work is not quiet: its session's own activity says so", async () => {
+    const { loop, queue, engine, fake } = await setup();
+    const item = await queue("Long turn");
+    await engine.dispatch(fake.paseo, item.id);
+    tickMinutes(45);
+    // No event in Maestro for 45 minutes: the turn started and has not ended. The session wrote 2 minutes ago.
+    fake.setLastActivityAt("agent-1", minutesAgo(2));
+    fake.refreshed.length = 0;
+    const entry = await loop.wake("timer");
+    expect(fake.refreshed).toContain("agent-1");
+    expect(entry.quiet).toEqual([]);
+    expect(entry.flagged).toEqual([]);
+    expect(entry.unasked).toEqual([]);
+    expect(entry.narrative.join("\n")).not.toContain("quiet");
+    expect((await engine.get(item.id)).item.flag).toBeNull();
+  });
+
+  test("a run idle by both clocks is quiet, counted from the later of the two", async () => {
+    const { loop, queue, engine, fake } = await setup();
+    const item = await queue("Idle one");
+    await engine.dispatch(fake.paseo, item.id);
+    tickMinutes(10);
+    fake.setLastActivityAt("agent-1", new Date(clock));
+    tickMinutes(35);
+    const entry = await loop.wake("timer");
+    // Maestro's events say 45 minutes; the session last did something 35 minutes ago.
+    expect(entry.quiet).toEqual([{ id: item.id, title: item.title, minutes: 35 }]);
+    expect(entry.flagged).toEqual([
+      { id: item.id, title: item.title, kind: "quiet", reason: "Quiet for 35 minutes, worth a look." },
+    ]);
+    tickMinutes(2);
+    expect((await engine.get(item.id)).item.flag?.reason).toBe("Quiet for 37 minutes, worth a look.");
+  });
+
+  test("a session that cannot be asked is not flagged quiet, and the wake says why", async () => {
+    const { loop, queue, engine, fake } = await setup();
+    const item = await queue("Long one");
+    await engine.dispatch(fake.paseo, item.id);
+    tickMinutes(45);
+    const ref = fake.paseo.agents.ref;
+    fake.paseo.agents.ref = ((id: string) => ({
+      ...ref(id),
+      refresh: () => Promise.reject(new Error("daemon busy")),
+    })) as unknown as typeof ref;
+    const entry = await loop.wake("timer");
+    expect(entry.quiet).toEqual([]);
+    expect(entry.flagged).toEqual([]);
+    expect(entry.unasked).toEqual([{ id: item.id, title: item.title, reason: "daemon busy" }]);
+    expect(entry.narrative).toEqual([
+      "Woke on a scheduled check.",
+      "Could not ask the session, so quiet was neither flagged nor cleared:",
+      "  Long one: daemon busy.",
+      "Did nothing new this tick.",
+    ]);
+    expect((await engine.get(item.id)).item.flag).toBeNull();
+  });
+
+  test("a session that never answers is given up on, bounded, and not flagged", async () => {
+    const { loop, queue, engine, fake } = await setup();
+    const item = await queue("Long one");
+    await engine.dispatch(fake.paseo, item.id);
+    tickMinutes(45);
+    // A read now reconciles; the wake's own read, at the same time, does not, so only its question hangs.
+    await engine.list(fake.paseo);
+    const ref = fake.paseo.agents.ref;
+    fake.paseo.agents.ref = ((id: string) => ({
+      ...ref(id),
+      refresh: () => new Promise(() => undefined),
+    })) as unknown as typeof ref;
+    const entry = await loop.wake("timer");
+    expect(entry.unasked).toEqual([{ id: item.id, title: item.title, reason: "Paseo did not answer within 0.1s" }]);
+    expect(entry.flagged).toEqual([]);
+  });
+
+  test("with no Paseo client there is no session to ask, so nothing is flagged quiet", async () => {
+    const { loop, queue, engine, fake, client } = await setup();
+    const item = await queue("Long one");
+    await engine.dispatch(fake.paseo, item.id);
+    tickMinutes(45);
+    client.paseo = null;
+    const entry = await loop.wake("manual");
+    expect(entry.unasked).toEqual([{ id: item.id, title: item.title, reason: ASK_NOT_CONNECTED }]);
+    expect(entry.flagged).toEqual([]);
+    expect(entry.narrative).toContain(NOT_CONNECTED);
+  });
+
+  describe("a quiet flag comes down when its session works again", () => {
+    /** A run flagged quiet 30 minutes after its dispatch, with nothing from Maestro or its session since. */
+    async function flaggedQuiet(setupResult: Awaited<ReturnType<typeof setup>>) {
+      const { loop, queue, engine, fake } = setupResult;
+      const item = await queue("Long turn");
+      await engine.dispatch(fake.paseo, item.id);
+      tickMinutes(30);
+      expect((await loop.wake("timer")).flagged.map((flag) => flag.kind)).toEqual(["quiet"]);
+      return { item, before: (await engine.get(item.id)).item };
+    }
+    const raw = async (store: WorkStore, id: string) => (await store.findById(id)).events;
+    const askFails = (fake: ReturnType<typeof fakePaseo>, refresh: () => Promise<unknown>) => {
+      const ref = fake.paseo.agents.ref;
+      fake.paseo.agents.ref = ((id: string) => ({ ...ref(id), refresh })) as unknown as typeof ref;
+    };
+
+    test("a session at work again mid-turn: the next wake takes the flag down, as the loop's receipt", async () => {
+      const ctx = await setup();
+      const { loop, engine, fake, store } = ctx;
+      const { item, before } = await flaggedQuiet(ctx);
+      tickMinutes(5);
+      // The turn is still open, so Maestro hears nothing: only the session's own activity moves.
+      fake.setLastActivityAt("agent-1", minutesAgo(1));
+      const entry = await loop.wake("timer");
+      expect(entry.cleared).toEqual([{ id: item.id, title: item.title }]);
+      expect(entry.quiet).toEqual([]);
+      expect(entry.flagged).toEqual([]);
+      expect(entry.unasked).toEqual([]);
+      expect(entry.narrative.slice(-2)).toEqual(["Cleared:", "  Long turn is active again."]);
+      const { item: wire, events } = await engine.get(item.id);
+      expect(wire).toMatchObject({ state: "running", flag: null });
+      expect(events.at(-1)).toEqual({
+        ts: entry.wokeAt,
+        type: "flag.cleared",
+        actor: "maestro",
+        text: "The loop took its flag down",
+        detail: ACTIVE_AGAIN,
+      });
+      expect((await raw(store, item.id)).at(-1)).toEqual({
+        ts: entry.wokeAt,
+        type: "flag.cleared",
+        actor: "maestro",
+        kind: "quiet",
+        reason: ACTIVE_AGAIN,
+      });
+      // Cleared, it is no longer in Needs you; the work's times still point at its dispatch.
+      expect(attentionOf((await engine.list()).items, clock).waiting).toEqual([]);
+      expect([wire.lastEventAt, wire.updatedAt]).toEqual([before.lastEventAt, before.updatedAt]);
+      // A wake after it adds nothing: the flag is down and the session is not quiet.
+      const count = (await raw(store, item.id)).length;
+      tickMinutes(1);
+      expect((await loop.wake("timer")).cleared).toEqual([]);
+      expect(await raw(store, item.id)).toHaveLength(count);
+    });
+
+    test("a snapshot that cannot be read leaves the flag, and the wake says why", async () => {
+      const ctx = await setup();
+      const { loop, engine, fake, store, client } = ctx;
+      const { item } = await flaggedQuiet(ctx);
+      tickMinutes(5);
+      // Had it been read, this would take the flag down.
+      fake.setLastActivityAt("agent-1", minutesAgo(1));
+      const count = (await raw(store, item.id)).length;
+      for (const [refresh, reason] of [
+        [() => Promise.reject(new Error("daemon busy")), "daemon busy"],
+        [() => Promise.resolve(null), "Paseo has no record of the session"],
+        [() => Promise.resolve({ agent: {} }), "the session did not say when it last worked"],
+      ] as const) {
+        askFails(fake, refresh);
+        const entry = await loop.wake("timer");
+        expect(entry.cleared).toEqual([]);
+        expect(entry.unasked).toEqual([{ id: item.id, title: item.title, reason }]);
+        expect(entry.narrative).toContain("Could not ask the session, so quiet was neither flagged nor cleared:");
+        expect((await engine.get(item.id)).item.flag?.kind).toBe("quiet");
+      }
+      client.paseo = null;
+      const unconnected = await loop.wake("timer");
+      expect(unconnected.unasked).toEqual([{ id: item.id, title: item.title, reason: ASK_NOT_CONNECTED }]);
+      expect(unconnected.cleared).toEqual([]);
+      expect((await engine.get(item.id)).item.flag?.kind).toBe("quiet");
+      expect(await raw(store, item.id)).toHaveLength(count);
+    });
+
+    test("a session still idle keeps the flag, and wakes add no event: no second flag, no clear", async () => {
+      const ctx = await setup();
+      const { loop, engine, store } = ctx;
+      const { item } = await flaggedQuiet(ctx);
+      const count = (await raw(store, item.id)).length;
+      for (const minutes of [35, 40]) {
+        tickMinutes(5);
+        const entry = await loop.wake("timer");
+        expect(entry.quiet).toEqual([{ id: item.id, title: item.title, minutes }]);
+        expect(entry.flagged).toEqual([]);
+        expect(entry.cleared).toEqual([]);
+      }
+      expect((await engine.get(item.id)).item.flag?.reason).toBe("Quiet for 40 minutes, worth a look.");
+      expect(await raw(store, item.id)).toHaveLength(count);
+    });
+
+    test("the loop's clear is not a look; your Leave it running is", async () => {
+      const ctx = await setup();
+      const { loop, engine, fake } = ctx;
+      const { item } = await flaggedQuiet(ctx);
+      const looks = (await engine.list()).scoreboard.looks;
+      tickMinutes(5);
+      fake.setLastActivityAt("agent-1", minutesAgo(1));
+      expect((await loop.wake("timer")).cleared).toEqual([{ id: item.id, title: item.title }]);
+      expect((await engine.list()).scoreboard.looks).toBe(looks);
+      expect((await engine.get(item.id)).item.flag).toBeNull();
+    });
+
+    test("is never written on work that moved after the wake read it, nor twice", async () => {
+      const ctx = await setup();
+      const { engine, store } = ctx;
+      const { item, before } = await flaggedQuiet(ctx);
+      tickMinutes(5);
+      const active = clock - 60_000;
+      // A turn ended meanwhile: the flag is already down, so there is nothing to clear.
+      await engine.onTurnStarted({ id: "agent-1" });
+      const count = (await raw(store, item.id)).length;
+      expect(await engine.clearQuiet(before, active)).toBe(false);
+      expect(await raw(store, item.id)).toHaveLength(count);
+      // Flagged again, it clears once; a second call finds no flag.
+      tickMinutes(30);
+      expect(await engine.flag(before, "quiet", "Quiet for 30 minutes, worth a look.")).toBe(true);
+      expect(await engine.clearQuiet(before, clock - 60_000)).toBe(true);
+      expect(await engine.clearQuiet(before, clock - 60_000)).toBe(false);
+      expect((await raw(store, item.id)).filter((event) => event.type === "flag.cleared")).toHaveLength(1);
+    });
+
+    test("quietCleared: active since the flag's since, and within the threshold, for a quiet flag only", () => {
+      const now = Date.parse("2026-09-22T10:00:00.000Z");
+      const at = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString();
+      const flag = (since?: string, kind: "quiet" | "yours" = "quiet") =>
+        ({
+          ts: at(0),
+          type: "loop.flagged",
+          actor: "maestro",
+          kind,
+          reason: "x",
+          ...(since ? { since } : {}),
+        }) as const;
+      const ms = (minutesAgo: number) => now - minutesAgo * 60_000;
+      expect(quietCleared(flag(at(10)), [], at(60), ms(5), now)).toBe(true);
+      // Not since the flag's since: the session's last work is what the flag already counted.
+      expect(quietCleared(flag(at(10)), [], at(60), ms(10), now)).toBe(false);
+      expect(quietCleared(flag(at(10)), [], at(60), ms(12), now)).toBe(false);
+      // Since, but quiet again by now.
+      expect(quietCleared(flag(at(40)), [], at(60), ms(30), now)).toBe(false);
+      // A flag raised before it kept since counts from the work's last event, as its reason does.
+      const events = [{ ts: at(20), type: "note", actor: "human", text: "x" } as const];
+      expect(quietCleared(flag(), events, at(60), ms(19), now)).toBe(true);
+      expect(quietCleared(flag(), events, at(60), ms(21), now)).toBe(false);
+      expect(quietCleared(flag(at(10), "yours"), [], at(60), ms(5), now)).toBe(false);
+    });
+
+    test("the quiet clock ignores the clear: the run is flagged again 30 minutes after its session last worked", async () => {
+      const ctx = await setup();
+      const { loop, engine, fake } = ctx;
+      const { item, before } = await flaggedQuiet(ctx);
+      tickMinutes(5);
+      fake.setLastActivityAt("agent-1", minutesAgo(1));
+      expect((await loop.wake("timer")).cleared).toHaveLength(1);
+      const after = (await engine.get(item.id)).item;
+      expect([after.lastEventAt, after.updatedAt]).toEqual([before.lastEventAt, before.updatedAt]);
+      // The session last worked at minute 34 and the clear was written at 35: at 64 it is quiet by both clocks.
+      tickMinutes(29);
+      const again = await loop.wake("timer");
+      expect(again.quiet).toEqual([{ id: item.id, title: item.title, minutes: 30 }]);
+      expect(again.flagged).toEqual([
+        { id: item.id, title: item.title, kind: "quiet", reason: "Quiet for 30 minutes, worth a look." },
+      ]);
+    });
+  });
+
+  test("the session's activity is read from lastActivityAt when the snapshot names it, else updatedAt", () => {
+    const at = "2026-09-22T09:00:00.000Z";
+    expect(sessionActiveAt({ updatedAt: at })).toBe(Date.parse(at));
+    expect(sessionActiveAt({ lastActivityAt: at, updatedAt: "2026-09-22T08:00:00.000Z" })).toBe(Date.parse(at));
+    expect(sessionActiveAt({ lastActivityAt: "garbage", updatedAt: at })).toBe(Date.parse(at));
+    expect(sessionActiveAt({})).toBeNull();
+    expect(sessionActiveAt({ updatedAt: 12 })).toBeNull();
+  });
+});
+
+describe("the loop and you, for the last slot", () => {
+  /** Holds the first run start inside startRun (after its slot is taken) until released. */
+  function holdFirstStart(fake: ReturnType<typeof fakePaseo>) {
+    const original = fake.paseo.providers.listModels;
+    let entered!: () => void;
+    let release!: () => void;
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    fake.paseo.providers.listModels = (async (...args: Parameters<typeof original>) => {
+      calls += 1;
+      if (calls === 1) {
+        entered();
+        await released;
+      }
+      return original(...args);
+    }) as typeof original;
+    return { inside, release };
+  }
+
+  test("the loop's start holds the slot: yours is refused at the cap, and exactly one starts", async () => {
+    const { loop, queue, engine, fake } = await setup({ concurrencyCap: 1 });
+    const loops = await queue("For the loop");
+    tickMinutes(1);
+    const yours = await queue("For you");
+    const hold = holdFirstStart(fake);
+    const waking = loop.wake("manual");
+    await hold.inside;
+    const mine = await engine.dispatch(fake.paseo, yours.id).then(
+      () => "started",
+      (error: Error) => error.message,
+    );
+    hold.release();
+    const entry = await waking;
+    expect(mine).toBe("At capacity: 1 running. It stays queued.");
+    expect(entry.dispatched).toEqual([{ id: loops.id, title: loops.title }]);
+    expect(entry.deferred).toEqual([{ id: yours.id, title: yours.title, reason: AT_RUN_CAP }]);
+    expect(fake.created).toHaveLength(1);
+    expect((await engine.get(loops.id)).item.state).toBe("running");
+    expect((await engine.get(yours.id)).item.state).toBe("proposed");
+  });
+
+  test("your start holds the slot: the loop defers at the cap, and exactly one starts", async () => {
+    const { loop, queue, engine, fake } = await setup({ concurrencyCap: 1 });
+    const loops = await queue("For the loop");
+    tickMinutes(1);
+    const yours = await queue("For you");
+    const hold = holdFirstStart(fake);
+    const mine = engine.dispatch(fake.paseo, yours.id);
+    await hold.inside;
+    const waking = loop.wake("manual");
+    // The wake reads, walks and defers while your start is still in flight.
+    const entry = await waking;
+    hold.release();
+    expect((await mine).state).toBe("running");
+    expect(entry.dispatched).toEqual([]);
+    expect(entry.deferred).toEqual([
+      { id: loops.id, title: loops.title, reason: AT_RUN_CAP },
+      { id: yours.id, title: yours.title, reason: AT_RUN_CAP },
+    ]);
+    expect(fake.created).toHaveLength(1);
+    expect((await engine.get(loops.id)).item.state).toBe("proposed");
+  });
+});
+
+describe("Leave it running", () => {
+  test("clears a quiet flag as your receipt, a look, and the quiet clock counts from it", async () => {
+    const { loop, queue, engine, fake } = await setup();
+    const item = await queue("Long one");
+    await engine.dispatch(fake.paseo, item.id);
+    tickMinutes(30);
+    expect((await loop.wake("timer")).flagged.map((flag) => flag.kind)).toEqual(["quiet"]);
+    const looks = (await engine.list()).scoreboard.looks;
+    tickMinutes(5);
+    const left = await engine.leaveRunning(item.id);
+    expect(left).toMatchObject({ state: "running", flag: null });
+    const { events } = await engine.get(item.id);
+    expect(events.at(-1)).toEqual({
+      ts: new Date(clock).toISOString(),
+      type: "flag.dismissed",
+      actor: "human",
+      text: "You left it running",
+      detail: "Quiet for 30 minutes, worth a look.",
+    });
+    expect((await engine.list()).scoreboard.looks).toBe(looks + 1);
+    // The session stays as quiet as it was: only your receipt moved the clock.
+    tickMinutes(29);
+    expect((await loop.wake("timer")).quiet).toEqual([]);
+    tickMinutes(1);
+    const again = await loop.wake("timer");
+    expect(again.quiet).toEqual([{ id: item.id, title: item.title, minutes: 30 }]);
+    expect(again.flagged.map((flag) => flag.kind)).toEqual(["quiet"]);
+  });
+
+  test("is refused on anything but a running run flagged quiet, and changes nothing", async () => {
+    const { loop, queue, engine, fake, store } = await setup();
+    const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
+    const running = await queue("Running");
+    await engine.dispatch(fake.paseo, running.id);
+    await loop.wake("manual");
+    expect((await engine.get(bypass.id)).item.flag?.kind).toBe("yours");
+    // A flag you clear by acting (dispatch or cancel) has no dismiss; a run that is not quiet has nothing to dismiss.
+    for (const id of [bypass.id, running.id]) {
+      const before = (await store.findById(id)).events.length;
+      await expect(engine.leaveRunning(id)).rejects.toThrow(NOT_QUIET);
+      expect((await store.findById(id)).events).toHaveLength(before);
+    }
+    tickMinutes(30);
+    await loop.wake("manual");
+    await engine.leaveRunning(running.id);
+    // Once left running, it is not flagged any more: a second press is refused.
+    await expect(engine.leaveRunning(running.id)).rejects.toThrow(NOT_QUIET);
   });
 });
 

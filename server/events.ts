@@ -84,8 +84,18 @@ export type WorkEvent = Base &
     | { type: "stopped"; actor: "human"; agentId: string | null }
     | { type: "note"; actor: Actor; text: string }
     // The loop putting work in Needs you (server/loop.ts). An event alone, never a state
-    // change; anything else that happens to the work after it clears it (flagOf).
-    | { type: "loop.flagged"; actor: "maestro"; kind: FlagKind; reason: string }
+    // change; anything else that happens to the work after it clears it (flagOf). A quiet
+    // flag carries `since`: when the run last did anything, by Maestro's events or by its
+    // session's own activity, whichever is later (absent on flags raised before it was kept).
+    | { type: "loop.flagged"; actor: "maestro"; kind: FlagKind; reason: string; since?: string }
+    // You looked at a run the loop flagged as quiet and left it running (Engine.leaveRunning).
+    // Like any event after a flag it clears it, and the quiet clock counts from it.
+    | { type: "flag.dismissed"; actor: "human"; kind: FlagKind; reason: string }
+    // The loop taking its own quiet flag down: the run's session, asked on a wake, has worked
+    // since the flag's `since` and within the quiet threshold (Engine.clearQuiet). Like any
+    // event after a flag it clears it; like the flag, it is the loop's remark, so it never
+    // moves the quiet clock (lastActivityOf) and is never a look.
+    | { type: "flag.cleared"; actor: "maestro"; kind: FlagKind; reason: string }
   );
 
 export type WorkEventType = WorkEvent["type"];
@@ -199,16 +209,19 @@ export function flagOf(events: readonly WorkEvent[]): FlaggedEvent | null {
   return last?.type === "loop.flagged" ? last : null;
 }
 
+/** The loop's remarks about the work: its flag, and its taking a flag down. Neither changes the work. */
+const LOOP_REMARKS = new Set<WorkEventType>(["loop.flagged", "flag.cleared"]);
+
 /**
- * The latest event that is not the loop's flag: when something last happened
- * to the work. A flag is the loop's remark about the work, not a change to
- * it, so it never moves this, and a flag cannot reset the quiet clock that
- * raised it.
+ * The latest event that is not one of the loop's remarks (its flag, or its
+ * clearing one): when something last happened to the work. A remark is about
+ * the work, not a change to it, so it never moves this: a flag cannot reset
+ * the quiet clock that raised it, and a clear cannot reset it either.
  */
 export function lastActivityOf(events: readonly WorkEvent[]): WorkEvent | null {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
-    if (event && event.type !== "loop.flagged") return event;
+    if (event && !LOOP_REMARKS.has(event.type)) return event;
   }
   return null;
 }
@@ -520,6 +533,10 @@ export function toWireEvent(event: WorkEvent, settled = false): WorkEventWire | 
       return { ...base, type: event.type, text: event.text, detail: null };
     case "loop.flagged":
       return { ...base, type: event.type, text: "Flagged for you by the loop", detail: event.reason };
+    case "flag.dismissed":
+      return { ...base, type: event.type, text: "You left it running", detail: event.reason };
+    case "flag.cleared":
+      return { ...base, type: event.type, text: "The loop took its flag down", detail: event.reason };
   }
 }
 
@@ -533,6 +550,9 @@ const HUMAN_LOOKS = new Set<WorkEventType>([
   "dispatched",
   "adopted",
   "permission.resolved",
+  // You checked a quiet run and chose to leave it be: a decision about the run, so a look.
+  "flag.dismissed",
+  // Not "flag.cleared": that is the loop taking its own flag down, nobody stepping in.
 ]);
 
 /**

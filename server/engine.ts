@@ -39,6 +39,7 @@ import {
   checkOutcome,
   decisionApplied,
   eventsSince,
+  type FlaggedEvent,
   flagOf,
   lastOf,
   latestChecks,
@@ -53,7 +54,7 @@ import {
   type WorkEvent,
   workerOf,
 } from "./events";
-import { flagStands } from "./flags";
+import { ACTIVE_AGAIN, flagStands, quietCleared } from "./flags";
 import { inspectFolder, repoRefusal } from "./folders";
 import { briefOf, type RunKeys, workTitle } from "./frontmatter";
 import { describePermission, type PermissionLike } from "./permissions";
@@ -163,6 +164,25 @@ export const STOPPED = "You stopped the run";
 /** Why work Stop flipped to stuck went back to running: its worktree changed between Stop's two reads. */
 export const STOP_RACED = "The worktree changed while Stop checked it";
 
+/**
+ * Why work Stop flipped to stuck is no longer that stop, read under the claim
+ * just before the archive, or null when it still is: stuck, with Stop's reason,
+ * for the same session. A turn that started meanwhile (the session resumed),
+ * an Unblock, or a fresh run all move it, and the session is then not Stop's
+ * to archive.
+ */
+function stopMoved(item: StoredWork | null, agentId: string): string | null {
+  if (!item) return "the work could not be read again";
+  if (workerOf(item.events)?.agentId !== agentId) return "a new run started";
+  const state = item.contract.state;
+  if (state !== "blocked") return `the work moved to ${PLAIN_VOICE[state].label}`;
+  if (reasonOf("blocked", item.events) !== STOPPED) return "the work is stuck for another reason";
+  return null;
+}
+
+/** Why Leave it running is refused: only a running run with the loop's quiet flag on it is left running. */
+export const NOT_QUIET = "Only a run the loop flagged as quiet can be left running.";
+
 /** Why Stop is refused while checks run: the session is done, and the checks decide where the work lands. */
 export const CHECKING = "The run already finished and its checks are running. When they report, it lands with you.";
 
@@ -219,8 +239,8 @@ export { leftToYou, MODED_BY_YOU, PROMPT_FREE } from "./runs";
 /** See EngineOptions.claimWaitMs. */
 export const CLAIM_WAIT_MS = 30_000;
 
-/** `work()`, or a rejection once `ms` pass: a claim never waits on the daemon for ever. */
-function within<T>(work: () => Promise<T>, ms: number): Promise<T> {
+/** `work()`, or a rejection once `ms` pass: a claim, or a wake, never waits on the daemon for ever. */
+export function within<T>(work: () => Promise<T>, ms: number): Promise<T> {
   let handle: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => {
     handle = setTimeout(() => reject(new Error(`Paseo did not answer within ${Math.round(ms / 100) / 10}s`)), ms);
@@ -489,9 +509,10 @@ export class Engine {
    * event, no state change, written under the work's lock. Only while the
    * reason still stands on the work as its files are now, and only when its
    * current flag is not already of this kind, so a wake every minute adds
-   * nothing. Returns whether it wrote one.
+   * nothing. Returns whether it wrote one. `since` (quiet only): when the
+   * run last did anything, so the reason keeps counting from there.
    */
-  async flag(item: Pick<WorkItem, "id" | "path">, kind: FlagKind, reason: string): Promise<boolean> {
+  async flag(item: Pick<WorkItem, "id" | "path">, kind: FlagKind, reason: string, since?: string): Promise<boolean> {
     const { store, config } = await this.store();
     let wrote = false;
     await store.mutate(
@@ -500,11 +521,71 @@ export class Engine {
         if (flagOf(fresh.events)?.kind === kind) return null;
         if (!flagStands(kind, fresh, this.now().getTime(), config)) return null;
         wrote = true;
-        return { events: [{ ts: this.stamp(), type: "loop.flagged", actor: "maestro", kind, reason }] };
+        const flagged: FlaggedEvent = {
+          ts: this.stamp(),
+          type: "loop.flagged",
+          actor: "maestro",
+          kind,
+          reason,
+          ...(since ? { since } : {}),
+        };
+        return { events: [flagged] };
       },
       join(store.root, item.path),
     );
     return wrote;
+  }
+
+  /**
+   * Take a quiet flag down for the loop: its session last did anything at
+   * `activeAt` (the daemon's word), which is since the flag's `since` and
+   * within QUIET_MS (server/flags.ts quietCleared). One `flag.cleared`
+   * receipt by Maestro, written under the work's lock, only while the work is
+   * still running with a quiet flag, so a wake that raced a turn's end or your
+   * Leave it running adds nothing. Not a look, and not activity: the quiet
+   * clock still counts from the run's last event. Returns whether it wrote one.
+   */
+  async clearQuiet(item: Pick<WorkItem, "id" | "path">, activeAt: number): Promise<boolean> {
+    const { store } = await this.store();
+    let wrote = false;
+    await store.mutate(
+      item.id,
+      (fresh) => {
+        const flag = flagOf(fresh.events);
+        if (fresh.contract.state !== "running" || !flag) return null;
+        if (!quietCleared(flag, fresh.events, fresh.mtime, activeAt, this.now().getTime())) return null;
+        wrote = true;
+        return {
+          events: [{ ts: this.stamp(), type: "flag.cleared", actor: "maestro", kind: flag.kind, reason: ACTIVE_AGAIN }],
+        };
+      },
+      join(store.root, item.path),
+    );
+    return wrote;
+  }
+
+  /**
+   * You looked at a run the loop flagged as quiet and left it running: your
+   * receipt, which clears the flag (flagOf) and restarts the quiet clock from
+   * now (lastActivityOf), so the loop flags it again only after another
+   * QUIET_MS with nothing from Maestro or its session. Checked under the
+   * work's lock: refused unless it is still running with a quiet flag.
+   */
+  async leaveRunning(id: string): Promise<WorkItem> {
+    const { store, config } = await this.store();
+    const current = await store.findById(id);
+    const updated = await store.mutate(
+      id,
+      (fresh) => {
+        const flag = flagOf(fresh.events);
+        if (fresh.contract.state !== "running" || flag?.kind !== "quiet") throw new UserError(NOT_QUIET);
+        return {
+          events: [{ ts: this.stamp(), type: "flag.dismissed", actor: "human", kind: flag.kind, reason: flag.reason }],
+        };
+      },
+      current.dir,
+    );
+    return toWire(updated, this.now().getTime(), config);
   }
 
   // ── Human verbs ────────────────────────────────────────────────────────────
@@ -1178,7 +1259,11 @@ export class Engine {
    * (the lock every change Maestro makes to this item takes) and is the last
    * thing before the archive: if it is not clean, or differs from the first
    * in any way, nothing is archived, the work goes back to running, and the
-   * call fails, asking you to Stop again. Every daemon call under the claim
+   * call fails, asking you to Stop again. Under the same claim, before that
+   * read, the item is read too: if it is no longer stuck with Stop's reason
+   * for the same session (a turn started, so the session resumed it; an
+   * Unblock; a fresh run), nothing is archived, a note says why, and the call
+   * fails with "Not archived:". Every daemon call under the claim
    * gives up after claimWaitMs, the archive included; one that gives up
    * counts as a failed archive. `discard` skips both reads.
    *
@@ -1252,9 +1337,21 @@ export class Engine {
       digest === null
         ? { failed: await archive(false) }
         : await withLock(id, async () => {
+            // The item first, read and not mutated: mutate takes this same lock, and so does load, which
+            // waits for it. fresh is the raw read for code holding the lock. It must still be this stop.
+            const moved = stopMoved(await store.fresh(id, stopped.dir).catch(() => null), worker.agentId);
+            if (moved) return { moved };
             const changed = await this.stopRecheck(paseo, stopped, worker, digest);
             return changed ? { changed } : { failed: await archive(true) };
           });
+    if ("moved" in outcome) {
+      // The work is not this stop any more, so there is nothing to put back: only say what happened.
+      const why = `${outcome.moved} while Stop checked the worktree`;
+      await store
+        .mutate(id, () => ({ events: [this.note(`Did not archive session ${worker.agentId}: ${why}`)] }), stopped.dir)
+        .catch(() => undefined);
+      throw new UserError(`Not archived: ${why}, so the session was kept.`);
+    }
     if ("changed" in outcome) {
       await putBack(outcome.changed.reason, `Did not archive session ${worker.agentId}: ${outcome.changed.reason}`);
       throw new UserError(outcome.changed.message);

@@ -4,8 +4,8 @@
 
 import type { PluginButton } from "@getpaseo/plugin/client";
 import type { WorkItem } from "../shared/contracts";
+import { needsHand } from "../shared/needs-you";
 import type { MaestroIntent } from "./intent";
-import { needsHand } from "./plane-model";
 
 type Listed = Pick<WorkItem, "id" | "group" | "flag">;
 
@@ -20,8 +20,9 @@ export function needsYouLabel(count: number): string {
 
 /**
  * Where the count opens Maestro: the one item that waits, else Needs you
- * (Stuck when only stuck work waits). The Needs you chip lists flagged work
- * too (plane-model inFilter), so it shows what the count counted.
+ * (Stuck when only stuck work waits). The Needs you chip and section hold
+ * exactly what needsHand holds (shared/needs-you.ts), stuck and flagged work
+ * included, so the filter it opens lists everything the count counted.
  */
 export function needsYouTarget(items: readonly Listed[]): MaestroIntent {
   const waiting = needsYou(items);

@@ -1,5 +1,7 @@
 // Settings: where work folders live, how a dispatch starts its agent, how many
-// run at once, and what an approval cleans up.
+// run at once, how often the loop wakes, and what an approval cleans up. Save
+// sends the whole config back, every field as config.get gave it but the ones
+// changed here.
 
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useToast } from "@getpaseo/plugin/client/react-native";
@@ -16,6 +18,7 @@ import { ActivityIndicator, View } from "react-native";
 import type { MaestroConfig } from "../shared/contracts";
 import { errorText } from "./format";
 import { useConfig, useVerbs } from "./hooks";
+import { LOOP_HINT, loopMinutesOf, loopOptions, loopValue } from "./loop-model";
 import { Notice, space } from "./ui";
 
 /** The cap as typed: empty is no cap, a whole number from 1 is a cap, anything else is an error to show. */
@@ -95,6 +98,17 @@ export function MaestroSettings({ theme }: PluginSurfaceProps) {
               setCapError(error);
               if (!error) patch({ concurrencyCap: cap });
             }}
+          />
+        </SettingsCard>
+      </SettingsSection>
+      <SettingsSection title="The loop">
+        <SettingsCard>
+          <SettingsSelect
+            label="The loop"
+            hint={LOOP_HINT}
+            value={loopValue(draft.loopMinutes)}
+            options={loopOptions(draft.loopMinutes)}
+            onValueChange={(value) => patch({ loopMinutes: loopMinutesOf(value) })}
           />
         </SettingsCard>
       </SettingsSection>

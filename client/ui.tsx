@@ -46,8 +46,23 @@ export function toneColor(theme: PluginTheme, tone: Tone): string {
   }
 }
 
+/**
+ * The platform's reduced-motion answer where it can be read at once (the web's
+ * matchMedia), else false until AccessibilityInfo answers. Read at once, the
+ * first frame is already right, and the async answer that follows is the same
+ * value, which React drops without a render.
+ */
+function reducedMotionNow(): boolean {
+  const view = (globalThis as { window?: { matchMedia?: (query: string) => { matches: boolean } } }).window;
+  try {
+    return view?.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  } catch {
+    return false;
+  }
+}
+
 export function useReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
+  const [reduced, setReduced] = useState(reducedMotionNow);
   useEffect(() => {
     let alive = true;
     AccessibilityInfo.isReduceMotionEnabled()
@@ -289,10 +304,13 @@ export function Notice({
   theme,
   tone,
   children,
+  action,
 }: {
   theme: PluginTheme;
   tone: "danger" | "warn";
   children: ReactNode;
+  /** A verb that answers the notice, under its words. */
+  action?: ReactNode;
 }) {
   const color = tone === "danger" ? theme.colors.statusDanger : theme.colors.statusWarning;
   return (
@@ -310,7 +328,14 @@ export function Notice({
       }}
     >
       <Icon name={tone === "danger" ? "CircleAlert" : "TriangleAlert"} size={16} color={color} />
-      <Text style={{ flex: 1, color: theme.colors.foreground, fontSize: size.sm, lineHeight: 20 }}>{children}</Text>
+      {action ? (
+        <View style={{ flex: 1, gap: space[2] }}>
+          <Text style={{ color: theme.colors.foreground, fontSize: size.sm, lineHeight: 20 }}>{children}</Text>
+          <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>{action}</View>
+        </View>
+      ) : (
+        <Text style={{ flex: 1, color: theme.colors.foreground, fontSize: size.sm, lineHeight: 20 }}>{children}</Text>
+      )}
     </View>
   );
 }

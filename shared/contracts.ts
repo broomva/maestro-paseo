@@ -313,6 +313,14 @@ export const stopWork = defineRpc({
 /** How a Stop refused because it would delete work that is not committed begins. */
 export const NOT_STOPPED = "Not stopped:";
 
+/**
+ * Leave a run the loop flagged as quiet running: yours alone, never on the
+ * agent socket. It writes your receipt, which clears the flag and restarts the
+ * quiet clock from now. Refused unless the work is running with a quiet flag.
+ * A `yours` or `failed` flag clears when you act on the work (dispatch, cancel).
+ */
+export const leaveRunning = defineRpc({ name: "work.leave-running", input: ById, output: ItemResult });
+
 export const adoptAgent = defineRpc({
   name: "work.adopt",
   input: z.object({ agentId: z.string().min(1), title: z.string() }),
@@ -381,14 +389,30 @@ export const WakeEntrySchema = z.object({
   deferred: z.array(Named.extend({ reason: z.string() })),
   /** At your gate (a result to judge), stuck, and asking a question. */
   needsYou: z.object({ gate: z.number(), stuck: z.number(), asking: z.number() }),
-  /** Running work with no event for 30 minutes or more. */
+  /**
+   * Running work with nothing new for 30 minutes or more, by Maestro's events
+   * and by its session's own activity; `minutes` counts from the later of the two.
+   */
   quiet: z.array(Named.extend({ minutes: z.number() })),
+  /**
+   * Running work quiet by Maestro's events, or flagged quiet, whose session
+   * could not be asked how recently it worked (`reason`), so its quiet was
+   * neither flagged nor cleared. Absent on entries written before the
+   * session was asked.
+   */
+  unasked: z.array(Named.extend({ reason: z.string() })).default([]),
   /**
    * The flags this wake raised: only those it wrote, so a work already
    * flagged the same way is not listed again. Absent on entries written
    * before flags existed.
    */
   flagged: z.array(Named.extend({ kind: z.enum(FLAG_KINDS), reason: z.string() })).default([]),
+  /**
+   * Running work whose quiet flag this wake took down: its session, asked,
+   * had worked since the flag was raised and within the quiet threshold.
+   * Absent on entries written before the loop cleared flags.
+   */
+  cleared: z.array(Named).default([]),
   narrative: z.array(z.string()),
   skipped: z.string().optional(),
 });

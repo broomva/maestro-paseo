@@ -11,6 +11,7 @@ import { resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
 import { expandHome, socketPath } from "../server/paths";
 import type { MaestroConfig, WorkEventWire, WorkItem } from "../shared/contracts";
+import { needsYouOf, sectionOf } from "../shared/needs-you";
 import { GROUP_COPY, GROUP_ORDER, PLAIN_VOICE } from "../shared/states";
 
 const USAGE = `maestro: operate Maestro from a Paseo session
@@ -114,14 +115,19 @@ const short = (id: string) => id.slice(0, 8);
 
 function renderItem(item: WorkItem): string {
   const where = item.repo ? `  ${item.repo}` : "";
-  const why = item.reason ? `\n      ${item.reason}` : "";
+  const why = [item.reason, item.flag?.reason]
+    .filter(Boolean)
+    .map((line) => `\n      ${line}`)
+    .join("");
   return `  ${item.id}  ${item.title}${where}${why}`;
 }
 
 function renderList(output: { root: string; items: WorkItem[]; warnings: string[] }): string {
   const lines = [`Work in ${output.root}`];
+  // Grouped as Maestro shows it: Needs you holds stuck and flagged work too (shared/needs-you.ts).
   for (const group of GROUP_ORDER) {
-    const items = output.items.filter((item) => item.group === group);
+    const items =
+      group === "review" ? needsYouOf(output.items) : output.items.filter((item) => sectionOf(item) === group);
     if (items.length === 0) continue;
     lines.push("", `${GROUP_COPY[group].title} (${items.length})`, ...items.map(renderItem));
   }

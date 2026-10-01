@@ -27,8 +27,11 @@ those, and nothing Paseo already does.
 
 ## What you get in Paseo
 
-- **Maestro** in the sidebar: all work, attention first (Needs you, Stuck, Running, Queued, Done),
-  the unsupervised-hours scoreboard, and a detail pane with the verb each item needs.
+- **Maestro** in the sidebar: all work, attention first (Needs you, Running, Queued, Done; Needs you
+  holds work at your gate, stuck work and work the loop flagged, the same set the header count counts),
+  the unsupervised-hours scoreboard, and a detail pane with the verb each item needs. The chips
+  follow the sections: each counts exactly what it shows, Stuck narrows Needs you to its stuck
+  work, and Needs you, Running, Queued and Done add up to All.
 - **Work** panel beside any agent: the work it is running, or a button to track it.
 - **Command Center**: *Open Maestro*, and *Track this session in Maestro* on an agent.
 - **`/maestro [title]`** in the composer: track the current session as work.
@@ -71,7 +74,8 @@ maestro mine                   # the work this session is running
 ```
 
 - **Sessions get the noun and the verb, never the gate.** Approve, send back, unblock, cancel,
-  settings and the loop are not served on the socket; a session that asks is told they are yours. A session
+  leaving a quiet run running, settings and the loop are not served on the socket; a session that
+  asks is told they are yours. A session
   starts only queued work (restarting stuck work is unblocking), and work it creates is always
   `gate: human`.
 - **A session cannot write a done check.** Checks run as you, with no session and no permission
@@ -183,25 +187,47 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
   of its own, are left alone with the reason. It never touches stuck work, and never stops, sends
   back, or decides anything.
 - **What it leaves to you lands in Needs you.** A wake flags three things on the work itself, so
-  they show in Maestro's Needs you (the chip, the board's column, the header count) with the
-  reason on the card and in the detail: queued work it leaves to you ("Start it yourself: ..."),
-  a start it tried that failed ("Could not start: ..."), and a run quiet for 30 minutes or more
-  ("Quiet for N minutes, worth a look"). Each flag is one `loop.flagged` receipt, written only
-  when the work's current flag is not already of that kind, so a wake every minute adds nothing.
-  Anything else that happens to the work (your dispatch or cancel, a turn, a state change, a
-  note) clears it, and the loop does not try a failed start again until then. Waiting at the run
-  cap is not flagged: that work starts when a slot frees. Flags go through Maestro and Paseo, never
-  a desktop notification.
+  they show in Maestro's Needs you (the feed's and the list's section, the chip, the board's
+  column, the header count, `maestro ls`; one definition, `shared/needs-you.ts`) with the reason
+  on the card and in the detail: queued work it leaves to you ("Start it yourself: ..."), a start
+  it tried that failed ("Could not start: ..."), and a run quiet for 30 minutes or more ("Quiet for
+  N minutes, worth a look"). Each flag is one `loop.flagged` receipt, written only when the work's
+  current flag is not already of that kind, so a wake every minute adds nothing. Anything else
+  that happens to the work (your dispatch or cancel, a turn, a state change, a note) clears it,
+  and the loop does not try a failed start again until then. Waiting at the run cap is not
+  flagged: that work starts when a slot frees. Flags go through Maestro and Paseo, never a desktop
+  notification.
+- **Quiet means the session is quiet too.** Maestro hears only turn boundaries, so a run quiet by
+  Maestro's events is flagged only when its session has done nothing for as long: the wake asks
+  Paseo for the session's last activity (bounded at 10 s), and a long turn that is still working
+  is not flagged. A session that cannot be asked is not flagged either, and the wake says so. A
+  run already flagged quiet is asked on every wake too: a session working again mid-turn sends
+  Maestro no event, so when it has worked since the flag and within the last 30 minutes the loop
+  takes the flag down itself ("The loop took its flag down", `flag.cleared`). That receipt is not
+  a look and does not move the quiet clock; a session that cannot be asked keeps its flag. While
+  the loop is off, a quiet flag clears with the next event on the work. A quiet run's notice
+  offers **Leave it running**: your receipt ("You left it running", a look), which clears the flag
+  and restarts the quiet clock. It is yours alone, never on the agent socket.
 - **Every wake leaves a receipt.** One line per wake in `wake-log.jsonl` beside the config
   (override with `MAESTRO_PASEO_WAKE_LOG`): why it woke, what it started, what it left alone and
-  why, what needs you, running work quiet for 30 minutes or more, and the flags it raised. It
-  keeps the newest 500 once it passes 1000 lines. The next wake is due a period after the last one
-  there, so a restart keeps the cadence.
+  why, what needs you, running work quiet for 30 minutes or more, sessions it could not ask, the
+  flags it raised, and the quiet flags it took down. It keeps the newest 500 once it passes 1000 lines. The next wake is due a
+  period after the last one there, so a restart keeps the cadence.
 - **One wake at a time.** A wake asked for while one runs is recorded as skipped, not queued. With
   no Paseo client yet (right after a restart) a wake records that it could not start work, and the
   first client to arrive runs another, once that wake ends if it arrives while the wake still runs.
+- **In Maestro.** Under the header line, a control says "Loop off", "Next wake in 12 min" or
+  "Waking…". It opens the loop's panel: how often it wakes (with a press to Settings), **Wake
+  now**, and the recent wakes, newest first, each with its time, its cause ("on schedule" or "you
+  asked") and what it did in words. While the loop is on, the Queued section reads "The loop
+  starts these on its next wake, under the run cap". Settings, Plugins, Maestro, **The loop**:
+  off, or every 5, 15, 30 or 60 minutes.
 - `loop.get` and `loop.wake` (wake now) are plugin RPCs for Maestro's own surfaces, never on the
   agent socket.
+
+| The loop's panel | Needs you, with the loop's flags |
+|---|---|
+| ![The loop's panel](docs/loop-panel.png) | ![Needs you with flagged work](docs/loop-needs-you-feed.png) |
 
 ## The agent's instructions
 

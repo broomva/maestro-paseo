@@ -2,16 +2,20 @@
 // gate or stuck. Three kinds, each raised by a wake (server/loop.ts):
 //   yours   queued work the loop leaves to you (prompt-free, or a mode you chose);
 //   failed  a start the loop tried that failed;
-//   quiet   running work with nothing new for QUIET_MS.
+//   quiet   running work with nothing new for QUIET_MS, by Maestro's events and
+//           by its session's own activity: Maestro sees only turn boundaries, so
+//           a long turn that is still working is not quiet (server/loop.ts).
 // A flag is one `loop.flagged` event, never a state change. It stands until
 // anything else happens to the work (server/events.ts flagOf), and the loop
 // writes one only when the work's current flag is not already of that kind,
-// so a wake every minute adds nothing. Notifications go through Maestro and
+// so a wake every minute adds nothing. A quiet flag is also taken down by the
+// loop itself (`flag.cleared`) when a wake finds the session working again,
+// since a session at work mid-turn sends Maestro no event (quietCleared). Notifications go through Maestro and
 // Paseo (Needs you, the header count, the item), never a desktop channel. Pure.
 
 import type { Flag, FlagKind, MaestroConfig, NextRun } from "../shared/contracts";
 import { isDispatchable, type OrchState } from "../shared/states";
-import { flagOf, lastActivityOf, type WorkEvent } from "./events";
+import { type FlaggedEvent, flagOf, lastActivityOf, type WorkEvent } from "./events";
 import { leftToYou, MODED_BY_YOU, nextRun, PROMPT_FREE } from "./runs";
 import type { StoredWork } from "./store";
 
@@ -34,9 +38,14 @@ export function yoursReason(left: string): string {
   return `Start it yourself: ${sentence(WHY_YOURS[left] ?? left)}`;
 }
 
+/** A dispatch error without dispatch's own "Could not start the run:", which the loop's words already say. */
+export function startError(message: string): string {
+  return message.replace(/^Could not start the run:\s*/, "");
+}
+
 /** The `failed` reason, from the dispatch error; dispatch's own "Could not start the run:" is not said twice. */
 export function failedReason(message: string): string {
-  return `Could not start: ${sentence(message.replace(/^Could not start the run:\s*/, ""))}`;
+  return `Could not start: ${sentence(startError(message))}`;
 }
 
 /** The `quiet` reason, for running work with nothing new for `ms`. */
@@ -47,6 +56,44 @@ export function quietReason(ms: number): string {
 /** How long since something last happened to the work: the loop's own flags do not count. */
 export function quietFor(events: readonly WorkEvent[], now: number, fallback: string): number {
   return now - Date.parse(lastActivityOf(events)?.ts ?? fallback);
+}
+
+/**
+ * When a session last did anything, from the daemon's snapshot of it, or
+ * null when it does not say. Paseo's app calls this lastActivityAt
+ * (PluginAgentSnapshot); the daemon fills it from the agent's updatedAt, which
+ * it moves on every timeline item, turn start and permission, and a plugin's
+ * agents.ref(id).refresh() returns that as `updatedAt`. A snapshot that names
+ * lastActivityAt is read first.
+ */
+export function sessionActiveAt(agent: { updatedAt?: unknown; lastActivityAt?: unknown }): number | null {
+  for (const value of [agent.lastActivityAt, agent.updatedAt]) {
+    const at = typeof value === "string" ? Date.parse(value) : Number.NaN;
+    if (Number.isFinite(at)) return at;
+  }
+  return null;
+}
+
+/** Why the loop took a quiet flag down: the reason on its `flag.cleared` receipt. */
+export const ACTIVE_AGAIN = "The session is active again.";
+
+/**
+ * Whether a quiet flag comes down, given when the run's session last did
+ * anything (`activeAt`, from the daemon): it has worked since the flag's
+ * `since` (Maestro's clock when the flag has none, as flagNow counts it) and
+ * within QUIET_MS of now. A session at work mid-turn sends Maestro no event,
+ * so without this a flag would stand until the turn ended.
+ */
+export function quietCleared(
+  flag: FlaggedEvent,
+  events: readonly WorkEvent[],
+  fallback: string,
+  activeAt: number,
+  now: number,
+): boolean {
+  if (flag.kind !== "quiet") return false;
+  const since = Date.parse(flag.since ?? lastActivityOf(events)?.ts ?? fallback);
+  return Number.isFinite(since) && activeAt > since && now - activeAt < QUIET_MS;
 }
 
 /**
@@ -72,7 +119,8 @@ export function flagStands(kind: FlagKind, item: StoredWork, now: number, config
  * long as the work is still in the state it was raised for. Two reasons are
  * read live: `yours` from how the next run would start now, so a Settings
  * change that hands the work back to the loop takes the flag down, and
- * `quiet` from the clock, so it says how long the run has really been quiet.
+ * `quiet` from the clock, counted from the flag's `since` (Maestro's events
+ * or the session's activity, whichever was later when the loop looked).
  */
 export function flagNow(
   events: readonly WorkEvent[],
@@ -91,7 +139,12 @@ export function flagNow(
     }
     case "failed":
       return isDispatchable(state) ? { kind: flag.kind, reason: flag.reason, at } : null;
-    case "quiet":
-      return state === "running" ? { kind: flag.kind, reason: quietReason(quietFor(events, now, fallback)), at } : null;
+    case "quiet": {
+      if (state !== "running") return null;
+      // Counted from when the run last did anything as the loop measured it, its session's activity included.
+      const since = flag.since ? Date.parse(flag.since) : Number.NaN;
+      const quiet = Number.isFinite(since) ? now - since : quietFor(events, now, fallback);
+      return { kind: flag.kind, reason: quietReason(quiet), at };
+    }
   }
 }

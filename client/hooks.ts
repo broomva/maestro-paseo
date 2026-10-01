@@ -12,14 +12,18 @@ import {
   decideWork,
   dispatchWork,
   getConfig,
+  getLoop,
   getWork,
+  leaveRunning,
   listWork,
   setConfig,
   stopWork,
   unblockWork,
   undoWork,
+  wakeLoop,
   workForAgent,
 } from "../shared/contracts";
+import { type LoopState, loopPollMs } from "./loop-model";
 
 const KEY = ["maestro"] as const;
 const POLL_MS = 4000;
@@ -49,6 +53,21 @@ export function useConfig() {
   return useQuery({ queryKey: [...KEY, "config"], queryFn: () => get({}) });
 }
 
+/**
+ * The loop's state (loop.get): its period, its next wake, whether one runs,
+ * and the newest wakes. Asked every 30 s, every 5 s while a wake is due or
+ * running, and never later than the next wake (loopPollMs); React Query
+ * stops asking once nothing that reads it is mounted.
+ */
+export function useLoop() {
+  const get = useRpc(getLoop);
+  return useQuery({
+    queryKey: [...KEY, "loop"],
+    queryFn: (): Promise<LoopState> => get({}),
+    refetchInterval: (query) => loopPollMs(query.state.data ?? null, Date.now()),
+  });
+}
+
 /** Refetch every Maestro query now, as when a decision's undo window closes. */
 export function useRefresh() {
   const client = useQueryClient();
@@ -67,7 +86,9 @@ export function useVerbs() {
     undo: useRpc(undoWork),
     stop: useRpc(stopWork),
     adopt: useRpc(adoptAgent),
+    leaveRunning: useRpc(leaveRunning),
     saveConfig: useRpc(setConfig),
+    wake: useRpc(wakeLoop),
   };
   return {
     create: useMutation({ mutationFn: rpc.create, onSettled: refresh }),
@@ -78,6 +99,8 @@ export function useVerbs() {
     undo: useMutation({ mutationFn: rpc.undo, onSettled: refresh }),
     stop: useMutation({ mutationFn: rpc.stop, onSettled: refresh }),
     adopt: useMutation({ mutationFn: rpc.adopt, onSettled: refresh }),
+    leaveRunning: useMutation({ mutationFn: rpc.leaveRunning, onSettled: refresh }),
     saveConfig: useMutation({ mutationFn: rpc.saveConfig, onSettled: refresh }),
+    wake: useMutation({ mutationFn: () => rpc.wake({}), onSettled: refresh }),
   };
 }

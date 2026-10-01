@@ -92,12 +92,16 @@ export function groupOf(state: OrchState): Group {
 }
 
 export const GROUP_COPY: Record<Group, { title: PlainVoice; hint: string }> = {
-  review: { title: "Needs you", hint: "Runs waiting at your gate" },
+  // Needs you lists stuck work and work the loop flagged too (shared/needs-you.ts).
+  review: { title: "Needs you", hint: "At your gate, stuck or flagged" },
   blocked: { title: "Stuck", hint: "A worker stopped and needs a hand" },
   running: { title: "Running", hint: "Dispatched and live in a worktree" },
   queued: { title: "Queued", hint: "Ready when you dispatch it" },
   done: { title: "Done", hint: "The branch is the receipt" },
 };
+
+/** The Queued hint while the loop is on (Settings, loopMinutes): it, not only you, starts that work. */
+export const QUEUED_LOOP_HINT = "The loop starts these on its next wake, under the run cap";
 
 const LEGAL: Record<OrchState, readonly OrchState[]> = {
   proposed: ["reviewing", "triggered", "running", "canceled"],

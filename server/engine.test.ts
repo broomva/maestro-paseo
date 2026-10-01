@@ -1613,6 +1613,40 @@ describe("stop run", () => {
     expect(fake.archived).toEqual(["agent-1"]);
   });
 
+  test("a turn that resumes the work between Stop's flip and its claim keeps the session, and says why", async () => {
+    const { create, engine, fake, repo } = await setup();
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    // Right after Stop flips the work to stuck, and before it takes the claim, the session starts a turn.
+    const mutate = WorkStore.prototype.mutate;
+    WorkStore.prototype.mutate = async function (this: WorkStore, ...args: Parameters<WorkStore["mutate"]>) {
+      const result = await mutate.apply(this, args);
+      if (result.contract.state === "blocked") {
+        WorkStore.prototype.mutate = mutate;
+        await engine.onTurnStarted({ id: "agent-1" });
+      }
+      return result;
+    };
+    try {
+      await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow(
+        "Not archived: the work moved to Running while Stop checked the worktree, so the session was kept.",
+      );
+    } finally {
+      WorkStore.prototype.mutate = mutate;
+    }
+    expect(fake.archived).toEqual([]);
+    const { item: after, events } = await engine.get(item.id);
+    expect(after.state).toBe("running");
+    expect(after.worker?.agentId).toBe("agent-1");
+    expect(events.at(-2)).toMatchObject({ text: "Running", detail: "Resumed in the session" });
+    expect(events.at(-1)?.text).toBe(
+      "Did not archive session agent-1: the work moved to Running while Stop checked the worktree",
+    );
+    // The claim was released, and a Stop now goes through.
+    expect(await engine.stopRun(fake.paseo, item.id)).toMatchObject({ state: "blocked", reason: STOPPED });
+    expect(fake.archived).toEqual(["agent-1"]);
+  });
+
   test("a clean worktree is read twice, the second time just before the archive, and stops", async () => {
     const { create, engine, fake, repo } = await setup();
     const item = await create();
