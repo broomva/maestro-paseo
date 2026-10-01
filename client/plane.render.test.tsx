@@ -464,7 +464,10 @@ afterEach(async () => {
   settings = settingsFixture();
   calls.length = 0;
   setReduced(true);
-  const unexpected = consoleError.mock.calls.filter((args) => !isProbe(args)).map((args) => String(args[0]));
+  // The message and its first argument: React's act warning names the component there ("An update to %s").
+  const unexpected = consoleError.mock.calls
+    .filter((args) => !isProbe(args))
+    .map((args) => (args.length > 1 ? `${String(args[0])} [${String(args[1])}]` : String(args[0])));
   consoleError.mockClear();
   expect(failures).toEqual([]);
   expect(unexpected).toEqual([]);
