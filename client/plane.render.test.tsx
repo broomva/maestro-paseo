@@ -30,7 +30,7 @@ import { afterAll, afterEach, describe, expect, mock, setDefaultTimeout, spyOn, 
 import type { PluginClientStateSource } from "@getpaseo/plugin/client/host";
 import { Window } from "happy-dom";
 import type { ReactNode } from "react";
-import type { Scoreboard, WorkItem } from "../shared/contracts";
+import type { MaestroConfig, Scoreboard, WakeEntry, WorkItem } from "../shared/contracts";
 import type { HistoryEvent } from "../shared/records";
 import { groupOf, type OrchState } from "../shared/states";
 
@@ -91,6 +91,67 @@ mock.module(KIT, () => {
   };
 });
 
+// Settings' kit (SettingsSection, SettingsSelect, ...) is the host's at runtime too: plain parts here, a
+// select as one button per option, restored in afterAll like the kit above.
+const UI = "@getpaseo/plugin/client/ui";
+const realUi = { ...(await import(`${Bun.resolveSync(UI, import.meta.dir)}?original`)) };
+mock.module(UI, () => {
+  const { Pressable, Text, View } = web as typeof import("react-native");
+  type Row = { label: string; hint?: string; children?: ReactNode };
+  const Section = ({ title, children }: { title: string; children: ReactNode }) => (
+    <View>
+      <Text>{title}</Text>
+      {children}
+    </View>
+  );
+  return {
+    SettingsSection: Section,
+    SettingsGroup: Section,
+    SettingsCard: ({ children }: { children: ReactNode }) => <View>{children}</View>,
+    SettingsRow: ({ label, children }: Row) => (
+      <View>
+        <Text>{label}</Text>
+        {children}
+      </View>
+    ),
+    SettingsInput: ({ label }: Row) => <Text>{label}</Text>,
+    SettingsSwitch: ({ label }: Row) => <Text>{label}</Text>,
+    SettingsSelect: ({
+      label,
+      hint,
+      value,
+      options,
+      onValueChange,
+    }: Row & { value: string; options: { label: string; value: string }[]; onValueChange(value: string): void }) => (
+      <View>
+        <Text>{label}</Text>
+        {hint ? <Text>{hint}</Text> : null}
+        {options.map((option) => (
+          <Pressable
+            key={option.value}
+            accessibilityRole="button"
+            {...{ "aria-pressed": option.value === value }}
+            accessibilityLabel={`${label}: ${option.label}`}
+            onPress={() => onValueChange(option.value)}
+          >
+            <Text>{option.label}</Text>
+          </Pressable>
+        ))}
+      </View>
+    ),
+    SettingsAction: ({
+      label,
+      actionLabel,
+      onPress,
+      disabled,
+    }: Row & { actionLabel: string; onPress(): void; disabled?: boolean }) => (
+      <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress}>
+        <Text>{actionLabel}</Text>
+      </Pressable>
+    ),
+  };
+});
+
 const { act } = await import("react");
 const { createRoot } = require("react-dom/client") as {
   createRoot(container: unknown): { render(node: ReactNode): void; unmount(): void };
@@ -100,6 +161,8 @@ const { PaseoApiProvider, PluginClientStateProvider, PluginRpcProvider } = await
 const { MaestroSurface } = await import("./plane");
 const { WorkDetail } = await import("./detail");
 const { requestIntent, resetIntents, takeIntent } = await import("./intent");
+const { MaestroSettings } = await import("./settings");
+const { linkSettings } = await import("./settings-link");
 
 function setReduced(value: boolean) {
   reduced = value;
@@ -206,7 +269,46 @@ const files = [
   { name: "image.png", size: 2048, mtime: new Date(Date.now() - 5 * 60_000).toISOString() },
   { name: "run.log", size: 90_000, mtime: new Date(Date.now() - 5 * 60_000).toISOString() },
 ];
+/** One wake as the log keeps it, `minutesAgo` before now. */
+const wakeEntry = (tickId: string, minutesAgo: number, extra: Partial<WakeEntry> = {}): WakeEntry => ({
+  tickId,
+  cause: "timer",
+  wokeAt: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+  dispatched: [],
+  deferred: [],
+  needsYou: { gate: 0, stuck: 0, asking: 0 },
+  quiet: [],
+  flagged: [],
+  narrative: ["Woke on a scheduled check.", "Did nothing new this tick."],
+  ...extra,
+});
+const loopOff = () => ({
+  minutes: null as number | null,
+  nextAt: null as string | null,
+  ticking: false,
+  recent: [] as WakeEntry[],
+});
+let loopState = loopOff();
+/** What loop.wake answers next. */
+let nextWake: () => WakeEntry = () => wakeEntry("w-now", 0, { cause: "manual" });
+const settingsFixture = (): MaestroConfig => ({
+  workRoot: "/work",
+  provider: "claude/haiku",
+  modeId: "acceptEdits",
+  isolation: "worktree",
+  concurrencyCap: 3,
+  archiveOnApprove: true,
+  defaultGate: "auto",
+  loopMinutes: null,
+});
+let settings = settingsFixture();
+const calls: { method: string; input: unknown }[] = [];
 const invoke = async (method: string, input: unknown) => {
+  calls.push({ method, input });
+  if (method === "loop.get") return loopState;
+  if (method === "loop.wake") return nextWake();
+  if (method === "config.get") return settings;
+  if (method === "config.set") return input;
   if (method === "work.list") return { root: "/work", items, warnings: [], scoreboard: board() };
   if (method === "work.history") return { events: history(), capped: false };
   if (method === "work.files") return { files };
@@ -345,6 +447,10 @@ afterEach(async () => {
   const failures = await unmountAll();
   takeIntent();
   items = fixture();
+  loopState = loopOff();
+  nextWake = () => wakeEntry("w-now", 0, { cause: "manual" });
+  settings = settingsFixture();
+  calls.length = 0;
   setReduced(true);
   const unexpected = consoleError.mock.calls.filter((args) => !isProbe(args)).map((args) => String(args[0]));
   consoleError.mockClear();
@@ -360,6 +466,7 @@ afterAll(async () => {
   consoleError.mockRestore();
   mock.restore();
   mock.module(KIT, () => realKit);
+  mock.module(UI, () => realUi);
   for (const key of added) delete (globalThis as Record<string, unknown>)[key];
   await win.happyDOM.close();
 });
@@ -666,5 +773,139 @@ describe("the week", () => {
     await settle(50);
     expect(view.tabs()[3]?.getAttribute("aria-selected")).toBe("true");
     expect(view.text()).toContain("You approved");
+  });
+});
+
+describe("the loop", () => {
+  const minutesAhead = (minutes: number) => new Date(Date.now() + minutes * 60_000 - 1_000).toISOString();
+  const rows = (view: Awaited<ReturnType<typeof mount>>) => view.all('[aria-label^="Wake, "]');
+
+  test("the header says when it wakes next; the panel says how often, and lists the wakes newest first", async () => {
+    loopState = {
+      minutes: 15,
+      nextAt: minutesAhead(12),
+      ticking: false,
+      recent: [
+        wakeEntry("w2", 3, {
+          cause: "manual",
+          narrative: ["Woke because you asked.", "Did:", "  Started Cache the Rust build in CI."],
+        }),
+        wakeEntry("w1", 18, {
+          narrative: [
+            "Woke on a scheduled check.",
+            "Did nothing new this tick.",
+            "Left alone:",
+            "  Bypass: Start it yourself: it runs without permission prompts.",
+          ],
+        }),
+      ],
+    };
+    const view = await mount(surface(false));
+    const control = view.byLabel("Next wake in 12 min. Show the loop");
+    expect(control?.getAttribute("aria-expanded")).toBe("false");
+    expect(view.text()).not.toContain("Recent wakes");
+    await view.press(control);
+    expect(view.byLabel("Next wake in 12 min. Hide the loop")?.getAttribute("aria-expanded")).toBe("true");
+    expect(view.text()).toContain("The loop wakes every 15 minutes.");
+    const [first, second] = rows(view);
+    expect(first?.getAttribute("aria-label")).toMatch(/^Wake, Today at \d\d:\d\d, you asked$/);
+    expect(first?.textContent).toContain("Started Cache the Rust build in CI.");
+    // The cause is the row's header: the narrative's own "Woke ..." line is not repeated under it.
+    expect(first?.textContent).not.toContain("Woke because you asked.");
+    expect(second?.getAttribute("aria-label")).toMatch(/, on schedule$/);
+    expect(second?.textContent).toContain("Bypass: Start it yourself: it runs without permission prompts.");
+    // Closing it takes the panel away; polling goes on only while the control is mounted.
+    await view.press(view.byLabel("Close the loop"));
+    expect(view.text()).not.toContain("Recent wakes");
+  });
+
+  test("Wake now asks for a wake and shows it on top", async () => {
+    loopState = { ...loopOff(), minutes: 30, nextAt: minutesAhead(20), recent: [wakeEntry("w1", 18)] };
+    nextWake = () =>
+      wakeEntry("w-now", 0, {
+        cause: "manual",
+        narrative: ["Woke because you asked.", "Did:", "  Started Persist the cart across devices."],
+      });
+    const view = await mount(surface(false));
+    await view.press(view.byLabel("Next wake in 20 min. Show the loop"));
+    await view.press(view.byLabel("Wake now"));
+    expect(calls.filter((call) => call.method === "loop.wake")).toHaveLength(1);
+    const [first, second] = rows(view);
+    expect(first?.getAttribute("aria-label")).toMatch(/, you asked$/);
+    expect(first?.textContent).toContain("Started Persist the cart across devices.");
+    expect(second?.getAttribute("aria-label")).toMatch(/, on schedule$/);
+    expect(view.all('[role="alert"]')).toHaveLength(0);
+  });
+
+  test("a wake that was skipped says why", async () => {
+    loopState = { ...loopOff(), minutes: 15, nextAt: minutesAhead(5), ticking: true };
+    nextWake = () =>
+      wakeEntry("w-skip", 0, {
+        cause: "manual",
+        skipped: "another check was already running",
+        narrative: ["Woke because you asked.", "Skipped: another check was already running."],
+      });
+    const view = await mount(surface(false));
+    await view.press(view.byLabel("Waking…. Show the loop"));
+    await view.press(view.byLabel("Wake now"));
+    expect(view.all('[role="alert"]').map((el) => el.textContent)).toEqual([
+      "Not woken: another check was already running.",
+    ]);
+  });
+
+  test("off and never woken: it says so, and says where its period is set", async () => {
+    const view = await mount(surface(false));
+    await view.press(view.byLabel("Loop off. Show the loop"));
+    expect(view.text()).toContain("The loop is off.");
+    expect(view.text()).toContain("No wakes yet.");
+    expect(view.text()).toContain("Its period is set in Settings.");
+    expect(view.byLabel("Open Settings")).toBeNull();
+  });
+
+  test("with Settings linked, the panel opens them", async () => {
+    let opened = 0;
+    const unlink = linkSettings(() => {
+      opened += 1;
+    });
+    try {
+      const view = await mount(surface(false));
+      await view.press(view.byLabel("Loop off. Show the loop"));
+      await view.press(view.byLabel("Open Settings"));
+      expect(opened).toBe(1);
+    } finally {
+      unlink();
+    }
+  });
+});
+
+describe("Settings", () => {
+  const settingsScreen = () => (
+    <MaestroSettings theme={theme} host={{ id: "h", label: "h" }} layout={{ compact: false, platform: "web" }} />
+  );
+
+  test("the loop is a choice of off or a period, and Save sends the whole config back with it", async () => {
+    const view = await mount(settingsScreen());
+    expect(view.text()).toContain("the loop starts Queued work under the run cap");
+    expect(view.pressed("The loop: Off")).toBe("true");
+    for (const label of ["Every 5 minutes", "Every 15 minutes", "Every 30 minutes", "Every 60 minutes"]) {
+      expect(view.byLabel(`The loop: ${label}`)).not.toBeNull();
+    }
+    await view.press(view.byLabel("The loop: Every 15 minutes"));
+    expect(view.pressed("The loop: Every 15 minutes")).toBe("true");
+    await view.press(view.byLabel("Save settings"));
+    expect(calls.filter((call) => call.method === "config.set").map((call) => call.input)).toEqual([
+      { ...settingsFixture(), loopMinutes: 15 },
+    ]);
+  });
+
+  test("a saved period that is none of the choices shows as itself, and turning it off saves null", async () => {
+    settings = { ...settingsFixture(), loopMinutes: 45 };
+    const view = await mount(settingsScreen());
+    expect(view.pressed("The loop: Every 45 minutes")).toBe("true");
+    await view.press(view.byLabel("The loop: Off"));
+    await view.press(view.byLabel("Save settings"));
+    expect(calls.filter((call) => call.method === "config.set").map((call) => call.input)).toEqual([
+      { ...settingsFixture(), loopMinutes: null },
+    ]);
   });
 });

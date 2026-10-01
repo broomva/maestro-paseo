@@ -6,6 +6,7 @@ import { opener, startIntegrations } from "./client/integrations";
 import { requestIntent } from "./client/intent";
 import { MaestroSurface } from "./client/plane";
 import { MaestroSettings } from "./client/settings";
+import { linkSettings } from "./client/settings-link";
 import { adoptAgent } from "./shared/contracts";
 import { GATE_CARD_KIND, GATE_CARD_VERSION, GateCardSchema } from "./shared/gate-card";
 import { BROOMVA_DARK, BROOMVA_LIGHT } from "./shared/theme";
@@ -17,6 +18,8 @@ export default function contribute(client: PluginClientContext) {
   client.addSurface("maestro", MaestroSurface);
   client.addSidebarItem({ id: "maestro", title: "Maestro", icon: "LayoutDashboard", surface: "maestro" });
   client.addSettingsScreen({ id: "maestro", title: "Maestro", icon: "LayoutDashboard", Component: MaestroSettings });
+  // The loop's panel opens Settings, which only this context can do (client/settings-link.ts).
+  const unlinkSettings = linkSettings(() => client.openSettings("maestro"));
 
   client.addWorkspacePanel({
     id: "work",
@@ -96,5 +99,6 @@ export default function contribute(client: PluginClientContext) {
 
   return () => {
     integrations.stop();
+    unlinkSettings();
   };
 }

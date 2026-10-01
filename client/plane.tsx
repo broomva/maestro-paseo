@@ -15,6 +15,7 @@ import { errorText, plural } from "./format";
 import { HistoryView } from "./history";
 import { useWorkList } from "./hooks";
 import { useIntent } from "./intent";
+import { LoopControl, LoopPanel } from "./loop";
 import { NewWork } from "./new-work";
 import { FilterRow, ScopeRow, ViewSwitch } from "./plane-controls";
 import {
@@ -43,6 +44,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const [chosenView, setView] = useState<PlaneView>("feed");
   const [filter, setFilter] = useState<Filter>("all");
   const [chosenScope, setScope] = useState<string | null>(null);
+  const [loopOpen, setLoopOpen] = useState(false);
   useIntent((intent) => {
     if (intent.kind === "select") setSelected(intent.id);
     else if (intent.kind === "new") setCreating(true);
@@ -100,6 +102,9 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
             Maestro
           </Text>
           <Text style={text.muted}>{summaryText(items)}</Text>
+          <View style={{ paddingTop: space[1] }}>
+            <LoopControl theme={theme} open={loopOpen} onToggle={() => setLoopOpen((open) => !open)} />
+          </View>
         </View>
         <IconButton theme={theme} icon="RefreshCw" label="Refresh work" onPress={() => void list.refetch()} />
         <Button
@@ -111,6 +116,8 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
           onPress={() => setCreating(true)}
         />
       </View>
+
+      {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
 
       <ViewSwitch theme={theme} view={view} onView={chooseView} views={viewsFor(compact)} />
 
