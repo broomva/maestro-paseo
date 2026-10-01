@@ -3,11 +3,12 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MaestroConfig, WakeEntry } from "../shared/contracts";
+import { attentionOf } from "./attention";
 import { defaultConfig } from "./config";
 import { type CreateInput, Engine, MODED_BY_YOU, PROMPT_FREE, type Timer } from "./engine";
 import { LOOP } from "./events";
 import { fakePaseo } from "./fake-paseo";
-import { ALREADY_WAKING, AT_RUN_CAP, Loop, NOT_CONNECTED, QUIET_MS } from "./loop";
+import { ALREADY_WAKING, AT_RUN_CAP, FAILED_BEFORE, Loop, NOT_CONNECTED, QUIET_MS } from "./loop";
 import type { Paseo } from "./runs";
 import { WorkStore } from "./store";
 import { WakeLog } from "./wake-log";
@@ -497,6 +498,207 @@ describe("a wake", () => {
     expect((await engine.list()).scoreboard.looks).toBe(before);
     await engine.dispatch(fake.paseo, (await queue("By you")).id);
     expect((await engine.list()).scoreboard.looks).toBe(before + 1);
+  });
+});
+
+describe("flags in Needs you", () => {
+  const PROMPTS = "Start it yourself: it runs without permission prompts.";
+  const MODED = "Start it yourself: it runs in a mode you chose.";
+  const FAILED = "Could not start: provider list unavailable.";
+
+  /** Make the next `times` starts fail the way a provider outage does. */
+  function failStarts(fake: ReturnType<typeof fakePaseo>, times = 1) {
+    const original = fake.paseo.providers.listModels;
+    let calls = 0;
+    fake.paseo.providers.listModels = (async (...args: Parameters<typeof original>) => {
+      calls += 1;
+      if (calls <= times) throw new Error("provider list unavailable");
+      return original(...args);
+    }) as typeof original;
+  }
+
+  async function raw(store: WorkStore, id: string) {
+    return (await store.findById(id)).events;
+  }
+  const flags = async (store: WorkStore, id: string) =>
+    (await raw(store, id)).filter((event) => event.type === "loop.flagged");
+
+  test("each kind is raised, as one loop.flagged event that reads as a receipt", async () => {
+    const { loop, queue, engine, fake, store } = await setup({ concurrencyCap: null });
+    const running = await queue("Long one");
+    await engine.dispatch(fake.paseo, running.id);
+    tickMinutes(1);
+    const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
+    tickMinutes(1);
+    const planned = await queue("Planned", { modeId: "plan" });
+    tickMinutes(1);
+    const broken = await queue("Broken");
+    tickMinutes(1);
+    const capped = await queue("Plain");
+    failStarts(fake);
+    tickMinutes(30);
+    const entry = await loop.wake("manual");
+    expect(entry.dispatched).toEqual([{ id: capped.id, title: capped.title }]);
+    expect(entry.flagged).toEqual([
+      { id: running.id, title: running.title, kind: "quiet", reason: "Quiet for 34 minutes, worth a look." },
+      { id: bypass.id, title: bypass.title, kind: "yours", reason: PROMPTS },
+      { id: planned.id, title: planned.title, kind: "yours", reason: MODED },
+      { id: broken.id, title: broken.title, kind: "failed", reason: FAILED },
+    ]);
+    expect(entry.narrative.slice(-5)).toEqual([
+      "Flagged for you:",
+      "  Long one.",
+      "  Bypass.",
+      "  Planned.",
+      "  Broken.",
+    ]);
+    // On the work: the flag, when the loop raised it, and a receipt by Maestro.
+    for (const [item, kind, reason] of [
+      [running, "quiet", "Quiet for 34 minutes, worth a look."],
+      [bypass, "yours", PROMPTS],
+      [planned, "yours", MODED],
+      [broken, "failed", FAILED],
+    ] as const) {
+      const { item: wire, events } = await engine.get(item.id);
+      expect(wire.flag).toEqual({ kind, reason, at: entry.wokeAt });
+      expect(events.at(-1)).toEqual({
+        ts: entry.wokeAt,
+        type: "loop.flagged",
+        actor: "maestro",
+        text: "Flagged for you by the loop",
+        detail: reason,
+      });
+      expect(await flags(store, item.id)).toEqual([
+        { ts: entry.wokeAt, type: "loop.flagged", actor: "maestro", kind, reason },
+      ]);
+      // A flag is not a change of state.
+      expect(wire.state).toBe(item.id === running.id ? "running" : "proposed");
+    }
+    // Started work and work deferred at the run cap are not flagged.
+    expect((await engine.get(capped.id)).item.flag).toBeNull();
+  });
+
+  test("deferred at the run cap is not flagged: it starts when a slot frees", async () => {
+    const { loop, queue, engine, fake } = await setup({ concurrencyCap: 1 });
+    await engine.dispatch(fake.paseo, (await queue("Holds the slot")).id);
+    const waiting = await queue("Waits for a slot");
+    const entry = await loop.wake("manual");
+    expect(entry.deferred).toEqual([{ id: waiting.id, title: waiting.title, reason: AT_RUN_CAP }]);
+    expect(entry.flagged).toEqual([]);
+    expect((await engine.get(waiting.id)).item.flag).toBeNull();
+  });
+
+  test("three wakes in a row write one flag per work, not three", async () => {
+    const { loop, queue, engine, fake, store } = await setup();
+    const running = await queue("Long one");
+    await engine.dispatch(fake.paseo, running.id);
+    const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
+    tickMinutes(1);
+    const broken = await queue("Broken");
+    failStarts(fake);
+    tickMinutes(30);
+    const entries: WakeEntry[] = [];
+    for (let wake = 0; wake < 3; wake += 1) {
+      entries.push(await loop.wake("timer"));
+      tickMinutes(1);
+    }
+    for (const item of [running, bypass, broken]) expect(await flags(store, item.id)).toHaveLength(1);
+    expect(entries.map((entry) => entry.flagged.map((flag) => flag.kind))).toEqual([
+      ["quiet", "yours", "failed"],
+      [],
+      [],
+    ]);
+    // The start that failed is not tried again while its flag stands: one failure note, not one a wake.
+    const notes = (await raw(store, broken.id)).filter((event) => event.type === "note");
+    expect(notes).toHaveLength(1);
+    expect(entries[2]?.deferred).toContainEqual({ id: broken.id, title: broken.title, reason: FAILED_BEFORE });
+    expect(fake.created).toHaveLength(1);
+  });
+
+  test("anything else that happens to the work clears it: your dispatch, a turn, a cancel, a note", async () => {
+    const { loop, queue, engine, fake, store } = await setup({ concurrencyCap: null });
+    const running = await queue("Long one");
+    await engine.dispatch(fake.paseo, running.id);
+    const dispatchMe = await queue("Dispatch me", { modeId: "bypassPermissions" });
+    const cancelMe = await queue("Cancel me", { modeId: "bypassPermissions" });
+    const noteMe = await queue("Note me", { modeId: "bypassPermissions" });
+    tickMinutes(30);
+    await loop.wake("manual");
+    for (const item of [running, dispatchMe, cancelMe, noteMe]) {
+      expect((await engine.get(item.id)).item.flag).not.toBeNull();
+    }
+    await engine.onTurnStarted({ id: "agent-1" });
+    expect((await engine.get(running.id)).item.flag).toBeNull();
+    await engine.dispatch(fake.paseo, dispatchMe.id);
+    expect((await engine.get(dispatchMe.id)).item.flag).toBeNull();
+    await engine.cancel(cancelMe.id);
+    expect((await engine.get(cancelMe.id)).item.flag).toBeNull();
+    await store.mutate(noteMe.id, () => ({
+      events: [{ ts: new Date(clock).toISOString(), type: "note", actor: "human", text: "Later" }],
+    }));
+    expect((await engine.get(noteMe.id)).item.flag).toBeNull();
+    // Cleared, the next wake may raise it again: the note did not make the work the loop's.
+    const again = await loop.wake("manual");
+    expect(again.flagged).toEqual([{ id: noteMe.id, title: noteMe.title, kind: "yours", reason: PROMPTS }]);
+  });
+
+  test("the quiet clock ignores the loop's own flags, so a flag never resets it", async () => {
+    const { loop, queue, engine, fake, store } = await setup();
+    const item = await queue("Long one");
+    await engine.dispatch(fake.paseo, item.id);
+    const before = (await engine.get(item.id)).item;
+    tickMinutes(30);
+    expect((await loop.wake("manual")).flagged.map((flag) => flag.kind)).toEqual(["quiet"]);
+    tickMinutes(1);
+    const next = await loop.wake("manual");
+    expect(next.quiet).toEqual([{ id: item.id, title: item.title, minutes: 31 }]);
+    expect(next.flagged).toEqual([]);
+    const after = (await engine.get(item.id)).item;
+    // The flag is not activity: the work's times still point at its dispatch, and the reason counts on.
+    expect(after.lastEventAt).toBe(before.lastEventAt);
+    expect(after.updatedAt).toBe(before.updatedAt);
+    expect(after.flag?.reason).toBe("Quiet for 31 minutes, worth a look.");
+    expect(await flags(store, item.id)).toHaveLength(1);
+  });
+
+  test("is never written on work that moved after the wake read it", async () => {
+    const { queue, engine, fake, store } = await setup();
+    const item = await queue("Bypass", { modeId: "bypassPermissions" });
+    const read = (await engine.get(item.id)).item;
+    await engine.dispatch(fake.paseo, item.id);
+    expect(await engine.flag(read, "yours", PROMPTS)).toBe(false);
+    expect(await engine.flag(read, "failed", FAILED)).toBe(false);
+    expect(await flags(store, item.id)).toEqual([]);
+    // Running, but not quiet yet.
+    expect(await engine.flag(read, "quiet", "Quiet for 0 minutes, worth a look.")).toBe(false);
+    tickMinutes(30);
+    expect(await engine.flag(read, "quiet", "Quiet for 30 minutes, worth a look.")).toBe(true);
+  });
+
+  test("a yours flag comes down when Settings hand the work back to the loop, which then starts it", async () => {
+    const { loop, queue, engine, fake, config } = await setup({ modeId: "bypassPermissions" });
+    const item = await queue("Plain");
+    expect((await loop.wake("manual")).flagged.map((flag) => flag.kind)).toEqual(["yours"]);
+    config.modeId = null;
+    expect((await engine.get(item.id)).item.flag).toBeNull();
+    const entry = await loop.wake("manual");
+    expect(entry.dispatched).toEqual([{ id: item.id, title: item.title }]);
+    expect(fake.created).toHaveLength(1);
+  });
+
+  test("work.attention lists flagged work after the work at your gate or stuck", async () => {
+    const { loop, queue, engine, fake } = await setup({ concurrencyCap: null });
+    const stuck = await queue("Stuck");
+    await engine.dispatch(fake.paseo, stuck.id);
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "boom" } }, []);
+    const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
+    await queue("Plain");
+    await loop.wake("manual");
+    const { waiting } = attentionOf((await engine.list()).items, clock);
+    expect(waiting).toEqual([
+      { id: stuck.id, group: "blocked", flag: null },
+      { id: bypass.id, group: "queued", flag: { kind: "yours", reason: PROMPTS, at: new Date(clock).toISOString() } },
+    ]);
   });
 });
 

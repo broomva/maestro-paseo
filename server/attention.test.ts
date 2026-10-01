@@ -29,6 +29,27 @@ describe("work.attention", () => {
     ]);
   });
 
+  test("waiting lists work the loop flagged too, after the work at your gate or stuck", () => {
+    const flag = { kind: "yours" as const, reason: "Start it yourself: x.", at: ago(60_000) };
+    const quiet = { kind: "quiet" as const, reason: "Quiet for 31 minutes, worth a look.", at: ago(60_000) };
+    const { waiting } = attentionOf(
+      [
+        fakeWork("q", "proposed", null, { flag }),
+        fakeWork("r", "review"),
+        fakeWork("x", "running", inA, { flag: quiet }),
+        fakeWork("plain", "running"),
+        fakeWork("b", "blocked"),
+      ],
+      now,
+    );
+    expect(waiting).toEqual([
+      { id: "r", group: "review", flag: null },
+      { id: "b", group: "blocked", flag: null },
+      { id: "q", group: "queued", flag },
+      { id: "x", group: "running", flag: quiet },
+    ]);
+  });
+
   test("sessions are the workers of live work, and of finished work only for a day after it changed", () => {
     const { sessions } = attentionOf(
       [
