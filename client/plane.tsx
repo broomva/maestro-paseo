@@ -98,25 +98,26 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
 
   const listPane = (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: pad, gap: space[5] }}>
-      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[3] }}>
-        <View style={{ flex: 1, gap: space[1] }}>
-          <Text style={text.heading} accessibilityRole="header">
-            Maestro
-          </Text>
-          <Text style={text.muted}>{summaryText(items)}</Text>
-          <View style={{ paddingTop: space[1] }}>
-            <LoopControl theme={theme} open={loopOpen} onToggle={() => setLoopOpen((open) => !open)} />
+      <View style={{ gap: space[2] }}>
+        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[3] }}>
+          <View style={{ flex: 1, gap: space[1] }}>
+            <Text style={text.heading} accessibilityRole="header">
+              Maestro
+            </Text>
+            <Text style={text.muted}>{summaryText(items)}</Text>
           </View>
+          <IconButton theme={theme} icon="RefreshCw" label="Refresh work" onPress={() => void list.refetch()} />
+          <Button
+            theme={theme}
+            variant="primary"
+            icon="Plus"
+            label="New work"
+            compact={compact}
+            onPress={() => setCreating(true)}
+          />
         </View>
-        <IconButton theme={theme} icon="RefreshCw" label="Refresh work" onPress={() => void list.refetch()} />
-        <Button
-          theme={theme}
-          variant="primary"
-          icon="Plus"
-          label="New work"
-          compact={compact}
-          onPress={() => setCreating(true)}
-        />
+        {/* Its own row, the pane's full width: beside the buttons a phone wraps "Next wake in 15 min". */}
+        <LoopControl theme={theme} open={loopOpen} onToggle={() => setLoopOpen((open) => !open)} />
       </View>
 
       {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
