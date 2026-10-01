@@ -9,6 +9,7 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { type CheckResult, NOT_STOPPED, type Pending, type WorkEventWire, type WorkItem } from "../shared/contracts";
 import { nextRunCopy } from "../shared/run";
+import { PLAIN_VOICE } from "../shared/states";
 import { ChangeText, WithChange } from "./changed";
 import { FilesSection } from "./files";
 import { ago, basename, errorText } from "./format";
@@ -183,6 +184,15 @@ export function stoppable(item: WorkItem): boolean {
   return item.state === "review" && item.permission !== null;
 }
 
+/** What an open Stop confirm turns into when the run leaves every state Stop acts on before you confirm. */
+export function movedOnText(item: WorkItem): string {
+  const lead = "The run moved on before you confirmed:";
+  // Still Running by its label, but the session is done and the checks decide where it lands.
+  if (item.state === "running") return `${lead} it finished, and its checks are running.`;
+  const { label } = PLAIN_VOICE[item.state];
+  return `${lead} it is now ${label === "Needs you" ? "in Needs you" : label}.`;
+}
+
 function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; compact: boolean }) {
   const verbs = useVerbs();
   const toast = useToast();
@@ -197,11 +207,16 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   const [confirmStop, setConfirmStop] = useState<string | null>(null);
   // A Stop refused because it would delete work that is not committed: the second confirm says what goes.
   const [stopLoss, setStopLoss] = useState<{ id: string; text: string } | null>(null);
+  // A confirm that was open when the run left every state Stop acts on: said, never dropped silently.
+  const [movedOn, setMovedOn] = useState<{ id: string; text: string } | null>(null);
   const closeStop = () => {
     setStopLoss(null);
     setConfirmStop(null);
   };
-  const openStop = () => setConfirmStop(item.id);
+  const openStop = () => {
+    setMovedOn(null);
+    setConfirmStop(item.id);
+  };
 
   const fail = (error: unknown) => toast.error(errorText(error));
   const stopRun = (discard: boolean) =>
@@ -215,6 +230,13 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
     });
   const lossText = stopLoss?.id === item.id ? stopLoss.text : null;
   const stopOpen = confirmStop === item.id || lossText !== null;
+  // The run left every state Stop acts on with the confirm open: swap it for the Notice. Set while
+  // rendering (React's way to adjust state to new props), so no frame shows neither. Not while your own
+  // Stop is in flight: that move is the one you confirmed.
+  if (stopOpen && !stoppable(item) && !verbs.stop.isPending) {
+    closeStop();
+    setMovedOn({ id: item.id, text: movedOnText(item) });
+  }
   const stopConfirm = stopOpen ? (
     <StopConfirm
       item={item}
@@ -243,10 +265,23 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   const pendingCard = item.pending ? (
     <PendingDecision item={item} pending={item.pending} theme={theme} compact={compact} />
   ) : null;
-  // What sits above the state's own verbs: a decision in its undo window.
+  const movedOnCard =
+    movedOn?.id === item.id ? (
+      <Notice
+        theme={theme}
+        tone="warn"
+        action={
+          <Button theme={theme} variant="quiet" label="Dismiss" compact={compact} onPress={() => setMovedOn(null)} />
+        }
+      >
+        {movedOn.text}
+      </Notice>
+    ) : null;
+  // What sits above the state's own verbs: a Stop that the run outran, then a decision in its undo window.
   const withTop = (node: ReactNode) =>
-    pendingCard ? (
+    movedOnCard || pendingCard ? (
       <View style={{ gap: space[3] }}>
+        {movedOnCard}
         {pendingCard}
         {node}
       </View>

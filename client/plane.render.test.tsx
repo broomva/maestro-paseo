@@ -755,6 +755,46 @@ describe("Stop run", () => {
     expect(view.text()).toContain(CONFIRM);
     expect(view.all('[role="alert"]')).toHaveLength(0);
   });
+
+  test("a run that moves on before you confirm says so in a Notice, instead of the confirm vanishing", async () => {
+    const view = await mount(detail("c"));
+    await view.press(view.byLabel("Stop run"));
+    expect(view.text()).toContain(CONFIRM);
+    move("c", work("c", "blocked", { worker: worker("c", "maestro/c-1"), reason: "Rate limited" }));
+    await view.refetch();
+    expect(view.text()).not.toContain(CONFIRM);
+    const [alert] = view.all('[role="alert"]');
+    expect(alert?.textContent).toContain("The run moved on before you confirmed: it is now Stuck.");
+    // The state's own verbs are under it.
+    expect(view.byLabel("Unblock")).not.toBeNull();
+    await view.press(alert?.querySelector('[aria-label="Dismiss"]'));
+    expect(view.all('[role="alert"]')).toHaveLength(0);
+    expect(sent("work.stop")).toEqual([]);
+  });
+
+  test("the second confirm, and the asking state's, say it too, with the state's plain label", async () => {
+    stopRefusal = "Not stopped: the worktree has 1 path not committed (edits, new or ignored files).";
+    items = [...fixture(), asking("k")];
+    const view = await mount(detail("k"));
+    await view.press(view.byLabel("Stop run"));
+    await view.press(view.byLabel("Stop run"));
+    expect(view.byLabel("Discard and stop")).not.toBeNull();
+    move("k", work("k", "review", { worker: worker("k", "maestro/k-1"), look }));
+    await view.refetch();
+    expect(view.byLabel("Discard and stop")).toBeNull();
+    expect(view.all('[role="alert"]').map((el) => el.textContent)).toContain(
+      "The run moved on before you confirmed: it is now in Needs you.Dismiss",
+    );
+  });
+
+  test("checks starting count as moving on: the run is done, and the checks decide", async () => {
+    const view = await mount(detail("c"));
+    await view.press(view.byLabel("Stop run"));
+    move("c", work("c", "running", { worker: worker("c", "maestro/c-1"), phase: "checking" }));
+    await view.refetch();
+    expect(view.text()).toContain("The run moved on before you confirmed: it finished, and its checks are running.");
+    expect(view.byLabel("Stop run")).toBeNull();
+  });
 });
 
 describe("views and filters", () => {
