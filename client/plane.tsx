@@ -1,18 +1,18 @@
 // The Maestro surface: all work, attention first, as a feed, a board or a
-// list, scoped to one initiative or to everything. Wide windows keep the feed
-// and the selected item side by side; the board and the list take the width
-// and open the item beside them. Compact windows show the feed and push the
-// item over it, with a way back.
+// list, or what happened as History, scoped to one initiative or to
+// everything. Wide windows keep the feed and the selected item side by side;
+// the board, the list and History take the width and open the item beside
+// them. Compact windows show the feed or History and push the item over it,
+// with a way back.
 
-import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
-import type { Scoreboard } from "../shared/contracts";
 import { ChangeScope } from "./changed";
 import { WorkDetail } from "./detail";
-import { duration, errorText, plural } from "./format";
+import { errorText, plural } from "./format";
+import { HistoryView } from "./history";
 import { useWorkList } from "./hooks";
 import { useIntent } from "./intent";
 import { NewWork } from "./new-work";
@@ -28,9 +28,11 @@ import {
   resolveScope,
   summaryText,
   viewFor,
+  viewsFor,
   visibleFilters,
 } from "./plane-model";
 import { BoardView, FeedView, ListView } from "./plane-views";
+import { ScoreboardCard } from "./scoreboard";
 import { Button, Card, IconButton, Notice, space, useText } from "./ui";
 
 export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps) {
@@ -109,7 +111,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
         />
       </View>
 
-      {compact ? null : <ViewSwitch theme={theme} view={view} onView={chooseView} />}
+      <ViewSwitch theme={theme} view={view} onView={chooseView} views={viewsFor(compact)} />
 
       {list.isPending ? (
         <ActivityIndicator color={theme.colors.foregroundMuted} />
@@ -122,7 +124,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
         </View>
       ) : (
         <>
-          <ScoreboardCard theme={theme} board={list.data.scoreboard} />
+          <ScoreboardCard theme={theme} board={list.data.scoreboard} onOpenHistory={() => chooseView("history")} />
           {list.data.warnings.slice(0, 3).map((warning) => (
             <Notice key={warning} theme={theme} tone="warn">
               {warning}
@@ -154,7 +156,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
               {scopes.length > 0 ? (
                 <ScopeRow theme={theme} initiatives={scopes} scope={scope} onScope={setScope} />
               ) : null}
-              {view === "board" ? null : (
+              {view === "board" || view === "history" ? null : (
                 <FilterRow
                   theme={theme}
                   filters={visibleFilters(counts, filter)}
@@ -163,7 +165,9 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
                   onFilter={setFilter}
                 />
               )}
-              {shown.length === 0 && view !== "board" ? (
+              {view === "history" ? (
+                <HistoryView {...pick} scope={scope} />
+              ) : shown.length === 0 && view !== "board" ? (
                 <Text style={text.muted}>{emptyText(filter)}</Text>
               ) : view === "board" ? (
                 <BoardView {...pick} items={shown} />
@@ -190,7 +194,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     );
   }
 
-  // The board and the list want the width: the item opens beside them only when one is picked.
+  // The board, the list and History want the width: the item opens beside them only when one is picked.
   const wide = view !== "feed";
   return (
     <ChangeScope>
@@ -235,62 +239,5 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
         {newWork}
       </View>
     </ChangeScope>
-  );
-}
-
-function ScoreboardCard({ theme, board }: { theme: PluginTheme; board: Scoreboard }) {
-  const text = useText(theme);
-  const runs = board.segments.length;
-  const label = `Unsupervised ${duration(board.unsupervisedMs)} today, ${plural(runs, "stretch", "stretches")}, ${plural(board.looks, "look")}`;
-  return (
-    <Card theme={theme}>
-      <Text style={text.label}>Unsupervised today</Text>
-      <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[3], flexWrap: "wrap" }}>
-        <Text style={[text.heading, text.tabular]}>{duration(board.unsupervisedMs)}</Text>
-        <Text style={[text.muted, text.tabular]}>
-          {plural(board.looks, "look")} · longest run {duration(board.longestRunMs)}
-        </Text>
-      </View>
-      <View accessible accessibilityLabel={label} style={{ height: 16, justifyContent: "center" }}>
-        <View style={{ height: 6, borderRadius: 3, backgroundColor: theme.colors.border, overflow: "hidden" }}>
-          {board.segments.map((segment) => (
-            <View
-              key={`${segment.start}`}
-              style={{
-                position: "absolute",
-                top: 0,
-                bottom: 0,
-                left: `${segment.start * 100}%`,
-                width: `${Math.max(segment.width * 100, 0.6)}%`,
-                backgroundColor: theme.colors.accent,
-                opacity: segment.live ? 1 : 0.7,
-              }}
-            />
-          ))}
-        </View>
-        {[...new Set(board.notches)].map((notch) => (
-          <View
-            key={notch}
-            style={{
-              position: "absolute",
-              left: `${notch * 100}%`,
-              top: 1,
-              width: 2,
-              height: 14,
-              borderRadius: 1,
-              backgroundColor: theme.colors.foreground,
-            }}
-          />
-        ))}
-      </View>
-      <Text style={text.small}>Bars are runs on their own. Each mark is a time you stepped in.</Text>
-      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-        {["00:00", "06:00", "12:00", "18:00", "24:00"].map((mark) => (
-          <Text key={mark} style={[text.small, text.tabular]}>
-            {mark}
-          </Text>
-        ))}
-      </View>
-    </Card>
   );
 }

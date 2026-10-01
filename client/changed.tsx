@@ -1,5 +1,7 @@
-// The changed line: lines added and removed in a worker's workspace, read from
-// Paseo's client state with useWorkspace. Paseo hands that state to workspace
+// The changed line: lines added and removed in a worker's workspace. The
+// server reads it for every item (item.changed, server/changed.ts), and that
+// comes first. Without it, the stat is read from Paseo's client state with
+// useWorkspace, as the agent panel can. Paseo hands that state to workspace
 // panels but not to surfaces (0.9.2), and there useWorkspace throws. So the
 // surface wraps itself in ChangeScope, which probes once: without the state
 // every read reports "unknown" instead of every card throwing.
@@ -45,15 +47,21 @@ export function ChangeScope({ children }: { children: ReactNode }) {
   );
 }
 
-/** Hands the workspace's diff stat to `children`: null while it is unknown or unreadable. */
+/**
+ * Hands the workspace's diff stat to `children`: `stat` when the server read
+ * one, else the client state's, null while it is unknown or unreadable.
+ */
 export function WithChange({
   workspaceId,
+  stat,
   children,
 }: {
   workspaceId: string | null | undefined;
+  stat?: DiffStat | null;
   children: (stat: DiffStat | null) => ReactNode;
 }) {
   const reach = useContext(ReachContext);
+  if (stat) return children(stat);
   const unknown = children(null);
   if (!workspaceId || reach === false) return unknown;
   return (

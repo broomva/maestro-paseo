@@ -48,3 +48,16 @@ export function errorText(error: unknown): string {
     .trim();
   return clean || "Something went wrong.";
 }
+
+/** A file size a person reads: "812 B", "1.2 KB", "3.4 MB". */
+export function bytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = n / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}

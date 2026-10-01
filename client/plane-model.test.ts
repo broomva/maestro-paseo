@@ -22,6 +22,7 @@ import {
   stuckText,
   summaryText,
   viewFor,
+  viewsFor,
   visibleFilters,
   workerText,
 } from "./plane-model";
@@ -64,11 +65,18 @@ const plane = [
 ];
 
 describe("views", () => {
-  test("compact always shows the feed", () => {
+  test("compact shows the feed, or History when it is chosen", () => {
     expect(viewFor("board", true)).toBe("feed");
     expect(viewFor("list", true)).toBe("feed");
+    expect(viewFor("history", true)).toBe("history");
     expect(viewFor("board", false)).toBe("board");
     expect(viewFor("list", false)).toBe("list");
+    expect(viewFor("history", false)).toBe("history");
+  });
+
+  test("compact offers the feed and History; wide offers all four", () => {
+    expect(viewsFor(true).map((view) => view.label)).toEqual(["Feed", "History"]);
+    expect(viewsFor(false).map((view) => view.label)).toEqual(["Feed", "Board", "List", "History"]);
   });
 });
 

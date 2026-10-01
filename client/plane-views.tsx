@@ -139,7 +139,7 @@ function WorkCard({ theme, item, selected, onSelect }: Selectable & { item: Work
         <StateLabel theme={theme} state={item.state} label={stateText(item)} />
         {worker ? <Text style={text.small}>{worker}</Text> : null}
       </View>
-      <WithChange workspaceId={item.worker?.workspaceId}>
+      <WithChange workspaceId={item.worker?.workspaceId} stat={item.changed}>
         {(stat) =>
           changedVisible(branch, stat) ? (
             <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>

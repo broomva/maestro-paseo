@@ -9,6 +9,7 @@ import { useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import type { CheckResult, WorkEventWire, WorkItem } from "../shared/contracts";
 import { ChangeText, WithChange } from "./changed";
+import { FilesSection } from "./files";
 import { ago, basename, errorText } from "./format";
 import { useVerbs, useWorkDetail } from "./hooks";
 import { changedVisible } from "./plane-model";
@@ -113,6 +114,8 @@ export function WorkDetail({
           </Text>
         </View>
       ) : null}
+
+      <FilesSection id={item.id} theme={theme} />
 
       <Receipts theme={theme} events={events} />
 
@@ -223,7 +226,7 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
             </View>
           </View>
         ) : null}
-        <WithChange workspaceId={item.worker?.workspaceId}>
+        <WithChange workspaceId={item.worker?.workspaceId} stat={item.changed}>
           {(stat) =>
             changedVisible(item.worker?.branch, stat) ? (
               <View style={{ gap: space[1] }}>
