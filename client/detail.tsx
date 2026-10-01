@@ -328,20 +328,11 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
             onPress={() => void answer(false)}
           />
         </View>
-        {/* Or end the run without answering. Cancel is a decision at the gate, so a pending one replaces it. */}
+        {/* Or end the run without answering. No Cancel here: it would close the work and leave the
+            session waiting on this question (server/engine.ts STOP_BEFORE_CANCEL). Stop, then cancel from Stuck. */}
         {stopConfirm ?? (
           <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
             <Button theme={theme} icon="Square" label="Stop run" compact={compact} onPress={openStop} />
-            {pendingCard ? null : (
-              <Button
-                theme={theme}
-                variant="quiet"
-                label="Cancel work"
-                compact={compact}
-                busy={verbs.cancel.isPending}
-                onPress={() => verbs.cancel.mutate({ id: item.id }, { onError: fail })}
-              />
-            )}
           </View>
         )}
       </Card>,

@@ -695,14 +695,13 @@ describe("Stop run", () => {
   const CONFIRM_ASKING =
     "Stopping archives the session and leaves its question unanswered. The branch and its commits stay.";
 
-  test("the asking card offers Stop run and Cancel work beside Allow and Deny, and each asks the host", async () => {
+  test("the asking card offers Stop run beside Allow and Deny, and no Cancel work", async () => {
     items = [...fixture(), asking("k")];
     const view = await mount(detail("k"));
     expect(view.text()).toContain("The agent is asking");
-    for (const label of ["Allow", "Deny", "Stop run", "Cancel work"]) expect(view.byLabel(label)).not.toBeNull();
-
-    await view.press(view.byLabel("Cancel work"));
-    expect(sent("work.cancel")).toEqual([{ id: "k" }]);
+    for (const label of ["Allow", "Deny", "Stop run"]) expect(view.byLabel(label)).not.toBeNull();
+    // Cancel would close the work and leave the session waiting on the question: Stop, then cancel from Stuck.
+    expect(view.byLabel("Cancel work")).toBeNull();
 
     // Stop confirms first, as it does for a working run, and says the question goes unanswered.
     await view.press(view.byLabel("Stop run"));

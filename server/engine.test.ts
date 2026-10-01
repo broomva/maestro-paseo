@@ -14,6 +14,7 @@ import {
   MODED_BY_YOU,
   NOT_STOPPABLE,
   RUN_WENT_ON,
+  STOP_BEFORE_CANCEL,
   STOPPED,
   type Timer,
   UNDO_MS,
@@ -1188,11 +1189,22 @@ describe("guards when a decision takes effect", () => {
     expect((await engine.get("gate-orphan")).item.state).toBe("canceled");
   });
 
-  test("cancel applies while the agent asks: it needs no answer", async () => {
-    const { create, engine, decide } = await setup();
+  test("cancel is refused while the agent asks, when made or when it comes due: no session is left waiting", async () => {
+    const { create, engine, fake, timers, decide } = await setup();
     const item = await create();
+    await endTurn(engine, fake);
+    // Made at the gate, before it asked: dropped when it comes due, and the work stays at the gate.
+    await engine.verdict(fake.paseo, item.id, "block", "");
     await engine.onPermissionRequested({ id: "agent-1" }, { id: "p1", name: "Bash", input: { command: "ls" } });
-    expect((await decide(item.id, "block")).state).toBe("canceled");
+    tickMs(UNDO_MS);
+    await timers.fire();
+    const after = await engine.get(item.id);
+    expect(after.item.state).toBe("review");
+    expect(after.item.permission).not.toBeNull();
+    expect(JSON.stringify(after.events)).toContain(STOP_BEFORE_CANCEL);
+    // Made while it asks: refused outright.
+    await expect(decide(item.id, "block")).rejects.toThrow(STOP_BEFORE_CANCEL);
+    expect(fake.archived).toEqual([]);
   });
 });
 
@@ -1855,17 +1867,17 @@ describe("stop run", () => {
     expect(fake.archived).toEqual([]);
   });
 
-  test("Cancel work while the agent asks waits out the undo window, then closes the work", async () => {
+  test("Cancel work while the agent asks is refused: it would leave the session waiting on the question", async () => {
     const { create, engine, fake, timers } = await setup();
     const item = await create();
     await ask(engine, fake);
-    expect(await engine.cancel(item.id, fake.paseo)).toMatchObject({
-      state: "review",
-      pending: { verdict: "block" },
-    });
+    await expect(engine.cancel(item.id, fake.paseo)).rejects.toThrow(STOP_BEFORE_CANCEL);
     tickMs(UNDO_MS);
     await timers.fire();
-    expect((await engine.get(item.id)).item.state).toBe("canceled");
+    const after = (await engine.get(item.id)).item;
+    expect(after).toMatchObject({ state: "review", pending: null });
+    expect(after.permission).not.toBeNull();
+    expect(fake.archived).toEqual([]);
   });
 
   test("a failed archive puts the run back and says why", async () => {

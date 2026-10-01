@@ -251,13 +251,20 @@ export function within<T>(work: () => Promise<T>, ms: number): Promise<T> {
   return Promise.race([Promise.resolve().then(work), late]).finally(() => clearTimeout(handle));
 }
 
+/**
+ * Why Cancel is refused while the agent asks: canceling closes the work but
+ * leaves the session alive, its turn waiting on a question nobody would see.
+ * Stop archives the session; the work can be canceled from Stuck after.
+ */
+export const STOP_BEFORE_CANCEL = "The agent is asking you something. Stop the run first, then cancel the work.";
+
 /** Why a decision cannot be made (or, when it comes due, applied) on this item right now. */
 function gateRefusal(item: StoredWork, verdict: Verdict, applying: boolean): string | null {
   if (item.contract.state !== "review") {
     return applying ? "It was no longer waiting on you." : "Only work waiting on you takes a verdict.";
   }
-  if (verdict !== "block" && pendingPermission(item.events)) {
-    return "The agent is waiting on a question. Answer it first.";
+  if (pendingPermission(item.events)) {
+    return verdict === "block" ? STOP_BEFORE_CANCEL : "The agent is waiting on a question. Answer it first.";
   }
   if (verdict === "revise" && !workerOf(item.events)) return "There is no session to send this back to.";
   return null;
