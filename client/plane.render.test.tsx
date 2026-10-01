@@ -165,6 +165,7 @@ const { MaestroSettings } = await import("./settings");
 const { attentionOf } = await import("../server/attention");
 const { headerFace, needsYou } = await import("./header-count");
 const { linkSettings } = await import("./settings-link");
+const { LOOP_HINT: LOOP_SETTINGS_HINT } = await import("./loop-model");
 
 function setReduced(value: boolean) {
   reduced = value;
@@ -1016,6 +1017,18 @@ describe("Settings", () => {
   const settingsScreen = () => (
     <MaestroSettings theme={theme} host={{ id: "h", label: "h" }} layout={{ compact: false, platform: "web" }} />
   );
+
+  test("the loop's control carries its hint, the one sentence that says what the loop does", async () => {
+    const view = await mount(settingsScreen());
+    // The select the host draws: its label, its hint, then one button per choice.
+    const control = view.byLabel("The loop: Off")?.parentElement;
+    const parts = [...(control?.children ?? [])].map((el) => el.textContent);
+    expect(parts.slice(0, 2)).toEqual(["The loop", LOOP_SETTINGS_HINT]);
+    expect(LOOP_SETTINGS_HINT).toBe(
+      "On a schedule, the loop starts Queued work under the run cap, and leaves work that skips permission prompts, or runs in a mode you chose, to you.",
+    );
+    expect(view.text().split(LOOP_SETTINGS_HINT)).toHaveLength(2);
+  });
 
   test("the loop is a choice of off or a period, and Save sends the whole config back with it", async () => {
     const view = await mount(settingsScreen());
