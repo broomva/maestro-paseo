@@ -14,9 +14,12 @@
 //   2. cancel from proposed, triggered or blocked. Maestro routes this through
 //      an audited human override; here it is the "Cancel work" verb, recorded
 //      in the event log as a human action.
-//   3. review -> blocked, only while a question is pending: when the session
-//      behind it is gone (nobody is left to answer, so the work is stuck, not
-//      waiting), or when you stop the run instead of answering it.
+//   3. review -> blocked, in three cases: while a question is pending, when
+//      the session behind it is gone (nobody is left to answer, so the work
+//      is stuck, not waiting) or when you stop the run instead of answering
+//      it; and with no question pending, when a turn whose start was missed
+//      ends failed or canceled after the work landed (server/engine.ts
+//      endTurn): the gate then shows the turn that stopped, as Stuck.
 // The invariant that matters is kept exactly: under gate:human nothing reaches
 // done without an approve verdict.
 
