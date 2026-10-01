@@ -6,7 +6,8 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { call, Refused } from "./bin/maestro";
 import contribute from "./index.server";
 import { answers } from "./server/agent-socket";
-import { NO_HANDLE } from "./server/engine";
+import { loadConfig } from "./server/config";
+import { Engine, NO_HANDLE, UNDO_MS } from "./server/engine";
 import { fakePaseo } from "./server/fake-paseo";
 
 setDefaultTimeout(60_000);
@@ -94,4 +95,160 @@ test("the plugin's handlers and hooks hand the agent socket its daemon client", 
     if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
   }
   await expect(stat(path)).rejects.toThrow();
+});
+
+test("undo, stop and the default gate are wired through the plugin's handlers", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
+  roots.push(root);
+  const repo = join(root, "repo");
+  await mkdir(repo);
+  const config = join(root, "config.json");
+  // Written before these settings existed, except the default gate.
+  await writeFile(
+    config,
+    JSON.stringify({
+      workRoot: join(root, "work"),
+      provider: "claude/test-model",
+      modeId: null,
+      isolation: "worktree",
+      defaultGate: "auto",
+    }),
+  );
+  const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
+  process.env.MAESTRO_PASEO_CONFIG = config;
+  process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
+  const { host, handlers, hooks } = fakeHost();
+  const cleanup = contribute(host);
+  const fake = fakePaseo();
+  const context = { paseo: fake.paseo, signal: new AbortController().signal };
+  const run = async (name: string, input: unknown) => {
+    const handler = handlers.get(name);
+    if (!handler) throw new Error(`${name} is not handled`);
+    return (await handler(input, context)) as {
+      item: { id: string; state: string; gate: string } & Record<string, unknown>;
+    };
+  };
+  try {
+    for (const name of ["work.undo", "work.stop", "work.verdict", "work.cancel", "config.get", "config.set"]) {
+      expect(handlers.has(name)).toBe(true);
+    }
+    expect(await run("config.get", {})).toMatchObject({ concurrencyCap: 3, archiveOnApprove: false });
+
+    // The form said nothing about the gate: the default applies, and checks deciding still needs a check.
+    const base = { brief: "", repo, initiative: "", dispatch: false };
+    await expect(run("work.create", { ...base, title: "No check", check: "" })).rejects.toThrow(
+      "needs a check command",
+    );
+    const { item: auto } = await run("work.create", { ...base, title: "Checked", check: "true" });
+    expect(auto.gate).toBe("auto");
+    const { item: chosen } = await run("work.create", { ...base, title: "Mine", check: "", gate: "human" });
+    expect(chosen.gate).toBe("human");
+
+    // Dispatch, land at the gate, decide, take it back.
+    const { item: running } = await run("work.dispatch", { id: chosen.id });
+    expect(running.state).toBe("running");
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    const ended = hooks.get("agent.turn_ended");
+    if (!ended) throw new Error("agent.turn_ended is not subscribed");
+    await ended({ agent: { id: "agent-1" }, outcome: { kind: "completed" }, timeline: [], turnId: "t1" }, context);
+    const { item: pending } = await run("work.verdict", { id: chosen.id, verdict: "approve", note: "" });
+    expect(pending).toMatchObject({ state: "review", pending: { verdict: "approve" } });
+    const { item: undone } = await run("work.undo", { id: chosen.id });
+    expect(undone).toMatchObject({ state: "review", pending: null });
+    const { item: canceling } = await run("work.cancel", { id: chosen.id });
+    expect(canceling).toMatchObject({ state: "review", pending: { verdict: "block" } });
+    await run("work.undo", { id: chosen.id });
+
+    // Stop a run from the handler: the session is archived and the work is stuck.
+    const { item: other } = await run("work.create", { ...base, title: "Stop me", check: "", gate: "human" });
+    await run("work.dispatch", { id: other.id });
+    // Its folder is no git worktree, so nothing proves stopping loses nothing: refused, then confirmed.
+    await expect(run("work.stop", { id: other.id })).rejects.toThrow("Not stopped:");
+    expect(fake.archived).toEqual([]);
+    const { item: stopped } = await run("work.stop", { id: other.id, discard: true });
+    expect(stopped).toMatchObject({ state: "blocked", reason: "You stopped the run" });
+    expect(fake.archived).toEqual(["agent-2"]);
+  } finally {
+    await cleanup();
+    process.env.MAESTRO_PASEO_CONFIG = saved.config;
+    process.env.MAESTRO_PASEO_SOCKET = saved.socket;
+    if (saved.config === undefined) delete process.env.MAESTRO_PASEO_CONFIG;
+    if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
+  }
+});
+
+test("decisions left from before a restart apply on load, or once a client arrives", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
+  roots.push(root);
+  const repo = join(root, "repo");
+  await mkdir(repo);
+  const config = join(root, "config.json");
+  await writeFile(config, JSON.stringify({ workRoot: join(root, "work"), provider: "claude/test-model" }));
+  const fake = fakePaseo();
+
+  // The previous plugin process: two runs at the gate, each decided, then it went down inside the window.
+  const past = Date.now() - 60_000;
+  const before = new Engine({
+    now: () => new Date(past),
+    config: () => loadConfig(config),
+    log: () => undefined,
+    timer: () => () => undefined,
+  });
+  const make = async (title: string) => {
+    const item = await before.create(fake.paseo, {
+      title,
+      brief: "",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "",
+      dispatch: true,
+    });
+    const agent = fake.agents.get(item.worker?.agentId ?? "");
+    if (agent) agent.status = "idle";
+    await before.onTurnEnded({ id: item.worker?.agentId ?? "" }, { kind: "completed" }, []);
+    return item.id;
+  };
+  const canceled = await make("Cancel me");
+  const approved = await make("Approve me");
+  await before.verdict(fake.paseo, canceled, "block", "");
+  await before.verdict(fake.paseo, approved, "approve", "");
+  before.stop();
+  expect(past + UNDO_MS).toBeLessThan(Date.now());
+
+  const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
+  process.env.MAESTRO_PASEO_CONFIG = config;
+  process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
+  const { host, handlers, hooks } = fakeHost();
+  const cleanup = contribute(host);
+  const state = async (id: string) => {
+    const get = handlers.get("work.get");
+    if (!get) throw new Error("work.get is not handled");
+    return ((await get({ id }, {})) as { item: { state: string } }).item.state;
+  };
+  const until = async (id: string, want: string) => {
+    for (let i = 0; i < 100 && (await state(id)) !== want; i += 1) await new Promise((r) => setTimeout(r, 20));
+    return state(id);
+  };
+  try {
+    // On load, with no client yet: the cancel asks nothing of the session and applies.
+    expect(await until(canceled, "canceled")).toBe("canceled");
+    // The approval must ask whether the session is working again, so it waits for a client:
+    // still waiting a while later, not merely not reached yet by the sweep.
+    for (let i = 0; i < 15; i += 1) {
+      expect(await state(approved)).toBe("review");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const created = hooks.get("agent.created");
+    if (!created) throw new Error("agent.created is not subscribed");
+    await created({ agent: { id: "someone" } }, { paseo: fake.paseo, signal: new AbortController().signal });
+    expect(await until(approved, "done")).toBe("done");
+  } finally {
+    await cleanup();
+    process.env.MAESTRO_PASEO_CONFIG = saved.config;
+    process.env.MAESTRO_PASEO_SOCKET = saved.socket;
+    if (saved.config === undefined) delete process.env.MAESTRO_PASEO_CONFIG;
+    if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
+  }
 });

@@ -54,8 +54,15 @@ export type WorkEvent = Base &
     | { type: "checks.started"; actor: "maestro"; token: string; recovered?: boolean; endedAt?: string }
     | { type: "checks.finished"; actor: "maestro"; token: string; results: CheckResult[] }
     | { type: "state"; actor: Actor; from: OrchState; to: OrchState; reason: string | null }
-    | { type: "gate"; actor: "human"; verdict: Verdict; note: string }
+    // A decision at the gate is recorded when you make it and applied when its undo
+    // window closes. The applied `gate` carries the token of the decision it applies;
+    // a `gate` without one is a decision recorded before the window existed.
+    | { type: "gate"; actor: "human"; verdict: Verdict; note: string; token?: string }
+    | { type: "gate.pending"; actor: "human"; verdict: Verdict; note: string; token: string; effectiveAt: string }
+    | { type: "gate.undone"; actor: "human"; verdict: Verdict; token: string }
+    | { type: "gate.dropped"; actor: "maestro"; verdict: Verdict; token: string; reason: string }
     | { type: "unblocked"; actor: "human"; note: string }
+    | { type: "stopped"; actor: "human"; agentId: string | null }
     | { type: "note"; actor: Actor; text: string }
   );
 
@@ -117,6 +124,51 @@ export function pendingPermission(events: readonly WorkEvent[]): Permission | nu
       event.type === "dispatched",
   );
   return answered ? null : { requestId: asked.requestId, title: asked.title, detail: asked.detail };
+}
+
+export interface PendingDecision {
+  token: string;
+  verdict: Verdict;
+  note: string;
+  decidedAt: string;
+  effectiveAt: string;
+}
+
+/**
+ * The decision at the gate that has not taken effect: the latest one made,
+ * unless it was applied, undone, or dropped since. A decision cannot be made
+ * while another is pending, so only the latest can be.
+ */
+export function pendingDecision(events: readonly WorkEvent[]): PendingDecision | null {
+  const made = lastOf(events, "gate.pending");
+  if (!made) return null;
+  const settled = events
+    .slice(indexOfEvent(events, made) + 1)
+    .some(
+      (event) =>
+        (event.type === "gate" || event.type === "gate.undone" || event.type === "gate.dropped") &&
+        event.token === made.token,
+    );
+  if (settled) return null;
+  return {
+    token: made.token,
+    verdict: made.verdict,
+    note: made.note,
+    decidedAt: made.ts,
+    effectiveAt: made.effectiveAt,
+  };
+}
+
+/** The events recorded after the decision with this token was made. */
+export function eventsSince(events: readonly WorkEvent[], token: string): WorkEvent[] {
+  const made = events.findIndex((event) => event.type === "gate.pending" && event.token === token);
+  return made < 0 ? [] : events.slice(made + 1);
+}
+
+/** Whether the latest decision made at the gate has taken effect. */
+export function decisionApplied(events: readonly WorkEvent[]): boolean {
+  const made = lastOf(events, "gate.pending");
+  return made !== null && events.some((event) => event.type === "gate" && event.token === made.token);
 }
 
 /** A checks run that started and has not reported. */
@@ -283,9 +335,17 @@ const CAUSES = new Set<WorkEventType>([
   "adopted",
   "gate",
   "unblocked",
+  "stopped",
   "permission.asked",
   "permission.resolved",
 ]);
+
+/** How each gate verdict reads: the button, the pending receipt, the applied receipt. */
+export const DECISION_WORDS: Record<Verdict, { verb: string; doing: string; done: string }> = {
+  approve: { verb: "Approve", doing: "Approving", done: "You approved" },
+  revise: { verb: "Send back", doing: "Sending it back", done: "You sent it back" },
+  block: { verb: "Cancel work", doing: "Canceling", done: "You canceled it" },
+};
 
 /**
  * The receipts a person reads. A state change right after the event that
@@ -294,10 +354,16 @@ const CAUSES = new Set<WorkEventType>([
  */
 export function toWireEvents(events: readonly WorkEvent[]): WorkEventWire[] {
   const out: WorkEventWire[] = [];
+  // Decisions that were applied, undone or dropped: their countdown is over, so they read as made.
+  const settled = new Set(
+    events.flatMap((event) =>
+      event.type === "gate" || event.type === "gate.undone" || event.type === "gate.dropped" ? [event.token] : [],
+    ),
+  );
   events.forEach((event, index) => {
     const previous = events[index - 1];
     if (event.type === "state" && previous && CAUSES.has(previous.type)) return;
-    const wire = toWireEvent(event);
+    const wire = toWireEvent(event, event.type === "gate.pending" && settled.has(event.token));
     if (wire) out.push(wire);
   });
   return out;
@@ -309,7 +375,8 @@ function byline(origin: Origin): string | null {
   return origin.by ? `by session ${origin.by.slice(0, 8)}` : "by a session";
 }
 
-export function toWireEvent(event: WorkEvent): WorkEventWire | null {
+/** One receipt. `settled`: for a decision, whether it was applied, undone or dropped since. */
+export function toWireEvent(event: WorkEvent, settled = false): WorkEventWire | null {
   const base = { ts: event.ts, actor: event.actor };
   switch (event.type) {
     case "created":
@@ -360,17 +427,31 @@ export function toWireEvent(event: WorkEvent): WorkEventWire | null {
       return word ? { ...base, type: event.type, text: word, detail: event.reason } : null;
     }
     case "gate":
+      // A decision made in the undo window was already receipted when you made it; this is when it landed.
+      if (event.token) return { ...base, type: event.type, text: "Took effect", detail: null };
+      return { ...base, type: event.type, text: DECISION_WORDS[event.verdict].done, detail: event.note || null };
+    case "gate.pending": {
+      if (settled)
+        return { ...base, type: event.type, text: DECISION_WORDS[event.verdict].done, detail: event.note || null };
+      const seconds = Math.max(0, Math.round((ms(event.effectiveAt) - ms(event.ts)) / 1000));
       return {
         ...base,
         type: event.type,
-        text:
-          event.verdict === "approve"
-            ? "You approved"
-            : event.verdict === "revise"
-              ? "You sent it back"
-              : "You canceled it",
+        text: `${DECISION_WORDS[event.verdict].doing} in ${seconds}s`,
         detail: event.note || null,
       };
+    }
+    case "gate.undone":
+      return { ...base, type: event.type, text: "Undone", detail: DECISION_WORDS[event.verdict].verb };
+    case "gate.dropped":
+      return {
+        ...base,
+        type: event.type,
+        text: `${DECISION_WORDS[event.verdict].verb} did not take effect`,
+        detail: event.reason,
+      };
+    case "stopped":
+      return { ...base, type: event.type, text: "You stopped the run", detail: null };
     case "unblocked":
       return { ...base, type: event.type, text: "You unblocked it", detail: event.note || null };
     case "note":
@@ -380,7 +461,25 @@ export function toWireEvent(event: WorkEvent): WorkEventWire | null {
 
 // ── The scoreboard: unsupervised hours today ─────────────────────────────────
 
-const HUMAN_LOOKS = new Set<WorkEventType>(["gate", "unblocked", "dispatched", "adopted", "permission.resolved"]);
+const HUMAN_LOOKS = new Set<WorkEventType>([
+  "gate",
+  "gate.pending",
+  "unblocked",
+  "stopped",
+  "dispatched",
+  "adopted",
+  "permission.resolved",
+]);
+
+/**
+ * A look is you stepping in. A decision counts when you make it, so the `gate`
+ * that applies it later (it carries the decision's token) is not a second look,
+ * and undoing it inside the window takes nothing back.
+ */
+function isLook(event: WorkEvent): boolean {
+  if (event.actor !== "human" || !HUMAN_LOOKS.has(event.type)) return false;
+  return !(event.type === "gate" && event.token);
+}
 
 function merge(intervals: Array<[number, number]>): Array<[number, number]> {
   const sorted = [...intervals].sort((a, b) => a[0] - b[0]);
@@ -411,7 +510,7 @@ function dayBoard(
   const unsupervisedMs = clipped.reduce((sum, [a, b]) => sum + (b - a), 0);
   const longestRunMs = clipped.reduce((max, [a, b]) => Math.max(max, b - a), 0);
   const notches = logs
-    .flatMap((events) => events.filter((e) => e.actor === "human" && HUMAN_LOOKS.has(e.type)))
+    .flatMap((events) => events.filter(isLook))
     .map((e) => ms(e.ts))
     .filter((t) => t >= dayStart && t < dayEnd)
     .sort((a, b) => a - b);

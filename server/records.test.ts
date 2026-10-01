@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { MaestroConfig, WorkItem } from "../shared/contracts";
 import { agentMethods } from "./agent-socket";
 import { ChangedCache } from "./changed";
+import { defaultConfig } from "./config";
 import { Engine } from "./engine";
 import type { WorkEvent } from "./events";
 import { historyOf, Records } from "./records";
@@ -23,6 +24,7 @@ async function setup() {
   const root = await mkdtemp(join(tmpdir(), "maestro-records-"));
   roots.push(root);
   const config: MaestroConfig = {
+    ...defaultConfig(),
     workRoot: join(root, "work"),
     provider: "claude",
     modeId: null,
@@ -215,6 +217,7 @@ test("a work root that does not exist yet has no history", async () => {
   const root = await mkdtemp(join(tmpdir(), "maestro-records-"));
   roots.push(root);
   const records = new Records(async () => ({
+    ...defaultConfig(),
     workRoot: join(root, "missing"),
     provider: "claude",
     modeId: null,

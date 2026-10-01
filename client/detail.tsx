@@ -5,13 +5,13 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { type PluginSurfaceProps, usePaseo } from "@getpaseo/plugin/client";
 import { ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
-import { useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
-import type { CheckResult, WorkEventWire, WorkItem } from "../shared/contracts";
+import { type CheckResult, NOT_STOPPED, type Pending, type WorkEventWire, type WorkItem } from "../shared/contracts";
 import { ChangeText, WithChange } from "./changed";
 import { FilesSection } from "./files";
 import { ago, basename, errorText } from "./format";
-import { useVerbs, useWorkDetail } from "./hooks";
+import { useRefresh, useVerbs, useWorkDetail } from "./hooks";
 import { changedVisible } from "./plane-model";
 import { Button, Card, IconButton, Notice, radius, StateLabel, space, useText } from "./ui";
 
@@ -144,6 +144,14 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   const [note, setNote] = useState("");
   const [sendingBack, setSendingBack] = useState(false);
   const [answering, setAnswering] = useState(false);
+  // The item whose Stop run is being confirmed, so an open confirm never carries over to another item.
+  const [confirmStop, setConfirmStop] = useState<string | null>(null);
+  // A Stop refused because it would delete work that is not committed: the second confirm says what goes.
+  const [stopLoss, setStopLoss] = useState<{ id: string; text: string } | null>(null);
+  const closeStop = () => {
+    setStopLoss(null);
+    setConfirmStop(null);
+  };
 
   const fail = (error: unknown) => toast.error(errorText(error));
   const inputStyle = {
@@ -157,6 +165,21 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
     fontSize: 14,
     textAlignVertical: "top" as const,
   };
+
+  // A decision you made that has not taken effect sits on top. It replaces only the gate's own
+  // verbs: answering a question, stopping a run, or unblocking stay where they are.
+  const pendingCard = item.pending ? (
+    <PendingDecision item={item} pending={item.pending} theme={theme} compact={compact} />
+  ) : null;
+  const withPending = (node: ReactNode) =>
+    pendingCard ? (
+      <View style={{ gap: space[3] }}>
+        {pendingCard}
+        {node}
+      </View>
+    ) : (
+      node
+    );
 
   if (item.state === "review" && item.permission) {
     const { requestId } = item.permission;
@@ -175,7 +198,7 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
         setAnswering(false);
       }
     };
-    return (
+    return withPending(
       <Card theme={theme}>
         <Text style={text.label}>The agent is asking</Text>
         <Text style={text.body}>{item.look?.ask ?? item.permission.title}</Text>
@@ -197,11 +220,12 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
             onPress={() => void answer(false)}
           />
         </View>
-      </Card>
+      </Card>,
     );
   }
 
   if (item.state === "review") {
+    if (pendingCard) return pendingCard;
     const look = item.look;
     return (
       <Card theme={theme}>
@@ -313,7 +337,7 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   }
 
   if (item.state === "blocked") {
-    return (
+    return withPending(
       <Card theme={theme}>
         <Text style={text.label}>Stuck</Text>
         <Text style={text.body}>{item.reason ?? "The run stopped without a reason."}</Text>
@@ -344,7 +368,7 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
             onPress={() => verbs.cancel.mutate({ id: item.id }, { onError: fail })}
           />
         </View>
-      </Card>
+      </Card>,
     );
   }
 
@@ -375,16 +399,145 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   }
 
   if (item.state === "running") {
-    return (
-      <Text style={text.muted}>
-        {item.phase === "checking"
-          ? "The run finished. Checks are running in its worktree."
-          : `Working${item.worker?.provider ? ` with ${item.worker.provider}` : ""}. It comes back to you when the run ends.`}
-      </Text>
+    // While checks run the session is already done: nothing to stop, and the checks decide where it lands.
+    const stoppable = item.phase !== "checking";
+    return withPending(
+      <View style={{ gap: space[3] }}>
+        <Text style={text.muted}>
+          {item.phase === "checking"
+            ? "The run finished. Checks are running in its worktree."
+            : `Working${item.worker?.provider ? ` with ${item.worker.provider}` : ""}. It comes back to you when the run ends.`}
+        </Text>
+        {!stoppable ? null : stopLoss?.id === item.id ? (
+          <Card theme={theme}>
+            <Text style={text.body}>{stopLoss.text}</Text>
+            <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
+              <Button
+                theme={theme}
+                variant="primary"
+                label="Discard and stop"
+                compact={compact}
+                busy={verbs.stop.isPending}
+                onPress={() =>
+                  verbs.stop.mutate({ id: item.id, discard: true }, { onSuccess: closeStop, onError: fail })
+                }
+              />
+              <Button theme={theme} variant="quiet" label="Keep it running" compact={compact} onPress={closeStop} />
+            </View>
+          </Card>
+        ) : confirmStop === item.id ? (
+          <Card theme={theme}>
+            <Text style={text.body}>
+              {item.worker?.branch
+                ? "Stopping archives the session. The branch and its commits stay."
+                : "Stopping archives the session."}
+            </Text>
+            <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
+              <Button
+                theme={theme}
+                variant="primary"
+                label="Stop run"
+                compact={compact}
+                busy={verbs.stop.isPending}
+                onPress={() =>
+                  verbs.stop.mutate(
+                    { id: item.id },
+                    {
+                      onSuccess: () => setConfirmStop(null),
+                      onError: (error) => {
+                        const said = errorText(error);
+                        if (said.startsWith(NOT_STOPPED)) setStopLoss({ id: item.id, text: said });
+                        else fail(error);
+                      },
+                    },
+                  )
+                }
+              />
+              <Button
+                theme={theme}
+                variant="quiet"
+                label="Keep it running"
+                compact={compact}
+                onPress={() => setConfirmStop(null)}
+              />
+            </View>
+          </Card>
+        ) : (
+          <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
+            <Button
+              theme={theme}
+              icon="Square"
+              label="Stop run"
+              compact={compact}
+              onPress={() => setConfirmStop(item.id)}
+            />
+          </View>
+        )}
+      </View>,
     );
   }
 
-  return item.verdict ? <Text style={text.muted}>{item.verdict}</Text> : null;
+  return withPending(item.verdict ? <Text style={text.muted}>{item.verdict}</Text> : null);
+}
+
+const PENDING_WORDS: Record<Pending["verdict"], string> = {
+  approve: "Approving",
+  revise: "Sending it back",
+  block: "Canceling the work",
+};
+
+/** A decision inside its undo window, counting down to when it takes effect. */
+function PendingDecision({
+  item,
+  pending,
+  theme,
+  compact,
+}: {
+  item: WorkItem;
+  pending: Pending;
+  theme: PluginTheme;
+  compact: boolean;
+}) {
+  const verbs = useVerbs();
+  const refresh = useRefresh();
+  const toast = useToast();
+  const text = useText(theme);
+  // Counted from what the host said was left, so a clock that differs from the host's does not skew it.
+  const { remainingMs } = pending;
+  const deadline = useMemo(() => Date.now() + remainingMs, [remainingMs]);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(timer);
+  }, []);
+  const left = Math.max(0, Math.ceil((deadline - now) / 1000));
+  const due = left === 0;
+  useEffect(() => {
+    if (!due) return;
+    // The host applies it on its own timer; look again just after, instead of waiting for the next poll.
+    const timer = setTimeout(() => void refresh(), 500);
+    return () => clearTimeout(timer);
+  }, [due, refresh]);
+  const words = PENDING_WORDS[pending.verdict];
+  return (
+    <Card theme={theme}>
+      <Text style={text.label}>Needs you</Text>
+      <Text style={text.body}>{due ? `${words} now.` : `${words} in ${left}s.`}</Text>
+      {pending.note ? <Text style={text.muted}>{pending.note}</Text> : null}
+      <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
+        <Button
+          theme={theme}
+          variant="primary"
+          icon="Undo2"
+          label={due ? "Undo" : `Undo (${left}s)`}
+          accessibilityLabel="Undo"
+          compact={compact}
+          busy={verbs.undo.isPending}
+          onPress={() => verbs.undo.mutate({ id: item.id }, { onError: (error) => toast.error(errorText(error)) })}
+        />
+      </View>
+    </Card>
+  );
 }
 
 function Checks({ theme, item, results }: { theme: PluginTheme; item: WorkItem; results: CheckResult[] }) {

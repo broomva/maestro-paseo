@@ -50,6 +50,7 @@ function work(id: string, state: OrchState, extra: Partial<WorkItem> = {}): Work
     look: null,
     permission: null,
     checks: [],
+    pending: null,
     ...extra,
   };
 }

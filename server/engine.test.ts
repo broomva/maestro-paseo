@@ -1,12 +1,16 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmodSync, existsSync, mkdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { MaestroConfig } from "../shared/contracts";
-import { Engine } from "./engine";
+import type { Verdict } from "../shared/states";
+import { defaultConfig } from "./config";
+import { CHECKING, CLIENT_WAIT_MS, Engine, RUN_WENT_ON, STOPPED, type Timer, UNDO_MS } from "./engine";
 import { fakePaseo } from "./fake-paseo";
 import type { Paseo } from "./runs";
 import { EVENTS_FILE, WORK_FILE, WorkStore } from "./store";
+import { gitEnv } from "./worktree";
 
 /** A real agent is idle once its turn ends; the fixture has to say so too. */
 async function endTurn(
@@ -24,6 +28,56 @@ let clock = Date.parse("2026-09-22T09:00:00.000Z");
 const tick = (minutes: number) => {
   clock += minutes * 60_000;
 };
+const tickMs = (ms: number) => {
+  clock += ms;
+};
+
+/** git for fixtures, with none of this machine's config (no signing, no hooks). */
+function git(cwd: string, ...args: string[]): string {
+  const run = Bun.spawnSync(["git", "-C", cwd, "-c", "user.email=t@example.com", "-c", "user.name=t", ...args], {
+    env: gitEnv() as Record<string, string>,
+  });
+  if (run.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${run.stderr.toString()}`);
+  return run.stdout.toString();
+}
+
+/**
+ * Makes a run's folder what Paseo makes it: a worktree of the work's repository
+ * on the run's branch, with nothing uncommitted. The repository gets one commit
+ * the first time.
+ */
+function cleanWorktree(repo: string, worker: { cwd: string | null; branch: string | null } | null | undefined): string {
+  if (!worker?.cwd || !worker.branch) throw new Error("the run has no worktree");
+  if (!existsSync(join(repo, ".git"))) {
+    git(repo, "init", "-q");
+    writeFileSync(join(repo, "a.txt"), "hello\n");
+    git(repo, "add", "a.txt");
+    git(repo, "commit", "-q", "-m", "init");
+  }
+  git(repo, "worktree", "add", "-q", "-b", worker.branch, worker.cwd);
+  return worker.cwd;
+}
+
+/** Timers the test fires by hand, after moving the same clock the engine reads. */
+function fakeTimers() {
+  const armed: Array<{ run: () => Promise<void>; ms: number; canceled: boolean }> = [];
+  const timer: Timer = (run, ms) => {
+    const entry = { run, ms, canceled: false };
+    armed.push(entry);
+    return () => {
+      entry.canceled = true;
+    };
+  };
+  return {
+    timer,
+    /** Timers armed and not canceled, not yet fired. */
+    live: () => armed.filter((entry) => !entry.canceled),
+    /** Fire every timer armed so far, as if its delay had passed, and wait for what it does. */
+    fire: async () => {
+      for (const entry of armed.splice(0)) if (!entry.canceled) await entry.run();
+    },
+  };
+}
 
 const roots: string[] = [];
 afterAll(async () => {
@@ -31,23 +85,35 @@ afterAll(async () => {
 });
 
 async function setup(overrides: Partial<MaestroConfig> = {}) {
-  const root = await mkdtemp(join(tmpdir(), "maestro-engine-"));
+  // Real path: the repository's path may not pass through a link, and macOS's tmpdir does (/var).
+  const root = await realpath(await mkdtemp(join(tmpdir(), "maestro-engine-")));
   roots.push(root);
   const repo = join(root, "repo");
   await mkdir(repo);
   const config: MaestroConfig = {
+    ...defaultConfig(),
     workRoot: join(root, "work"),
     provider: "claude",
     modeId: null,
     isolation: "worktree",
     ...overrides,
   };
+  const timers = fakeTimers();
   const engine = new Engine({
     now: () => new Date(clock),
     config: async () => config,
     log: process.env.DEBUG ? console.log : () => {},
+    timer: timers.timer,
+    claimWaitMs: 200,
   });
   const fake = fakePaseo();
+  /** Decide at the gate and let the undo window run out. */
+  const decide = async (id: string, verdict: Verdict, note = "", paseo: Paseo | null = fake.paseo) => {
+    await engine.verdict(paseo, id, verdict, note);
+    tickMs(UNDO_MS);
+    await timers.fire();
+    return (await engine.get(id)).item;
+  };
   const create = (extra: Partial<{ gate: "human" | "auto"; check: string; dispatch: boolean }> = {}) =>
     engine.create(fake.paseo, {
       title: "Persist run transcripts",
@@ -58,12 +124,15 @@ async function setup(overrides: Partial<MaestroConfig> = {}) {
       initiative: "hawthorne",
       dispatch: extra.dispatch ?? true,
     });
-  return { engine, fake, repo, config, create, store: new WorkStore(config.workRoot) };
+  return { engine, fake, repo, config, create, store: new WorkStore(config.workRoot), timers, decide };
 }
 
 beforeEach(() => {
   clock = Date.parse("2026-09-22T09:00:00.000Z");
 });
+
+/** For tests of what a stop does to the work's state, not to its worktree: discarding skips the worktree check. */
+const DISCARD = { discard: true } as const;
 
 async function settle(engine: Engine, id: string, want: string) {
   for (let i = 0; i < 100; i += 1) {
@@ -161,10 +230,10 @@ describe("the gate", () => {
   });
 
   test("approve closes it; the file and the log both say so", async () => {
-    const { create, engine, config, fake } = await setup();
+    const { create, engine, config, fake, decide } = await setup();
     const item = await create();
     await endTurn(engine, fake);
-    const done = await engine.verdict(null as unknown as Paseo, item.id, "approve", "");
+    const done = await decide(item.id, "approve");
     expect(done.state).toBe("done");
     expect(done.verdict).toBe("You approved");
     const dir = join(config.workRoot, "hawthorne", "persist-run-transcripts");
@@ -173,22 +242,22 @@ describe("the gate", () => {
   });
 
   test("send back needs a note, wakes the same session, and returns to running", async () => {
-    const { create, engine, fake } = await setup();
+    const { create, engine, fake, decide } = await setup();
     const item = await create();
     await endTurn(engine, fake);
     await expect(engine.verdict(fake.paseo, item.id, "revise", "  ")).rejects.toThrow("Say what should change");
-    const back = await engine.verdict(fake.paseo, item.id, "revise", "Add a replay test");
+    const back = await decide(item.id, "revise", "Add a replay test");
     expect(back.state).toBe("running");
     expect(fake.sent[0]?.agentId).toBe("agent-1");
     expect(fake.sent[0]?.text).toContain("Add a replay test");
   });
 
   test("a send back that cannot reach the session parks as stuck with the reason", async () => {
-    const { create, engine, fake } = await setup();
+    const { create, engine, fake, decide } = await setup();
     const item = await create();
     await endTurn(engine, fake);
     fake.failNextSends();
-    const stuck = await engine.verdict(fake.paseo, item.id, "revise", "Again");
+    const stuck = await decide(item.id, "revise", "Again");
     expect(stuck.state).toBe("blocked");
     expect(stuck.reason).toBe("Could not reach the session: socket closed");
   });
@@ -633,7 +702,7 @@ describe("round 2: lookups and duplicates", () => {
   });
 
   test("a repeated turn end in one stretch changes nothing; a reused id after a send back is a new turn", async () => {
-    const { create, engine, fake } = await setup();
+    const { create, engine, fake, decide } = await setup();
     const item = await create({ check: "sleep 0.2" });
     const idle = fake.agents.get("agent-1");
     if (idle) idle.status = "idle";
@@ -642,7 +711,7 @@ describe("round 2: lookups and duplicates", () => {
     await settle(engine, item.id, "review");
     expect((await engine.get(item.id)).events.filter((e) => e.type === "checks.started")).toHaveLength(1);
     // The session reopened and numbers its turns from 1 again.
-    await engine.verdict(fake.paseo, item.id, "revise", "one more thing");
+    await decide(item.id, "revise", "one more thing");
     await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");
     await settle(engine, item.id, "review");
     expect((await engine.get(item.id)).events.filter((e) => e.type === "checks.started")).toHaveLength(2);
@@ -870,4 +939,1195 @@ test("a read while a change is in flight returns the finished change, never half
   const { item: read, events } = await reading;
   expect(read.state).toBe("review");
   expect(events.at(-1)?.detail).toBe("held open");
+});
+
+describe("the undo window", () => {
+  test("a decision is recorded when you make it and takes effect 10s later", async () => {
+    const { create, engine, fake, timers } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    const looksBefore = (await engine.list(fake.paseo)).scoreboard.looks;
+    const pending = await engine.verdict(fake.paseo, item.id, "approve", "");
+    expect(pending).toMatchObject({ state: "review", pending: { verdict: "approve", remainingMs: UNDO_MS } });
+    expect(timers.live().map((timer) => timer.ms)).toEqual([UNDO_MS]);
+    // The look counts at the click, not when it applies.
+    expect((await engine.list(fake.paseo)).scoreboard.looks).toBe(looksBefore + 1);
+
+    // A timer that fires before the clock reaches the deadline applies nothing and waits out the rest.
+    tickMs(UNDO_MS - 1);
+    await timers.fire();
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "review", pending: { remainingMs: 1 } });
+    expect(timers.live().map((timer) => timer.ms)).toEqual([1]);
+
+    tickMs(1);
+    await timers.fire();
+    const { item: done, events } = await engine.get(item.id);
+    expect(done).toMatchObject({ state: "done", pending: null, verdict: "You approved" });
+    expect(events.slice(-2).map((event) => event.text)).toEqual(["You approved", "Took effect"]);
+    expect((await engine.list(fake.paseo)).scoreboard.looks).toBe(looksBefore + 1);
+  });
+
+  test("undo inside the window takes it back, and nothing applies later", async () => {
+    const { create, engine, fake, timers } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    const looksBefore = (await engine.list(fake.paseo)).scoreboard.looks;
+    await engine.verdict(fake.paseo, item.id, "revise", "Add a replay test");
+    tickMs(4_000);
+    expect(await engine.undo(item.id)).toMatchObject({ state: "review", pending: null });
+    expect(timers.live()).toHaveLength(0);
+    tickMs(UNDO_MS);
+    await timers.fire();
+    await engine.list(fake.paseo);
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "review", pending: null });
+    expect(fake.sent).toHaveLength(0);
+    expect(events.at(-1)).toMatchObject({ text: "Undone", detail: "Send back" });
+    // The decision was a look; taking it back does not add or remove one.
+    expect((await engine.list(fake.paseo)).scoreboard.looks).toBe(looksBefore + 1);
+    // A fresh decision can follow.
+    expect((await engine.verdict(fake.paseo, item.id, "approve", "")).pending?.verdict).toBe("approve");
+  });
+
+  test("undo after it took effect is refused, and so is undo with nothing decided", async () => {
+    const { create, engine, fake, decide } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await expect(engine.undo(item.id)).rejects.toThrow("There is no decision waiting to take effect.");
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    await expect(engine.undo(item.id)).rejects.toThrow("Too late to undo: it already took effect.");
+    expect((await engine.get(item.id)).item.state).toBe("done");
+  });
+
+  test("one decision at a time: a second is refused until the first is undone", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await expect(engine.verdict(fake.paseo, item.id, "block", "")).rejects.toThrow("already waiting to take effect");
+    await expect(engine.cancel(item.id)).rejects.toThrow("already waiting to take effect");
+    await engine.undo(item.id);
+    expect((await engine.cancel(item.id)).pending?.verdict).toBe("block");
+  });
+
+  test("cancel from Needs you waits out the window; queued work cancels at once", async () => {
+    const { create, engine, fake, timers } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    expect(await engine.cancel(item.id)).toMatchObject({ state: "review", pending: { verdict: "block" } });
+    tickMs(UNDO_MS);
+    await timers.fire();
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "canceled", verdict: "You canceled it" });
+
+    const queued = await create({ dispatch: false });
+    expect(await engine.cancel(queued.id)).toMatchObject({ state: "canceled", pending: null });
+  });
+
+  test("a restart after the window closed applies the decision on load", async () => {
+    const { create, engine, fake, config, timers } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    // The plugin goes down inside the window; its timer goes with it.
+    engine.stop();
+    expect(timers.live()).toHaveLength(0);
+    tickMs(UNDO_MS + 60_000);
+    const restarted = new Engine({ now: () => new Date(clock), config: async () => config, log: () => {} });
+    expect(await restarted.sweep(fake.paseo)).toBe(true);
+    expect((await restarted.get(item.id)).item).toMatchObject({ state: "done", pending: null });
+  });
+
+  test("a restart inside the window arms a timer for what is left of it", async () => {
+    const { create, engine, fake, config } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "revise", "Rename the flag");
+    engine.stop();
+    tickMs(3_000);
+    const timers = fakeTimers();
+    const restarted = new Engine({
+      now: () => new Date(clock),
+      config: async () => config,
+      log: () => {},
+      client: () => fake.paseo,
+      timer: timers.timer,
+    });
+    expect(await restarted.sweep()).toBe(false);
+    expect(timers.live().map((timer) => timer.ms)).toEqual([UNDO_MS - 3_000]);
+    tickMs(UNDO_MS - 3_000);
+    await timers.fire();
+    expect((await restarted.get(item.id)).item.state).toBe("running");
+    expect(fake.sent.at(-1)?.text).toContain("Rename the flag");
+  });
+
+  test("with no client yet, an overdue approval waits instead of skipping its guard", async () => {
+    const { create, engine, fake, config } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    const other = await create();
+    await endTurn(engine, fake, [], "agent-2");
+    await engine.cancel(other.id);
+    engine.stop();
+    tickMs(UNDO_MS);
+    let handle: Paseo | null = null;
+    const restarted = new Engine({
+      now: () => new Date(clock),
+      config: async () => config,
+      log: () => {},
+      client: () => handle,
+      timer: fakeTimers().timer,
+    });
+    // A cancel asks nothing of the session, so it applies; the approval must ask, so it waits.
+    await restarted.sweep();
+    expect((await restarted.get(other.id)).item.state).toBe("canceled");
+    expect((await restarted.get(item.id)).item).toMatchObject({ state: "review", pending: { verdict: "approve" } });
+    // The session started working again meanwhile: once a client exists, the guard sees it.
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "running";
+    handle = fake.paseo;
+    await restarted.sweep();
+    const { item: after, events } = await restarted.get(item.id);
+    expect(after).toMatchObject({ state: "review", pending: null });
+    expect(events.at(-1)).toMatchObject({ text: "Approve did not take effect" });
+  });
+
+  test("stopping the engine clears every timer it armed", async () => {
+    const { create, engine, fake, timers } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    expect(timers.live()).toHaveLength(1);
+    engine.stop();
+    expect(timers.live()).toHaveLength(0);
+    // Nothing new is armed after the stop, even by a sweep.
+    await engine.sweep(fake.paseo);
+    expect(timers.live()).toHaveLength(0);
+  });
+});
+
+describe("guards when a decision takes effect", () => {
+  test("a question asked inside the window drops an approval, with the reason", async () => {
+    const { create, engine, fake, timers } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await engine.onPermissionRequested({ id: "agent-1" }, { id: "p1", name: "Bash", input: { command: "ls" } });
+    tickMs(UNDO_MS);
+    await timers.fire();
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "review", pending: null, phase: "asking" });
+    expect(events.at(-1)).toMatchObject({
+      text: "Approve did not take effect",
+      detail: "The agent is waiting on a question. Answer it first.",
+    });
+  });
+
+  test("a session working again when the window closes drops the approval", async () => {
+    const { create, engine, fake, timers } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "running";
+    tickMs(UNDO_MS);
+    await timers.fire();
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "review", pending: null });
+    expect(events.at(-1)).toMatchObject({
+      text: "Approve did not take effect",
+      detail: "The session is working again. Wait for it to stop, then decide.",
+    });
+  });
+
+  test("work that moved on inside the window drops the decision", async () => {
+    const { create, engine, fake, timers } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "revise", "More tests");
+    await engine.onTurnStarted({ id: "agent-1" });
+    tickMs(UNDO_MS);
+    await timers.fire();
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "running", pending: null });
+    expect(events.at(-1)).toMatchObject({
+      text: "Send back did not take effect",
+      detail: "The run went on after you decided.",
+    });
+    expect(fake.sent).toHaveLength(0);
+  });
+
+  test("a send back whose session record is gone is dropped, not sent to nobody", async () => {
+    const { engine, fake, config, timers } = await setup();
+    const dir = join(config.workRoot, "orphan");
+    await mkdir(dir, { recursive: true });
+    await Bun.write(
+      join(dir, WORK_FILE),
+      "---\nid: gate-orphan\nkind: task\nstate: review\ngate: human\ncreated: 2026-09-22\nupdated: 2026-09-22\n---\n\n# Orphan\n",
+    );
+    await expect(engine.verdict(fake.paseo, "gate-orphan", "revise", "again")).rejects.toThrow(
+      "no session to send this back to",
+    );
+    // Cancel needs no session, and still applies.
+    await engine.verdict(fake.paseo, "gate-orphan", "block", "");
+    tickMs(UNDO_MS);
+    await timers.fire();
+    expect((await engine.get("gate-orphan")).item.state).toBe("canceled");
+  });
+
+  test("cancel applies while the agent asks: it needs no answer", async () => {
+    const { create, engine, decide } = await setup();
+    const item = await create();
+    await engine.onPermissionRequested({ id: "agent-1" }, { id: "p1", name: "Bash", input: { command: "ls" } });
+    expect((await decide(item.id, "block")).state).toBe("canceled");
+  });
+});
+
+describe("concurrency cap", () => {
+  test("at the cap a dispatch is refused and the work stays queued", async () => {
+    const { create, engine, fake } = await setup({ concurrencyCap: 1 });
+    await create();
+    const queued = await create({ dispatch: false });
+    await expect(engine.dispatch(fake.paseo, queued.id)).rejects.toThrow("At capacity: 1 running. It stays queued.");
+    expect((await engine.get(queued.id)).item.state).toBe("proposed");
+    expect(fake.created).toHaveLength(1);
+    // A slot frees when the run lands at the gate.
+    await endTurn(engine, fake);
+    expect((await engine.dispatch(fake.paseo, queued.id)).state).toBe("running");
+  });
+
+  test("the default cap is 3; stuck work stays stuck at the cap", async () => {
+    const { create, engine, fake } = await setup();
+    const first = await create();
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "boom" } }, []);
+    await create();
+    await create();
+    await create();
+    await expect(engine.dispatch(fake.paseo, first.id)).rejects.toThrow("At capacity: 3 running. It stays stuck.");
+    expect((await engine.get(first.id)).item.state).toBe("blocked");
+    await expect(create()).rejects.toThrow("At capacity: 3 running. It stays queued.");
+  });
+
+  test("no cap starts every dispatch", async () => {
+    const { create } = await setup({ concurrencyCap: null });
+    for (let n = 0; n < 5; n += 1) expect((await create()).state).toBe("running");
+  });
+
+  test("two dispatches at once cannot both take the last slot", async () => {
+    const { create, engine, fake } = await setup({ concurrencyCap: 2 });
+    await create();
+    const a = await create({ dispatch: false });
+    const b = await create({ dispatch: false });
+    const results = await Promise.allSettled([engine.dispatch(fake.paseo, a.id), engine.dispatch(fake.paseo, b.id)]);
+    expect(results.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
+    const refused = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
+    expect(String(refused.reason)).toContain("At capacity: 2 running");
+    expect(fake.created).toHaveLength(2);
+  });
+});
+
+describe("archive on approve", () => {
+  test("an approval archives the run's workspace; the branch stays", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    await endTurn(engine, fake);
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect(fake.archivedWorkspaces).toEqual(["ws-1"]);
+    const { events } = await engine.get(item.id);
+    expect(events.at(-1)?.text).toBe(`Archived the workspace. The branch ${item.worker?.branch} stays.`);
+  });
+
+  test("off by default, and never on a send back or a cancel", async () => {
+    const { create, engine, fake, decide, config, repo } = await setup();
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    await endTurn(engine, fake);
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect(fake.archivedWorkspaces).toEqual([]);
+    config.archiveOnApprove = true;
+    const other = await create();
+    cleanWorktree(repo, other.worker);
+    await endTurn(engine, fake, [], "agent-2");
+    await decide(other.id, "revise", "again");
+    await endTurn(engine, fake, [], "agent-2");
+    await decide(other.id, "block");
+    expect(fake.archivedWorkspaces).toEqual([]);
+  });
+
+  test("a failed archive is a receipt and the approval stands", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    await endTurn(engine, fake);
+    fake.paseo.workspaces.archive = async () => {
+      throw new Error("worktree has changes");
+    };
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe(
+      "Could not archive the workspace: worktree has changes. The approval stands.",
+    );
+
+    // The daemon can also answer with an error instead of throwing.
+    const other = await create();
+    cleanWorktree(repo, other.worker);
+    await endTurn(engine, fake, [], "agent-2");
+    fake.paseo.workspaces.archive = (async (workspaceId: string) => ({
+      requestId: "r",
+      workspaceId,
+      archivedAt: null,
+      error: "busy",
+    })) as typeof fake.paseo.workspaces.archive;
+    expect((await decide(other.id, "approve")).state).toBe("done");
+    expect((await engine.get(other.id)).events.at(-1)?.text).toBe(
+      "Could not archive the workspace: busy. The approval stands.",
+    );
+  });
+
+  test("a tracked session's workspace is yours and stays", async () => {
+    const { engine, fake, repo, decide } = await setup({ archiveOnApprove: true });
+    fake.agents.set("manual", {
+      id: "manual",
+      cwd: repo,
+      status: "idle",
+      workspaceId: "ws-mine",
+      provider: "codex",
+      title: "By hand",
+      archivedAt: null,
+      pendingPermissions: [],
+      activeTurn: null,
+    });
+    const item = await engine.adopt(fake.paseo, "manual", "");
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect(fake.archivedWorkspaces).toEqual([]);
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe("Kept the workspace: Maestro did not create it.");
+  });
+
+  test("a worktree with uncommitted changes is kept, and so is one that cannot be checked", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const dirty = await create();
+    const cwd = cleanWorktree(repo, dirty.worker);
+    await Bun.write(join(cwd, "notes.txt"), "not committed");
+    await endTurn(engine, fake);
+    expect((await decide(dirty.id, "approve")).state).toBe("done");
+    expect((await engine.get(dirty.id)).events.at(-1)?.text).toBe("Kept the worktree: it has uncommitted changes.");
+
+    // Not a repository (or git fails): nothing proves the work is committed, so it stays.
+    const unknown = await create();
+    await endTurn(engine, fake, [], "agent-2");
+    expect((await decide(unknown.id, "approve")).state).toBe("done");
+    expect((await engine.get(unknown.id)).events.at(-1)?.text).toStartWith(
+      "Kept the worktree: could not check it for uncommitted changes (",
+    );
+    expect(fake.archivedWorkspaces).toEqual([]);
+  });
+
+  test("a worktree whose .git points at a decoy matching its files is kept: git reads the run's own entry", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    const cwd = cleanWorktree(repo, item.worker);
+    await Bun.write(join(cwd, "notes.txt"), "not committed\n");
+    // The session's own repository, whose one commit holds exactly what the worktree holds.
+    const decoy = join(dirname(repo), "decoy");
+    git(dirname(repo), "init", "-q", decoy);
+    await Bun.write(join(decoy, "a.txt"), "hello\n");
+    await Bun.write(join(decoy, "notes.txt"), "not committed\n");
+    git(decoy, "add", "-A");
+    git(decoy, "commit", "-q", "-m", "decoy");
+    writeFileSync(join(cwd, ".git"), `gitdir: ${join(decoy, ".git")}\n`);
+    // The attack is live: git that follows the folder's .git reads the uncommitted work as clean.
+    expect(git(cwd, "status", "--porcelain")).toBe("");
+    await endTurn(engine, fake);
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect(fake.archivedWorkspaces).toEqual([]);
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe(
+      "Kept the worktree: could not check it for uncommitted changes (its .git does not point at its own entry in the repository).",
+    );
+  });
+
+  test("a write that lands while the worktree is read keeps it: it is read again just before the archive", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    const cwd = cleanWorktree(repo, item.worker);
+    await endTurn(engine, fake);
+    const real = Bun.which("git");
+    if (!real) throw new Error("git is not on PATH");
+    // A git whose first status answers clean, and then the session writes a file.
+    const bin = join(dirname(repo), "bin");
+    const wrote = join(dirname(repo), "wrote");
+    await Bun.write(
+      join(bin, "git"),
+      [
+        "#!/bin/sh",
+        `"${real}" "$@"`,
+        "code=$?",
+        `case "$*" in *status*) [ -e "${wrote}" ] || { : > "${wrote}"; echo late > "${cwd}/late.txt"; };; esac`,
+        "exit $code",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(join(bin, "git"), 0o755);
+    const saved = process.env.PATH;
+    process.env.PATH = `${bin}:${saved ?? ""}`;
+    try {
+      expect((await decide(item.id, "approve")).state).toBe("done");
+    } finally {
+      process.env.PATH = saved;
+    }
+    expect(existsSync(wrote)).toBe(true);
+    expect(fake.archivedWorkspaces).toEqual([]);
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe("Kept the worktree: it has uncommitted changes.");
+  });
+
+  test("a session that is working again, or that cannot be asked, keeps the worktree", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    await endTurn(engine, fake);
+    // The approval applied with the session idle; it starts working again once the claim is taken.
+    const describe = fake.paseo.workspaces.ref;
+    fake.paseo.workspaces.ref = ((id: string) => ({
+      refresh: async () => {
+        const agent = fake.agents.get("agent-1");
+        if (agent) agent.status = "running";
+        return describe(id).refresh();
+      },
+    })) as unknown as typeof fake.paseo.workspaces.ref;
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe("Kept the worktree: the session is working again.");
+
+    const other = await create();
+    cleanWorktree(repo, other.worker);
+    await endTurn(engine, fake, [], "agent-2");
+    const ref = fake.paseo.agents.ref;
+    let asked = 0;
+    // The decision and its apply each ask once; the claim's ask never comes back.
+    fake.paseo.agents.ref = ((id: string) => ({
+      ...ref(id),
+      refresh: () => (++asked > 2 ? new Promise(() => undefined) : ref(id).refresh()),
+    })) as unknown as typeof ref;
+    fake.paseo.workspaces.ref = describe;
+    expect((await decide(other.id, "approve")).state).toBe("done");
+    expect((await engine.get(other.id)).events.at(-1)?.text).toBe(
+      "Kept the worktree: could not ask whether the session is idle (Paseo did not answer within 0.2s).",
+    );
+    expect(fake.archivedWorkspaces).toEqual([]);
+  });
+
+  test("Paseo's record naming another folder keeps the worktree", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    await endTurn(engine, fake);
+    fake.paseo.workspaces.ref = ((_id: string) => ({
+      refresh: async () => ({ workspaceDirectory: repo }),
+    })) as unknown as typeof fake.paseo.workspaces.ref;
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect(fake.archivedWorkspaces).toEqual([]);
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe(
+      "Kept the worktree: could not check it for uncommitted changes (Paseo records the workspace at another folder).",
+    );
+    // Naming the same folder, it archives.
+    const other = await create();
+    const cwd = cleanWorktree(repo, other.worker);
+    await endTurn(engine, fake, [], "agent-2");
+    fake.paseo.workspaces.ref = ((_id: string) => ({
+      refresh: async () => ({ workspaceDirectory: cwd, projectRootPath: repo }),
+    })) as unknown as typeof fake.paseo.workspaces.ref;
+    expect((await decide(other.id, "approve")).state).toBe("done");
+    expect(fake.archivedWorkspaces).toEqual(["ws-2"]);
+  });
+
+  test("a repository path that is a link repointed at a forged repository keeps the worktree", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const root = dirname(repo);
+    // Paseo puts worktrees outside the repository, so the repository can move and leave the worktree in place.
+    fake.placeWorktreesIn(join(root, "worktrees"));
+    const item = await create();
+    const cwd = cleanWorktree(repo, item.worker);
+    const branch = item.worker?.branch ?? "";
+    await Bun.write(join(cwd, "notes.txt"), "not committed\n");
+    // A forged repository whose own entry names this folder on the run's branch, at a commit matching the folder.
+    const forged = join(root, "forged");
+    git(root, "init", "-q", forged);
+    await Bun.write(join(forged, "a.txt"), "hello\n");
+    await Bun.write(join(forged, "notes.txt"), "not committed\n");
+    git(forged, "add", "-A");
+    git(forged, "commit", "-q", "-m", "forged");
+    git(forged, "worktree", "add", "-q", "-b", branch, join(root, "scratch"));
+    const entry = join(forged, ".git", "worktrees", "scratch");
+    writeFileSync(join(entry, "gitdir"), `${join(cwd, ".git")}\n`);
+    writeFileSync(join(cwd, ".git"), `gitdir: ${entry}\n`);
+    // The work's repository path becomes a link to it; Paseo's record names the same path.
+    renameSync(repo, join(root, "moved"));
+    symlinkSync(forged, repo);
+    // The attack is live: git through the link, on that entry, reads the uncommitted work as clean.
+    expect(git(cwd, "status", "--porcelain")).toBe("");
+    await endTurn(engine, fake);
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect(fake.archivedWorkspaces).toEqual([]);
+    expect(existsSync(join(cwd, "notes.txt"))).toBe(true);
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe(
+      `Kept the worktree: could not check it for uncommitted changes (the repository's path goes through a symbolic link: ${repo}).`,
+    );
+  });
+
+  test("Paseo's record naming another repository keeps the worktree", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    await endTurn(engine, fake);
+    const elsewhere = join(dirname(repo), "elsewhere");
+    git(dirname(repo), "init", "-q", elsewhere);
+    const describe = fake.paseo.workspaces.ref;
+    fake.paseo.workspaces.ref = ((id: string) => ({
+      refresh: async () => ({ ...(await describe(id).refresh()), projectRootPath: elsewhere }),
+    })) as unknown as typeof describe;
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect(fake.archivedWorkspaces).toEqual([]);
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe(
+      "Kept the worktree: could not check it for uncommitted changes (Paseo records the workspace as made from another repository).",
+    );
+  });
+
+  test("an archive Paseo never answers releases the claim and says so", async () => {
+    const { create, engine, fake, decide, repo, store } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    await endTurn(engine, fake);
+    fake.paseo.workspaces.archive = () => new Promise(() => undefined);
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe(
+      "Could not archive the workspace: Paseo did not answer within 0.2s. The approval stands.",
+    );
+    // The item's lock is free: a later change to it goes through.
+    await store.mutate(item.id, () => ({ events: [] }));
+  });
+});
+
+describe("stop run", () => {
+  test("stopping archives the session and leaves the work stuck with the reason", async () => {
+    const { create, engine, fake, repo } = await setup();
+    const item = await create();
+    // Nothing uncommitted in the worktree, so nothing to confirm.
+    cleanWorktree(repo, item.worker);
+    const looksBefore = (await engine.list(fake.paseo)).scoreboard.looks;
+    const stuck = await engine.stopRun(fake.paseo, item.id);
+    expect(stuck).toMatchObject({ state: "blocked", reason: "You stopped the run" });
+    expect(fake.archived).toEqual(["agent-1"]);
+    // The worktree and its branch stay.
+    expect(fake.archivedWorkspaces).toEqual([]);
+    expect(stuck.worker?.branch).toBe(item.worker?.branch ?? "missing");
+    expect((await engine.list(fake.paseo)).scoreboard.looks).toBe(looksBefore + 1);
+
+    // What the archive sets off only adds receipts.
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "canceled", reason: "archived" }, []);
+    await engine.onArchived({ id: "agent-1" });
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "blocked", reason: "You stopped the run" });
+    expect(events.map((event) => event.text)).toContain("You stopped the run");
+
+    // Unblock starts a fresh run: the session is gone.
+    expect((await engine.unblock(fake.paseo, item.id, "")).state).toBe("running");
+    expect(fake.created).toHaveLength(2);
+  });
+
+  test("Stop refuses while the worktree holds work that is not committed, ignored files included; discard stops it", async () => {
+    const { create, engine, fake, repo } = await setup();
+    const item = await create();
+    const cwd = cleanWorktree(repo, item.worker);
+    mkdirSync(join(repo, ".git", "info"), { recursive: true });
+    writeFileSync(join(repo, ".git", "info", "exclude"), "*.log\n");
+    writeFileSync(join(cwd, "a.txt"), "edited\n");
+    writeFileSync(join(cwd, "notes.txt"), "draft\n");
+    writeFileSync(join(cwd, "build.log"), "ignored, and archiving deletes it too\n");
+    const refusal = (paths: string) =>
+      `Not stopped: the worktree has ${paths} not committed (edits, new or ignored files), and stopping archives it, which deletes them. Stop again and confirm to discard them.`;
+    await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow(refusal("3 paths"));
+    // An ignored file alone is still work the archive deletes.
+    git(cwd, "checkout", "--", "a.txt");
+    unlinkSync(join(cwd, "notes.txt"));
+    await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow(refusal("1 path"));
+    expect(fake.archived).toEqual([]);
+    expect((await engine.get(item.id)).item.state).toBe("running");
+    // Confirmed: it stops.
+    expect(await engine.stopRun(fake.paseo, item.id, { discard: true })).toMatchObject({
+      state: "blocked",
+      reason: STOPPED,
+    });
+    expect(fake.archived).toEqual(["agent-1"]);
+  });
+
+  test("stopped work can be canceled", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await engine.stopRun(fake.paseo, item.id, DISCARD);
+    expect((await engine.cancel(item.id)).state).toBe("canceled");
+  });
+
+  test("only running work can be stopped", async () => {
+    const { create, engine, fake } = await setup();
+    const queued = await create({ dispatch: false });
+    await expect(engine.stopRun(fake.paseo, queued.id)).rejects.toThrow("Only running work can be stopped.");
+    const item = await create();
+    await endTurn(engine, fake);
+    await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow("Only running work can be stopped.");
+    expect(fake.archived).toEqual([]);
+  });
+
+  test("a failed archive puts the run back and says why", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    const ref = fake.paseo.agents.ref;
+    fake.paseo.agents.ref = ((id: string) => ({
+      ...ref(id),
+      archive: async () => {
+        throw new Error("daemon busy");
+      },
+    })) as unknown as typeof ref;
+    await expect(engine.stopRun(fake.paseo, item.id, DISCARD)).rejects.toThrow(
+      "Could not stop the session: daemon busy",
+    );
+    const { item: after, events } = await engine.get(item.id);
+    expect(after.state).toBe("running");
+    expect(events.at(-1)).toMatchObject({ text: "Running", detail: "Could not stop the session: daemon busy" });
+  });
+
+  test("a run with no session recorded stops without archiving anything", async () => {
+    const { engine, fake, config } = await setup();
+    const dir = join(config.workRoot, "orphan");
+    await mkdir(dir, { recursive: true });
+    await Bun.write(
+      join(dir, WORK_FILE),
+      "---\nid: stop-orphan\nkind: task\nstate: running\ngate: human\ncreated: 2026-09-22\nupdated: 2026-09-22\n---\n\n# Orphan\n",
+    );
+    expect(await engine.stopRun(fake.paseo, "stop-orphan")).toMatchObject({
+      state: "blocked",
+      reason: "You stopped the run",
+    });
+    expect(fake.archived).toEqual([]);
+  });
+});
+
+describe("races around a decision and a stop", () => {
+  test("an undo that lands while the decision is being applied wins", async () => {
+    const { create, engine, fake, timers } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    // Hold the apply open while it asks the session whether it is working again.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let asking!: () => void;
+    const asked = new Promise<void>((resolve) => {
+      asking = resolve;
+    });
+    const ref = fake.paseo.agents.ref;
+    fake.paseo.agents.ref = ((id: string) => ({
+      ...ref(id),
+      refresh: async () => {
+        asking();
+        await held;
+        return ref(id).refresh();
+      },
+    })) as unknown as typeof ref;
+    tickMs(UNDO_MS);
+    const applying = timers.fire();
+    await asked;
+    await engine.undo(item.id);
+    release();
+    await applying;
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "review", pending: null });
+    expect(events.map((event) => event.text)).not.toContain("Took effect");
+    expect(events.at(-1)).toMatchObject({ text: "Undone", detail: "Approve" });
+  });
+
+  test("the list applies a decision whose timer never ran", async () => {
+    const { create, engine, fake, config } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    engine.stop();
+    tickMs(UNDO_MS);
+    const restarted = new Engine({ now: () => new Date(clock), config: async () => config, log: () => {} });
+    const { items } = await restarted.list(fake.paseo);
+    expect(items.find((entry) => entry.id === item.id)).toMatchObject({ state: "done", pending: null });
+  });
+
+  test("a run with no session recorded restarts in its own slot", async () => {
+    const { engine, fake, config } = await setup({ concurrencyCap: 1 });
+    const dir = join(config.workRoot, "orphan");
+    await mkdir(dir, { recursive: true });
+    await Bun.write(
+      join(dir, WORK_FILE),
+      `---\nid: cap-orphan\nkind: task\nstate: running\ngate: human\nrepo: ${join(config.workRoot, "..", "repo")}\ncreated: 2026-09-22\nupdated: 2026-09-22\n---\n\n# Orphan\n`,
+    );
+    expect((await engine.dispatch(fake.paseo, "cap-orphan")).worker?.agentId).toBe("agent-1");
+  });
+
+  test("hooks the archive sets off before it returns leave the reason as yours", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    const ref = fake.paseo.agents.ref;
+    fake.paseo.agents.ref = ((id: string) => ({
+      ...ref(id),
+      archive: async () => {
+        await engine.onTurnEnded({ id }, { kind: "canceled", reason: "archived" }, [], "t9");
+        await engine.onArchived({ id });
+        return ref(id).archive();
+      },
+    })) as unknown as typeof ref;
+    expect(await engine.stopRun(fake.paseo, item.id, DISCARD)).toMatchObject({
+      state: "blocked",
+      reason: "You stopped the run",
+    });
+    const { events } = await engine.get(item.id);
+    expect(events.slice(-3).map((event) => event.text)).toEqual([
+      "You stopped the run",
+      "Turn stopped",
+      "The session was archived",
+    ]);
+  });
+});
+
+/** Holds the `nth` store scan from now open after it has read the tree, so a test can land writes in between. */
+function holdScan(nth: number) {
+  const original = WorkStore.prototype.scan;
+  let readDone!: () => void;
+  let release!: () => void;
+  const read = new Promise<void>((resolve) => {
+    readDone = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let count = 0;
+  WorkStore.prototype.scan = async function (this: WorkStore, ...args: Parameters<WorkStore["scan"]>) {
+    const result = await original.apply(this, args);
+    count += 1;
+    if (count === nth) {
+      readDone();
+      await released;
+    }
+    return result;
+  };
+  return { read, release, restore: () => (WorkStore.prototype.scan = original) };
+}
+
+describe("round 2 of review: a decision is about the result you saw", () => {
+  test("approve, send back or cancel is dropped when the run went on and came back", async () => {
+    const { create, engine, fake, timers } = await setup();
+    const cases = [
+      ["approve", "", "Approve"],
+      ["revise", "Tighten it", "Send back"],
+      ["block", "", "Cancel work"],
+    ] as const;
+    for (const [n, [verdict, note, verb]] of cases.entries()) {
+      const agentId = `agent-${n + 1}`;
+      const item = await create();
+      await endTurn(engine, fake, [], agentId);
+      await engine.verdict(fake.paseo, item.id, verdict, note);
+      // The session picks up again and lands a different result at the gate before the window closes.
+      await engine.onTurnStarted({ id: agentId });
+      await endTurn(
+        engine,
+        fake,
+        [{ type: "assistant_message", text: "## Decided\n- rewrote it\n## Ask\nok?" }],
+        agentId,
+      );
+      expect((await engine.get(item.id)).item.state).toBe("review");
+      tickMs(UNDO_MS);
+      await timers.fire();
+      const { item: after, events } = await engine.get(item.id);
+      expect(after).toMatchObject({ state: "review", pending: null, look: { decided: ["rewrote it"] } });
+      expect(events.at(-1)).toMatchObject({ text: `${verb} did not take effect`, detail: RUN_WENT_ON });
+    }
+    expect(fake.sent).toHaveLength(0);
+  });
+
+  test("a turn that ended at the gate after you decided (its start missed) drops the approval", async () => {
+    const { create, engine, fake, timers } = await setup();
+    const item = await create();
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-late");
+    expect((await engine.get(item.id)).events.filter((event) => event.type === "turn.ended")).toHaveLength(2);
+    tickMs(UNDO_MS);
+    await timers.fire();
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "review", pending: null });
+  });
+
+  test("a turn start alone after you decided is the run going on", async () => {
+    const { create, engine, fake, timers, store } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    // Every path today records a turn start with a state change; the rule does not depend on that.
+    await store.mutate(item.id, () => ({
+      events: [{ ts: new Date(clock).toISOString(), type: "turn.started", actor: "agent", agentId: "agent-1" }],
+    }));
+    tickMs(UNDO_MS);
+    await timers.fire();
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "review", pending: null });
+    expect(events.at(-1)).toMatchObject({ text: "Approve did not take effect", detail: RUN_WENT_ON });
+  });
+
+  test("a write torn after the state landed is completed, not reported as refused", async () => {
+    const { create, engine, fake, timers, store } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    // A crash between the contract write and the receipts: the file says done, the log never heard.
+    await store.mutate(item.id, () => ({ patch: { state: "done" } }));
+    tickMs(UNDO_MS);
+    await timers.fire();
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "done", pending: null, verdict: "You approved" });
+    expect(events.slice(-2).map((event) => event.text)).toEqual(["You approved", "Took effect"]);
+    expect(events.map((event) => event.text)).not.toContain("Approve did not take effect");
+  });
+
+  test("a torn send back is completed, and the session still gets the note", async () => {
+    const { create, engine, fake, timers, store } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "revise", "Rename the flag");
+    await store.mutate(item.id, () => ({ patch: { state: "running" } }));
+    tickMs(UNDO_MS);
+    await timers.fire();
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "running", pending: null });
+    expect(fake.sent.at(-1)?.text).toContain("Rename the flag");
+  });
+
+  test("an overdue decision reads as due, never as negative time", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    engine.stop();
+    tickMs(UNDO_MS + 5_000);
+    expect((await engine.get(item.id)).item.pending).toMatchObject({ verdict: "approve", remainingMs: 0 });
+  });
+});
+
+describe("round 2 of review: client, cap and stop", () => {
+  test("a decision found due with no client re-arms a timer and applies once a client exists", async () => {
+    const { create, engine, fake, config } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    engine.stop();
+    tickMs(UNDO_MS);
+    let handle: Paseo | null = null;
+    const timers = fakeTimers();
+    const restarted = new Engine({
+      now: () => new Date(clock),
+      config: async () => config,
+      log: () => {},
+      client: () => handle,
+      timer: timers.timer,
+    });
+    expect(await restarted.sweep()).toBe(false);
+    expect(timers.live().map((timer) => timer.ms)).toEqual([CLIENT_WAIT_MS]);
+    // Still no client when it fires: it waits again rather than giving up.
+    await timers.fire();
+    expect(timers.live().map((timer) => timer.ms)).toEqual([CLIENT_WAIT_MS]);
+    handle = fake.paseo;
+    await timers.fire();
+    expect((await restarted.get(item.id)).item).toMatchObject({ state: "done", pending: null });
+  });
+
+  test("the cap counts a run that took its slot before this dispatch read the files", async () => {
+    const { engine, fake, repo } = await setup({ concurrencyCap: 1 });
+    const make = (title: string) =>
+      engine.create(fake.paseo, { title, brief: "", repo, gate: "human", check: "", initiative: "", dispatch: false });
+    const a = await make("First");
+    const b = await make("Second");
+    // A stops inside its run start, before it is recorded running.
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    let startedA!: () => void;
+    const insideA = new Promise<void>((resolve) => {
+      startedA = resolve;
+    });
+    const original = fake.paseo.workspaces.create;
+    let first = true;
+    fake.paseo.workspaces.create = (async (options: Parameters<typeof original>[0]) => {
+      const workspace = await original(options);
+      if (first) {
+        first = false;
+        startedA();
+        await gateA;
+      }
+      return workspace;
+    }) as typeof original;
+    const dispatchA = engine.dispatch(fake.paseo, a.id);
+    await insideA;
+    // B reads the files while A is still starting (queued on disk), then counts only after A is
+    // recorded running and has let go of its slot.
+    const hold = holdScan(2);
+    let dispatchB!: Promise<unknown>;
+    try {
+      dispatchB = engine.dispatch(fake.paseo, b.id).then(
+        () => "started",
+        (error: Error) => error.message,
+      );
+      await hold.read;
+    } finally {
+      hold.restore();
+    }
+    releaseA();
+    expect((await dispatchA).state).toBe("running");
+    hold.release();
+    expect(await dispatchB).toBe("At capacity: 1 running. It stays queued.");
+    expect(fake.created).toHaveLength(1);
+  });
+
+  test("create at the cap returns the queued item and why, instead of an error without the id", async () => {
+    const { create, engine, fake, repo } = await setup({ concurrencyCap: 1 });
+    await create();
+    const { item, notice } = await engine.createWork(fake.paseo, {
+      title: "Later",
+      brief: "",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "",
+      dispatch: true,
+    });
+    expect(item.state).toBe("proposed");
+    expect(notice).toBe(`Created ${item.id}, not started. At capacity: 1 running. It stays queued.`);
+    expect(fake.created).toHaveLength(1);
+  });
+
+  test("Stop is refused while checks run: the session is done and the checks decide", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create({ check: "sleep 0.3" });
+    await endTurn(engine, fake);
+    expect((await engine.get(item.id)).item.phase).toBe("checking");
+    await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow(CHECKING);
+    expect(fake.archived).toEqual([]);
+    expect((await settle(engine, item.id, "review")).reason).toBeNull();
+  });
+
+  test("a stop whose run was replaced while it read is refused, and archives nothing", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    const hold = holdNextScan();
+    let stopping!: Promise<unknown>;
+    try {
+      stopping = engine.stopRun(fake.paseo, item.id, DISCARD).then(
+        () => "stopped",
+        (error: Error) => error.message,
+      );
+      await hold.read;
+    } finally {
+      hold.restore();
+    }
+    // Meanwhile the run failed and you started a fresh one.
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "boom" } }, []);
+    await engine.dispatch(fake.paseo, item.id);
+    hold.release();
+    expect(await stopping).toBe("A new run started while this one was being stopped.");
+    expect(fake.archived).toEqual([]);
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "running", worker: { agentId: "agent-2" } });
+  });
+
+  test("a failed archive leaves alone work that moved on since the stop", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    const ref = fake.paseo.agents.ref;
+    fake.paseo.agents.ref = ((id: string) => ({
+      ...ref(id),
+      archive: async () => {
+        // The session resumed and failed on its own before the archive gave up.
+        await engine.onTurnStarted({ id });
+        await engine.onTurnEnded({ id }, { kind: "failed", error: { message: "boom" } }, [], "t2");
+        throw new Error("daemon busy");
+      },
+    })) as unknown as typeof ref;
+    await expect(engine.stopRun(fake.paseo, item.id, DISCARD)).rejects.toThrow(
+      "Could not stop the session: daemon busy",
+    );
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "blocked", reason: "boom" });
+    expect(events.at(-1)?.text).toBe("Could not archive session agent-1: daemon busy");
+  });
+
+  test("a failed archive of an earlier run never rolls back a later stop", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const ref = fake.paseo.agents.ref;
+    fake.paseo.agents.ref = ((id: string) =>
+      id === "agent-1"
+        ? {
+            ...ref(id),
+            archive: async () => {
+              entered();
+              await held;
+              throw new Error("daemon busy");
+            },
+          }
+        : ref(id)) as unknown as typeof ref;
+    const first = engine.stopRun(fake.paseo, item.id, DISCARD).then(
+      () => "stopped",
+      (error: Error) => error.message,
+    );
+    await inside;
+    // While the first archive hangs: the session is gone, you unblock (a fresh run), then stop that one too.
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.archivedAt = new Date(clock).toISOString();
+    expect((await engine.unblock(fake.paseo, item.id, "")).worker?.agentId).toBe("agent-2");
+    expect((await engine.stopRun(fake.paseo, item.id, DISCARD)).reason).toBe("You stopped the run");
+    release();
+    expect(await first).toBe("Could not stop the session: daemon busy");
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "blocked", reason: "You stopped the run", worker: { agentId: "agent-2" } });
+    expect(events.at(-1)?.text).toBe("Could not archive session agent-1: daemon busy");
+  });
+
+  test("a cancel that finds the work just reached Needs you refuses rather than skip the window", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "boom" } }, []);
+    const hold = holdNextScan();
+    let canceling!: Promise<unknown>;
+    try {
+      canceling = engine.cancel(item.id).then(
+        () => "canceled",
+        (error: Error) => error.message,
+      );
+      await hold.read;
+    } finally {
+      hold.restore();
+    }
+    // Resumed in the session and landed at the gate while the cancel was reading.
+    await engine.onTurnStarted({ id: "agent-1" });
+    await endTurn(engine, fake);
+    hold.release();
+    expect(await canceling).toBe("This work just reached Needs you. Cancel it there.");
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "review", pending: null });
+  });
+});
+
+describe("round 3 of review", () => {
+  test("a torn send back followed by a turn is dropped: the note never reaches a run that went on", async () => {
+    const { create, engine, fake, timers, store } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    await engine.verdict(fake.paseo, item.id, "revise", "Rename the flag");
+    // The write tore after the state landed; then the session started a turn of its own.
+    await store.mutate(item.id, () => ({ patch: { state: "running" } }));
+    await engine.onTurnStarted({ id: "agent-1" });
+    tickMs(UNDO_MS);
+    await timers.fire();
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "running", pending: null });
+    expect(events.at(-1)).toMatchObject({ text: "Send back did not take effect", detail: RUN_WENT_ON });
+    expect(events.map((event) => event.text)).not.toContain("Took effect");
+    expect(fake.sent).toHaveLength(0);
+  });
+
+  test("a torn approval followed by a turn stays closed, says the run went on, and archives nothing", async () => {
+    const { create, engine, fake, timers, store, repo } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await store.mutate(item.id, () => ({ patch: { state: "done" } }));
+    // Done cannot reopen, but the session still ended another turn after you decided.
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-2");
+    tickMs(UNDO_MS);
+    await timers.fire();
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "done", pending: null, verdict: "You approved" });
+    expect(events.slice(-4).map((event) => event.text)).toEqual([
+      "You approved",
+      "Turn finished",
+      "Took effect",
+      `${RUN_WENT_ON} Nothing else was done.`,
+    ]);
+    expect(fake.archivedWorkspaces).toEqual([]);
+  });
+
+  test("a torn cancel followed by a turn stays canceled and says the run went on", async () => {
+    const { create, engine, fake, timers, store } = await setup();
+    const item = await create();
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");
+    await engine.verdict(fake.paseo, item.id, "block", "");
+    await store.mutate(item.id, () => ({ patch: { state: "canceled" } }));
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-2");
+    tickMs(UNDO_MS);
+    await timers.fire();
+    const { item: after, events } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "canceled", pending: null });
+    expect(events.slice(-3).map((event) => event.text)).toEqual([
+      "Turn finished",
+      "Took effect",
+      `${RUN_WENT_ON} Nothing else was done.`,
+    ]);
+    expect(events.map((event) => event.text)).not.toContain("Cancel work did not take effect");
+  });
+
+  test("a sweep while a timer's apply is in flight arms nothing more; one timer is left after", async () => {
+    const { create, engine: first, fake, config, store } = await setup();
+    const item = await create();
+    await endTurn(first, fake);
+    first.stop();
+    let hold = false;
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const timers = fakeTimers();
+    const engine = new Engine({
+      now: () => new Date(clock),
+      config: async () => {
+        if (hold) {
+          entered();
+          await held;
+        }
+        return config;
+      },
+      log: () => {},
+      timer: timers.timer,
+    });
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    const { items } = await store.scan();
+    // The timer fires before the clock gets there, and its apply is held open.
+    hold = true;
+    const firing = timers.fire();
+    await inside;
+    await engine.sweep(fake.paseo, items);
+    expect(timers.live()).toHaveLength(0);
+    hold = false;
+    release();
+    await firing;
+    // The apply found it early and waits out the rest: exactly one timer.
+    expect(timers.live().map((timer) => timer.ms)).toEqual([UNDO_MS]);
+  });
 });

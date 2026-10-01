@@ -3,7 +3,7 @@
 
 import type { WorkItem } from "../shared/contracts";
 import { groupOf } from "../shared/states";
-import { lookOf, pendingPermission, phaseOf, reasonOf, verdictOf, workerOf } from "./events";
+import { lookOf, pendingDecision, pendingPermission, phaseOf, reasonOf, verdictOf, workerOf } from "./events";
 import { lastLanding } from "./gate-card";
 import { placement, type StoredWork } from "./store";
 
@@ -12,6 +12,7 @@ export function toWire(item: StoredWork, now: number): WorkItem {
   const last = events[events.length - 1];
   const created = events.find((event) => event.type === "created");
   const { initiative, project } = placement(item.rel);
+  const decision = pendingDecision(events);
   return {
     id: contract.id,
     path: item.rel,
@@ -35,5 +36,14 @@ export function toWire(item: StoredWork, now: number): WorkItem {
     permission: contract.state === "review" ? pendingPermission(events) : null,
     checks: contract.checks.map(({ name, run }) => ({ name, run })),
     landing: lastLanding(events) ?? undefined,
+    pending: decision
+      ? {
+          verdict: decision.verdict,
+          note: decision.note,
+          decidedAt: decision.decidedAt,
+          effectiveAt: decision.effectiveAt,
+          remainingMs: Math.max(0, Date.parse(decision.effectiveAt) - now),
+        }
+      : null,
   };
 }
