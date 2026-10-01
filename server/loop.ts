@@ -39,7 +39,16 @@ import type { FlagKind, WakeEntry, WorkItem } from "../shared/contracts";
 import { isDispatchable } from "../shared/states";
 import { AtCapacity, type Engine, leftToYou, realTimer, type Timer, UserError, within } from "./engine";
 import { LOOP } from "./events";
-import { failedReason, minutesWords, QUIET_MS, quietReason, sentence, sessionActiveAt, yoursReason } from "./flags";
+import {
+  failedReason,
+  minutesWords,
+  QUIET_MS,
+  quietReason,
+  sentence,
+  sessionActiveAt,
+  startError,
+  yoursReason,
+} from "./flags";
 import type { Paseo } from "./runs";
 import { WakeLog } from "./wake-log";
 
@@ -421,7 +430,8 @@ export class Loop {
         }
         const message = error instanceof Error ? error.message : String(error);
         if (!(error instanceof UserError)) this.log(`the loop could not start ${item.id}: ${message}`);
-        entry.deferred.push({ ...named(item), reason: `could not start: ${message}` });
+        // Dispatch's own "Could not start the run:" is not said twice: "could not start: <why>".
+        entry.deferred.push({ ...named(item), reason: `could not start: ${startError(message)}` });
         raise.push({ item, kind: "failed", reason: failedReason(message) });
       }
     }

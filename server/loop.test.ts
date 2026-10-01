@@ -352,10 +352,13 @@ describe("a wake", () => {
       {
         id: first.id,
         title: first.title,
-        reason: "could not start: Could not start the run: provider list unavailable",
+        reason: "could not start: provider list unavailable",
       },
     ]);
     expect(entry.dispatched).toEqual([{ id: later.id, title: later.title }]);
+    // The narrative says it once, too.
+    expect(entry.narrative).toContain("  First: could not start: provider list unavailable.");
+    expect(entry.narrative.join("\n")).not.toContain("Could not start the run");
   });
 
   test("a wake asked for while one runs is recorded as skipped, not queued", async () => {

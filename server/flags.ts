@@ -36,9 +36,14 @@ export function yoursReason(left: string): string {
   return `Start it yourself: ${sentence(WHY_YOURS[left] ?? left)}`;
 }
 
+/** A dispatch error without dispatch's own "Could not start the run:", which the loop's words already say. */
+export function startError(message: string): string {
+  return message.replace(/^Could not start the run:\s*/, "");
+}
+
 /** The `failed` reason, from the dispatch error; dispatch's own "Could not start the run:" is not said twice. */
 export function failedReason(message: string): string {
-  return `Could not start: ${sentence(message.replace(/^Could not start the run:\s*/, ""))}`;
+  return `Could not start: ${sentence(startError(message))}`;
 }
 
 /** The `quiet` reason, for running work with nothing new for `ms`. */
