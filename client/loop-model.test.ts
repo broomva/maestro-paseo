@@ -30,6 +30,7 @@ function entry(tickId: string, extra: Partial<WakeEntry> = {}): WakeEntry {
     quiet: [],
     unasked: [],
     flagged: [],
+    cleared: [],
     narrative: ["Woke on a scheduled check.", "Did nothing new this tick."],
     ...extra,
   };

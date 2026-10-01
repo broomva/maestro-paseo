@@ -201,12 +201,17 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
   Maestro's events is flagged only when its session has done nothing for as long: the wake asks
   Paseo for the session's last activity (bounded at 10 s), and a long turn that is still working
   is not flagged. A session that cannot be asked is not flagged either, and the wake says so. A
-  quiet run's notice offers **Leave it running**: your receipt ("You left it running", a look),
-  which clears the flag and restarts the quiet clock. It is yours alone, never on the agent socket.
+  run already flagged quiet is asked on every wake too: a session working again mid-turn sends
+  Maestro no event, so when it has worked since the flag and within the last 30 minutes the loop
+  takes the flag down itself ("The loop took its flag down", `flag.cleared`). That receipt is not
+  a look and does not move the quiet clock; a session that cannot be asked keeps its flag. While
+  the loop is off, a quiet flag clears with the next event on the work. A quiet run's notice
+  offers **Leave it running**: your receipt ("You left it running", a look), which clears the flag
+  and restarts the quiet clock. It is yours alone, never on the agent socket.
 - **Every wake leaves a receipt.** One line per wake in `wake-log.jsonl` beside the config
   (override with `MAESTRO_PASEO_WAKE_LOG`): why it woke, what it started, what it left alone and
-  why, what needs you, running work quiet for 30 minutes or more, sessions it could not ask, and
-  the flags it raised. It keeps the newest 500 once it passes 1000 lines. The next wake is due a
+  why, what needs you, running work quiet for 30 minutes or more, sessions it could not ask, the
+  flags it raised, and the quiet flags it took down. It keeps the newest 500 once it passes 1000 lines. The next wake is due a
   period after the last one there, so a restart keeps the cadence.
 - **One wake at a time.** A wake asked for while one runs is recorded as skipped, not queued. With
   no Paseo client yet (right after a restart) a wake records that it could not start work, and the

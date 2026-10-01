@@ -8,12 +8,14 @@
 // A flag is one `loop.flagged` event, never a state change. It stands until
 // anything else happens to the work (server/events.ts flagOf), and the loop
 // writes one only when the work's current flag is not already of that kind,
-// so a wake every minute adds nothing. Notifications go through Maestro and
+// so a wake every minute adds nothing. A quiet flag is also taken down by the
+// loop itself (`flag.cleared`) when a wake finds the session working again,
+// since a session at work mid-turn sends Maestro no event (quietCleared). Notifications go through Maestro and
 // Paseo (Needs you, the header count, the item), never a desktop channel. Pure.
 
 import type { Flag, FlagKind, MaestroConfig, NextRun } from "../shared/contracts";
 import { isDispatchable, type OrchState } from "../shared/states";
-import { flagOf, lastActivityOf, type WorkEvent } from "./events";
+import { type FlaggedEvent, flagOf, lastActivityOf, type WorkEvent } from "./events";
 import { leftToYou, MODED_BY_YOU, nextRun, PROMPT_FREE } from "./runs";
 import type { StoredWork } from "./store";
 
@@ -70,6 +72,28 @@ export function sessionActiveAt(agent: { updatedAt?: unknown; lastActivityAt?: u
     if (Number.isFinite(at)) return at;
   }
   return null;
+}
+
+/** Why the loop took a quiet flag down: the reason on its `flag.cleared` receipt. */
+export const ACTIVE_AGAIN = "The session is active again.";
+
+/**
+ * Whether a quiet flag comes down, given when the run's session last did
+ * anything (`activeAt`, from the daemon): it has worked since the flag's
+ * `since` (Maestro's clock when the flag has none, as flagNow counts it) and
+ * within QUIET_MS of now. A session at work mid-turn sends Maestro no event,
+ * so without this a flag would stand until the turn ended.
+ */
+export function quietCleared(
+  flag: FlaggedEvent,
+  events: readonly WorkEvent[],
+  fallback: string,
+  activeAt: number,
+  now: number,
+): boolean {
+  if (flag.kind !== "quiet") return false;
+  const since = Date.parse(flag.since ?? lastActivityOf(events)?.ts ?? fallback);
+  return Number.isFinite(since) && activeAt > since && now - activeAt < QUIET_MS;
 }
 
 /**

@@ -18,11 +18,15 @@
 //      Maestro sees only turn boundaries, so work quiet by its events is
 //      quiet only if its session, asked (bounded, ASK_MS), has done nothing
 //      for as long; when the session cannot be asked it is not flagged, and
-//      the entry says why (`unasked`);
+//      the entry says why (`unasked`). A run already flagged quiet is asked
+//      too: a session at work again mid-turn sends Maestro no event, so the
+//      loop takes that flag down itself (`cleared`), and leaves it when the
+//      session cannot be asked;
 //   5. flags, in Maestro's Needs you, what it leaves to you, what it could
 //      not start, and what has gone quiet (server/flags.ts): one event per
 //      work, and none while the same flag already stands;
 //   6. writes one wake-log entry (server/wake-log.ts) that says all of it.
+// While the loop is off, a quiet flag stands until the next event on the work.
 // It never stops, sends back or decides anything: those stay yours. Being
 // deferred at the run cap is not flagged: that work starts when a slot frees.
 //
@@ -83,8 +87,10 @@ type Cause = WakeEntry["cause"];
 type Named = { id: string; title: string };
 /** A flag this wake means to raise, written once the walk is done; `since` for quiet (Engine.flag). */
 type Raise = { item: WorkItem; kind: FlagKind; reason: string; since?: string };
-/** Running work quiet by Maestro's events, and when it last did anything by them. */
+/** Running work quiet by Maestro's events (flagged quiet or not), and when it last did anything by them. */
 type Silent = { item: WorkItem; last: number };
+/** A run flagged quiet whose session has worked again, and when it last did (the daemon's word). */
+type Clear = { item: WorkItem; activeAt: number };
 
 export interface LoopOptions {
   engine: Engine;
@@ -118,7 +124,7 @@ export function narrate(entry: Omit<WakeEntry, "narrative" | "tickId" | "wokeAt"
   if (needs.length > 0) lines.push("Needs you:", ...needs.map((line) => `  ${line}`));
   if (entry.unasked.length > 0) {
     lines.push(
-      "Could not ask the session, so not flagged quiet:",
+      "Could not ask the session, so quiet was neither flagged nor cleared:",
       ...entry.unasked.map((run) => `  ${run.title}: ${sentence(run.reason)}`),
     );
   }
@@ -132,6 +138,9 @@ export function narrate(entry: Omit<WakeEntry, "narrative" | "tickId" | "wokeAt"
   }
   if (entry.flagged.length > 0) {
     lines.push("Flagged for you:", ...entry.flagged.map((work) => `  ${sentence(work.title)}`));
+  }
+  if (entry.cleared.length > 0) {
+    lines.push("Cleared:", ...entry.cleared.map((work) => `  ${work.title} is active again.`));
   }
   return lines;
 }
@@ -291,6 +300,7 @@ export class Loop {
       quiet: [],
       unasked: [],
       flagged: [],
+      cleared: [],
       narrative: [],
     };
   }
@@ -309,6 +319,7 @@ export class Loop {
     }
     const now = Date.parse(entry.wokeAt);
     const raise: Raise[] = [];
+    const clear: Clear[] = [];
     const silent: Silent[] = [];
     for (const item of items) {
       if (item.state === "review") {
@@ -317,12 +328,13 @@ export class Loop {
       } else if (item.state === "blocked") {
         entry.needsYou.stuck += 1;
       } else if (item.state === "running") {
-        // lastEventAt skips the loop's own flags (server/wire.ts), so a flag never resets this clock.
+        // lastEventAt skips the loop's own flags and clears (server/wire.ts), so neither resets this clock.
+        // A run flagged quiet is here too: its flag stands only while no other event follows it.
         const last = Date.parse(item.lastEventAt ?? item.updatedAt);
         if (now - last >= QUIET_MS) silent.push({ item, last });
       }
     }
-    await this.askQuiet(paseo, silent, now, entry, raise);
+    await this.askQuiet(paseo, silent, now, entry, raise, clear);
     if (!paseo) {
       this.missedClient = cause === "timer";
       notes.push(NOT_CONNECTED);
@@ -331,6 +343,7 @@ export class Loop {
       await this.startQueued(paseo, items, entry, raise);
     }
     await this.raiseFlags(raise, entry);
+    await this.clearFlags(clear, entry);
     entry.narrative = narrate(entry, notes);
     return entry;
   }
@@ -341,7 +354,9 @@ export class Loop {
    * boundaries, so a long turn still at work has no event for a while: its
    * session's own activity (sessionActiveAt) says it is not quiet. Quiet
    * counts from the later of the two. A session that cannot be asked is not
-   * flagged, and the entry says why.
+   * flagged, and the entry says why. A run flagged quiet whose session has
+   * worked within QUIET_MS goes on `clear`; one whose session cannot be asked
+   * keeps its flag.
    */
   private async askQuiet(
     paseo: Paseo | null,
@@ -349,6 +364,7 @@ export class Loop {
     now: number,
     entry: WakeEntry,
     raise: Raise[],
+    clear: Clear[],
   ): Promise<void> {
     const asked = await Promise.all(
       silent.map(async (run) => ({ ...run, session: await this.askSession(paseo, run.item) })),
@@ -356,6 +372,10 @@ export class Loop {
     for (const { item, last, session } of asked) {
       if ("error" in session) {
         entry.unasked.push({ ...named(item), reason: session.error });
+        continue;
+      }
+      if (item.flag?.kind === "quiet" && now - session.at < QUIET_MS) {
+        clear.push({ item, activeAt: session.at });
         continue;
       }
       const since = Math.max(last, session.at);
@@ -388,6 +408,17 @@ export class Loop {
         if (await this.engine.flag(item, kind, reason, since)) entry.flagged.push({ ...named(item), kind, reason });
       } catch (error) {
         this.log(`the loop could not flag ${item.id}: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  /** Take down the quiet flags whose sessions worked again; the engine writes each only while it still stands. */
+  private async clearFlags(clear: readonly Clear[], entry: WakeEntry): Promise<void> {
+    for (const { item, activeAt } of clear) {
+      try {
+        if (await this.engine.clearQuiet(item, activeAt)) entry.cleared.push(named(item));
+      } catch (error) {
+        this.log(`the loop could not clear the flag on ${item.id}: ${(error as Error).message}`);
       }
     }
   }

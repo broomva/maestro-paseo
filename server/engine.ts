@@ -54,7 +54,7 @@ import {
   type WorkEvent,
   workerOf,
 } from "./events";
-import { flagStands } from "./flags";
+import { ACTIVE_AGAIN, flagStands, quietCleared } from "./flags";
 import { inspectFolder, repoRefusal } from "./folders";
 import { briefOf, type RunKeys, workTitle } from "./frontmatter";
 import { describePermission, type PermissionLike } from "./permissions";
@@ -530,6 +530,34 @@ export class Engine {
           ...(since ? { since } : {}),
         };
         return { events: [flagged] };
+      },
+      join(store.root, item.path),
+    );
+    return wrote;
+  }
+
+  /**
+   * Take a quiet flag down for the loop: its session last did anything at
+   * `activeAt` (the daemon's word), which is since the flag's `since` and
+   * within QUIET_MS (server/flags.ts quietCleared). One `flag.cleared`
+   * receipt by Maestro, written under the work's lock, only while the work is
+   * still running with a quiet flag, so a wake that raced a turn's end or your
+   * Leave it running adds nothing. Not a look, and not activity: the quiet
+   * clock still counts from the run's last event. Returns whether it wrote one.
+   */
+  async clearQuiet(item: Pick<WorkItem, "id" | "path">, activeAt: number): Promise<boolean> {
+    const { store } = await this.store();
+    let wrote = false;
+    await store.mutate(
+      item.id,
+      (fresh) => {
+        const flag = flagOf(fresh.events);
+        if (fresh.contract.state !== "running" || !flag) return null;
+        if (!quietCleared(flag, fresh.events, fresh.mtime, activeAt, this.now().getTime())) return null;
+        wrote = true;
+        return {
+          events: [{ ts: this.stamp(), type: "flag.cleared", actor: "maestro", kind: flag.kind, reason: ACTIVE_AGAIN }],
+        };
       },
       join(store.root, item.path),
     );

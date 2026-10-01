@@ -395,9 +395,10 @@ export const WakeEntrySchema = z.object({
    */
   quiet: z.array(Named.extend({ minutes: z.number() })),
   /**
-   * Running work quiet by Maestro's events whose session could not be asked
-   * how recently it worked (`reason`), so it was not flagged quiet. Absent on
-   * entries written before the session was asked.
+   * Running work quiet by Maestro's events, or flagged quiet, whose session
+   * could not be asked how recently it worked (`reason`), so its quiet was
+   * neither flagged nor cleared. Absent on entries written before the
+   * session was asked.
    */
   unasked: z.array(Named.extend({ reason: z.string() })).default([]),
   /**
@@ -406,6 +407,12 @@ export const WakeEntrySchema = z.object({
    * before flags existed.
    */
   flagged: z.array(Named.extend({ kind: z.enum(FLAG_KINDS), reason: z.string() })).default([]),
+  /**
+   * Running work whose quiet flag this wake took down: its session, asked,
+   * had worked since the flag was raised and within the quiet threshold.
+   * Absent on entries written before the loop cleared flags.
+   */
+  cleared: z.array(Named).default([]),
   narrative: z.array(z.string()),
   skipped: z.string().optional(),
 });
