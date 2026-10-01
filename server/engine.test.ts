@@ -1561,6 +1561,101 @@ describe("stop run", () => {
     expect(fake.archived).toEqual(["agent-1"]);
   });
 
+  /**
+   * Writes a file into `cwd` as the next store change begins. The first change Stop makes after its check
+   * is the flip to stuck, so the write lands between the check and the archive, as a session still working would.
+   */
+  function writeOnNextChange(cwd: string, name: string): () => void {
+    const mutate = WorkStore.prototype.mutate;
+    WorkStore.prototype.mutate = async function (this: WorkStore, ...args: Parameters<WorkStore["mutate"]>) {
+      WorkStore.prototype.mutate = mutate;
+      writeFileSync(join(cwd, name), "written while Stop checked\n");
+      return mutate.apply(this, args);
+    };
+    return () => {
+      WorkStore.prototype.mutate = mutate;
+    };
+  }
+
+  /** Counts the daemon's workspace lookups: each worktree check starts with one. */
+  function countWorktreeReads(fake: ReturnType<typeof fakePaseo>): { reads: number } {
+    const counter = { reads: 0 };
+    const ref = fake.paseo.workspaces.ref;
+    fake.paseo.workspaces.ref = ((id: string) => {
+      counter.reads += 1;
+      return ref(id);
+    }) as typeof ref;
+    return counter;
+  }
+
+  test("a write that lands between Stop's check and its archive keeps the session, and the work goes back to running", async () => {
+    const { create, engine, fake, repo } = await setup();
+    const item = await create();
+    const cwd = cleanWorktree(repo, item.worker);
+    const restore = writeOnNextChange(cwd, "late.txt");
+    try {
+      await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow(
+        "Not stopped: the worktree changed while Stop checked it, so nothing was stopped. Stop again, or confirm to discard whatever it holds.",
+      );
+    } finally {
+      restore();
+    }
+    expect(fake.archived).toEqual([]);
+    expect(existsSync(join(cwd, "late.txt"))).toBe(true);
+    const { item: after, events } = await engine.get(item.id);
+    expect(after.state).toBe("running");
+    expect(after.worker?.agentId).toBe("agent-1");
+    expect(events.at(-1)).toMatchObject({ text: "Running", detail: "The worktree changed while Stop checked it" });
+    // Once the write is committed, Stop goes through.
+    git(cwd, "add", "late.txt");
+    git(cwd, "commit", "-q", "-m", "late");
+    expect(await engine.stopRun(fake.paseo, item.id)).toMatchObject({ state: "blocked", reason: STOPPED });
+    expect(fake.archived).toEqual(["agent-1"]);
+  });
+
+  test("a clean worktree is read twice, the second time just before the archive, and stops", async () => {
+    const { create, engine, fake, repo } = await setup();
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    const counter = countWorktreeReads(fake);
+    expect(await engine.stopRun(fake.paseo, item.id)).toMatchObject({ state: "blocked", reason: STOPPED });
+    expect(counter.reads).toBe(2);
+    expect(fake.archived).toEqual(["agent-1"]);
+  });
+
+  test("discard skips both reads: a write between them does not keep the session", async () => {
+    const { create, engine, fake, repo } = await setup();
+    const item = await create();
+    const cwd = cleanWorktree(repo, item.worker);
+    const counter = countWorktreeReads(fake);
+    const restore = writeOnNextChange(cwd, "late.txt");
+    try {
+      expect(await engine.stopRun(fake.paseo, item.id, DISCARD)).toMatchObject({ state: "blocked", reason: STOPPED });
+    } finally {
+      restore();
+    }
+    expect(counter.reads).toBe(0);
+    expect(fake.archived).toEqual(["agent-1"]);
+  });
+
+  test("a second read that cannot check keeps the session too", async () => {
+    const { create, engine, fake, repo } = await setup();
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    const ref = fake.paseo.workspaces.ref;
+    let reads = 0;
+    fake.paseo.workspaces.ref = ((id: string) => {
+      reads += 1;
+      // The second read's lookup never answers: the claim gives up at claimWaitMs.
+      return reads === 1 ? ref(id) : { refresh: () => new Promise(() => undefined) };
+    }) as typeof ref;
+    await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow(
+      "Not stopped: the worktree could not be checked again before stopping (Paseo has no record of the workspace), so nothing was stopped.",
+    );
+    expect(fake.archived).toEqual([]);
+    expect((await engine.get(item.id)).item.state).toBe("running");
+  });
+
   test("stopped work can be canceled", async () => {
     const { create, engine, fake } = await setup();
     const item = await create();
