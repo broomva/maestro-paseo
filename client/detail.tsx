@@ -82,6 +82,13 @@ export function WorkDetail({
         ) : null}
       </View>
 
+      {/* The loop flagged it: why it is in Needs you though it is not at your gate or stuck. */}
+      {item.flag ? (
+        <Notice theme={theme} tone="warn">
+          {item.flag.reason}
+        </Notice>
+      ) : null}
+
       <Verbs item={item} theme={theme} compact={compact} />
 
       {navigation && item.worker ? (

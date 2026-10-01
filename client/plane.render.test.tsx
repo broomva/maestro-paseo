@@ -130,6 +130,7 @@ function work(id: string, state: OrchState, extra: Partial<WorkItem> = {}): Work
     permission: null,
     checks: [],
     pending: null,
+    flag: null,
     ...extra,
   };
 }
@@ -444,6 +445,46 @@ describe("before a verb that can start a run", () => {
     const view = await mount(<WorkDetail id="p" theme={theme} compact={false} navigation={undefined} />);
     expect(view.text()).toContain("mode acceptEdits (from Settings)");
     expect(view.text()).not.toContain("skip");
+  });
+});
+
+describe("work the loop flagged", () => {
+  const yours = {
+    kind: "yours" as const,
+    reason: "Start it yourself: it runs without permission prompts.",
+    at: new Date(Date.now() - 2 * 60_000).toISOString(),
+  };
+  const flagged = () => [...fixture(), work("y", "proposed", { flag: yours })];
+
+  test("is in Needs you: the summary, its chip, and the board's column, with the reason on its card", async () => {
+    items = flagged();
+    const view = await mount(surface(false));
+    expect(view.text()).toContain("3 need you · 1 stuck · 1 running");
+    const card = view.byLabel(`Work y, Queued, ${yours.reason}, updated 12 minutes ago`);
+    expect(card?.textContent).toContain(yours.reason);
+    await view.press(view.byLabel("Needs you, 3"));
+    expect(view.text()).toContain("Work y");
+    expect(view.text()).not.toContain("Work d");
+    await view.press(view.tabs()[1]);
+    const text = view.text();
+    const needsYou = text.indexOf("At your gate, stuck or flagged");
+    const done = text.indexOf("The branch is the receipt");
+    expect(needsYou).toBeGreaterThan(-1);
+    expect(text.indexOf("Work y")).toBeGreaterThan(needsYou);
+    expect(text.indexOf("Work y")).toBeLessThan(done);
+    // It left the Queued column: only once on the board.
+    expect(text.match(/Work y/g)).toHaveLength(1);
+    expect(text.indexOf("Work d")).toBeLessThan(needsYou);
+  });
+
+  test("the detail says why, as a warning Notice; unflagged work has none", async () => {
+    items = flagged();
+    const view = await mount(<WorkDetail id="y" theme={theme} compact={false} navigation={undefined} />);
+    expect(view.all('[role="alert"]').map((el) => el.textContent)).toContain(yours.reason);
+    expect(view.byLabel("Dispatch")).not.toBeNull();
+    await view.rerender(<WorkDetail id="d" theme={theme} compact={false} navigation={undefined} />);
+    expect(view.text()).not.toContain(yours.reason);
+    expect(view.all('[role="alert"]')).toHaveLength(0);
   });
 });
 

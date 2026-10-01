@@ -177,6 +177,18 @@ describe("what a session is offered", () => {
     engine.stop();
   });
 
+  test("the loop is refused: a session can neither read it nor wake it to start work", async () => {
+    const { repo, ok, ask, fake } = await setup();
+    await ok("work.create", { title: "Queued for the loop", repo });
+    for (const method of ["loop.get", "loop.wake"]) {
+      const response = await ask(method);
+      expect(response.ok).toBe(false);
+      expect(!response.ok && response.error).toContain(`${method} is yours alone`);
+    }
+    // Nothing was started on the session's behalf.
+    expect(fake.created).toEqual([]);
+  });
+
   test("create at the cap answers with the queued item and why; the retry is a dispatch, not a duplicate", async () => {
     const { repo, ok, ask, engine, fake, config } = await setup();
     config.concurrencyCap = 1;

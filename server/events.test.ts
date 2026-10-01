@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   bullets,
+  type FlaggedEvent,
+  flagOf,
   formatDuration,
+  lastActivityOf,
   lookOf,
   parseEvents,
   pendingPermission,
@@ -174,6 +177,36 @@ describe("who asked", () => {
     expect(toWireEvent({ ...bySession, by: null })?.detail).toBe("claude/sonnet on run/abc by a session");
     expect(toWireEvent(dispatched)?.detail).toBe("claude/sonnet on run/abc");
     expect(toWireEvent({ ts: at(0), type: "created", actor: "human" })?.detail).toBeNull();
+  });
+});
+
+describe("the loop's flag", () => {
+  const flagged = (minutes: number, kind: "yours" | "failed" | "quiet" = "quiet"): FlaggedEvent => ({
+    ts: at(minutes),
+    type: "loop.flagged",
+    actor: "maestro",
+    kind,
+    reason: `flagged at ${minutes}`,
+  });
+  const after: WorkEvent[] = [
+    { ts: at(40), type: "turn.started", actor: "agent", agentId: "a1" },
+    { ts: at(40), type: "state", actor: "agent", from: "running", to: "review", reason: null },
+    { ts: at(40), type: "note", actor: "maestro", text: "Dispatch failed: boom" },
+    { ...dispatched, ts: at(40) },
+  ];
+
+  test("is the latest flag, while nothing but another flag follows it", () => {
+    expect(flagOf([])).toBeNull();
+    expect(flagOf([dispatched])).toBeNull();
+    expect(flagOf([dispatched, flagged(30)])).toEqual(flagged(30));
+    expect(flagOf([dispatched, flagged(30), flagged(31, "failed")])).toEqual(flagged(31, "failed"));
+    for (const event of after) expect(flagOf([dispatched, flagged(30), event])).toBeNull();
+  });
+
+  test("is not activity: the work's last activity skips it", () => {
+    expect(lastActivityOf([dispatched, flagged(30), flagged(31)])).toEqual(dispatched);
+    expect(lastActivityOf([flagged(30)])).toBeNull();
+    expect(lastActivityOf([dispatched, flagged(30), ...after])).toEqual({ ...dispatched, ts: at(40) });
   });
 });
 

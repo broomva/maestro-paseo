@@ -5,6 +5,7 @@ import { loadConfig, saveConfig } from "./server/config";
 import { Engine } from "./server/engine";
 import { inspectFolder as inspect } from "./server/folders";
 import { GateCards } from "./server/gate-card";
+import { Loop } from "./server/loop";
 import { socketPath } from "./server/paths";
 import { Records } from "./server/records";
 import type { Paseo } from "./server/runs";
@@ -16,6 +17,7 @@ import {
   decideWork,
   dispatchWork,
   getConfig,
+  getLoop,
   getWork,
   inspectFolder,
   listWork,
@@ -23,6 +25,7 @@ import {
   stopWork,
   unblockWork,
   undoWork,
+  wakeLoop,
   workForAgent,
 } from "./shared/contracts";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
@@ -45,10 +48,14 @@ export default function contribute(host: PluginServerContext) {
   // inside the undo window) applies as soon as the first one arrives.
   let latest: Paseo | null = null;
   const engine = new Engine({ client: () => latest, landed: (before, after) => cards.landed(before, after) });
+  // The loop wakes on its own timer, outside any handler, so it reads the same client (server/loop.ts).
+  const loop = new Loop({ engine, client: () => latest, log });
   const keep = (paseo: Paseo) => {
     const first = !latest && Boolean(paseo);
     latest = paseo;
-    if (first) void engine.sweep(paseo).catch((error) => log(`applying due decisions: ${(error as Error).message}`));
+    if (!first) return;
+    void engine.sweep(paseo).catch((error) => log(`applying due decisions: ${(error as Error).message}`));
+    void loop.connected();
   };
   const server: Pick<PluginServerContext, "handle" | "on"> = {
     handle: (contract, handler) =>
@@ -92,7 +99,15 @@ export default function contribute(host: PluginServerContext) {
   server.handle(workForAgent, ({ agentId }) => engine.forAgent(agentId).then((item) => ({ item })));
   server.handle(inspectFolder, ({ path }) => inspect(path));
   server.handle(getConfig, () => loadConfig());
-  server.handle(setConfig, (input) => saveConfig(input));
+  // Saved Settings may turn the loop on or off, or change its period: arm it again from them.
+  server.handle(setConfig, async (input) => {
+    const saved = await saveConfig(input);
+    await loop.reschedule();
+    return saved;
+  });
+  // The loop's state and a wake now: yours, never on the agent socket.
+  server.handle(getLoop, () => loop.get());
+  server.handle(wakeLoop, () => loop.wake("manual"));
 
   server.on("agent.turn_started", (event) => engine.onTurnStarted(event.agent));
   server.on("agent.turn_ended", (event) =>
@@ -110,8 +125,11 @@ export default function contribute(host: PluginServerContext) {
 
   // Decisions made before a restart: arm the ones still inside their window, apply the overdue ones.
   void engine.sweep().catch((error) => log(`applying due decisions: ${(error as Error).message}`));
+  // The loop's next wake, from Settings and its log: a restart keeps its cadence.
+  void loop.reschedule();
 
   return async () => {
+    loop.stop();
     engine.stop();
     await stopSocket();
   };

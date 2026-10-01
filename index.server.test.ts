@@ -253,3 +253,82 @@ test("decisions left from before a restart apply on load, or once a client arriv
     if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
   }
 });
+
+test("the loop is wired: off by default, Settings arm and disarm it, a wake now is yours, and cleanup stops it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
+  roots.push(root);
+  const repo = join(root, "repo");
+  await mkdir(join(repo, ".git"), { recursive: true });
+  const config = join(root, "config.json");
+  // Written before the loop existed: it loads off.
+  await writeFile(
+    config,
+    JSON.stringify({
+      workRoot: join(root, "work"),
+      provider: "claude/test-model",
+      modeId: null,
+      isolation: "worktree",
+    }),
+  );
+  const saved = {
+    config: process.env.MAESTRO_PASEO_CONFIG,
+    socket: process.env.MAESTRO_PASEO_SOCKET,
+    wakeLog: process.env.MAESTRO_PASEO_WAKE_LOG,
+  };
+  process.env.MAESTRO_PASEO_CONFIG = config;
+  process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
+  delete process.env.MAESTRO_PASEO_WAKE_LOG;
+  const { host, handlers } = fakeHost();
+  const cleanup = contribute(host);
+  const fake = fakePaseo();
+  const context = { paseo: fake.paseo, signal: new AbortController().signal };
+  // biome-ignore lint/suspicious/noExplicitAny: the handlers answer each contract's own output shape.
+  const run = async (name: string, input: unknown): Promise<any> => {
+    const handler = handlers.get(name);
+    if (!handler) throw new Error(`${name} is not handled`);
+    return handler(input, context);
+  };
+  try {
+    expect(await run("loop.get", {})).toEqual({ minutes: null, nextAt: null, ticking: false, recent: [] });
+    const { item } = await run("work.create", {
+      title: "Loop me",
+      brief: "",
+      repo,
+      check: "",
+      initiative: "",
+      dispatch: false,
+    });
+
+    // Saving Settings with a period arms the next wake a period from now.
+    const settings = await run("config.get", {});
+    expect(settings.loopMinutes).toBeNull();
+    const before = Date.now();
+    await run("config.set", { ...settings, loopMinutes: 5 });
+    const on = await run("loop.get", {});
+    expect(on.minutes).toBe(5);
+    const ahead = Date.parse(on.nextAt) - before;
+    expect(ahead).toBeGreaterThanOrEqual(5 * 60_000);
+    expect(ahead).toBeLessThan(5 * 60_000 + 10_000);
+
+    // A wake now is yours to ask for: it says so, and starts the queued work as the loop.
+    const woke = await run("loop.wake", {});
+    expect(woke).toMatchObject({ cause: "manual", dispatched: [{ id: item.id, title: "Loop me" }] });
+    expect(fake.created).toHaveLength(1);
+    expect((await run("loop.get", {})).recent.map((entry: { tickId: string }) => entry.tickId)).toEqual([woke.tickId]);
+    expect((await stat(join(root, "wake-log.jsonl"))).isFile()).toBe(true);
+
+    // Off again: nothing is armed.
+    await run("config.set", { ...settings, loopMinutes: null });
+    expect(await run("loop.get", {})).toMatchObject({ minutes: null, nextAt: null });
+  } finally {
+    await cleanup();
+    for (const [key, value] of [
+      ["MAESTRO_PASEO_CONFIG", saved.config],
+      ["MAESTRO_PASEO_SOCKET", saved.socket],
+      ["MAESTRO_PASEO_WAKE_LOG", saved.wakeLog],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});

@@ -19,9 +19,9 @@
 
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
-import { type MaestroConfig, NOT_STOPPED, type RunChoices, type WorkItem } from "../shared/contracts";
+import { type FlagKind, type MaestroConfig, NOT_STOPPED, type RunChoices, type WorkItem } from "../shared/contracts";
 import { skipsPrompts } from "../shared/run";
 import {
   GROUP_ORDER,
@@ -39,6 +39,7 @@ import {
   checkOutcome,
   decisionApplied,
   eventsSince,
+  flagOf,
   lastOf,
   latestChecks,
   type Origin,
@@ -52,10 +53,11 @@ import {
   type WorkEvent,
   workerOf,
 } from "./events";
+import { flagStands } from "./flags";
 import { inspectFolder, repoRefusal } from "./folders";
 import { briefOf, type RunKeys, workTitle } from "./frontmatter";
 import { describePermission, type PermissionLike } from "./permissions";
-import { type Paseo, startRun } from "./runs";
+import { leftToYou, MODED_BY_YOU, nextRun, type Paseo, startRun } from "./runs";
 import { type Mutation, placement, type StoredWork, WorkStore, withLock } from "./store";
 import { toWire } from "./wire";
 import { type WorktreeStatus, worktreeStatus } from "./worktree";
@@ -158,13 +160,16 @@ export const UNDO_MS = 10_000;
 /** The reason work you stopped is stuck. */
 export const STOPPED = "You stopped the run";
 
+/** Why work Stop flipped to stuck went back to running: its worktree changed between Stop's two reads. */
+export const STOP_RACED = "The worktree changed while Stop checked it";
+
 /** Why Stop is refused while checks run: the session is done, and the checks decide where the work lands. */
 export const CHECKING = "The run already finished and its checks are running. When they report, it lands with you.";
 
 /** Runs `run` once after `ms` and returns what cancels it. */
 export type Timer = (run: () => Promise<void>, ms: number) => () => void;
 
-const realTimer: Timer = (run, ms) => {
+export const realTimer: Timer = (run, ms) => {
   const handle = setTimeout(() => void run(), ms);
   // The decision is on disk: a timer alone never keeps the process up, and the load sweep applies it after a restart.
   handle.unref?.();
@@ -208,7 +213,8 @@ function runKeys(input: RunChoices): RunKeys {
   return keys;
 }
 
-export const MODED_BY_YOU = "This work runs in a mode you chose; start it yourself.";
+// Who must start a run lives beside how it starts (server/runs.ts); the loop and its tests read it here.
+export { leftToYou, MODED_BY_YOU, PROMPT_FREE } from "./runs";
 
 /** See EngineOptions.claimWaitMs. */
 export const CLAIM_WAIT_MS = 30_000;
@@ -252,16 +258,22 @@ type ApplyOutcome = "applied" | "dropped" | "early" | "waiting" | "settled";
  * stuck work, or a run with no session recorded. A session may start only
  * queued work (restarting stuck work is unblocking, and that is yours), and
  * never work that carries a mode you chose for it: the mode is yours to use.
+ * The loop starts only queued work too, and never work leftToYou names.
  */
-function startRefusal(item: StoredWork, origin: Origin): string | null {
+function startRefusal(item: StoredWork, origin: Origin, config: MaestroConfig): string | null {
   const state = item.contract.state;
-  if (origin.actor === "agent") {
-    if (!isDispatchable(state)) return "A session can start only queued work. Stuck work is unblocked in Maestro.";
-    // auto_accept is a mode by another name: it skips the prompts too (shared/run.ts).
-    return item.contract.modeId || skipsPrompts({ featureValues: item.contract.featureValues }) ? MODED_BY_YOU : null;
+  switch (origin.actor) {
+    case "agent":
+      if (!isDispatchable(state)) return "A session can start only queued work. Stuck work is unblocked in Maestro.";
+      // auto_accept is a mode by another name: it skips the prompts too (shared/run.ts).
+      return item.contract.modeId || skipsPrompts({ featureValues: item.contract.featureValues }) ? MODED_BY_YOU : null;
+    case "maestro":
+      if (!isDispatchable(state)) return "The loop starts only queued work. Stuck work is yours to unblock.";
+      return leftToYou(nextRun(config, item));
+    case "human":
+      if (isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events))) return null;
+      return "Only queued or stuck work can be dispatched.";
   }
-  if (isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events))) return null;
-  return "Only queued or stuck work can be dispatched.";
 }
 
 export class Engine {
@@ -470,6 +482,31 @@ export class Engine {
     return item ? toWire(item, this.now().getTime(), config) : null;
   }
 
+  // ── The loop's flags ───────────────────────────────────────────────────────
+
+  /**
+   * Put work in Needs you for the loop (server/flags.ts): one `loop.flagged`
+   * event, no state change, written under the work's lock. Only while the
+   * reason still stands on the work as its files are now, and only when its
+   * current flag is not already of this kind, so a wake every minute adds
+   * nothing. Returns whether it wrote one.
+   */
+  async flag(item: Pick<WorkItem, "id" | "path">, kind: FlagKind, reason: string): Promise<boolean> {
+    const { store, config } = await this.store();
+    let wrote = false;
+    await store.mutate(
+      item.id,
+      (fresh) => {
+        if (flagOf(fresh.events)?.kind === kind) return null;
+        if (!flagStands(kind, fresh, this.now().getTime(), config)) return null;
+        wrote = true;
+        return { events: [{ ts: this.stamp(), type: "loop.flagged", actor: "maestro", kind, reason }] };
+      },
+      join(store.root, item.path),
+    );
+    return wrote;
+  }
+
   // ── Human verbs ────────────────────────────────────────────────────────────
 
   async create(paseo: Paseo | null, input: CreateInput, origin: Origin = BY_HUMAN): Promise<WorkItem> {
@@ -478,9 +515,9 @@ export class Engine {
     if (input.gate === "auto" && !input.check.trim()) {
       throw new UserError("Letting checks decide needs a check command.");
     }
-    // How runs start is yours alone: work a session creates runs as Settings say, so no
+    // How runs start is yours alone: work anyone else creates runs as Settings say, so no
     // session can file work that dispatches with a mode that skips permissions.
-    const run = origin.actor === "agent" ? undefined : runKeys(input);
+    const run = origin.actor === "human" ? runKeys(input) : undefined;
     const folder = await inspectFolder(input.repo);
     const repo = folder.path;
     if (!isAbsolute(repo)) throw new UserError("Use an absolute path for the repository.");
@@ -542,7 +579,7 @@ export class Engine {
     try {
       const { store, config } = await this.store();
       const item = await store.findById(id);
-      const refusal = startRefusal(item, origin);
+      const refusal = startRefusal(item, origin, config);
       if (refusal) throw new UserError(refusal);
       this.checkCapacity(item, ahead, await this.running(store), config.concurrencyCap);
       let worker: Awaited<ReturnType<typeof startRun>>;
@@ -559,7 +596,8 @@ export class Engine {
         bound = await store.mutate(
           id,
           (fresh) => {
-            if (startRefusal(fresh, origin)) throw new UserError("The work changed while the run was starting.");
+            if (startRefusal(fresh, origin, config))
+              throw new UserError("The work changed while the run was starting.");
             return {
               to: "running",
               actor: origin.actor,
@@ -983,30 +1021,75 @@ export class Engine {
   }
 
   /**
-   * Why Stop must not archive a run's session yet: its worktree holds work
-   * that is not committed (edits, new files, ignored files: archiving deletes
-   * them all), or it cannot be checked. Null when nothing would be lost, or
-   * the folder is not one Maestro made (a tracked session's, or the
-   * repository itself in directory mode), which archiving leaves alone.
+   * Read a run's worktree for Stop, ignored files included (archiving deletes
+   * them too). Null when the folder is not one Maestro made (a tracked
+   * session's, or the repository itself in directory mode), which archiving
+   * leaves alone, so there is nothing to read.
    */
-  private async stopLoss(paseo: Paseo, item: StoredWork, worker: NonNullable<ReturnType<typeof workerOf>>) {
+  private async stopRead(
+    paseo: Paseo,
+    item: StoredWork,
+    worker: NonNullable<ReturnType<typeof workerOf>>,
+  ): Promise<WorktreeStatus | null> {
     const { workspaceId, branch, cwd } = worker;
     if (!branch || !workspaceId) return null;
     const repo = item.contract.repo;
-    const read = async (): Promise<WorktreeStatus> => {
-      if (!cwd) return { error: "no worktree folder is recorded" };
-      if (!repo) return { error: "the work names no repository" };
-      const recorded = await this.recorded(paseo, workspaceId, cwd);
-      if ("error" in recorded) return recorded;
-      return worktreeStatus({ repo, cwd, branch, projectRoot: recorded.projectRoot }, 10_000, { ignored: true });
-    };
-    const status = await read();
+    if (!cwd) return { error: "no worktree folder is recorded" };
+    if (!repo) return { error: "the work names no repository" };
+    const recorded = await this.recorded(paseo, workspaceId, cwd);
+    if ("error" in recorded) return recorded;
+    return worktreeStatus({ repo, cwd, branch, projectRoot: recorded.projectRoot }, 10_000, { ignored: true });
+  }
+
+  /**
+   * Whether Stop may archive a run's session: the digest of a clean worktree
+   * (compared again just before the archive), null when there is nothing to
+   * read, or why it must not: the worktree holds work that is not committed
+   * (edits, new files, ignored files: archiving deletes them all), or it
+   * cannot be checked.
+   */
+  private async stopLoss(
+    paseo: Paseo,
+    item: StoredWork,
+    worker: NonNullable<ReturnType<typeof workerOf>>,
+  ): Promise<{ digest: string } | { refusal: string } | null> {
+    const status = await this.stopRead(paseo, item, worker);
+    if (!status) return null;
     if ("error" in status) {
-      return `${NOT_STOPPED} the worktree could not be checked for work that is not committed (${status.error}), and stopping archives it. Stop again and confirm to discard whatever it holds.`;
+      return {
+        refusal: `${NOT_STOPPED} the worktree could not be checked for work that is not committed (${status.error}), and stopping archives it. Stop again and confirm to discard whatever it holds.`,
+      };
     }
-    if (status.count === 0) return null;
+    if (status.count === 0) return { digest: status.digest };
     const paths = status.count === 1 ? "1 path" : `${status.count} paths`;
-    return `${NOT_STOPPED} the worktree has ${paths} not committed (edits, new or ignored files), and stopping archives it, which deletes them. Stop again and confirm to discard them.`;
+    return {
+      refusal: `${NOT_STOPPED} the worktree has ${paths} not committed (edits, new or ignored files), and stopping archives it, which deletes them. Stop again and confirm to discard them.`,
+    };
+  }
+
+  /**
+   * Stop's second read, under the item's claim, just before the archive:
+   * null when the worktree is still clean and the same as the first read
+   * found it, otherwise why the session is kept.
+   */
+  private async stopRecheck(
+    paseo: Paseo,
+    item: StoredWork,
+    worker: NonNullable<ReturnType<typeof workerOf>>,
+    digest: string,
+  ): Promise<{ reason: string; message: string } | null> {
+    const status = await this.stopRead(paseo, item, worker);
+    if (status && "error" in status) {
+      return {
+        reason: "The worktree could not be checked again before stopping",
+        message: `${NOT_STOPPED} the worktree could not be checked again before stopping (${status.error}), so nothing was stopped. Stop again, or confirm to discard whatever it holds.`,
+      };
+    }
+    if (status && !status.dirty && status.digest === digest) return null;
+    return {
+      reason: STOP_RACED,
+      message: `${NOT_STOPPED} the worktree changed while Stop checked it, so nothing was stopped. Stop again, or confirm to discard whatever it holds.`,
+    };
   }
 
   async unblock(paseo: Paseo, id: string, note: string): Promise<WorkItem> {
@@ -1089,6 +1172,23 @@ export class Engine {
    * archive itself) find it already stuck and only add their receipts. If the
    * archive fails, the session may still be working: the work goes back to
    * running with the reason, and the call fails.
+   *
+   * The worktree is read twice, as archiveClaimed reads it. The first read
+   * comes before the flip to stuck. The second runs under the item's claim
+   * (the lock every change Maestro makes to this item takes) and is the last
+   * thing before the archive: if it is not clean, or differs from the first
+   * in any way, nothing is archived, the work goes back to running, and the
+   * call fails, asking you to Stop again. Every daemon call under the claim
+   * gives up after claimWaitMs, the archive included; one that gives up
+   * counts as a failed archive. `discard` skips both reads.
+   *
+   * The race that remains: a write that lands after the second read returns
+   * and before Paseo has removed the files (one daemon round trip, plus the
+   * removal) is lost with them. Nothing here can close it: the read is git's
+   * and the removal is Paseo's, and no lock both of them honour exists. An
+   * archive that gives up at claimWaitMs may still land later, which widens
+   * that window by as long, and leaves the work running with a session that
+   * is gone (the archived hook then moves it to stuck).
    */
   async stopRun(paseo: Paseo, id: string, { discard = false }: { discard?: boolean } = {}): Promise<WorkItem> {
     if (this.dispatching.has(id)) throw new UserError("A run is starting for this work. Stop it once it is running.");
@@ -1103,8 +1203,8 @@ export class Engine {
     const early = refusal(current);
     if (early) throw new UserError(early);
     const worker = workerOf(current.events);
-    const loss = worker && !discard ? await this.stopLoss(paseo, current, worker) : null;
-    if (loss) throw new UserError(loss);
+    const checked = worker && !discard ? await this.stopLoss(paseo, current, worker) : null;
+    if (checked && "refusal" in checked) throw new UserError(checked.refusal);
     const stopped = await store.mutate(
       id,
       (item) => {
@@ -1123,22 +1223,48 @@ export class Engine {
       current.dir,
     );
     if (!worker) return toWire(stopped, this.now().getTime(), config);
-    try {
-      await paseo.agents.ref(worker.agentId).archive();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await store
+    /** Put the work back to running when it is still the stop this call made; otherwise only say so. */
+    const putBack = (reason: string, note: string) =>
+      store
         .mutate(
           id,
           (item) =>
             item.contract.state === "blocked" &&
             reasonOf("blocked", item.events) === STOPPED &&
             workerOf(item.events)?.agentId === worker.agentId
-              ? { to: "running", reason: `Could not stop the session: ${message}` }
-              : { events: [this.note(`Could not archive session ${worker.agentId}: ${message}`)] },
+              ? { to: "running", reason }
+              : { events: [this.note(note)] },
           stopped.dir,
         )
         .catch(() => undefined);
+    /** Archive the session; under the claim, bounded by claimWaitMs. Null when it was archived. */
+    const archive = (claimed: boolean) => {
+      const call = () => paseo.agents.ref(worker.agentId).archive();
+      return (claimed ? within(call, this.claimWaitMs) : call()).then(
+        () => null,
+        (error: unknown) => ({ message: error instanceof Error ? error.message : String(error) }),
+      );
+    };
+    const digest = checked && "digest" in checked ? checked.digest : null;
+    // Nothing was read (discard, or a folder archiving leaves alone): nothing to re-verify, so no claim.
+    // Otherwise the claim is the item's lock, the one every mutation of it takes, so nothing inside it mutates.
+    const outcome =
+      digest === null
+        ? { failed: await archive(false) }
+        : await withLock(id, async () => {
+            const changed = await this.stopRecheck(paseo, stopped, worker, digest);
+            return changed ? { changed } : { failed: await archive(true) };
+          });
+    if ("changed" in outcome) {
+      await putBack(outcome.changed.reason, `Did not archive session ${worker.agentId}: ${outcome.changed.reason}`);
+      throw new UserError(outcome.changed.message);
+    }
+    if (outcome.failed) {
+      const { message } = outcome.failed;
+      await putBack(
+        `Could not stop the session: ${message}`,
+        `Could not archive session ${worker.agentId}: ${message}`,
+      );
       throw new UserError(`Could not stop the session: ${message}`);
     }
     return toWire(await store.load(stopped.dir), this.now().getTime(), config);

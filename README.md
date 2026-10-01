@@ -70,8 +70,8 @@ maestro track                  # track this session as work
 maestro mine                   # the work this session is running
 ```
 
-- **Sessions get the noun and the verb, never the gate.** Approve, send back, unblock, cancel and
-  settings are not served on the socket; a session that asks is told they are yours. A session
+- **Sessions get the noun and the verb, never the gate.** Approve, send back, unblock, cancel,
+  settings and the loop are not served on the socket; a session that asks is told they are yours. A session
   starts only queued work (restarting stuck work is unblocking), and work it creates is always
   `gate: human`.
 - **A session cannot write a done check.** Checks run as you, with no session and no permission
@@ -167,6 +167,42 @@ running (send back, answered question), and queued or stuck work can be canceled
 are documented in `shared/states.ts`, and the invariant that matters is kept exactly: nothing
 under a human gate reaches Done without an approve verdict.
 
+## The loop
+
+Off by default. Give it a period in Settings (`loopMinutes`) and Maestro wakes on that schedule to
+start queued work, the way the Maestro runtime's tick does. Each wake reads the work (reconciling
+sessions and applying decisions whose undo window closed), then walks the Queued group, triggered
+first, then the rest, each the longest-waiting first, and starts what it can through the same
+dispatch you use, recorded as Maestro's ("by the loop"), never as yours and never as a look.
+
+- **It stops at the run cap.** The first start refused at the cap defers that work and the rest of
+  the queue, "at the run cap". Work it would never start (below) keeps its own reason, before the
+  cap or after it.
+- **It never starts what is yours to start.** Work whose run would skip permission prompts (a mode
+  that does, the work's own or Settings', or an auto-approving feature), and work you gave a mode
+  of its own, are left alone with the reason. It never touches stuck work, and never stops, sends
+  back, or decides anything.
+- **What it leaves to you lands in Needs you.** A wake flags three things on the work itself, so
+  they show in Maestro's Needs you (the chip, the board's column, the header count) with the
+  reason on the card and in the detail: queued work it leaves to you ("Start it yourself: ..."),
+  a start it tried that failed ("Could not start: ..."), and a run quiet for 30 minutes or more
+  ("Quiet for N minutes, worth a look"). Each flag is one `loop.flagged` receipt, written only
+  when the work's current flag is not already of that kind, so a wake every minute adds nothing.
+  Anything else that happens to the work (your dispatch or cancel, a turn, a state change, a
+  note) clears it, and the loop does not try a failed start again until then. Waiting at the run
+  cap is not flagged: that work starts when a slot frees. Flags go through Maestro and Paseo, never
+  a desktop notification.
+- **Every wake leaves a receipt.** One line per wake in `wake-log.jsonl` beside the config
+  (override with `MAESTRO_PASEO_WAKE_LOG`): why it woke, what it started, what it left alone and
+  why, what needs you, running work quiet for 30 minutes or more, and the flags it raised. It
+  keeps the newest 500 once it passes 1000 lines. The next wake is due a period after the last one
+  there, so a restart keeps the cadence.
+- **One wake at a time.** A wake asked for while one runs is recorded as skipped, not queued. With
+  no Paseo client yet (right after a restart) a wake records that it could not start work, and the
+  first client to arrive runs another, once that wake ends if it arrives while the wake still runs.
+- `loop.get` and `loop.wake` (wake now) are plugin RPCs for Maestro's own surfaces, never on the
+  agent socket.
+
 ## The agent's instructions
 
 The receipt of each dispatch, and the detail pane, say how the agent was started: provider, mode,
@@ -205,6 +241,7 @@ it answers, and the other keeps retrying every ten seconds, which its plugin log
 | `provider` | `claude` | Provider, optionally with a model: `claude/claude-sonnet-5` |
 | `modeId` | none | Provider mode for runs; empty means the provider default. It applies only while a run uses the Settings provider: work that chose another provider starts in that provider's default mode |
 | `isolation` | `worktree` | `worktree` for a fresh branch per run, `directory` to run in the repo |
+| `loopMinutes` | none | How often the loop wakes to start queued work, in whole minutes from 1 to 1440 (a day); empty means off |
 
 ## Development
 

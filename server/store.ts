@@ -80,7 +80,8 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-async function endsWithNewline(path: string): Promise<boolean> {
+/** Whether the file ends with a newline (or is empty or missing), so an append never joins a torn last line. */
+export async function endsWithNewline(path: string): Promise<boolean> {
   let handle: import("node:fs/promises").FileHandle | undefined;
   try {
     handle = await open(path, "r");

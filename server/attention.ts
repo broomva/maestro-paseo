@@ -8,9 +8,16 @@ import { isAttention, isTerminal } from "../shared/states";
 /** How long finished work keeps its pill: long enough to see it closed, not forever. */
 export const RECENT_MS = 24 * 60 * 60 * 1000;
 
-/** Keeps the list's order (attention first), which the pills rely on when two items name one session. */
+/**
+ * `waiting`: work at your gate or stuck first, then work the loop flagged,
+ * each in the list's order. Sessions keep the list's order (attention first),
+ * which the pills rely on when two items name one session.
+ */
 export function attentionOf(items: readonly WorkItem[], now: number): Attention {
-  const waiting = items.filter((item) => isAttention(item.state)).map(({ id, group }) => ({ id, group }));
+  const waiting = [
+    ...items.filter((item) => isAttention(item.state)),
+    ...items.filter((item) => !isAttention(item.state) && item.flag),
+  ].map(({ id, group, flag }) => ({ id, group, flag }));
   const sessions: Attention["sessions"] = [];
   for (const item of items) {
     const worker = item.worker;

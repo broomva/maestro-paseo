@@ -173,6 +173,7 @@ const settings: MaestroConfig = {
   concurrencyCap: null,
   archiveOnApprove: false,
   defaultGate: "human",
+  loopMinutes: null,
 };
 const created: Record<string, unknown>[] = [];
 const inspected: string[] = [];
@@ -199,6 +200,7 @@ const item = (id: string): WorkItem => ({
   permission: null,
   checks: [],
   pending: null,
+  flag: null,
 });
 const invoke = async (method: string, input: unknown) => {
   switch (method) {

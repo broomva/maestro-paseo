@@ -100,6 +100,19 @@ export const PendingSchema = z.object({
 });
 export type Pending = z.infer<typeof PendingSchema>;
 
+/**
+ * Why the loop put work in Needs you, raised by a wake: queued work it leaves
+ * to you to start (`yours`), a start it tried that failed (`failed`), or a run
+ * quiet for 30 minutes or more (`quiet`). Being deferred at the run cap is
+ * not one: that work starts when a slot frees.
+ */
+export const FLAG_KINDS = ["yours", "failed", "quiet"] as const;
+export type FlagKind = (typeof FLAG_KINDS)[number];
+
+/** The loop's current flag on a work: its kind, the reason in words, and when the loop raised it. */
+export const FlagSchema = z.object({ kind: z.enum(FLAG_KINDS), reason: z.string(), at: z.string() });
+export type Flag = z.infer<typeof FlagSchema>;
+
 export const WorkItemSchema = z.object({
   id: z.string(),
   path: z.string(),
@@ -133,6 +146,11 @@ export const WorkItemSchema = z.object({
   /** The latest move into review, as its index in the event log; kept after the work leaves review. */
   landing: z.number().int().optional(),
   pending: PendingSchema.nullable(),
+  /**
+   * The loop's flag: this work needs you though it is not at your gate or
+   * stuck. Null once anything else happens to the work (server/events.ts flagOf).
+   */
+  flag: FlagSchema.nullable(),
 });
 export type WorkItem = z.infer<typeof WorkItemSchema>;
 
@@ -172,6 +190,9 @@ export const ScoreboardSchema = z.object({
 export type Scoreboard = z.infer<typeof ScoreboardSchema>;
 
 const CAP = "The concurrency cap is a whole number of runs, 1 or more, or empty for no cap";
+/** The longest period the loop takes, in minutes: one day. */
+export const LOOP_MAX_MINUTES = 1440;
+const LOOP_EVERY = `The loop wakes every whole number of minutes from 1 to ${LOOP_MAX_MINUTES} (a day), or empty for off`;
 
 export const ConfigSchema = z.object({
   workRoot: z.string().min(1),
@@ -184,6 +205,13 @@ export const ConfigSchema = z.object({
   archiveOnApprove: z.boolean(),
   /** The gate new work gets when the form does not say. */
   defaultGate: z.enum(GATE_MODES),
+  /**
+   * How often the loop (server/loop.ts) wakes to start queued work, in
+   * minutes; null for off. Off by default: the loop starts work on its own,
+   * so it is yours to turn on. At most a day, so the next wake is always a
+   * time a timer can hold.
+   */
+  loopMinutes: z.number().int(LOOP_EVERY).positive(LOOP_EVERY).max(LOOP_MAX_MINUTES, LOOP_EVERY).nullable(),
 });
 export type MaestroConfig = z.infer<typeof ConfigSchema>;
 
@@ -312,14 +340,15 @@ export const setConfig = defineRpc({
 /**
  * What the header count and the composer pills show, read from the work files
  * alone: it never reconciles against sessions, so polling it costs no agent
- * round trips. `waiting` is the work at your gate or stuck; `sessions` are the
- * workers of work that is live or changed in the last day.
+ * round trips. `waiting` is the work that needs you: at your gate or stuck
+ * first, then work the loop flagged (`flag`, null for the others); `sessions`
+ * are the workers of work that is live or changed in the last day.
  */
 export const attentionWork = defineRpc({
   name: "work.attention",
   input: z.object({}),
   output: z.object({
-    waiting: z.array(z.object({ id: z.string(), group: z.enum(GROUP_ORDER) })),
+    waiting: z.array(z.object({ id: z.string(), group: z.enum(GROUP_ORDER), flag: FlagSchema.nullable() })),
     sessions: z.array(
       z.object({
         workId: z.string(),
@@ -332,3 +361,50 @@ export const attentionWork = defineRpc({
   }),
 });
 export type Attention = z.infer<typeof attentionWork.output>;
+
+// ── The loop ─────────────────────────────────────────────────────────────────
+
+const Named = z.object({ id: z.string(), title: z.string() });
+
+/**
+ * One wake of the loop, as its log keeps it: why it woke, what it started,
+ * what it left alone and why, what needs you, which runs have gone quiet, and
+ * the flags it raised in Needs you. `narrative` is the same in plain words,
+ * one line each. A wake asked for while another ran is `skipped` (the
+ * reason), with empty lists and zero counts: read `skipped` first.
+ */
+export const WakeEntrySchema = z.object({
+  tickId: z.string(),
+  cause: z.enum(["timer", "manual"]),
+  wokeAt: z.string(),
+  dispatched: z.array(Named),
+  deferred: z.array(Named.extend({ reason: z.string() })),
+  /** At your gate (a result to judge), stuck, and asking a question. */
+  needsYou: z.object({ gate: z.number(), stuck: z.number(), asking: z.number() }),
+  /** Running work with no event for 30 minutes or more. */
+  quiet: z.array(Named.extend({ minutes: z.number() })),
+  /**
+   * The flags this wake raised: only those it wrote, so a work already
+   * flagged the same way is not listed again. Absent on entries written
+   * before flags existed.
+   */
+  flagged: z.array(Named.extend({ kind: z.enum(FLAG_KINDS), reason: z.string() })).default([]),
+  narrative: z.array(z.string()),
+  skipped: z.string().optional(),
+});
+export type WakeEntry = z.infer<typeof WakeEntrySchema>;
+
+/** The loop now: every how many minutes (null: off), its next wake, whether one is running, and the newest wakes first. */
+export const getLoop = defineRpc({
+  name: "loop.get",
+  input: z.object({}),
+  output: z.object({
+    minutes: z.number().nullable(),
+    nextAt: z.string().nullable(),
+    ticking: z.boolean(),
+    recent: z.array(WakeEntrySchema),
+  }),
+});
+
+/** Wake the loop now. Returns this wake's entry, or a skipped one when a wake is already running. */
+export const wakeLoop = defineRpc({ name: "loop.wake", input: z.object({}), output: WakeEntrySchema });

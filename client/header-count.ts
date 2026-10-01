@@ -1,22 +1,28 @@
 // The header count: in every workspace, "N need you" while work waits at your
-// gate or is stuck, and nothing at all while none does. Pure.
+// gate, is stuck, or was flagged by the loop, and nothing at all while none
+// does. Pure.
 
 import type { PluginButton } from "@getpaseo/plugin/client";
 import type { WorkItem } from "../shared/contracts";
 import type { MaestroIntent } from "./intent";
+import { needsHand } from "./plane-model";
 
-type Listed = Pick<WorkItem, "id" | "group">;
+type Listed = Pick<WorkItem, "id" | "group" | "flag">;
 
-/** Work that needs you: waiting at your gate, or stuck. */
+/** Work that needs you: waiting at your gate, stuck, or flagged by the loop (plane-model needsHand). */
 export function needsYou<T extends Listed>(items: readonly T[]): T[] {
-  return items.filter((item) => item.group === "review" || item.group === "blocked");
+  return items.filter(needsHand);
 }
 
 export function needsYouLabel(count: number): string {
   return `${count} ${count === 1 ? "needs" : "need"} you`;
 }
 
-/** Where the count opens Maestro: the one item that waits, else Needs you (Stuck when only stuck work waits). */
+/**
+ * Where the count opens Maestro: the one item that waits, else Needs you
+ * (Stuck when only stuck work waits). The Needs you chip lists flagged work
+ * too (plane-model inFilter), so it shows what the count counted.
+ */
 export function needsYouTarget(items: readonly Listed[]): MaestroIntent {
   const waiting = needsYou(items);
   const [only] = waiting;

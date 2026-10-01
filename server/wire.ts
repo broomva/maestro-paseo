@@ -1,9 +1,21 @@
 // StoredWork -> the WorkItem the surfaces render. Pure: every derived field
 // comes from the contract plus the event log, and `nextRun` from Settings too.
+// `updatedAt` and `lastEventAt` skip the loop's flags: a flag is a remark
+// about the work, not a change to it (server/events.ts lastActivityOf).
 
 import type { MaestroConfig, WorkItem } from "../shared/contracts";
 import { groupOf } from "../shared/states";
-import { lookOf, pendingDecision, pendingPermission, phaseOf, reasonOf, verdictOf, workerOf } from "./events";
+import {
+  lastActivityOf,
+  lookOf,
+  pendingDecision,
+  pendingPermission,
+  phaseOf,
+  reasonOf,
+  verdictOf,
+  workerOf,
+} from "./events";
+import { flagNow } from "./flags";
 import { lastLanding } from "./gate-card";
 import { nextRun } from "./runs";
 import { placement, type StoredWork } from "./store";
@@ -11,10 +23,11 @@ import { placement, type StoredWork } from "./store";
 /** `config` is the Settings this read used: `nextRun` fills the work's unset run choices from it. */
 export function toWire(item: StoredWork, now: number, config: MaestroConfig): WorkItem {
   const { contract, events } = item;
-  const last = events[events.length - 1];
+  const last = lastActivityOf(events);
   const created = events.find((event) => event.type === "created");
   const { initiative, project } = placement(item.rel);
   const decision = pendingDecision(events);
+  const next = nextRun(config, item);
   return {
     id: contract.id,
     path: item.rel,
@@ -37,7 +50,7 @@ export function toWire(item: StoredWork, now: number, config: MaestroConfig): Wo
     look: lookOf(contract.state, events, now),
     permission: contract.state === "review" ? pendingPermission(events) : null,
     checks: contract.checks.map(({ name, run }) => ({ name, run })),
-    nextRun: nextRun(config, item),
+    nextRun: next,
     landing: lastLanding(events) ?? undefined,
     pending: decision
       ? {
@@ -48,5 +61,6 @@ export function toWire(item: StoredWork, now: number, config: MaestroConfig): Wo
           remainingMs: Math.max(0, Date.parse(decision.effectiveAt) - now),
         }
       : null,
+    flag: flagNow(events, contract.state, next, now, item.mtime),
   };
 }

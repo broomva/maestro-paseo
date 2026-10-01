@@ -6,6 +6,7 @@
 import type {
   CheckResult,
   FeatureValues,
+  FlagKind,
   Look,
   Permission,
   Scoreboard,
@@ -19,13 +20,17 @@ import type { OrchState, Verdict } from "../shared/states";
 export type Actor = "human" | "agent" | "maestro";
 
 /**
- * Who asked for a change: you, in Maestro's own surfaces, or a session through
- * the agent socket (`by` is its agent id when it said). Only the first counts
- * as a look: a session starting work is not you stepping in.
+ * Who asked for a change: you, in Maestro's own surfaces; a session through
+ * the agent socket (`by` is its agent id when it said); or Maestro's own loop
+ * (server/loop.ts), starting queued work on its schedule. Only the first
+ * counts as a look: a session or the loop starting work is not you stepping in.
  */
-export type Origin = { actor: "human" } | { actor: "agent"; by: string | null };
+export type Origin = { actor: "human" } | { actor: "agent"; by: string | null } | { actor: "maestro"; via: "loop" };
 
 export const BY_HUMAN: Origin = { actor: "human" };
+
+/** The loop's origin: what it starts is recorded as Maestro's, never as yours. */
+export const LOOP: Origin = { actor: "maestro", via: "loop" };
 
 interface Base {
   ts: string;
@@ -78,6 +83,9 @@ export type WorkEvent = Base &
     | { type: "unblocked"; actor: "human"; note: string }
     | { type: "stopped"; actor: "human"; agentId: string | null }
     | { type: "note"; actor: Actor; text: string }
+    // The loop putting work in Needs you (server/loop.ts). An event alone, never a state
+    // change; anything else that happens to the work after it clears it (flagOf).
+    | { type: "loop.flagged"; actor: "maestro"; kind: FlagKind; reason: string }
   );
 
 export type WorkEventType = WorkEvent["type"];
@@ -175,6 +183,34 @@ export function pendingDecision(events: readonly WorkEvent[]): PendingDecision |
     decidedAt: made.ts,
     effectiveAt: made.effectiveAt,
   };
+}
+
+export type FlaggedEvent = Extract<WorkEvent, { type: "loop.flagged" }>;
+
+/**
+ * The loop's current flag on this work: its latest `loop.flagged`, provided
+ * no event other than another flag follows it. Anything else that happens to
+ * the work clears it: your dispatch or cancel, a turn, a state change, a note.
+ * Since flags are all that may follow it, that is the last event, when that
+ * event is a flag.
+ */
+export function flagOf(events: readonly WorkEvent[]): FlaggedEvent | null {
+  const last = events[events.length - 1];
+  return last?.type === "loop.flagged" ? last : null;
+}
+
+/**
+ * The latest event that is not the loop's flag: when something last happened
+ * to the work. A flag is the loop's remark about the work, not a change to
+ * it, so it never moves this, and a flag cannot reset the quiet clock that
+ * raised it.
+ */
+export function lastActivityOf(events: readonly WorkEvent[]): WorkEvent | null {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event && event.type !== "loop.flagged") return event;
+  }
+  return null;
 }
 
 /** The events recorded after the decision with this token was made. */
@@ -387,10 +423,16 @@ export function toWireEvents(events: readonly WorkEvent[]): WorkEventWire[] {
   return out;
 }
 
-/** Names the session behind a change it asked for; a change you made needs no byline. */
+/** Names who asked for a change that was not yours: a session, or the loop. A change you made needs no byline. */
 function byline(origin: Origin): string | null {
-  if (origin.actor === "human") return null;
-  return origin.by ? `by session ${origin.by.slice(0, 8)}` : "by a session";
+  switch (origin.actor) {
+    case "human":
+      return null;
+    case "maestro":
+      return "by the loop";
+    case "agent":
+      return origin.by ? `by session ${origin.by.slice(0, 8)}` : "by a session";
+  }
 }
 
 /** One receipt. `settled`: for a decision, whether it was applied, undone or dropped since. */
@@ -476,6 +518,8 @@ export function toWireEvent(event: WorkEvent, settled = false): WorkEventWire | 
       return { ...base, type: event.type, text: "You unblocked it", detail: event.note || null };
     case "note":
       return { ...base, type: event.type, text: event.text, detail: null };
+    case "loop.flagged":
+      return { ...base, type: event.type, text: "Flagged for you by the loop", detail: event.reason };
   }
 }
 
