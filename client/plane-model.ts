@@ -32,27 +32,27 @@ export function filterLabel(filter: Filter): string {
 }
 
 /**
- * Whether an item is under a chip. Needs you is the one definition of what
- * needs you (needsHand: at your gate, stuck, or flagged), so the chip the
- * header count opens lists everything it counted; every other chip is its
- * own group, so a stuck or flagged item is under its state's chip too.
+ * Whether an item is under a chip. The chips follow the sections (sectionOf):
+ * Needs you, Running, Queued and Done each hold exactly what their section
+ * lists, so flagged or stuck work is under Needs you and under no state chip.
+ * Stuck narrows Needs you to its stuck work. All holds everything, which is
+ * the four sections together, since each item is in exactly one.
  */
 export function inFilter(item: Pick<WorkItem, "group" | "flag">, filter: Filter): boolean {
   if (filter === "all") return true;
-  return filter === "review" ? needsHand(item) : item.group === filter;
-}
-
-export function countFilters(items: readonly WorkItem[]): Record<Filter, number> {
-  const counts: Record<Filter, number> = { all: items.length, review: 0, blocked: 0, running: 0, queued: 0, done: 0 };
-  for (const item of items) {
-    if (item.group !== "review") counts[item.group] += 1;
-    if (needsHand(item)) counts.review += 1;
-  }
-  return counts;
+  return filter === "blocked" ? item.group === "blocked" : sectionOf(item) === filter;
 }
 
 export function applyFilter(items: readonly WorkItem[], filter: Filter): WorkItem[] {
   return items.filter((item) => inFilter(item, filter));
+}
+
+/** Each chip's count: the length of what its filter shows (applyFilter), so the two cannot disagree. */
+export function countFilters(items: readonly WorkItem[]): Record<Filter, number> {
+  return Object.fromEntries(FILTERS.map((filter) => [filter, applyFilter(items, filter).length])) as Record<
+    Filter,
+    number
+  >;
 }
 
 /** A chip shows when it has work or is selected, so a filter opened from elsewhere is never hidden. */

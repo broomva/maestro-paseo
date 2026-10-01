@@ -29,7 +29,9 @@ those, and nothing Paseo already does.
 
 - **Maestro** in the sidebar: all work, attention first (Needs you, Running, Queued, Done; Needs you
   holds work at your gate, stuck work and work the loop flagged, the same set the header count counts),
-  the unsupervised-hours scoreboard, and a detail pane with the verb each item needs.
+  the unsupervised-hours scoreboard, and a detail pane with the verb each item needs. The chips
+  follow the sections: each counts exactly what it shows, Stuck narrows Needs you to its stuck
+  work, and Needs you, Running, Queued and Done add up to All.
 - **Work** panel beside any agent: the work it is running, or a button to track it.
 - **Command Center**: *Open Maestro*, and *Track this session in Maestro* on an agent.
 - **`/maestro [title]`** in the composer: track the current session as work.

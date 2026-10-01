@@ -647,6 +647,68 @@ describe("work the loop flagged", () => {
 });
 
 describe("views and filters", () => {
+  test("each chip counts exactly what it shows; the section chips match the feed's sections and add up to All", async () => {
+    const at = new Date(Date.now() - 2 * 60_000).toISOString();
+    const yours = { kind: "yours" as const, reason: "Start it yourself: it runs without permission prompts.", at };
+    const quiet = { kind: "quiet" as const, reason: "Quiet for 41 minutes, worth a look.", at };
+    items = [
+      ...fixture(),
+      work("y", "proposed", { flag: yours }),
+      work("z", "running", { worker: worker("z", "maestro/z-1"), phase: "working", flag: quiet }),
+      work("q", "proposed"),
+    ];
+    const view = await mount(surface(false));
+    /** The chips as the toolbar shows them: label to count. */
+    const chips = () =>
+      new Map(
+        view.all('[aria-label="Filter by state"] [role="button"]').map((el) => {
+          const label = el.getAttribute("aria-label") ?? "";
+          const comma = label.lastIndexOf(", ");
+          return [label.slice(0, comma), Number(label.slice(comma + 2))] as const;
+        }),
+      );
+    type El = ReturnType<typeof view.all>[number];
+    const isCard = (el: El) => el.getAttribute("aria-label")?.startsWith("Work ") ?? false;
+    const cards = (root: El | null | undefined) =>
+      [...(root?.querySelectorAll('[role="button"]') ?? [])].filter(isCard);
+    /** The feed's sections: title to how many cards it lists. */
+    const sections = () =>
+      new Map(
+        view
+          .all('[role="heading"]')
+          .filter((el) => ["Needs you", "Stuck", "Running", "Queued", "Done"].includes(el.textContent ?? ""))
+          .map((el) => [el.textContent ?? "", cards(el.parentElement?.parentElement).length] as const),
+      );
+    const all = chips();
+    expect([...all]).toEqual([
+      ["All", 9],
+      ["Needs you", 5],
+      ["Stuck", 1],
+      ["Running", 1],
+      ["Queued", 2],
+      ["Done", 1],
+    ]);
+    // In the All view, each section chip counts its section; Stuck has no section of its own.
+    const listed = sections();
+    expect([...listed]).toEqual([
+      ["Needs you", 5],
+      ["Running", 1],
+      ["Queued", 2],
+      ["Done", 1],
+    ]);
+    for (const title of ["Needs you", "Running", "Queued", "Done"])
+      expect([title, all.get(title)]).toEqual([title, listed.get(title)]);
+    expect(["Needs you", "Running", "Queued", "Done"].reduce((sum, title) => sum + (all.get(title) ?? 0), 0)).toBe(
+      all.get("All") ?? -1,
+    );
+    // Every chip, Stuck and All included, shows as many cards as it counts.
+    for (const [title, count] of all) {
+      await view.press(view.byLabel(`${title}, ${count}`));
+      expect(view.pressed(`${title}, ${count}`)).toBe("true");
+      expect([title, view.all('[role="button"]').filter(isCard).length]).toEqual([title, count]);
+    }
+  });
+
   test("a filter intent checks its chip, opens the feed and drops the scope", async () => {
     const view = await mount(surface(false));
     await view.press(view.byLabel("genesis, 1 of 2 open"));
