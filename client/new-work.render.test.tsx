@@ -33,8 +33,13 @@ const win = new Window({ url: "http://localhost/" });
 // the whole bun process. So the list asks whichever window is current: once this file is done, a
 // later file's reduced-motion switch (plane.render.test.tsx) still reaches react-native-web.
 type Listener = (event: { matches: boolean }) => void;
+type MediaList = {
+  matches: boolean;
+  addEventListener(type: string, fn: Listener): void;
+  removeEventListener(type: string, fn: Listener): void;
+};
 const current = (query: string) => {
-  const live = (globalThis as { window?: { matchMedia?: (query: string) => MediaQueryList } }).window;
+  const live = (globalThis as { window?: { matchMedia?: (query: string) => MediaList } }).window;
   return live && live !== (win as unknown) ? live.matchMedia?.(query) : undefined;
 };
 Object.assign(win, {
@@ -43,8 +48,8 @@ Object.assign(win, {
     get matches() {
       return current(query)?.matches ?? query.includes("reduce");
     },
-    addEventListener: (type: string, fn: Listener) => current(query)?.addEventListener(type, fn as never),
-    removeEventListener: (type: string, fn: Listener) => current(query)?.removeEventListener(type, fn as never),
+    addEventListener: (type: string, fn: Listener) => current(query)?.addEventListener(type, fn),
+    removeEventListener: (type: string, fn: Listener) => current(query)?.removeEventListener(type, fn),
   }),
 });
 const added: string[] = [];
