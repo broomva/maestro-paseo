@@ -46,8 +46,23 @@ export function toneColor(theme: PluginTheme, tone: Tone): string {
   }
 }
 
+/**
+ * The platform's reduced-motion answer where it can be read at once (the web's
+ * matchMedia), else false until AccessibilityInfo answers. Read at once, the
+ * first frame is already right, and the async answer that follows is the same
+ * value, which React drops without a render.
+ */
+function reducedMotionNow(): boolean {
+  const view = (globalThis as { window?: { matchMedia?: (query: string) => { matches: boolean } } }).window;
+  try {
+    return view?.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  } catch {
+    return false;
+  }
+}
+
 export function useReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
+  const [reduced, setReduced] = useState(reducedMotionNow);
   useEffect(() => {
     let alive = true;
     AccessibilityInfo.isReduceMotionEnabled()

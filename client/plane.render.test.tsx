@@ -813,6 +813,21 @@ describe("the live signal", () => {
     expect(view.rings()).toHaveLength(1);
     expect(after).toEqual(before);
   });
+
+  test("reduced motion holds from the first frame, before AccessibilityInfo answers", async () => {
+    // The async answer never lands: only the synchronous read can keep the dot still.
+    const ask = spyOn(web.AccessibilityInfo, "isReduceMotionEnabled").mockImplementation(
+      () => new Promise<boolean>(() => {}),
+    );
+    try {
+      const view = await mount(surface(false));
+      const [before, after] = await opacities(view);
+      expect(view.rings()).toHaveLength(1);
+      expect(after).toEqual(before);
+    } finally {
+      ask.mockRestore();
+    }
+  });
 });
 
 describe("History", () => {
