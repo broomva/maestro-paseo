@@ -52,6 +52,16 @@ test("a missing file reads as no wakes; recent is the newest first", async () =>
   expect((await log.lastRun())?.tickId).toBe("t3");
 });
 
+test("an entry keeps the flags its wake raised; one written before flags existed reads with none", async () => {
+  const { path, logs, log } = await fresh();
+  const { flagged: _, ...older } = entry(1);
+  await writeFile(path, `${JSON.stringify(older)}\n`);
+  const raised = [{ id: "w1", title: "Bypass", kind: "yours" as const, reason: "Start it yourself: x." }];
+  await log.append(entry(2, { flagged: raised }));
+  expect((await log.recent(2)).map((one) => one.flagged)).toEqual([raised, []]);
+  expect(logs).toEqual([]);
+});
+
 test("a torn or garbage line is skipped with one warning, and the next append still lands on its own line", async () => {
   const { path, logs, log } = await fresh();
   await log.append(entry(1));

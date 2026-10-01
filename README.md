@@ -182,11 +182,21 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
   that does, the work's own or Settings', or an auto-approving feature), and work you gave a mode
   of its own, are left alone with the reason. It never touches stuck work, and never stops, sends
   back, or decides anything.
+- **What it leaves to you lands in Needs you.** A wake flags three things on the work itself, so
+  they show in Maestro's Needs you (the chip, the board's column, the header count) with the
+  reason on the card and in the detail: queued work it leaves to you ("Start it yourself: ..."),
+  a start it tried that failed ("Could not start: ..."), and a run quiet for 30 minutes or more
+  ("Quiet for N minutes, worth a look"). Each flag is one `loop.flagged` receipt, written only
+  when the work's current flag is not already of that kind, so a wake every minute adds nothing.
+  Anything else that happens to the work (your dispatch or cancel, a turn, a state change, a
+  note) clears it, and the loop does not try a failed start again until then. Waiting at the run
+  cap is not flagged: that work starts when a slot frees. Flags go through Maestro and Paseo, never
+  a desktop notification.
 - **Every wake leaves a receipt.** One line per wake in `wake-log.jsonl` beside the config
   (override with `MAESTRO_PASEO_WAKE_LOG`): why it woke, what it started, what it left alone and
-  why, what needs you, and running work quiet for 30 minutes or more. It keeps the newest 500 once
-  it passes 1000 lines. The next wake is due a period after the last one there, so a restart keeps
-  the cadence.
+  why, what needs you, running work quiet for 30 minutes or more, and the flags it raised. It
+  keeps the newest 500 once it passes 1000 lines. The next wake is due a period after the last one
+  there, so a restart keeps the cadence.
 - **One wake at a time.** A wake asked for while one runs is recorded as skipped, not queued. With
   no Paseo client yet (right after a restart) a wake records that it could not start work, and the
   first client to arrive runs another, once that wake ends if it arrives while the wake still runs.
