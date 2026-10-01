@@ -9,6 +9,7 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { type CheckResult, NOT_STOPPED, type Pending, type WorkEventWire, type WorkItem } from "../shared/contracts";
 import { nextRunCopy } from "../shared/run";
+import { PLAIN_VOICE } from "../shared/states";
 import { ChangeText, WithChange } from "./changed";
 import { FilesSection } from "./files";
 import { ago, basename, errorText } from "./format";
@@ -177,6 +178,21 @@ function BackRow({ theme, onBack }: { theme: PluginTheme; onBack: () => void }) 
   );
 }
 
+/** Whether Stop run acts on the work now: its session is working, or paused on a question for you. */
+export function stoppable(item: WorkItem): boolean {
+  if (item.state === "running") return item.phase !== "checking";
+  return item.state === "review" && item.permission !== null;
+}
+
+/** What an open Stop confirm turns into when the run leaves every state Stop acts on before you confirm. */
+export function movedOnText(item: WorkItem): string {
+  const lead = "The run moved on before you confirmed:";
+  // Still Running by its label, but the session is done and the checks decide where it lands.
+  if (item.state === "running") return `${lead} it finished, and its checks are running.`;
+  const { label } = PLAIN_VOICE[item.state];
+  return `${lead} it is now ${label === "Needs you" ? "in Needs you" : label}.`;
+}
+
 function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; compact: boolean }) {
   const verbs = useVerbs();
   const toast = useToast();
@@ -185,16 +201,53 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   const [note, setNote] = useState("");
   const [sendingBack, setSendingBack] = useState(false);
   const [answering, setAnswering] = useState(false);
-  // The item whose Stop run is being confirmed, so an open confirm never carries over to another item.
+  // Stop run's confirm lives here, above the per-state cards, so a move between the states it acts on
+  // (working, asking) keeps it open. Each piece names its item, so none carries over to another item.
+  // The item whose Stop run is being confirmed.
   const [confirmStop, setConfirmStop] = useState<string | null>(null);
   // A Stop refused because it would delete work that is not committed: the second confirm says what goes.
   const [stopLoss, setStopLoss] = useState<{ id: string; text: string } | null>(null);
+  // A confirm that was open when the run left every state Stop acts on: said, never dropped silently.
+  const [movedOn, setMovedOn] = useState<{ id: string; text: string } | null>(null);
   const closeStop = () => {
     setStopLoss(null);
     setConfirmStop(null);
   };
+  const openStop = () => {
+    setMovedOn(null);
+    setConfirmStop(item.id);
+  };
 
   const fail = (error: unknown) => toast.error(errorText(error));
+  const stopRun = (discard: boolean) =>
+    verbs.stop.mutate(discard ? { id: item.id, discard: true } : { id: item.id }, {
+      onSuccess: closeStop,
+      onError: (error) => {
+        const said = errorText(error);
+        if (!discard && said.startsWith(NOT_STOPPED)) setStopLoss({ id: item.id, text: said });
+        else fail(error);
+      },
+    });
+  const lossText = stopLoss?.id === item.id ? stopLoss.text : null;
+  const stopOpen = confirmStop === item.id || lossText !== null;
+  // The run left every state Stop acts on with the confirm open: swap it for the Notice. Set while
+  // rendering (React's way to adjust state to new props), so no frame shows neither. Not while your own
+  // Stop is in flight: that move is the one you confirmed.
+  if (stopOpen && !stoppable(item) && !verbs.stop.isPending) {
+    closeStop();
+    setMovedOn({ id: item.id, text: movedOnText(item) });
+  }
+  const stopConfirm = stopOpen ? (
+    <StopConfirm
+      item={item}
+      theme={theme}
+      compact={compact}
+      loss={lossText}
+      busy={verbs.stop.isPending}
+      onConfirm={stopRun}
+      onClose={closeStop}
+    />
+  ) : null;
   const inputStyle = {
     minHeight: 72,
     padding: space[3],
@@ -212,9 +265,23 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   const pendingCard = item.pending ? (
     <PendingDecision item={item} pending={item.pending} theme={theme} compact={compact} />
   ) : null;
-  const withPending = (node: ReactNode) =>
-    pendingCard ? (
+  const movedOnCard =
+    movedOn?.id === item.id ? (
+      <Notice
+        theme={theme}
+        tone="warn"
+        action={
+          <Button theme={theme} variant="quiet" label="Dismiss" compact={compact} onPress={() => setMovedOn(null)} />
+        }
+      >
+        {movedOn.text}
+      </Notice>
+    ) : null;
+  // What sits above the state's own verbs: a Stop that the run outran, then a decision in its undo window.
+  const withTop = (node: ReactNode) =>
+    movedOnCard || pendingCard ? (
       <View style={{ gap: space[3] }}>
+        {movedOnCard}
         {pendingCard}
         {node}
       </View>
@@ -239,7 +306,7 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
         setAnswering(false);
       }
     };
-    return withPending(
+    return withTop(
       <Card theme={theme}>
         <Text style={text.label}>The agent is asking</Text>
         <Text style={text.body}>{item.look?.ask ?? item.permission.title}</Text>
@@ -261,14 +328,21 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
             onPress={() => void answer(false)}
           />
         </View>
+        {/* Or end the run without answering. No Cancel here: it would close the work and leave the
+            session waiting on this question (server/engine.ts STOP_BEFORE_CANCEL). Stop, then cancel from Stuck. */}
+        {stopConfirm ?? (
+          <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
+            <Button theme={theme} icon="Square" label="Stop run" compact={compact} onPress={openStop} />
+          </View>
+        )}
       </Card>,
     );
   }
 
   if (item.state === "review") {
-    if (pendingCard) return pendingCard;
+    if (pendingCard) return withTop(null);
     const look = item.look;
-    return (
+    return withTop(
       <Card theme={theme}>
         <Text style={text.label}>Needs you</Text>
         {look ? (
@@ -373,13 +447,13 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
             />
           </View>
         )}
-      </Card>
+      </Card>,
     );
   }
 
   if (item.state === "blocked") {
     const restart = nextRunCopy(item.nextRun, "stuck");
-    return withPending(
+    return withTop(
       <Card theme={theme}>
         <Text style={text.label}>Stuck</Text>
         <Text style={text.body}>{item.reason ?? "The run stopped without a reason."}</Text>
@@ -422,7 +496,7 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
 
   if (item.state === "proposed" || item.state === "reviewing" || item.state === "triggered") {
     const queued = nextRunCopy(item.nextRun, "queued");
-    return (
+    return withTop(
       <Card theme={theme}>
         <Text style={text.body}>{queued.line}</Text>
         {queued.warning ? (
@@ -448,90 +522,79 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
             onPress={() => verbs.cancel.mutate({ id: item.id }, { onError: fail })}
           />
         </View>
-      </Card>
+      </Card>,
     );
   }
 
   if (item.state === "running") {
     // While checks run the session is already done: nothing to stop, and the checks decide where it lands.
-    const stoppable = item.phase !== "checking";
-    return withPending(
+    return withTop(
       <View style={{ gap: space[3] }}>
         <Text style={text.muted}>
           {item.phase === "checking"
             ? "The run finished. Checks are running in its worktree."
             : `Working${item.worker?.provider ? ` with ${item.worker.provider}` : ""}. It comes back to you when the run ends.`}
         </Text>
-        {!stoppable ? null : stopLoss?.id === item.id ? (
-          <Card theme={theme}>
-            <Text style={text.body}>{stopLoss.text}</Text>
-            <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
-              <Button
-                theme={theme}
-                variant="primary"
-                label="Discard and stop"
-                compact={compact}
-                busy={verbs.stop.isPending}
-                onPress={() =>
-                  verbs.stop.mutate({ id: item.id, discard: true }, { onSuccess: closeStop, onError: fail })
-                }
-              />
-              <Button theme={theme} variant="quiet" label="Keep it running" compact={compact} onPress={closeStop} />
-            </View>
-          </Card>
-        ) : confirmStop === item.id ? (
-          <Card theme={theme}>
-            <Text style={text.body}>
-              {item.worker?.branch
-                ? "Stopping archives the session. The branch and its commits stay."
-                : "Stopping archives the session."}
-            </Text>
-            <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
-              <Button
-                theme={theme}
-                variant="primary"
-                label="Stop run"
-                compact={compact}
-                busy={verbs.stop.isPending}
-                onPress={() =>
-                  verbs.stop.mutate(
-                    { id: item.id },
-                    {
-                      onSuccess: () => setConfirmStop(null),
-                      onError: (error) => {
-                        const said = errorText(error);
-                        if (said.startsWith(NOT_STOPPED)) setStopLoss({ id: item.id, text: said });
-                        else fail(error);
-                      },
-                    },
-                  )
-                }
-              />
-              <Button
-                theme={theme}
-                variant="quiet"
-                label="Keep it running"
-                compact={compact}
-                onPress={() => setConfirmStop(null)}
-              />
-            </View>
-          </Card>
-        ) : (
-          <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
-            <Button
-              theme={theme}
-              icon="Square"
-              label="Stop run"
-              compact={compact}
-              onPress={() => setConfirmStop(item.id)}
-            />
-          </View>
-        )}
+        {!stoppable(item)
+          ? null
+          : (stopConfirm ?? (
+              <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
+                <Button theme={theme} icon="Square" label="Stop run" compact={compact} onPress={openStop} />
+              </View>
+            ))}
       </View>,
     );
   }
 
-  return withPending(item.verdict ? <Text style={text.muted}>{item.verdict}</Text> : null);
+  return withTop(item.verdict ? <Text style={text.muted}>{item.verdict}</Text> : null);
+}
+
+/**
+ * Stop run's confirm: one piece for every state Stop acts on, so it stays open when a working run
+ * asks a question, or a question is answered, before you confirm. The first step says what stopping
+ * does; the second, after a Stop refused because the worktree holds work that is not committed,
+ * says what goes and asks again (`loss`).
+ */
+function StopConfirm({
+  item,
+  theme,
+  compact,
+  loss,
+  busy,
+  onConfirm,
+  onClose,
+}: {
+  item: WorkItem;
+  theme: PluginTheme;
+  compact: boolean;
+  loss: string | null;
+  busy: boolean;
+  onConfirm: (discard: boolean) => void;
+  onClose: () => void;
+}) {
+  const text = useText(theme);
+  const keep = item.permission ? "Keep it waiting" : "Keep it running";
+  const archives = item.permission
+    ? "Stopping archives the session and leaves its question unanswered."
+    : "Stopping archives the session.";
+  return (
+    <Card theme={theme}>
+      <Text style={text.body}>
+        {loss ?? (item.worker?.branch ? `${archives} The branch and its commits stay.` : archives)}
+      </Text>
+      <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
+        <Button
+          theme={theme}
+          variant="primary"
+          label={loss ? "Discard and stop" : "Stop run"}
+          compact={compact}
+          busy={busy}
+          onPress={() => onConfirm(loss !== null)}
+        />
+        <Button theme={theme} variant="quiet" label={keep} compact={compact} onPress={onClose} />
+      </View>
+    </Card>
+  );
 }
 
 const PENDING_WORDS: Record<Pending["verdict"], string> = {
