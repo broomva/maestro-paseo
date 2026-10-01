@@ -5,6 +5,7 @@ import { loadConfig, saveConfig } from "./server/config";
 import { Engine } from "./server/engine";
 import { GateCards } from "./server/gate-card";
 import { socketPath } from "./server/paths";
+import { Records } from "./server/records";
 import type { Paseo } from "./server/runs";
 import {
   adoptAgent,
@@ -20,6 +21,7 @@ import {
   unblockWork,
   workForAgent,
 } from "./shared/contracts";
+import { historyWork, readWorkFile, workFiles } from "./shared/records";
 
 const log = (message: string) => console.log(`[maestro] ${message}`);
 
@@ -48,10 +50,15 @@ export default function contribute(host: PluginServerContext) {
       }),
   };
 
-  server.handle(listWork, (_input, { paseo }) => engine.list(paseo));
-  server.handle(getWork, ({ id }) => engine.get(id));
+  // History, a work folder's files and each run's changed line: read-only, and never on the agent socket.
+  const records = new Records(() => engine.settings());
+  server.handle(listWork, (_input, { paseo }) => engine.list(paseo).then((list) => records.withChanged(paseo, list)));
+  server.handle(getWork, ({ id }, { paseo }) => engine.get(id).then((got) => records.withChangedItem(paseo, got)));
   // No client handed to list: the header count and pills poll this, and must not reconcile sessions.
   server.handle(attentionWork, () => engine.list().then(({ items }) => attentionOf(items, Date.now())));
+  server.handle(historyWork, ({ days }) => records.history(days));
+  server.handle(workFiles, ({ id }) => records.files(id));
+  server.handle(readWorkFile, ({ id, name }) => records.file(id, name));
   server.handle(createWork, (input, { paseo }) => engine.create(paseo, input).then((item) => ({ item })));
   server.handle(dispatchWork, ({ id }, { paseo }) => engine.dispatch(paseo, id).then((item) => ({ item })));
   server.handle(decideWork, ({ id, verdict, note }, { paseo }) =>

@@ -46,6 +46,10 @@ export type CheckResult = z.infer<typeof CheckResultSchema>;
 
 export const PHASES = ["working", "checking", "asking"] as const;
 
+/** Lines added and removed in a run's workspace, as Paseo reports them. */
+export const DiffStatSchema = z.object({ additions: z.number(), deletions: z.number() });
+export type DiffStat = z.infer<typeof DiffStatSchema>;
+
 export const WorkItemSchema = z.object({
   id: z.string(),
   path: z.string(),
@@ -63,6 +67,8 @@ export const WorkItemSchema = z.object({
   lastEventAt: z.string().nullable(),
   phase: z.enum(PHASES).nullable(),
   worker: WorkerSchema.nullable(),
+  /** The run's workspace diff stat, read best effort by work.list and work.get; null when unknown. */
+  changed: DiffStatSchema.nullable().optional(),
   reason: z.string().nullable(),
   verdict: z.string().nullable(),
   look: LookSchema.nullable(),
@@ -84,6 +90,15 @@ export const WorkEventSchema = z.object({
 });
 export type WorkEventWire = z.infer<typeof WorkEventSchema>;
 
+export const WeekDaySchema = z.object({
+  /** The local calendar day, YYYY-MM-DD. */
+  date: z.string(),
+  unsupervisedMs: z.number(),
+  looks: z.number(),
+  longestRunMs: z.number(),
+});
+export type WeekDay = z.infer<typeof WeekDaySchema>;
+
 export const ScoreboardSchema = z.object({
   unsupervisedMs: z.number(),
   looks: z.number(),
@@ -92,6 +107,10 @@ export const ScoreboardSchema = z.object({
   /** Fractions of the local day, 0 to 1. */
   segments: z.array(z.object({ start: z.number(), width: z.number(), live: z.boolean() })),
   notches: z.array(z.number()),
+  /** The last seven local days, oldest first and today last, scored by the same rules as today. */
+  week: z.array(WeekDaySchema).default([]),
+  /** Unsupervised time this week per initiative (null: work outside any), most first. */
+  weekByInitiative: z.array(z.object({ initiative: z.string().nullable(), unsupervisedMs: z.number() })).default([]),
 });
 export type Scoreboard = z.infer<typeof ScoreboardSchema>;
 

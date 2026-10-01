@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   attachIntent,
   INTENT_TTL_MS,
@@ -9,6 +9,11 @@ import {
   takeIntent,
 } from "./intent";
 
+// Before as well as after: a surface another test file left mounted (a render test that timed
+// out) still listens for intents, and would take this file's first one.
+beforeEach(() => {
+  resetIntents();
+});
 afterEach(() => {
   resetIntents();
 });

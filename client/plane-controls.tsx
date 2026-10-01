@@ -1,6 +1,6 @@
-// The plane's controls: the Feed / Board / List switch (tabs), the initiative
-// scope and the state filter (toggle chips: pressing the active one clears
-// it). Chips carry a label and a count; a dot never stands alone.
+// The plane's controls: the Feed / Board / List / History switch (tabs), the
+// initiative scope and the state filter (toggle chips: pressing the active one
+// clears it). Chips carry a label and a count; a dot never stands alone.
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
@@ -22,10 +22,12 @@ export function ViewSwitch({
   theme,
   view,
   onView,
+  views = VIEWS,
 }: {
   theme: PluginTheme;
   view: PlaneView;
   onView: (view: PlaneView) => void;
+  views?: readonly (typeof VIEWS)[number][];
 }) {
   return (
     <View
@@ -41,7 +43,7 @@ export function ViewSwitch({
         backgroundColor: theme.colors.surface1,
       }}
     >
-      {VIEWS.map((option) => {
+      {views.map((option) => {
         const selected = option.id === view;
         const ink = selected ? theme.colors.foreground : theme.colors.foregroundMuted;
         return (
@@ -70,7 +72,7 @@ export function ViewSwitch({
   );
 }
 
-function Chip({
+export function Chip({
   theme,
   label,
   count,

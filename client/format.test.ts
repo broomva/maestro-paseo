@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ago, agoWords, duration, errorText } from "./format";
+import { ago, agoWords, bytes, duration, errorText } from "./format";
 
 test("errors read as the handler's sentence", () => {
   expect(
@@ -30,4 +30,13 @@ test("ages in words, for screen readers", () => {
   expect(agoWords("2026-09-22T09:00:00Z", now)).toBe("updated 3 hours ago");
   expect(agoWords("2026-09-21T12:00:00Z", now)).toBe("updated 1 day ago");
   expect(agoWords(null, now)).toBe("");
+});
+
+test("file sizes", () => {
+  expect(bytes(0)).toBe("0 B");
+  expect(bytes(812)).toBe("812 B");
+  expect(bytes(1024)).toBe("1.0 KB");
+  expect(bytes(1260)).toBe("1.2 KB");
+  expect(bytes(65_536)).toBe("64 KB");
+  expect(bytes(3.4 * 1024 * 1024)).toBe("3.4 MB");
 });

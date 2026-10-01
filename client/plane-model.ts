@@ -9,12 +9,18 @@ export const VIEWS = [
   { id: "feed", label: "Feed", icon: "LayoutList" },
   { id: "board", label: "Board", icon: "Columns3" },
   { id: "list", label: "List", icon: "List" },
+  { id: "history", label: "History", icon: "History" },
 ] as const;
 export type PlaneView = (typeof VIEWS)[number]["id"];
 
-/** Compact windows have no room for columns or dense rows: they always show the feed. */
+/** Compact windows have no room for columns or dense rows: they show the feed or History. */
 export function viewFor(view: PlaneView, compact: boolean): PlaneView {
-  return compact ? "feed" : view;
+  return compact && view !== "history" ? "feed" : view;
+}
+
+/** The views a window offers: compact ones only those viewFor keeps. */
+export function viewsFor(compact: boolean): (typeof VIEWS)[number][] {
+  return VIEWS.filter((option) => viewFor(option.id, compact) === option.id);
 }
 
 export type Filter = "all" | Group;
