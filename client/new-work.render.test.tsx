@@ -29,12 +29,22 @@ const SLOW = 30_000;
 const it = (name: string, run: () => Promise<void>) => test(name, run, SLOW);
 
 const win = new Window({ url: "http://localhost/" });
+// react-native-web reads matchMedia once, when the first file loads it, and keeps that list for
+// the whole bun process. So the list asks whichever window is current: once this file is done, a
+// later file's reduced-motion switch (plane.render.test.tsx) still reaches react-native-web.
+type Listener = (event: { matches: boolean }) => void;
+const current = (query: string) => {
+  const live = (globalThis as { window?: { matchMedia?: (query: string) => MediaQueryList } }).window;
+  return live && live !== (win as unknown) ? live.matchMedia?.(query) : undefined;
+};
 Object.assign(win, {
   matchMedia: (query: string) => ({
     media: query,
-    matches: query.includes("reduce"),
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    get matches() {
+      return current(query)?.matches ?? query.includes("reduce");
+    },
+    addEventListener: (type: string, fn: Listener) => current(query)?.addEventListener(type, fn as never),
+    removeEventListener: (type: string, fn: Listener) => current(query)?.removeEventListener(type, fn as never),
   }),
 });
 const added: string[] = [];
