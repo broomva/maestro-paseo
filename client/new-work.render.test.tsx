@@ -22,7 +22,7 @@ import { afterAll, afterEach, describe, expect, mock, spyOn, test } from "bun:te
 
 import { Window } from "happy-dom";
 import type { ReactNode } from "react";
-import type { WorkItem } from "../shared/contracts";
+import type { MaestroConfig, WorkItem } from "../shared/contracts";
 import { FAKE_PROVIDERS } from "../shared/fake-providers";
 
 const SLOW = 30_000;
@@ -150,11 +150,14 @@ const paseo = {
   },
 };
 
-const settings: { workRoot: string; provider: string; modeId: string | null; isolation: string } = {
+const settings: MaestroConfig = {
   workRoot: "/work",
   provider: "claude/haiku",
   modeId: null,
   isolation: "worktree",
+  concurrencyCap: null,
+  archiveOnApprove: false,
+  defaultGate: "human",
 };
 const created: Record<string, unknown>[] = [];
 const inspected: string[] = [];
@@ -180,6 +183,7 @@ const item = (id: string): WorkItem => ({
   look: null,
   permission: null,
   checks: [],
+  pending: null,
 });
 const invoke = async (method: string, input: unknown) => {
   switch (method) {

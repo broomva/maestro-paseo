@@ -1,4 +1,5 @@
-// Settings: where work folders live and how a dispatch starts its agent.
+// Settings: where work folders live, how a dispatch starts its agent, how many
+// run at once, and what an approval cleans up.
 
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useToast } from "@getpaseo/plugin/client/react-native";
@@ -8,6 +9,7 @@ import {
   SettingsInput,
   SettingsSection,
   SettingsSelect,
+  SettingsSwitch,
 } from "@getpaseo/plugin/client/ui";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, View } from "react-native";
@@ -16,11 +18,22 @@ import { errorText } from "./format";
 import { useConfig, useVerbs } from "./hooks";
 import { Notice, space } from "./ui";
 
+/** The cap as typed: empty is no cap, a whole number from 1 is a cap, anything else is an error to show. */
+function parseCap(text: string): { cap: number | null; error: string | null } {
+  const trimmed = text.trim();
+  if (!trimmed) return { cap: null, error: null };
+  if (!/^\d+$/.test(trimmed) || Number(trimmed) < 1) {
+    return { cap: null, error: "A whole number of runs, 1 or more. Leave it empty for no cap." };
+  }
+  return { cap: Number(trimmed), error: null };
+}
+
 export function MaestroSettings({ theme }: PluginSurfaceProps) {
   const config = useConfig();
   const verbs = useVerbs();
   const toast = useToast();
   const [draft, setDraft] = useState<MaestroConfig | null>(null);
+  const [capError, setCapError] = useState<string | null>(null);
 
   useEffect(() => {
     if (config.data && draft === null) setDraft(config.data);
@@ -72,10 +85,41 @@ export function MaestroSettings({ theme }: PluginSurfaceProps) {
             ]}
             onValueChange={(isolation) => patch({ isolation })}
           />
+          <SettingsInput
+            label="Runs at once"
+            hint="A dispatch past this many running is refused and the work stays queued. Leave empty for no cap."
+            error={capError}
+            initialValue={draft.concurrencyCap === null ? "" : String(draft.concurrencyCap)}
+            onChangeText={(text) => {
+              const { cap, error } = parseCap(text);
+              setCapError(error);
+              if (!error) patch({ concurrencyCap: cap });
+            }}
+          />
+        </SettingsCard>
+      </SettingsSection>
+      <SettingsSection title="The gate">
+        <SettingsCard>
+          <SettingsSelect
+            label="New work"
+            hint="New work starts with this choice. Checks decide only when the work has a check command."
+            value={draft.defaultGate}
+            options={[
+              { label: "You approve", value: "human" },
+              { label: "Checks decide", value: "auto" },
+            ]}
+            onValueChange={(defaultGate) => patch({ defaultGate })}
+          />
+          <SettingsSwitch
+            label="Archive the workspace on approve"
+            hint="When an approval takes effect, the run's worktree goes away, unless it has uncommitted changes or cannot be checked. The branch stays as the receipt."
+            value={draft.archiveOnApprove}
+            onValueChange={(archiveOnApprove) => patch({ archiveOnApprove })}
+          />
           <SettingsAction
             label="Save settings"
             actionLabel={verbs.saveConfig.isPending ? "Saving" : "Save"}
-            disabled={verbs.saveConfig.isPending}
+            disabled={verbs.saveConfig.isPending || capError !== null}
             onPress={() =>
               verbs.saveConfig.mutate(draft, {
                 onSuccess: (saved) => {

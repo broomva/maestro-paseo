@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { answerTarget, cardView } from "../client/gate-state";
 import type { MaestroConfig } from "../shared/contracts";
 import { GATE_CARD_KIND, GATE_CARD_VERSION, type GateCardData, GateCardSchema } from "../shared/gate-card";
-import { Engine, type EngineOptions } from "./engine";
+import { defaultConfig } from "./config";
+import { Engine, type EngineOptions, UNDO_MS } from "./engine";
 import type { WorkEvent } from "./events";
 import { fakePaseo } from "./fake-paseo";
 import { GateCards, landingOf, lastLanding } from "./gate-card";
@@ -30,6 +31,7 @@ async function setup(options: { landed?: EngineOptions["landed"] } = {}) {
   // A git repository as far as Maestro checks: runs branch a worktree from it.
   await mkdir(join(repo, ".git"), { recursive: true });
   const config: MaestroConfig = {
+    ...defaultConfig(),
     workRoot: join(root, "work"),
     provider: "claude",
     modeId: null,
@@ -46,6 +48,8 @@ async function setup(options: { landed?: EngineOptions["landed"] } = {}) {
       config: async () => config,
       log,
       landed: landed ?? ((before, after) => cards.landed(before, after)),
+      // The undo window is run out by hand below (decide), on this test's clock.
+      timer: () => () => undefined,
     });
   };
   const engine = boot(options.landed);
@@ -76,7 +80,14 @@ async function setup(options: { landed?: EngineOptions["landed"] } = {}) {
     }
     throw new Error(`never reached ${want}`);
   };
-  return { engine, boot, fake, logs, create, endTurn, settle };
+  /** A decision at the gate, with its undo window run out so it takes effect. */
+  const decide = async (id: string, verdict: "approve" | "revise" | "block", note = "", on: Engine = engine) => {
+    await on.verdict(fake.paseo, id, verdict, note);
+    clock += UNDO_MS;
+    await on.sweep(fake.paseo);
+    return (await on.get(id)).item;
+  };
+  return { engine, boot, fake, logs, create, endTurn, settle, decide };
 }
 
 describe("the gate card in the worker's timeline", () => {
@@ -100,7 +111,7 @@ describe("the gate card in the worker's timeline", () => {
   });
 
   test("the card names its landing, and the wire says which landing is current", async () => {
-    const { create, endTurn, fake, engine } = await setup();
+    const { create, endTurn, fake, engine, decide } = await setup();
     const item = await create();
     expect((await engine.get(item.id)).item.landing).toBeUndefined();
     await endTurn();
@@ -111,16 +122,16 @@ describe("the gate card in the worker's timeline", () => {
     expect(landed.landing).toBe(card.landing);
     expect(cardView(card, landed)).toBe("deciding");
     // Approved, the work has left the gate: the same card now says how, and offers nothing.
-    const done = await engine.verdict(fake.paseo, item.id, "approve", "");
+    const done = await decide(item.id, "approve");
     expect(done.landing).toBe(card.landing);
     expect(cardView(card, done)).toBe("resolved");
   });
 
   test("after Send back and a new landing, the older card offers no verbs and the new one does", async () => {
-    const { create, endTurn, fake, engine } = await setup();
+    const { create, endTurn, fake, engine, decide } = await setup();
     const item = await create();
     await endTurn();
-    await engine.verdict(fake.paseo, item.id, "revise", "Add a replay test");
+    await decide(item.id, "revise", "Add a replay test");
     clock += 60_000;
     await endTurn();
     await flush();
@@ -244,10 +255,10 @@ describe("the gate card in the worker's timeline", () => {
   });
 
   test("each landing gets its own card: sent back and landed again is a second one", async () => {
-    const { create, endTurn, fake, engine } = await setup();
+    const { create, endTurn, fake, decide } = await setup();
     const item = await create();
     await endTurn();
-    await engine.verdict(fake.paseo, item.id, "revise", "Add a replay test");
+    await decide(item.id, "revise", "Add a replay test");
     clock += 60_000;
     await endTurn();
     await flush();

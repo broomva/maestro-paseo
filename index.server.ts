@@ -20,7 +20,9 @@ import {
   inspectFolder,
   listWork,
   setConfig,
+  stopWork,
   unblockWork,
+  undoWork,
   workForAgent,
 } from "./shared/contracts";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
@@ -30,7 +32,6 @@ const log = (message: string) => console.log(`[maestro] ${message}`);
 export default function contribute(host: PluginServerContext) {
   // A run that lands at your gate leaves an approval card in its session, through the latest client below.
   const cards = new GateCards(() => latest, log);
-  const engine = new Engine({ landed: (before, after) => cards.landed(before, after) });
 
   // The host hands the plugin its daemon client only inside handlers and hooks,
   // never at startup: one client for the life of the plugin process. The agent
@@ -38,16 +39,26 @@ export default function contribute(host: PluginServerContext) {
   // the first event arrives, socket verbs that start or read a session refuse and
   // say why. On shutdown the host disposes the client before calling the cleanup
   // below, so a request answered in that window can fail; it fails with an answer.
+  //
+  // A decision at the gate applies on a timer, outside any handler, so the engine
+  // reads the same client. One that came due before the first client (a restart
+  // inside the undo window) applies as soon as the first one arrives.
   let latest: Paseo | null = null;
+  const engine = new Engine({ client: () => latest, landed: (before, after) => cards.landed(before, after) });
+  const keep = (paseo: Paseo) => {
+    const first = !latest && Boolean(paseo);
+    latest = paseo;
+    if (first) void engine.sweep(paseo).catch((error) => log(`applying due decisions: ${(error as Error).message}`));
+  };
   const server: Pick<PluginServerContext, "handle" | "on"> = {
     handle: (contract, handler) =>
       host.handle(contract, (input, context) => {
-        latest = context.paseo;
+        keep(context.paseo);
         return handler(input, context);
       }),
     on: (name, handler) =>
       host.on(name, (event, context) => {
-        latest = context.paseo;
+        keep(context.paseo);
         return handler(event, context);
       }),
   };
@@ -61,13 +72,20 @@ export default function contribute(host: PluginServerContext) {
   server.handle(historyWork, ({ days }) => records.history(days));
   server.handle(workFiles, ({ id }) => records.files(id));
   server.handle(readWorkFile, ({ id, name }) => records.file(id, name));
-  server.handle(createWork, (input, { paseo }) => engine.create(paseo, input).then((item) => ({ item })));
+  server.handle(createWork, async (input, { paseo }) => {
+    const gate = input.gate ?? (await engine.settings()).defaultGate;
+    return engine.createWork(paseo, { ...input, gate });
+  });
   server.handle(dispatchWork, ({ id }, { paseo }) => engine.dispatch(paseo, id).then((item) => ({ item })));
   server.handle(decideWork, ({ id, verdict, note }, { paseo }) =>
     engine.verdict(paseo, id, verdict, note).then((item) => ({ item })),
   );
   server.handle(unblockWork, ({ id, note }, { paseo }) => engine.unblock(paseo, id, note).then((item) => ({ item })));
-  server.handle(cancelWork, ({ id }) => engine.cancel(id).then((item) => ({ item })));
+  server.handle(cancelWork, ({ id }, { paseo }) => engine.cancel(id, paseo).then((item) => ({ item })));
+  server.handle(undoWork, ({ id }) => engine.undo(id).then((item) => ({ item })));
+  server.handle(stopWork, ({ id, discard }, { paseo }) =>
+    engine.stopRun(paseo, id, { discard: discard === true }).then((item) => ({ item })),
+  );
   server.handle(adoptAgent, ({ agentId, title }, { paseo }) =>
     engine.adopt(paseo, agentId, title).then((item) => ({ item })),
   );
@@ -89,6 +107,9 @@ export default function contribute(host: PluginServerContext) {
   // Sessions reach Maestro through a socket of its own (server/agent-socket.ts).
   // If it cannot open, Maestro's own screens still work, and it keeps trying.
   const stopSocket = keepServing({ path: socketPath(), methods: agentMethods(engine, () => latest), log });
+
+  // Decisions made before a restart: arm the ones still inside their window, apply the overdue ones.
+  void engine.sweep().catch((error) => log(`applying due decisions: ${(error as Error).message}`));
 
   return async () => {
     engine.stop();

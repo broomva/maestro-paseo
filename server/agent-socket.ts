@@ -4,10 +4,11 @@
 // only this user can open. Every session has a shell; `bin/maestro.ts` is the
 // client.
 //
-// It offers the noun and the verb, never the gate: approve, send back,
-// unblock, cancel and settings are not served, so no session can pass its own
-// gate or loosen how runs start. A session starts only queued work, and cannot
-// write a done check: checks run as you with no session in the loop.
+// It offers the noun and the verb, never the gate: approve, send back, undo,
+// stop, unblock, cancel and settings are not served, so no session can pass its
+// own gate, take back your decision, or loosen how runs start. A session starts
+// only queued work, and cannot write a done check: checks run as you with no
+// session in the loop.
 // Everything done through it is recorded as the agent's, since nothing here
 // can prove a person asked, under the agent id the client reports (unverified).
 // This is the surface a session is offered, not a sandbox. A process running as
@@ -37,7 +38,14 @@ export interface Caller {
 export type AgentMethod = (input: unknown, caller: Caller) => Promise<unknown>;
 
 /** The verbs that stay with you. Named so a session that asks for one is told why. */
-export const GATE_METHODS: ReadonlySet<string> = new Set(["work.verdict", "work.unblock", "work.cancel", "config.set"]);
+export const GATE_METHODS: ReadonlySet<string> = new Set([
+  "work.verdict",
+  "work.undo",
+  "work.stop",
+  "work.unblock",
+  "work.cancel",
+  "config.set",
+]);
 
 function method<S extends z.ZodType>(
   schema: S,
@@ -83,7 +91,8 @@ export function agentMethods(engine: Engine, paseo: () => Paseo | null): Readonl
     return id;
   };
   return new Map<string, AgentMethod>([
-    ["work.list", method(z.object({}), () => engine.list(paseo() ?? undefined))],
+    // Read-only for your decisions: a session listing work never makes one take effect.
+    ["work.list", method(z.object({}), () => engine.list(paseo() ?? undefined, { decide: false }))],
     ["work.get", method(ById, ({ id }) => engine.get(id))],
     [
       "work.create",
@@ -98,7 +107,7 @@ export function agentMethods(engine: Engine, paseo: () => Paseo | null): Readonl
             "A session cannot write a done check: checks run as you, outside any session's permissions, so they come from the person who owns this Maestro.",
           );
         }
-        return { item: await engine.create(paseo(), input, origin(caller)) };
+        return engine.createWork(paseo(), input, origin(caller));
       }),
     ],
     [
@@ -151,7 +160,7 @@ export async function answer(
   const run = methods.get(name);
   if (!run) {
     const error = GATE_METHODS.has(name)
-      ? `${name} is yours alone: the gate, unblocking, canceling and settings happen in Maestro, not from a session.`
+      ? `${name} is yours alone: the gate, undo, stopping a run, unblocking, canceling and settings happen in Maestro, not from a session.`
       : `Unknown method ${name}. Offered: ${[...methods.keys()].join(", ")}.`;
     return { id, ok: false, error };
   }

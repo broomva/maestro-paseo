@@ -1,5 +1,7 @@
-// Host-local configuration: where work folders live and how runs start.
-// Kept in its own JSON file so the daemon side can read it at dispatch time.
+// Host-local configuration: where work folders live, how runs start, how many
+// run at once, and what an approval cleans up. Kept in its own JSON file so the
+// daemon side can read it at dispatch time. A setting missing from the file
+// takes its default, so a file written before the setting existed still loads.
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -10,7 +12,15 @@ import { configPath, expandHome } from "./paths";
 export { configPath, expandHome };
 
 export function defaultConfig(): MaestroConfig {
-  return { workRoot: join(homedir(), "maestro"), provider: "claude", modeId: null, isolation: "worktree" };
+  return {
+    workRoot: join(homedir(), "maestro"),
+    provider: "claude",
+    modeId: null,
+    isolation: "worktree",
+    concurrencyCap: 3,
+    archiveOnApprove: false,
+    defaultGate: "human",
+  };
 }
 
 export class ConfigError extends Error {

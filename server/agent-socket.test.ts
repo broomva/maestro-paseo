@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { call, main, Refused, Usage } from "../bin/maestro";
 import type { MaestroConfig, WorkItem } from "../shared/contracts";
 import { type AgentMethod, agentMethods, answer, answers, keepServing, MAX_LINE, serveAgents } from "./agent-socket";
+import { defaultConfig } from "./config";
 import { Engine, NO_HANDLE } from "./engine";
 import { parseEvents } from "./events";
 import { fakePaseo } from "./fake-paseo";
@@ -40,6 +41,7 @@ async function setup() {
   // A git repository as far as Maestro checks: runs branch a worktree from it.
   await mkdir(join(repo, ".git"), { recursive: true });
   const config: MaestroConfig = {
+    ...defaultConfig(),
     workRoot: join(root, "work"),
     provider: "claude/test-model",
     modeId: null,
@@ -135,6 +137,88 @@ describe("what a session is offered", () => {
     }
     expect((await engine.get(item.id)).item.state).toBe("review");
     expect((await ok("config.get")) as unknown as MaestroConfig).toMatchObject({ modeId: null });
+  });
+
+  test("undo, stop and settings are refused, and take nothing back", async () => {
+    const { repo, ok, ask, engine, fake, config } = await setup();
+    const { item } = await ok("work.create", { title: "Trim the cache", repo, dispatch: true });
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, []);
+    // Your decision is waiting out its window: a session cannot take it back.
+    await engine.verdict(fake.paseo, item.id, "approve", "");
+    const undo = await ask("work.undo", { id: item.id });
+    expect(undo.ok).toBe(false);
+    expect(!undo.ok && undo.error).toContain("work.undo is yours alone");
+    expect((await engine.get(item.id)).item.pending?.verdict).toBe("approve");
+
+    // Running work: a session cannot stop another run, or its own.
+    const { item: running } = await ok("work.create", { title: "Second", repo, dispatch: true });
+    const stop = await ask("work.stop", { id: running.id });
+    expect(stop.ok).toBe(false);
+    expect(!stop.ok && stop.error).toContain("work.stop is yours alone");
+    expect((await engine.get(running.id)).item.state).toBe("running");
+    expect(fake.archived).toEqual([]);
+
+    // Settings: raising the cap, archiving on approve, or letting checks close new work are all yours.
+    const set = await ask("config.set", {
+      ...config,
+      concurrencyCap: null,
+      archiveOnApprove: true,
+      defaultGate: "auto",
+    });
+    expect(set.ok).toBe(false);
+    expect(!set.ok && set.error).toContain("config.set is yours alone");
+    expect((await ok("config.get")) as unknown as MaestroConfig).toMatchObject({
+      concurrencyCap: 3,
+      archiveOnApprove: false,
+      defaultGate: "human",
+    });
+    engine.stop();
+  });
+
+  test("create at the cap answers with the queued item and why; the retry is a dispatch, not a duplicate", async () => {
+    const { repo, ok, ask, engine, fake, config } = await setup();
+    config.concurrencyCap = 1;
+    await ok("work.create", { title: "First", repo, dispatch: true });
+    const response = await ask("work.create", { title: "Second", repo, dispatch: true });
+    if (!response.ok) throw new Error(response.error);
+    const { item, notice } = response.output as { item: WorkItem; notice: string | null };
+    expect(item.group).toBe("queued");
+    expect(notice).toContain("At capacity: 1 running. It stays queued.");
+    // The session holds the id, so it retries the dispatch, which refuses again without adding anything.
+    const retry = await ask("work.dispatch", { id: item.id });
+    expect(!retry.ok && retry.error).toBe("At capacity: 1 running. It stays queued.");
+    expect((await engine.list()).items.map((entry) => entry.title).sort()).toEqual(["First", "Second"]);
+    expect(fake.created).toHaveLength(1);
+  });
+
+  test("a session's list never makes one of your decisions take effect", async () => {
+    const { repo, ok, engine, fake, config } = await setup();
+    const { item } = await ok("work.create", { title: "Decided", repo, dispatch: true });
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, []);
+    // Decided a minute ago by an instance that went down: overdue now.
+    const earlier = new Engine({
+      now: () => new Date(Date.now() - 60_000),
+      config: async () => config,
+      log: () => {},
+      timer: () => () => undefined,
+    });
+    await earlier.verdict(fake.paseo, item.id, "approve", "");
+    const listed = (await ok("work.list")) as unknown as { items: WorkItem[] };
+    expect(listed.items[0]).toMatchObject({ state: "review", pending: { verdict: "approve", remainingMs: 0 } });
+    // Your own read applies it.
+    const mine = await engine.list(fake.paseo);
+    expect(mine.items[0]).toMatchObject({ state: "done", pending: null });
+  });
+
+  test("work a session creates is human-gated even when new work defaults to checks deciding", async () => {
+    const { repo, ok, config } = await setup();
+    config.defaultGate = "auto";
+    const { item } = await ok("work.create", { title: "Default", repo });
+    expect(item.gate).toBe("human");
   });
 
   test("a session starts only queued work; stuck work stays yours to unblock", async () => {
