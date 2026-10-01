@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { fakeWork } from "./fake-work";
 import { headerFace, headerSpecs, needsYou, needsYouLabel, needsYouTarget } from "./header-count";
+import { applyFilter } from "./plane-model";
 
 describe("the header count", () => {
   test("counts work at your gate and stuck work, nothing else", () => {
@@ -70,6 +71,26 @@ describe("the header count", () => {
       group: "blocked",
     });
     expect(needsYouTarget([])).toEqual({ kind: "filter", group: "review" });
+  });
+
+  test("the filter it opens lists everything it counted, stuck and flagged work mixed in", () => {
+    const at = "2026-09-29T09:30:00.000Z";
+    const flagged = fakeWork("f", "proposed", null, { flag: { kind: "yours", reason: "Start it yourself: x.", at } });
+    const quiet = fakeWork("q", "running", null, { flag: { kind: "quiet", reason: "Quiet for 31 minutes.", at } });
+    const mixes = [
+      [fakeWork("b", "blocked"), flagged],
+      [fakeWork("b", "blocked"), quiet, fakeWork("x", "running")],
+      [fakeWork("r", "review"), fakeWork("b", "blocked")],
+      [fakeWork("r", "review"), fakeWork("b", "blocked"), flagged, quiet],
+      [fakeWork("b1", "blocked"), fakeWork("b2", "blocked")],
+    ];
+    for (const items of mixes) {
+      const target = needsYouTarget(items);
+      expect(target.kind).toBe("filter");
+      if (target.kind !== "filter") continue;
+      const listed = applyFilter(items, target.group).map((item) => item.id);
+      expect(listed).toEqual(expect.arrayContaining(needsYou(items).map((item) => item.id)));
+    }
   });
 
   test("one button per workspace, all with the same count", () => {

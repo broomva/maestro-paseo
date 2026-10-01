@@ -811,6 +811,75 @@ describe("quiet asks the session", () => {
   });
 });
 
+describe("the loop and you, for the last slot", () => {
+  /** Holds the first run start inside startRun (after its slot is taken) until released. */
+  function holdFirstStart(fake: ReturnType<typeof fakePaseo>) {
+    const original = fake.paseo.providers.listModels;
+    let entered!: () => void;
+    let release!: () => void;
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    fake.paseo.providers.listModels = (async (...args: Parameters<typeof original>) => {
+      calls += 1;
+      if (calls === 1) {
+        entered();
+        await released;
+      }
+      return original(...args);
+    }) as typeof original;
+    return { inside, release };
+  }
+
+  test("the loop's start holds the slot: yours is refused at the cap, and exactly one starts", async () => {
+    const { loop, queue, engine, fake } = await setup({ concurrencyCap: 1 });
+    const loops = await queue("For the loop");
+    tickMinutes(1);
+    const yours = await queue("For you");
+    const hold = holdFirstStart(fake);
+    const waking = loop.wake("manual");
+    await hold.inside;
+    const mine = await engine.dispatch(fake.paseo, yours.id).then(
+      () => "started",
+      (error: Error) => error.message,
+    );
+    hold.release();
+    const entry = await waking;
+    expect(mine).toBe("At capacity: 1 running. It stays queued.");
+    expect(entry.dispatched).toEqual([{ id: loops.id, title: loops.title }]);
+    expect(entry.deferred).toEqual([{ id: yours.id, title: yours.title, reason: AT_RUN_CAP }]);
+    expect(fake.created).toHaveLength(1);
+    expect((await engine.get(loops.id)).item.state).toBe("running");
+    expect((await engine.get(yours.id)).item.state).toBe("proposed");
+  });
+
+  test("your start holds the slot: the loop defers at the cap, and exactly one starts", async () => {
+    const { loop, queue, engine, fake } = await setup({ concurrencyCap: 1 });
+    const loops = await queue("For the loop");
+    tickMinutes(1);
+    const yours = await queue("For you");
+    const hold = holdFirstStart(fake);
+    const mine = engine.dispatch(fake.paseo, yours.id);
+    await hold.inside;
+    const waking = loop.wake("manual");
+    // The wake reads, walks and defers while your start is still in flight.
+    const entry = await waking;
+    hold.release();
+    expect((await mine).state).toBe("running");
+    expect(entry.dispatched).toEqual([]);
+    expect(entry.deferred).toEqual([
+      { id: loops.id, title: loops.title, reason: AT_RUN_CAP },
+      { id: yours.id, title: yours.title, reason: AT_RUN_CAP },
+    ]);
+    expect(fake.created).toHaveLength(1);
+    expect((await engine.get(loops.id)).item.state).toBe("proposed");
+  });
+});
+
 describe("Leave it running", () => {
   test("clears a quiet flag as your receipt, a look, and the quiet clock counts from it", async () => {
     const { loop, queue, engine, fake } = await setup();

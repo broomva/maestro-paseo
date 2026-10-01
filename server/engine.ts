@@ -164,6 +164,22 @@ export const STOPPED = "You stopped the run";
 /** Why work Stop flipped to stuck went back to running: its worktree changed between Stop's two reads. */
 export const STOP_RACED = "The worktree changed while Stop checked it";
 
+/**
+ * Why work Stop flipped to stuck is no longer that stop, read under the claim
+ * just before the archive, or null when it still is: stuck, with Stop's reason,
+ * for the same session. A turn that started meanwhile (the session resumed),
+ * an Unblock, or a fresh run all move it, and the session is then not Stop's
+ * to archive.
+ */
+function stopMoved(item: StoredWork | null, agentId: string): string | null {
+  if (!item) return "the work could not be read again";
+  if (workerOf(item.events)?.agentId !== agentId) return "a new run started";
+  const state = item.contract.state;
+  if (state !== "blocked") return `the work moved to ${PLAIN_VOICE[state].label}`;
+  if (reasonOf("blocked", item.events) !== STOPPED) return "the work is stuck for another reason";
+  return null;
+}
+
 /** Why Leave it running is refused: only a running run with the loop's quiet flag on it is left running. */
 export const NOT_QUIET = "Only a run the loop flagged as quiet can be left running.";
 
@@ -1215,7 +1231,11 @@ export class Engine {
    * (the lock every change Maestro makes to this item takes) and is the last
    * thing before the archive: if it is not clean, or differs from the first
    * in any way, nothing is archived, the work goes back to running, and the
-   * call fails, asking you to Stop again. Every daemon call under the claim
+   * call fails, asking you to Stop again. Under the same claim, before that
+   * read, the item is read too: if it is no longer stuck with Stop's reason
+   * for the same session (a turn started, so the session resumed it; an
+   * Unblock; a fresh run), nothing is archived, a note says why, and the call
+   * fails with "Not archived:". Every daemon call under the claim
    * gives up after claimWaitMs, the archive included; one that gives up
    * counts as a failed archive. `discard` skips both reads.
    *
@@ -1289,9 +1309,21 @@ export class Engine {
       digest === null
         ? { failed: await archive(false) }
         : await withLock(id, async () => {
+            // The item first, read and not mutated: mutate takes this same lock, and so does load, which
+            // waits for it. fresh is the raw read for code holding the lock. It must still be this stop.
+            const moved = stopMoved(await store.fresh(id, stopped.dir).catch(() => null), worker.agentId);
+            if (moved) return { moved };
             const changed = await this.stopRecheck(paseo, stopped, worker, digest);
             return changed ? { changed } : { failed: await archive(true) };
           });
+    if ("moved" in outcome) {
+      // The work is not this stop any more, so there is nothing to put back: only say what happened.
+      const why = `${outcome.moved} while Stop checked the worktree`;
+      await store
+        .mutate(id, () => ({ events: [this.note(`Did not archive session ${worker.agentId}: ${why}`)] }), stopped.dir)
+        .catch(() => undefined);
+      throw new UserError(`Not archived: ${why}, so the session was kept.`);
+    }
     if ("changed" in outcome) {
       await putBack(outcome.changed.reason, `Did not archive session ${worker.agentId}: ${outcome.changed.reason}`);
       throw new UserError(outcome.changed.message);
