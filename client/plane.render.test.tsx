@@ -316,9 +316,12 @@ const settingsFixture = (): MaestroConfig => ({
 let settings = settingsFixture();
 /** What work.stop refuses with when it is not told to discard, as the host does for a worktree with uncommitted work. */
 let stopRefusal: string | null = null;
+/** While set, work.stop answers only once it resolves: a Stop still in flight. */
+let stopHeld: Promise<void> | null = null;
 const calls: { method: string; input: unknown }[] = [];
 const invoke = async (method: string, input: unknown) => {
   calls.push({ method, input });
+  if (method === "work.stop" && stopHeld) await stopHeld;
   if (method === "work.stop" && stopRefusal && !(input as { discard?: boolean }).discard) {
     throw new Error(stopRefusal);
   }
@@ -473,6 +476,7 @@ afterEach(async () => {
   nextWake = () => wakeEntry("w-now", 0, { cause: "manual" });
   settings = settingsFixture();
   stopRefusal = null;
+  stopHeld = null;
   calls.length = 0;
   setReduced(true);
   // The message and its first argument: React's act warning names the component there ("An update to %s").
@@ -785,6 +789,25 @@ describe("Stop run", () => {
     expect(view.all('[role="alert"]').map((el) => el.textContent)).toContain(
       "The run moved on before you confirmed: it is now in Needs you.Dismiss",
     );
+  });
+
+  test("your own Stop in flight is not a move on: a poll that sees it stuck first shows no Notice", async () => {
+    let release = () => {};
+    stopHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const view = await mount(detail("c"));
+    await view.press(view.byLabel("Stop run"));
+    await view.press(view.byLabel("Stop run"));
+    expect(sent("work.stop")).toEqual([{ id: "c" }]);
+    // The host stopped it and a poll read that before the call answered.
+    move("c", work("c", "blocked", { worker: worker("c", "maestro/c-1"), reason: "You stopped the run" }));
+    await view.refetch();
+    expect(view.text()).toContain("You stopped the run");
+    expect(view.all('[role="alert"]')).toHaveLength(0);
+    release();
+    await settle(50);
+    expect(view.all('[role="alert"]')).toHaveLength(0);
   });
 
   test("checks starting count as moving on: the run is done, and the checks decide", async () => {
