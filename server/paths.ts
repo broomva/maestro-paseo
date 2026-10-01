@@ -19,3 +19,8 @@ export function configPath(env: NodeJS.ProcessEnv = process.env): string {
 export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.MAESTRO_PASEO_SOCKET ?? join(dirname(configPath(env)), "maestro.sock");
 }
+
+/** The loop's wake log sits beside the config too (server/wake-log.ts). */
+export function wakeLogPath(env: NodeJS.ProcessEnv = process.env): string {
+  return env.MAESTRO_PASEO_WAKE_LOG ?? join(dirname(configPath(env)), "wake-log.jsonl");
+}

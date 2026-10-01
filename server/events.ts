@@ -19,13 +19,17 @@ import type { OrchState, Verdict } from "../shared/states";
 export type Actor = "human" | "agent" | "maestro";
 
 /**
- * Who asked for a change: you, in Maestro's own surfaces, or a session through
- * the agent socket (`by` is its agent id when it said). Only the first counts
- * as a look: a session starting work is not you stepping in.
+ * Who asked for a change: you, in Maestro's own surfaces; a session through
+ * the agent socket (`by` is its agent id when it said); or Maestro's own loop
+ * (server/loop.ts), starting queued work on its schedule. Only the first
+ * counts as a look: a session or the loop starting work is not you stepping in.
  */
-export type Origin = { actor: "human" } | { actor: "agent"; by: string | null };
+export type Origin = { actor: "human" } | { actor: "agent"; by: string | null } | { actor: "maestro"; via: "loop" };
 
 export const BY_HUMAN: Origin = { actor: "human" };
+
+/** The loop's origin: what it starts is recorded as Maestro's, never as yours. */
+export const LOOP: Origin = { actor: "maestro", via: "loop" };
 
 interface Base {
   ts: string;
@@ -387,10 +391,16 @@ export function toWireEvents(events: readonly WorkEvent[]): WorkEventWire[] {
   return out;
 }
 
-/** Names the session behind a change it asked for; a change you made needs no byline. */
+/** Names who asked for a change that was not yours: a session, or the loop. A change you made needs no byline. */
 function byline(origin: Origin): string | null {
-  if (origin.actor === "human") return null;
-  return origin.by ? `by session ${origin.by.slice(0, 8)}` : "by a session";
+  switch (origin.actor) {
+    case "human":
+      return null;
+    case "maestro":
+      return "by the loop";
+    case "agent":
+      return origin.by ? `by session ${origin.by.slice(0, 8)}` : "by a session";
+  }
 }
 
 /** One receipt. `settled`: for a decision, whether it was applied, undone or dropped since. */

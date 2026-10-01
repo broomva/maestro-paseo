@@ -19,14 +19,33 @@ async function file(contents: unknown): Promise<string> {
 
 const older = { workRoot: "/tmp/work", provider: "claude", modeId: null, isolation: "worktree" as const };
 
-test("a file written before the cap, archive and default gate settings loads with their defaults", async () => {
+test("a file written before the cap, archive, default gate and loop settings loads with their defaults", async () => {
   expect(await loadConfig(await file(older))).toEqual({
     ...older,
     concurrencyCap: 3,
     archiveOnApprove: false,
     defaultGate: "human",
+    loopMinutes: null,
   });
-  expect(defaultConfig()).toMatchObject({ concurrencyCap: 3, archiveOnApprove: false, defaultGate: "human" });
+  expect(defaultConfig()).toMatchObject({
+    concurrencyCap: 3,
+    archiveOnApprove: false,
+    defaultGate: "human",
+    loopMinutes: null,
+  });
+});
+
+test("the loop is off by default, and wakes every whole number of minutes from 1", async () => {
+  expect((await loadConfig(await file({ ...older, loopMinutes: 15 }))).loopMinutes).toBe(15);
+  expect((await loadConfig(await file({ ...older, loopMinutes: null }))).loopMinutes).toBeNull();
+  for (const bad of [0, -5, 2.5, "10"]) {
+    await expect(loadConfig(await file({ ...older, loopMinutes: bad }))).rejects.toThrow(
+      /loop wakes every whole number|expected number/,
+    );
+  }
+  const path = await file(older);
+  await saveConfig({ ...defaultConfig(), workRoot: "/tmp/w", loopMinutes: 30 }, path);
+  expect((await loadConfig(path)).loopMinutes).toBe(30);
 });
 
 test("the cap is a whole number of runs from 1, or null for no cap", async () => {

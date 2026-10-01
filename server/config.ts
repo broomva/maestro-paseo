@@ -1,7 +1,8 @@
 // Host-local configuration: where work folders live, how runs start, how many
-// run at once, and what an approval cleans up. Kept in its own JSON file so the
-// daemon side can read it at dispatch time. A setting missing from the file
-// takes its default, so a file written before the setting existed still loads.
+// run at once, what an approval cleans up, and how often the loop wakes. Kept
+// in its own JSON file so the daemon side can read it at dispatch time. A
+// setting missing from the file takes its default, so a file written before
+// the setting existed still loads.
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -20,6 +21,7 @@ export function defaultConfig(): MaestroConfig {
     concurrencyCap: 3,
     archiveOnApprove: false,
     defaultGate: "human",
+    loopMinutes: null,
   };
 }
 

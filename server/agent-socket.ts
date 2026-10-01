@@ -5,8 +5,9 @@
 // client.
 //
 // It offers the noun and the verb, never the gate: approve, send back, undo,
-// stop, unblock, cancel and settings are not served, so no session can pass its
-// own gate, take back your decision, or loosen how runs start. A session starts
+// stop, unblock, cancel, settings and the loop are not served, so no session
+// can pass its own gate, take back your decision, loosen how runs start, or
+// wake the loop to start work. A session starts
 // only queued work, and cannot write a done check: checks run as you with no
 // session in the loop.
 // Everything done through it is recorded as the agent's, since nothing here
@@ -45,6 +46,8 @@ export const GATE_METHODS: ReadonlySet<string> = new Set([
   "work.unblock",
   "work.cancel",
   "config.set",
+  "loop.get",
+  "loop.wake",
 ]);
 
 function method<S extends z.ZodType>(
@@ -160,7 +163,7 @@ export async function answer(
   const run = methods.get(name);
   if (!run) {
     const error = GATE_METHODS.has(name)
-      ? `${name} is yours alone: the gate, undo, stopping a run, unblocking, canceling and settings happen in Maestro, not from a session.`
+      ? `${name} is yours alone: the gate, undo, stopping a run, unblocking, canceling, settings and the loop happen in Maestro, not from a session.`
       : `Unknown method ${name}. Offered: ${[...methods.keys()].join(", ")}.`;
     return { id, ok: false, error };
   }

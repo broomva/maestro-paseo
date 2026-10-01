@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
-import { type MaestroConfig, NOT_STOPPED, type RunChoices, type WorkItem } from "../shared/contracts";
+import { type MaestroConfig, type NextRun, NOT_STOPPED, type RunChoices, type WorkItem } from "../shared/contracts";
 import { skipsPrompts } from "../shared/run";
 import {
   GROUP_ORDER,
@@ -55,7 +55,7 @@ import {
 import { inspectFolder, repoRefusal } from "./folders";
 import { briefOf, type RunKeys, workTitle } from "./frontmatter";
 import { describePermission, type PermissionLike } from "./permissions";
-import { type Paseo, startRun } from "./runs";
+import { nextRun, type Paseo, startRun } from "./runs";
 import { type Mutation, placement, type StoredWork, WorkStore, withLock } from "./store";
 import { toWire } from "./wire";
 import { type WorktreeStatus, worktreeStatus } from "./worktree";
@@ -167,7 +167,7 @@ export const CHECKING = "The run already finished and its checks are running. Wh
 /** Runs `run` once after `ms` and returns what cancels it. */
 export type Timer = (run: () => Promise<void>, ms: number) => () => void;
 
-const realTimer: Timer = (run, ms) => {
+export const realTimer: Timer = (run, ms) => {
   const handle = setTimeout(() => void run(), ms);
   // The decision is on disk: a timer alone never keeps the process up, and the load sweep applies it after a restart.
   handle.unref?.();
@@ -213,6 +213,22 @@ function runKeys(input: RunChoices): RunKeys {
 
 export const MODED_BY_YOU = "This work runs in a mode you chose; start it yourself.";
 
+/** Why the loop leaves queued work to you: its run would edit files and run commands without asking. */
+export const PROMPT_FREE = "runs without permission prompts; start it yourself";
+
+/**
+ * Why the loop must leave this work for you to start, read from how its next
+ * run would start (server/runs.ts nextRun, Settings included), or null. A run
+ * that skips permission prompts, by a mode (the work's or Settings') or an
+ * auto-approving feature, is never the loop's to start; nor is work you gave
+ * a mode of its own, which is yours to use.
+ */
+export function leftToYou(next: NextRun): string | null {
+  if (skipsPrompts(next)) return PROMPT_FREE;
+  if (next.modeId && !next.fromSettings.includes("modeId")) return MODED_BY_YOU;
+  return null;
+}
+
 /** See EngineOptions.claimWaitMs. */
 export const CLAIM_WAIT_MS = 30_000;
 
@@ -255,16 +271,22 @@ type ApplyOutcome = "applied" | "dropped" | "early" | "waiting" | "settled";
  * stuck work, or a run with no session recorded. A session may start only
  * queued work (restarting stuck work is unblocking, and that is yours), and
  * never work that carries a mode you chose for it: the mode is yours to use.
+ * The loop starts only queued work too, and never work leftToYou names.
  */
-function startRefusal(item: StoredWork, origin: Origin): string | null {
+function startRefusal(item: StoredWork, origin: Origin, config: MaestroConfig): string | null {
   const state = item.contract.state;
-  if (origin.actor === "agent") {
-    if (!isDispatchable(state)) return "A session can start only queued work. Stuck work is unblocked in Maestro.";
-    // auto_accept is a mode by another name: it skips the prompts too (shared/run.ts).
-    return item.contract.modeId || skipsPrompts({ featureValues: item.contract.featureValues }) ? MODED_BY_YOU : null;
+  switch (origin.actor) {
+    case "agent":
+      if (!isDispatchable(state)) return "A session can start only queued work. Stuck work is unblocked in Maestro.";
+      // auto_accept is a mode by another name: it skips the prompts too (shared/run.ts).
+      return item.contract.modeId || skipsPrompts({ featureValues: item.contract.featureValues }) ? MODED_BY_YOU : null;
+    case "maestro":
+      if (!isDispatchable(state)) return "The loop starts only queued work. Stuck work is yours to unblock.";
+      return leftToYou(nextRun(config, item));
+    case "human":
+      if (isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events))) return null;
+      return "Only queued or stuck work can be dispatched.";
   }
-  if (isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events))) return null;
-  return "Only queued or stuck work can be dispatched.";
 }
 
 export class Engine {
@@ -481,9 +503,9 @@ export class Engine {
     if (input.gate === "auto" && !input.check.trim()) {
       throw new UserError("Letting checks decide needs a check command.");
     }
-    // How runs start is yours alone: work a session creates runs as Settings say, so no
+    // How runs start is yours alone: work anyone else creates runs as Settings say, so no
     // session can file work that dispatches with a mode that skips permissions.
-    const run = origin.actor === "agent" ? undefined : runKeys(input);
+    const run = origin.actor === "human" ? runKeys(input) : undefined;
     const folder = await inspectFolder(input.repo);
     const repo = folder.path;
     if (!isAbsolute(repo)) throw new UserError("Use an absolute path for the repository.");
@@ -545,7 +567,7 @@ export class Engine {
     try {
       const { store, config } = await this.store();
       const item = await store.findById(id);
-      const refusal = startRefusal(item, origin);
+      const refusal = startRefusal(item, origin, config);
       if (refusal) throw new UserError(refusal);
       this.checkCapacity(item, ahead, await this.running(store), config.concurrencyCap);
       let worker: Awaited<ReturnType<typeof startRun>>;
@@ -562,7 +584,8 @@ export class Engine {
         bound = await store.mutate(
           id,
           (fresh) => {
-            if (startRefusal(fresh, origin)) throw new UserError("The work changed while the run was starting.");
+            if (startRefusal(fresh, origin, config))
+              throw new UserError("The work changed while the run was starting.");
             return {
               to: "running",
               actor: origin.actor,
@@ -1226,7 +1249,10 @@ export class Engine {
     }
     if (outcome.failed) {
       const { message } = outcome.failed;
-      await putBack(`Could not stop the session: ${message}`, `Could not archive session ${worker.agentId}: ${message}`);
+      await putBack(
+        `Could not stop the session: ${message}`,
+        `Could not archive session ${worker.agentId}: ${message}`,
+      );
       throw new UserError(`Could not stop the session: ${message}`);
     }
     return toWire(await store.load(stopped.dir), this.now().getTime(), config);
