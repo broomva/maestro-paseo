@@ -176,7 +176,8 @@ first, then the rest, each the longest-waiting first, and starts what it can thr
 dispatch you use, recorded as Maestro's ("by the loop"), never as yours and never as a look.
 
 - **It stops at the run cap.** The first start refused at the cap defers that work and the rest of
-  the queue, "at the run cap".
+  the queue, "at the run cap". Work it would never start (below) keeps its own reason, before the
+  cap or after it.
 - **It never starts what is yours to start.** Work whose run would skip permission prompts (a mode
   that does, the work's own or Settings', or an auto-approving feature), and work you gave a mode
   of its own, are left alone with the reason. It never touches stuck work, and never stops, sends
@@ -188,7 +189,7 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
   the cadence.
 - **One wake at a time.** A wake asked for while one runs is recorded as skipped, not queued. With
   no Paseo client yet (right after a restart) a wake records that it could not start work, and the
-  first client to arrive runs another.
+  first client to arrive runs another, once that wake ends if it arrives while the wake still runs.
 - `loop.get` and `loop.wake` (wake now) are plugin RPCs for Maestro's own surfaces, never on the
   agent socket.
 
@@ -230,7 +231,7 @@ it answers, and the other keeps retrying every ten seconds, which its plugin log
 | `provider` | `claude` | Provider, optionally with a model: `claude/claude-sonnet-5` |
 | `modeId` | none | Provider mode for runs; empty means the provider default. It applies only while a run uses the Settings provider: work that chose another provider starts in that provider's default mode |
 | `isolation` | `worktree` | `worktree` for a fresh branch per run, `directory` to run in the repo |
-| `loopMinutes` | none | How often the loop wakes to start queued work, in whole minutes; empty means off |
+| `loopMinutes` | none | How often the loop wakes to start queued work, in whole minutes from 1 to 1440 (a day); empty means off |
 
 ## Development
 

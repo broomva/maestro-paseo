@@ -172,7 +172,9 @@ export const ScoreboardSchema = z.object({
 export type Scoreboard = z.infer<typeof ScoreboardSchema>;
 
 const CAP = "The concurrency cap is a whole number of runs, 1 or more, or empty for no cap";
-const LOOP_EVERY = "The loop wakes every whole number of minutes, 1 or more, or empty for off";
+/** The longest period the loop takes, in minutes: one day. */
+export const LOOP_MAX_MINUTES = 1440;
+const LOOP_EVERY = `The loop wakes every whole number of minutes from 1 to ${LOOP_MAX_MINUTES} (a day), or empty for off`;
 
 export const ConfigSchema = z.object({
   workRoot: z.string().min(1),
@@ -188,9 +190,10 @@ export const ConfigSchema = z.object({
   /**
    * How often the loop (server/loop.ts) wakes to start queued work, in
    * minutes; null for off. Off by default: the loop starts work on its own,
-   * so it is yours to turn on.
+   * so it is yours to turn on. At most a day, so the next wake is always a
+   * time a timer can hold.
    */
-  loopMinutes: z.number().int(LOOP_EVERY).positive(LOOP_EVERY).nullable(),
+  loopMinutes: z.number().int(LOOP_EVERY).positive(LOOP_EVERY).max(LOOP_MAX_MINUTES, LOOP_EVERY).nullable(),
 });
 export type MaestroConfig = z.infer<typeof ConfigSchema>;
 

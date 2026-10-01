@@ -9,7 +9,9 @@
 //      permission prompts or carries a mode you gave it (engine leftToYou),
 //      and starts the rest through the engine's dispatch as the loop, so the
 //      run cap, the folder checks and the start refusal are dispatch's own.
-//      The first refusal at the cap defers it and the rest of the queue;
+//      The first refusal at the cap defers it and the rest of the queue "at
+//      the run cap", except work the loop would never start whatever the cap
+//      (leftToYou), which keeps its own reason after the cap as before it;
 //   4. counts what needs you, and names running work quiet for 30 minutes;
 //   5. writes one wake-log entry (server/wake-log.ts) that says all of it.
 // It never stops, sends back or decides anything: those stay yours.
@@ -19,7 +21,8 @@
 // One wake runs at a time; one asked for meanwhile is recorded as skipped,
 // never queued. With no Paseo client yet (the plugin gets one with its first
 // handler or hook), a wake records that it could not start work, and the
-// first client to arrive runs another.
+// first client to arrive runs another, after that wake ends when it arrives
+// while the wake is still running.
 
 import { randomUUID } from "node:crypto";
 import type { WakeEntry, WorkItem } from "../shared/contracts";
@@ -122,6 +125,12 @@ export class Loop {
   private generation = 0;
   /** A scheduled wake found no client: the first client to arrive runs another. */
   private missedClient = false;
+  /**
+   * A client arrived while a wake was running. That wake may have read the
+   * client before it arrived and not yet recorded the miss, so it settles this
+   * when it ends: another wake if it missed, nothing if not.
+   */
+  private arrivedMidWake: { promise: Promise<void>; resolve: () => void } | null = null;
 
   constructor(options: LoopOptions) {
     this.engine = options.engine;
@@ -176,9 +185,25 @@ export class Loop {
     this.disarm();
   }
 
-  /** The plugin has its first Paseo client. A scheduled wake that had none started nothing: run one now. */
+  /**
+   * The plugin has its first Paseo client. A scheduled wake that had none
+   * started nothing: run one now. While a wake runs, the answer waits for it
+   * to end, since it may yet record that it found no client; the promise
+   * settles once the follow-up wake, if any, has run.
+   */
   connected(): Promise<void> {
-    if (!this.missedClient || this.stopped) return Promise.resolve();
+    if (this.stopped) return Promise.resolve();
+    if (this.ticking) {
+      if (!this.arrivedMidWake) {
+        let resolve: () => void = () => undefined;
+        const promise = new Promise<void>((done) => {
+          resolve = done;
+        });
+        this.arrivedMidWake = { promise, resolve };
+      }
+      return this.arrivedMidWake.promise;
+    }
+    if (!this.missedClient) return Promise.resolve();
     this.missedClient = false;
     return this.onTimer(null);
   }
@@ -208,6 +233,10 @@ export class Loop {
     } finally {
       this.ticking = false;
       await this.reschedule();
+      const arrived = this.arrivedMidWake;
+      this.arrivedMidWake = null;
+      // Not awaited: the wake that ran answers now; the follow-up settles the client's own promise.
+      if (arrived) void this.connected().then(arrived.resolve, arrived.resolve);
     }
   }
 
@@ -259,7 +288,12 @@ export class Loop {
     return entry;
   }
 
-  /** Walk the queue in order: leave alone what is yours to start, start the rest until dispatch says the cap is reached. */
+  /**
+   * Walk the queue in order: leave alone what is yours to start, start the
+   * rest until dispatch says the cap is reached, then defer the rest "at the
+   * run cap". What is yours keeps its own reason after the cap too: the loop
+   * never starts it, so the cap is not why it waits.
+   */
   private async startQueued(paseo: Paseo, items: readonly WorkItem[], entry: WakeEntry): Promise<void> {
     const queue = items.filter((item) => isDispatchable(item.state)).sort(queueOrder);
     let capped = false;

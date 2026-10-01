@@ -283,6 +283,28 @@ describe("a wake", () => {
     expect(fake.created).toHaveLength(1);
   });
 
+  test("after the cap, work the loop never starts keeps its own reason, not the cap's", async () => {
+    const { loop, queue, fake } = await setup({ concurrencyCap: 1 });
+    const first = await queue("First");
+    tickMinutes(1);
+    const second = await queue("Second");
+    tickMinutes(1);
+    const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
+    tickMinutes(1);
+    const planned = await queue("Planned", { modeId: "plan" });
+    tickMinutes(1);
+    const third = await queue("Third");
+    const entry = await loop.wake("manual");
+    expect(entry.dispatched).toEqual([{ id: first.id, title: first.title }]);
+    expect(entry.deferred).toEqual([
+      { id: second.id, title: second.title, reason: AT_RUN_CAP },
+      { id: bypass.id, title: bypass.title, reason: PROMPT_FREE },
+      { id: planned.id, title: planned.title, reason: MODED_BY_YOU },
+      { id: third.id, title: third.title, reason: AT_RUN_CAP },
+    ]);
+    expect(fake.created).toHaveLength(1);
+  });
+
   test("a Settings mode that skips prompts keeps the loop from starting anything", async () => {
     const { loop, queue, fake } = await setup({ modeId: "bypassPermissions" });
     const plain = await queue("Plain");
@@ -374,6 +396,56 @@ describe("a wake", () => {
     await loop.connected();
     expect((await loop.get()).recent).toHaveLength(2);
   });
+
+  // The first client can arrive while a wake that found none is still running: before the wake
+  // has recorded the miss (it is still reading the work) or after (it is writing its log). Either
+  // way the wake runs another once it ends, so the queue does not wait a whole period.
+  for (const when of ["while it reads the work", "while it writes its log"] as const) {
+    test(`a client that arrives ${when}, during a wake that found none, gets a follow-up wake`, async () => {
+      const { loop, queue, client, fake, engine, wakeLog } = await setup({ loopMinutes: 5 });
+      await queue("Waiting for Paseo");
+      client.paseo = null;
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let reached: () => void = () => undefined;
+      const atHold = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      if (when === "while it reads the work") {
+        const list = engine.list.bind(engine);
+        engine.list = (async (...args: Parameters<typeof list>) => {
+          reached();
+          await held;
+          return list(...args);
+        }) as typeof engine.list;
+      } else {
+        const append = wakeLog.append.bind(wakeLog);
+        let first = true;
+        wakeLog.append = (entry: WakeEntry) => {
+          if (!first) return append(entry);
+          first = false;
+          reached();
+          return held.then(() => append(entry));
+        };
+      }
+      const missed = loop.wake("timer");
+      await atHold;
+      client.paseo = fake.paseo;
+      const arrived = loop.connected();
+      release();
+      const entry = await missed;
+      expect(entry.narrative).toContain(NOT_CONNECTED);
+      await arrived;
+      expect(fake.created).toHaveLength(1);
+      const recent = (await loop.get()).recent;
+      expect(recent.map((logged) => [logged.cause, logged.dispatched.length, logged.skipped ?? null])).toEqual([
+        ["timer", 1, null],
+        ["timer", 0, null],
+      ]);
+    });
+  }
 
   test("names running work quiet for 30 minutes, not 29", async () => {
     const { loop, queue, engine, fake } = await setup();
