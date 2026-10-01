@@ -31,8 +31,17 @@ export function fakePaseo() {
   let appendMode: "ok" | "throw" | "hang" = "ok";
   let failSend = false;
   let n = 0;
-  const makeWorkspace = (directory: string) => ({
-    id: `ws-${++n}`,
+  /** Where new worktrees go: under the repository by default, or a folder of their own, as Paseo puts them. */
+  let worktreeRoot: string | null = null;
+  /** The daemon's record of each workspace, as workspaces.ref(id).refresh() answers it. */
+  const records = new Map<string, { id: string; projectRootPath: string; workspaceDirectory: string }>();
+  const makeWorkspace = (directory: string, projectRootPath: string) => {
+    const id = `ws-${++n}`;
+    records.set(id, { id, projectRootPath, workspaceDirectory: directory });
+    return workspace(id, directory);
+  };
+  const workspace = (id: string, directory: string) => ({
+    id,
     directory,
     agents: {
       create: async (options: Record<string, unknown>) => {
@@ -59,11 +68,12 @@ export function fakePaseo() {
     },
     workspaces: {
       create: async (options: { source: { cwd: string; worktreeSlug: string } }) => {
-        const directory = join(options.source.cwd, ".wt", options.source.worktreeSlug);
+        const directory = join(worktreeRoot ?? join(options.source.cwd, ".wt"), options.source.worktreeSlug);
         await mkdir(directory, { recursive: true });
-        return makeWorkspace(directory);
+        return makeWorkspace(directory, options.source.cwd);
       },
-      open: async (cwd: string) => makeWorkspace(cwd),
+      open: async (cwd: string) => makeWorkspace(cwd, cwd),
+      ref: (id: string) => ({ refresh: async () => records.get(id) ?? null }),
       archive: async (workspaceId: string) => {
         archivedWorkspaces.push(workspaceId);
         return { workspaceId, archivedAt: new Date().toISOString(), error: null };
@@ -118,6 +128,9 @@ export function fakePaseo() {
     },
     failNextSends: () => {
       failSend = true;
+    },
+    placeWorktreesIn: (folder: string) => {
+      worktreeRoot = folder;
     },
   };
 }

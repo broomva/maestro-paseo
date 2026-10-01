@@ -163,7 +163,10 @@ test("undo, stop and the default gate are wired through the plugin's handlers", 
     // Stop a run from the handler: the session is archived and the work is stuck.
     const { item: other } = await run("work.create", { ...base, title: "Stop me", check: "", gate: "human" });
     await run("work.dispatch", { id: other.id });
-    const { item: stopped } = await run("work.stop", { id: other.id });
+    // Its folder is no git worktree, so nothing proves stopping loses nothing: refused, then confirmed.
+    await expect(run("work.stop", { id: other.id })).rejects.toThrow("Not stopped:");
+    expect(fake.archived).toEqual([]);
+    const { item: stopped } = await run("work.stop", { id: other.id, discard: true });
     expect(stopped).toMatchObject({ state: "blocked", reason: "You stopped the run" });
     expect(fake.archived).toEqual(["agent-2"]);
   } finally {

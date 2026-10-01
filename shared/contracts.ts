@@ -207,8 +207,19 @@ export const cancelWork = defineRpc({ name: "work.cancel", input: ById, output: 
 /** Take back a decision at the gate before it takes effect. */
 export const undoWork = defineRpc({ name: "work.undo", input: ById, output: ItemResult });
 
-/** Stop a running run: its session is archived and the work is stuck, with the branch kept. */
-export const stopWork = defineRpc({ name: "work.stop", input: ById, output: ItemResult });
+/**
+ * Stop a running run: its session is archived and the work is stuck, with the branch kept.
+ * Refused, with a message that starts NOT_STOPPED, while the run's worktree holds work that
+ * is not committed; `discard: true` stops it anyway, once you have confirmed that loss.
+ */
+export const stopWork = defineRpc({
+  name: "work.stop",
+  input: ById.extend({ discard: z.boolean().optional() }),
+  output: ItemResult,
+});
+
+/** How a Stop refused because it would delete work that is not committed begins. */
+export const NOT_STOPPED = "Not stopped:";
 
 export const adoptAgent = defineRpc({
   name: "work.adopt",

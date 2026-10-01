@@ -7,7 +7,7 @@ import { type PluginSurfaceProps, usePaseo } from "@getpaseo/plugin/client";
 import { ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
-import type { CheckResult, Pending, WorkEventWire, WorkItem } from "../shared/contracts";
+import { type CheckResult, NOT_STOPPED, type Pending, type WorkEventWire, type WorkItem } from "../shared/contracts";
 import { ChangeText, WithChange } from "./changed";
 import { FilesSection } from "./files";
 import { ago, basename, errorText } from "./format";
@@ -146,6 +146,12 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
   const [answering, setAnswering] = useState(false);
   // The item whose Stop run is being confirmed, so an open confirm never carries over to another item.
   const [confirmStop, setConfirmStop] = useState<string | null>(null);
+  // A Stop refused because it would delete work that is not committed: the second confirm says what goes.
+  const [stopLoss, setStopLoss] = useState<{ id: string; text: string } | null>(null);
+  const closeStop = () => {
+    setStopLoss(null);
+    setConfirmStop(null);
+  };
 
   const fail = (error: unknown) => toast.error(errorText(error));
   const inputStyle = {
@@ -402,7 +408,24 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
             ? "The run finished. Checks are running in its worktree."
             : `Working${item.worker?.provider ? ` with ${item.worker.provider}` : ""}. It comes back to you when the run ends.`}
         </Text>
-        {!stoppable ? null : confirmStop === item.id ? (
+        {!stoppable ? null : stopLoss?.id === item.id ? (
+          <Card theme={theme}>
+            <Text style={text.body}>{stopLoss.text}</Text>
+            <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
+              <Button
+                theme={theme}
+                variant="primary"
+                label="Discard and stop"
+                compact={compact}
+                busy={verbs.stop.isPending}
+                onPress={() =>
+                  verbs.stop.mutate({ id: item.id, discard: true }, { onSuccess: closeStop, onError: fail })
+                }
+              />
+              <Button theme={theme} variant="quiet" label="Keep it running" compact={compact} onPress={closeStop} />
+            </View>
+          </Card>
+        ) : confirmStop === item.id ? (
           <Card theme={theme}>
             <Text style={text.body}>
               {item.worker?.branch
@@ -417,7 +440,17 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
                 compact={compact}
                 busy={verbs.stop.isPending}
                 onPress={() =>
-                  verbs.stop.mutate({ id: item.id }, { onSuccess: () => setConfirmStop(null), onError: fail })
+                  verbs.stop.mutate(
+                    { id: item.id },
+                    {
+                      onSuccess: () => setConfirmStop(null),
+                      onError: (error) => {
+                        const said = errorText(error);
+                        if (said.startsWith(NOT_STOPPED)) setStopLoss({ id: item.id, text: said });
+                        else fail(error);
+                      },
+                    },
+                  )
                 }
               />
               <Button

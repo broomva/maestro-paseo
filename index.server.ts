@@ -81,7 +81,9 @@ export default function contribute(host: PluginServerContext) {
   server.handle(unblockWork, ({ id, note }, { paseo }) => engine.unblock(paseo, id, note).then((item) => ({ item })));
   server.handle(cancelWork, ({ id }, { paseo }) => engine.cancel(id, paseo).then((item) => ({ item })));
   server.handle(undoWork, ({ id }) => engine.undo(id).then((item) => ({ item })));
-  server.handle(stopWork, ({ id }, { paseo }) => engine.stopRun(paseo, id).then((item) => ({ item })));
+  server.handle(stopWork, ({ id, discard }, { paseo }) =>
+    engine.stopRun(paseo, id, { discard: discard === true }).then((item) => ({ item })),
+  );
   server.handle(adoptAgent, ({ agentId, title }, { paseo }) =>
     engine.adopt(paseo, agentId, title).then((item) => ({ item })),
   );

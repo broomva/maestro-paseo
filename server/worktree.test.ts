@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitEnv, type RunWorktree, worktreeStatus } from "./worktree";
@@ -35,7 +35,8 @@ function naiveStatus(cwd: string): void {
  * script that leaves a marker when anything runs it.
  */
 async function repo(options: { relative?: boolean } = {}) {
-  const root = await mkdtemp(join(tmpdir(), "maestro-worktree-"));
+  // Real path: the repository's path may not pass through a link, and macOS's tmpdir does (/var).
+  const root = await realpath(await mkdtemp(join(tmpdir(), "maestro-worktree-")));
   roots.push(root);
   const main = join(root, "repo");
   sh(root, "init", "-q", main);
@@ -46,7 +47,7 @@ async function repo(options: { relative?: boolean } = {}) {
   const cwd = join(root, "wt");
   const relative = options.relative ? ["-c", "worktree.useRelativePaths=true"] : [];
   sh(main, ...relative, "worktree", "add", "-q", "-b", branch, cwd);
-  const run: RunWorktree = { repo: main, cwd, branch };
+  const run: RunWorktree = { repo: main, cwd, branch, projectRoot: main };
   const marker = join(root, "ran");
   const script = join(root, "hostile.sh");
   await writeFile(script, `#!/bin/sh\necho ran >> "${marker}"\ncat\n`);
@@ -192,7 +193,7 @@ describe("checking a worktree the session wrote", () => {
     const untracked = await repo();
     await writeFile(join(untracked.cwd, "notes.txt"), "draft\n");
     expect(await worktreeStatus(untracked.run)).toMatchObject({ dirty: true });
-    const result = await worktreeStatus({ ...untracked.run, repo: untracked.root });
+    const result = await worktreeStatus({ ...untracked.run, repo: untracked.root, projectRoot: untracked.root });
     expect("error" in result && result.error).toContain("not a git repository");
   });
 

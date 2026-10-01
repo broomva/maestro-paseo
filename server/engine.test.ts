@@ -1,12 +1,12 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmodSync, existsSync, mkdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { MaestroConfig } from "../shared/contracts";
 import type { Verdict } from "../shared/states";
 import { defaultConfig } from "./config";
-import { CHECKING, CLIENT_WAIT_MS, Engine, RUN_WENT_ON, type Timer, UNDO_MS } from "./engine";
+import { CHECKING, CLIENT_WAIT_MS, Engine, RUN_WENT_ON, STOPPED, type Timer, UNDO_MS } from "./engine";
 import { fakePaseo } from "./fake-paseo";
 import type { Paseo } from "./runs";
 import { EVENTS_FILE, WORK_FILE, WorkStore } from "./store";
@@ -85,7 +85,8 @@ afterAll(async () => {
 });
 
 async function setup(overrides: Partial<MaestroConfig> = {}) {
-  const root = await mkdtemp(join(tmpdir(), "maestro-engine-"));
+  // Real path: the repository's path may not pass through a link, and macOS's tmpdir does (/var).
+  const root = await realpath(await mkdtemp(join(tmpdir(), "maestro-engine-")));
   roots.push(root);
   const repo = join(root, "repo");
   await mkdir(repo);
@@ -129,6 +130,9 @@ async function setup(overrides: Partial<MaestroConfig> = {}) {
 beforeEach(() => {
   clock = Date.parse("2026-09-22T09:00:00.000Z");
 });
+
+/** For tests of what a stop does to the work's state, not to its worktree: discarding skips the worktree check. */
+const DISCARD = { discard: true } as const;
 
 async function settle(engine: Engine, id: string, want: string) {
   for (let i = 0; i < 100; i += 1) {
@@ -1381,11 +1385,12 @@ describe("archive on approve", () => {
     cleanWorktree(repo, item.worker);
     await endTurn(engine, fake);
     // The approval applied with the session idle; it starts working again once the claim is taken.
-    fake.paseo.workspaces.ref = ((_id: string) => ({
+    const describe = fake.paseo.workspaces.ref;
+    fake.paseo.workspaces.ref = ((id: string) => ({
       refresh: async () => {
         const agent = fake.agents.get("agent-1");
         if (agent) agent.status = "running";
-        return null;
+        return describe(id).refresh();
       },
     })) as unknown as typeof fake.paseo.workspaces.ref;
     expect((await decide(item.id, "approve")).state).toBe("done");
@@ -1401,9 +1406,7 @@ describe("archive on approve", () => {
       ...ref(id),
       refresh: () => (++asked > 2 ? new Promise(() => undefined) : ref(id).refresh()),
     })) as unknown as typeof ref;
-    fake.paseo.workspaces.ref = ((_id: string) => ({
-      refresh: async () => null,
-    })) as unknown as typeof fake.paseo.workspaces.ref;
+    fake.paseo.workspaces.ref = describe;
     expect((await decide(other.id, "approve")).state).toBe("done");
     expect((await engine.get(other.id)).events.at(-1)?.text).toBe(
       "Kept the worktree: could not ask whether the session is idle (Paseo did not answer within 0.2s).",
@@ -1429,10 +1432,62 @@ describe("archive on approve", () => {
     const cwd = cleanWorktree(repo, other.worker);
     await endTurn(engine, fake, [], "agent-2");
     fake.paseo.workspaces.ref = ((_id: string) => ({
-      refresh: async () => ({ workspaceDirectory: cwd }),
+      refresh: async () => ({ workspaceDirectory: cwd, projectRootPath: repo }),
     })) as unknown as typeof fake.paseo.workspaces.ref;
     expect((await decide(other.id, "approve")).state).toBe("done");
     expect(fake.archivedWorkspaces).toEqual(["ws-2"]);
+  });
+
+  test("a repository path that is a link repointed at a forged repository keeps the worktree", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const root = dirname(repo);
+    // Paseo puts worktrees outside the repository, so the repository can move and leave the worktree in place.
+    fake.placeWorktreesIn(join(root, "worktrees"));
+    const item = await create();
+    const cwd = cleanWorktree(repo, item.worker);
+    const branch = item.worker?.branch ?? "";
+    await Bun.write(join(cwd, "notes.txt"), "not committed\n");
+    // A forged repository whose own entry names this folder on the run's branch, at a commit matching the folder.
+    const forged = join(root, "forged");
+    git(root, "init", "-q", forged);
+    await Bun.write(join(forged, "a.txt"), "hello\n");
+    await Bun.write(join(forged, "notes.txt"), "not committed\n");
+    git(forged, "add", "-A");
+    git(forged, "commit", "-q", "-m", "forged");
+    git(forged, "worktree", "add", "-q", "-b", branch, join(root, "scratch"));
+    const entry = join(forged, ".git", "worktrees", "scratch");
+    writeFileSync(join(entry, "gitdir"), `${join(cwd, ".git")}\n`);
+    writeFileSync(join(cwd, ".git"), `gitdir: ${entry}\n`);
+    // The work's repository path becomes a link to it; Paseo's record names the same path.
+    renameSync(repo, join(root, "moved"));
+    symlinkSync(forged, repo);
+    // The attack is live: git through the link, on that entry, reads the uncommitted work as clean.
+    expect(git(cwd, "status", "--porcelain")).toBe("");
+    await endTurn(engine, fake);
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect(fake.archivedWorkspaces).toEqual([]);
+    expect(existsSync(join(cwd, "notes.txt"))).toBe(true);
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe(
+      `Kept the worktree: could not check it for uncommitted changes (the repository's path goes through a symbolic link: ${repo}).`,
+    );
+  });
+
+  test("Paseo's record naming another repository keeps the worktree", async () => {
+    const { create, engine, fake, decide, repo } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    await endTurn(engine, fake);
+    const elsewhere = join(dirname(repo), "elsewhere");
+    git(dirname(repo), "init", "-q", elsewhere);
+    const describe = fake.paseo.workspaces.ref;
+    fake.paseo.workspaces.ref = ((id: string) => ({
+      refresh: async () => ({ ...(await describe(id).refresh()), projectRootPath: elsewhere }),
+    })) as unknown as typeof describe;
+    expect((await decide(item.id, "approve")).state).toBe("done");
+    expect(fake.archivedWorkspaces).toEqual([]);
+    expect((await engine.get(item.id)).events.at(-1)?.text).toBe(
+      "Kept the worktree: could not check it for uncommitted changes (Paseo records the workspace as made from another repository).",
+    );
   });
 
   test("an archive Paseo never answers releases the claim and says so", async () => {
@@ -1452,8 +1507,10 @@ describe("archive on approve", () => {
 
 describe("stop run", () => {
   test("stopping archives the session and leaves the work stuck with the reason", async () => {
-    const { create, engine, fake } = await setup();
+    const { create, engine, fake, repo } = await setup();
     const item = await create();
+    // Nothing uncommitted in the worktree, so nothing to confirm.
+    cleanWorktree(repo, item.worker);
     const looksBefore = (await engine.list(fake.paseo)).scoreboard.looks;
     const stuck = await engine.stopRun(fake.paseo, item.id);
     expect(stuck).toMatchObject({ state: "blocked", reason: "You stopped the run" });
@@ -1475,10 +1532,36 @@ describe("stop run", () => {
     expect(fake.created).toHaveLength(2);
   });
 
+  test("Stop refuses while the worktree holds work that is not committed, ignored files included; discard stops it", async () => {
+    const { create, engine, fake, repo } = await setup();
+    const item = await create();
+    const cwd = cleanWorktree(repo, item.worker);
+    mkdirSync(join(repo, ".git", "info"), { recursive: true });
+    writeFileSync(join(repo, ".git", "info", "exclude"), "*.log\n");
+    writeFileSync(join(cwd, "a.txt"), "edited\n");
+    writeFileSync(join(cwd, "notes.txt"), "draft\n");
+    writeFileSync(join(cwd, "build.log"), "ignored, and archiving deletes it too\n");
+    const refusal = (paths: string) =>
+      `Not stopped: the worktree has ${paths} not committed (edits, new or ignored files), and stopping archives it, which deletes them. Stop again and confirm to discard them.`;
+    await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow(refusal("3 paths"));
+    // An ignored file alone is still work the archive deletes.
+    git(cwd, "checkout", "--", "a.txt");
+    unlinkSync(join(cwd, "notes.txt"));
+    await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow(refusal("1 path"));
+    expect(fake.archived).toEqual([]);
+    expect((await engine.get(item.id)).item.state).toBe("running");
+    // Confirmed: it stops.
+    expect(await engine.stopRun(fake.paseo, item.id, { discard: true })).toMatchObject({
+      state: "blocked",
+      reason: STOPPED,
+    });
+    expect(fake.archived).toEqual(["agent-1"]);
+  });
+
   test("stopped work can be canceled", async () => {
     const { create, engine, fake } = await setup();
     const item = await create();
-    await engine.stopRun(fake.paseo, item.id);
+    await engine.stopRun(fake.paseo, item.id, DISCARD);
     expect((await engine.cancel(item.id)).state).toBe("canceled");
   });
 
@@ -1502,7 +1585,9 @@ describe("stop run", () => {
         throw new Error("daemon busy");
       },
     })) as unknown as typeof ref;
-    await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow("Could not stop the session: daemon busy");
+    await expect(engine.stopRun(fake.paseo, item.id, DISCARD)).rejects.toThrow(
+      "Could not stop the session: daemon busy",
+    );
     const { item: after, events } = await engine.get(item.id);
     expect(after.state).toBe("running");
     expect(events.at(-1)).toMatchObject({ text: "Running", detail: "Could not stop the session: daemon busy" });
@@ -1595,7 +1680,7 @@ describe("races around a decision and a stop", () => {
         return ref(id).archive();
       },
     })) as unknown as typeof ref;
-    expect(await engine.stopRun(fake.paseo, item.id)).toMatchObject({
+    expect(await engine.stopRun(fake.paseo, item.id, DISCARD)).toMatchObject({
       state: "blocked",
       reason: "You stopped the run",
     });
@@ -1839,7 +1924,7 @@ describe("round 2 of review: client, cap and stop", () => {
     const hold = holdNextScan();
     let stopping!: Promise<unknown>;
     try {
-      stopping = engine.stopRun(fake.paseo, item.id).then(
+      stopping = engine.stopRun(fake.paseo, item.id, DISCARD).then(
         () => "stopped",
         (error: Error) => error.message,
       );
@@ -1869,7 +1954,9 @@ describe("round 2 of review: client, cap and stop", () => {
         throw new Error("daemon busy");
       },
     })) as unknown as typeof ref;
-    await expect(engine.stopRun(fake.paseo, item.id)).rejects.toThrow("Could not stop the session: daemon busy");
+    await expect(engine.stopRun(fake.paseo, item.id, DISCARD)).rejects.toThrow(
+      "Could not stop the session: daemon busy",
+    );
     const { item: after, events } = await engine.get(item.id);
     expect(after).toMatchObject({ state: "blocked", reason: "boom" });
     expect(events.at(-1)?.text).toBe("Could not archive session agent-1: daemon busy");
@@ -1898,7 +1985,7 @@ describe("round 2 of review: client, cap and stop", () => {
             },
           }
         : ref(id)) as unknown as typeof ref;
-    const first = engine.stopRun(fake.paseo, item.id).then(
+    const first = engine.stopRun(fake.paseo, item.id, DISCARD).then(
       () => "stopped",
       (error: Error) => error.message,
     );
@@ -1907,7 +1994,7 @@ describe("round 2 of review: client, cap and stop", () => {
     const agent = fake.agents.get("agent-1");
     if (agent) agent.archivedAt = new Date(clock).toISOString();
     expect((await engine.unblock(fake.paseo, item.id, "")).worker?.agentId).toBe("agent-2");
-    expect((await engine.stopRun(fake.paseo, item.id)).reason).toBe("You stopped the run");
+    expect((await engine.stopRun(fake.paseo, item.id, DISCARD)).reason).toBe("You stopped the run");
     release();
     expect(await first).toBe("Could not stop the session: daemon busy");
     const { item: after, events } = await engine.get(item.id);

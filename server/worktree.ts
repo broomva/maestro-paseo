@@ -5,10 +5,17 @@
 // Git is pinned to the run's own repository. The folder's `.git` is a file the
 // session can rewrite: pointed at a decoy repository whose commit matches the
 // folder, git that follows it reads the folder as clean, and the archive then
-// deletes the work. So nothing here follows it. The repository the work names
-// (the contract's repo, yours) gives the common git dir; under its
-// `worktrees/`, exactly one entry must name this folder's `.git` and have HEAD
-// on the branch Maestro recorded, and its `commondir` must lead back to that
+// deletes the work. So nothing here follows it.
+//
+// The repository's path is checked before git reads it. A path that passes
+// through a symbolic link can be repointed at a forged repository whose own
+// `worktrees/` entry names this folder and branch, so neither the path nor any
+// of its parents may be a link. The real path must be the repository Paseo
+// records the workspace as made from (its projectRootPath, the daemon's record
+// and not the work's), and the common git dir git reports from it must lie
+// inside it. Under that git dir's `worktrees/`, exactly one entry must name
+// this folder's `.git` and have HEAD on the branch Maestro recorded, and its
+// `commondir` must lead back to that
 // same repository. Git then runs with that entry as `--git-dir` and the folder
 // as `--work-tree`. The folder's own `.git` must point at that entry too: a
 // worktree whose pointer was moved is not one this can vouch for. Any mismatch
@@ -32,30 +39,34 @@
 //     status does not enter them, and a worktree that has any is kept.
 // Any failure, timeout included, is "cannot check", and the caller keeps the worktree.
 //
-// Not closed: the driver names are read by one git call and status is a second
+// Not closed: a forged repository moved into the repository's own path (a
+// real folder, not a link) matches Paseo's record, which holds a path and not
+// the folder itself. And the driver names are read by one git call and status is a second
 // one. A process still running in the worktree that adds a driver between the
 // two gets it run. Git has no switch that turns every filter off.
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 
 /** What Maestro recorded when it started the run: the work's repository, the worktree Paseo made, its branch. */
 export interface RunWorktree {
-  /** The work's repository, as the contract names it. Yours, so trusted. */
+  /** The work's repository, as the contract names it. Its path is checked before git reads it; see above. */
   repo: string;
   /** The run's worktree folder. */
   cwd: string;
   /** The run's branch, `run/<hex>`. */
   branch: string;
+  /** The repository Paseo records the workspace as made from (its projectRootPath); null when it has no record. */
+  projectRoot: string | null;
 }
 
 /**
  * Clean or not, with a digest of everything status said (the branch's commit
  * included), so two reads can be compared. Or why it could not be checked.
  */
-export type WorktreeStatus = { dirty: boolean; digest: string } | { error: string };
+export type WorktreeStatus = { dirty: boolean; count: number; digest: string } | { error: string };
 
 /** Turns off each command a repository's config could make these git calls run. */
 export const HARDENING: readonly string[] = [
@@ -144,6 +155,27 @@ const text = (path: string) => readFile(path, "utf8").catch(() => null);
 /** A path git wrote into a file, resolved from the folder git counts it from (git may write it relative). */
 const named = (from: string, contents: string) => resolve(from, contents.replace(/\r?\n$/, ""));
 
+/** The first of the path and its parents that is a symbolic link, or null when none is. */
+async function linkOn(path: string): Promise<string | null> {
+  for (let at = path; ; at = dirname(at)) {
+    if ((await lstat(at).catch(() => null))?.isSymbolicLink()) return at;
+    if (dirname(at) === at) return null;
+  }
+}
+
+/** How many paths a `git status --porcelain=v2 -z` listing names (a rename's second, original path is not counted). */
+function countRecords(listing: string): number {
+  let count = 0;
+  const records = listing.split("\0");
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index] as string;
+    if (record.length === 0 || record.startsWith("# ")) continue;
+    count += 1;
+    if (record.startsWith("2 ")) index += 1;
+  }
+  return count;
+}
+
 /**
  * The run's own entry under the repository's `worktrees/`, found from what was
  * recorded and never from the folder's `.git`; see the top of this file.
@@ -152,8 +184,17 @@ async function pin(
   run: RunWorktree,
   timeoutMs: number,
 ): Promise<{ gitDir: string; workTree: string } | { error: string }> {
+  const repoPath = resolve(run.repo);
+  const link = await linkOn(repoPath);
+  if (link) return { error: `the repository's path goes through a symbolic link: ${link}` };
+  const repo = await real(repoPath);
+  if (!repo) return { error: "the repository is not there" };
+  if (!run.projectRoot) return { error: "Paseo has no record of the repository the workspace was made from" };
+  if ((await real(run.projectRoot)) !== repo) {
+    return { error: "Paseo records the workspace as made from another repository" };
+  }
   const common = await git(
-    ["-C", run.repo],
+    ["-C", repo],
     ["rev-parse", "--path-format=absolute", "--git-common-dir"],
     gitEnv(),
     timeoutMs,
@@ -162,6 +203,7 @@ async function pin(
   const commonDir = await real(common.stdout.trim());
   const workTree = await real(run.cwd);
   if (!commonDir) return { error: "the repository's git folder is not there" };
+  if (!commonDir.startsWith(`${repo}${sep}`)) return { error: "the repository's git folder is outside it" };
   if (!workTree) return { error: "the worktree folder is not there" };
   const entries: string[] = [];
   const root = join(commonDir, "worktrees");
@@ -193,10 +235,15 @@ async function pin(
 
 /**
  * `git status` on the run's worktree, pinned and hardened as above: tracked
- * edits, staged changes and untracked files all count as uncommitted. Each
- * git call has `timeoutMs` to answer.
+ * edits, staged changes and untracked files all count as uncommitted, and with
+ * `ignored`, ignored files too (removing the worktree deletes them as well).
+ * Each git call has `timeoutMs` to answer.
  */
-export async function worktreeStatus(run: RunWorktree, timeoutMs = 10_000): Promise<WorktreeStatus> {
+export async function worktreeStatus(
+  run: RunWorktree,
+  timeoutMs = 10_000,
+  { ignored = false }: { ignored?: boolean } = {},
+): Promise<WorktreeStatus> {
   const pinned = await pin(run, timeoutMs);
   if ("error" in pinned) return pinned;
   const scope = ["-C", pinned.workTree, `--git-dir=${pinned.gitDir}`, `--work-tree=${pinned.workTree}`];
@@ -213,12 +260,20 @@ export async function worktreeStatus(run: RunWorktree, timeoutMs = 10_000): Prom
   // v2 with --branch: a header line per fact (the commit, the branch), then one record per change.
   const status = await git(
     scope,
-    ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all"],
+    [
+      "status",
+      "--porcelain=v2",
+      "--branch",
+      "-z",
+      "--untracked-files=normal",
+      "--ignore-submodules=all",
+      ...(ignored ? ["--ignored=traditional"] : []),
+    ],
     env,
     timeoutMs,
   );
   if (!status.ok) return { error: status.message };
-  const dirty = status.stdout.split("\0").some((record) => record.length > 0 && !record.startsWith("# "));
+  const count = countRecords(status.stdout);
   const digest = createHash("sha256").update(`${pinned.gitDir}\0${status.stdout}`).digest("hex");
-  return { dirty, digest };
+  return { dirty: count > 0, count, digest };
 }

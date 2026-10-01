@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
-import type { MaestroConfig, WorkItem } from "../shared/contracts";
+import { type MaestroConfig, NOT_STOPPED, type WorkItem } from "../shared/contracts";
 import {
   GROUP_ORDER,
   isDispatchable,
@@ -56,7 +56,7 @@ import { describePermission, type PermissionLike } from "./permissions";
 import { type Paseo, startRun } from "./runs";
 import { type Mutation, placement, type StoredWork, WorkStore, withLock } from "./store";
 import { toWire } from "./wire";
-import { worktreeStatus } from "./worktree";
+import { type WorktreeStatus, worktreeStatus } from "./worktree";
 
 /** Why a verb that starts or reads a session cannot run: the plugin has not been handed a Paseo client yet. */
 export const NO_HANDLE =
@@ -890,14 +890,9 @@ export class Engine {
     const cannot = (why: string) => `Kept the worktree: could not check it for uncommitted changes (${why}).`;
     if (!cwd) return cannot("no worktree folder is recorded");
     if (!repo) return cannot("the work names no repository");
-    // Paseo's record of the workspace, when it has one, must name the folder Maestro recorded.
-    const described = await within(() => paseo.workspaces.ref(workspaceId).refresh(), this.claimWaitMs).catch(
-      () => null,
-    );
-    const directory = described?.workspaceDirectory;
-    if (directory && (await realpath(directory).catch(() => directory)) !== (await realpath(cwd).catch(() => cwd))) {
-      return cannot("Paseo records the workspace at another folder");
-    }
+    const recorded = await this.recorded(paseo, workspaceId, cwd);
+    if ("error" in recorded) return cannot(recorded.error);
+    const { projectRoot } = recorded;
     /** A digest of a clean worktree read while the session was idle, or the receipt that keeps it. */
     const read = async (): Promise<{ digest: string } | { keep: string }> => {
       const snapshot = await within(() => paseo.agents.ref(agentId).refresh(), this.claimWaitMs).then(
@@ -908,7 +903,7 @@ export class Engine {
         return { keep: `Kept the worktree: could not ask whether the session is idle (${snapshot.error}).` };
       if (snapshot.value?.agent.status === "running")
         return { keep: "Kept the worktree: the session is working again." };
-      const status = await worktreeStatus({ repo, cwd, branch });
+      const status = await worktreeStatus({ repo, cwd, branch, projectRoot });
       if ("error" in status) return { keep: cannot(status.error) };
       if (status.dirty) return { keep: "Kept the worktree: it has uncommitted changes." };
       return { digest: status.digest };
@@ -926,6 +921,55 @@ export class Engine {
     return failure
       ? `Could not archive the workspace: ${failure}. The approval stands.`
       : `Archived the workspace. The branch ${branch} stays.`;
+  }
+
+  /**
+   * Paseo's record of a workspace Maestro made: it must name the folder
+   * Maestro recorded, and it says which repository the workspace was made
+   * from. The daemon's record, not the work's, so the session cannot write it.
+   */
+  private async recorded(
+    paseo: Paseo,
+    workspaceId: string,
+    cwd: string,
+  ): Promise<{ projectRoot: string } | { error: string }> {
+    const described = await within(() => paseo.workspaces.ref(workspaceId).refresh(), this.claimWaitMs).catch(
+      () => null,
+    );
+    if (!described) return { error: "Paseo has no record of the workspace" };
+    const directory = described.workspaceDirectory;
+    if (directory && (await realpath(directory).catch(() => directory)) !== (await realpath(cwd).catch(() => cwd))) {
+      return { error: "Paseo records the workspace at another folder" };
+    }
+    if (!described.projectRootPath) return { error: "Paseo records no repository for the workspace" };
+    return { projectRoot: described.projectRootPath };
+  }
+
+  /**
+   * Why Stop must not archive a run's session yet: its worktree holds work
+   * that is not committed (edits, new files, ignored files: archiving deletes
+   * them all), or it cannot be checked. Null when nothing would be lost, or
+   * the folder is not one Maestro made (a tracked session's, or the
+   * repository itself in directory mode), which archiving leaves alone.
+   */
+  private async stopLoss(paseo: Paseo, item: StoredWork, worker: NonNullable<ReturnType<typeof workerOf>>) {
+    const { workspaceId, branch, cwd } = worker;
+    if (!branch || !workspaceId) return null;
+    const repo = item.contract.repo;
+    const read = async (): Promise<WorktreeStatus> => {
+      if (!cwd) return { error: "no worktree folder is recorded" };
+      if (!repo) return { error: "the work names no repository" };
+      const recorded = await this.recorded(paseo, workspaceId, cwd);
+      if ("error" in recorded) return recorded;
+      return worktreeStatus({ repo, cwd, branch, projectRoot: recorded.projectRoot }, 10_000, { ignored: true });
+    };
+    const status = await read();
+    if ("error" in status) {
+      return `${NOT_STOPPED} the worktree could not be checked for work that is not committed (${status.error}), and stopping archives it. Stop again and confirm to discard whatever it holds.`;
+    }
+    if (status.count === 0) return null;
+    const paths = status.count === 1 ? "1 path" : `${status.count} paths`;
+    return `${NOT_STOPPED} the worktree has ${paths} not committed (edits, new or ignored files), and stopping archives it, which deletes them. Stop again and confirm to discard them.`;
   }
 
   async unblock(paseo: Paseo, id: string, note: string): Promise<WorkItem> {
@@ -1001,13 +1045,15 @@ export class Engine {
 
   /**
    * Stop a running run. Paseo has no stop that keeps the session, so this
-   * archives it; the branch and its commits stay. The work is stuck with the
+   * archives it; the branch and its commits stay. Work in the worktree that is
+   * not committed would go with it, so Stop refuses, saying how much, unless
+   * `discard` says to go ahead (see stopLoss). The work is stuck with the
    * reason recorded first, so hooks the archive sets off (a stopped turn, the
    * archive itself) find it already stuck and only add their receipts. If the
    * archive fails, the session may still be working: the work goes back to
    * running with the reason, and the call fails.
    */
-  async stopRun(paseo: Paseo, id: string): Promise<WorkItem> {
+  async stopRun(paseo: Paseo, id: string, { discard = false }: { discard?: boolean } = {}): Promise<WorkItem> {
     if (this.dispatching.has(id)) throw new UserError("A run is starting for this work. Stop it once it is running.");
     const { store } = await this.store();
     const current = await store.findById(id);
@@ -1020,6 +1066,8 @@ export class Engine {
     const early = refusal(current);
     if (early) throw new UserError(early);
     const worker = workerOf(current.events);
+    const loss = worker && !discard ? await this.stopLoss(paseo, current, worker) : null;
+    if (loss) throw new UserError(loss);
     const stopped = await store.mutate(
       id,
       (item) => {
