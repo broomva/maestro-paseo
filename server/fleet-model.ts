@@ -169,21 +169,36 @@ export function failedStepOf(detail: string | null): string | null {
 }
 
 /**
- * A tick with no exit is running inside its budget and died past it, the
- * budget counted from the later of its start and the Mac's last wake: a tick
- * the Mac slept through finishes after the wake.
+ * Awake milliseconds from a wall-clock time to now: what launchd counts for
+ * StartInterval, and what a tick's time budget runs on (server/fleet.ts
+ * AwakeClock). `whole` is false when the count could start only later than
+ * asked (before the plugin's first record): then it is a lower bound.
+ */
+export type AwakeFor = (fromWallMs: number) => { ms: number; whole: boolean };
+
+/** Wall time as awake time: no sleep accounted. */
+export const awakeAsWall =
+  (now: number): AwakeFor =>
+  (from) => ({ ms: now - from, whole: true });
+
+/**
+ * A tick with no exit is running while the time awake since it started is
+ * inside its budget, and died past it. When its start is before what the
+ * awake clock knows (the plugin started later), wall time decides: an
+ * unfinished tick from before a reload is not given a fresh budget.
  */
 export function tickStatusOf(
   entry: TickEntry | undefined,
   now: number,
   budgetMs: number,
-  awakeSince: number | null = null,
+  awakeFor: AwakeFor = awakeAsWall(now),
 ): TickStatus {
   if (!entry) return "unknown";
   if (entry.ended) return entry.exit === null ? "unknown" : entry.exit === 0 ? "ok" : "failed";
   const started = ms(entry.fireAt);
   if (started === null) return "unknown";
-  return now - Math.max(started, awakeSince ?? 0) <= budgetMs ? "running" : "died";
+  const awake = awakeFor(started);
+  return (awake.whole ? awake.ms : now - started) <= budgetMs ? "running" : "died";
 }
 
 /** What one report.json says, kept small: the rest of the file is not held. */
@@ -317,7 +332,8 @@ export function actWords(verb: string, key: string, target: Json): string {
 export function actProposals(acts: readonly DryAct[], sinceTick: number | null): FleetProposal[] {
   const newest = new Map<string, { act: DryAct; words: string }>();
   for (const act of acts) {
-    if (sinceTick !== null && act.tick !== null && act.tick < sinceTick) continue;
+    // A verb run by hand outside a tick (no tick number) is old news, not a standing proposal.
+    if (sinceTick !== null && (act.tick === null || act.tick < sinceTick)) continue;
     const words = actWords(act.verb, act.key, act.target);
     const hash = createHash("sha256")
       .update(`${words}\n${str(act.target.text) ?? ""}`)
@@ -347,7 +363,7 @@ export function tickRows(
   now: number,
   budgetMs: number,
   limit: number,
-  awakeSince: number | null = null,
+  awakeFor?: AwakeFor,
 ): FleetTick[] {
   const numbers = [...new Set([...fold.ticks.keys(), ...tickDirs])].sort((a, b) => b - a).slice(0, limit);
   return numbers.map((tick) => {
@@ -357,7 +373,7 @@ export function tickRows(
       tick,
       at: entry?.fireAt ?? report?.ts ?? null,
       finishedAt: entry?.exitAt ?? null,
-      status: tickStatusOf(entry, now, budgetMs, awakeSince),
+      status: tickStatusOf(entry, now, budgetMs, awakeFor),
       exit: entry?.exit ?? null,
       steps: entry?.detail ?? null,
       failedStep: failedStepOf(entry?.detail ?? null),
@@ -403,8 +419,8 @@ export interface HealthInput {
   scheduledAt: number | null;
   /** The newest tick. */
   latest: FleetTick | null;
-  /** When this host last woke from sleep; null when no sleep was seen. launchd misses ticks while the Mac sleeps. */
-  awakeSince: number | null;
+  /** Awake time since a wall time (AwakeFor): launchd counts its interval in it, so a missed tick is measured in it too. */
+  awakeFor: AwakeFor;
   now: number;
 }
 
@@ -423,10 +439,14 @@ export function healthOf(input: HealthInput): Health {
     return { status: "off", reason, notice: reason, since: null };
   }
   const startedAt = ms(latest?.at ?? null);
-  if (input.scheduled) {
-    const from = Math.max(startedAt ?? input.scheduledAt ?? now, input.awakeSince ?? 0);
-    if (now - from > missedAfter(input.intervalMs)) {
-      const quiet = span(now - (startedAt ?? input.scheduledAt ?? now));
+  const quietFrom = startedAt ?? input.scheduledAt;
+  if (input.scheduled && quietFrom !== null) {
+    // A lower bound when the quiet began before the plugin's first record: never a false alarm at a reload.
+    const awake = input.awakeFor(quietFrom).ms;
+    if (awake > missedAfter(input.intervalMs)) {
+      const wall = now - quietFrom;
+      // Said in wall time, as people read a clock; the awake part when sleep took a real share of it.
+      const quiet = wall - awake > 10 * 60_000 ? `${span(wall)} (${span(awake)} of it awake)` : span(wall);
       const runs = `It runs ${every(input.intervalMs)}.`;
       return {
         status: "missed",
@@ -434,7 +454,7 @@ export function healthOf(input: HealthInput): Health {
           ? `No tick for ${quiet}: the last was tick ${latest.tick}. ${runs}`
           : `No tick yet, ${quiet} after it was scheduled. ${runs}`,
         notice: latest ? `No tick since tick ${latest.tick}. ${runs}` : `No tick since it was scheduled. ${runs}`,
-        since: latest?.at ?? (input.scheduledAt !== null ? new Date(input.scheduledAt).toISOString() : null),
+        since: new Date(quietFrom).toISOString(),
       };
     }
   }
@@ -499,8 +519,10 @@ const BEFORE_A_TICK = new Set(["lock", "config", "statedir", "tick"]);
  * tick's `tick-<step>` alert, or for a missed tick an alert that stops ticks
  * before they start. A tick that died raises none. An open alert stands for
  * every later alert of its kind (the fleet adopts it rather than raise
- * another); a closed one counts only when it was closed after the condition
- * began (`since`): you answered it, so the condition is yours already.
+ * another). For a failing tick, one closed after that tick began counts as
+ * answered: you dismissed this failure. Never for a missed tick: its `since`
+ * is the last tick, which stays put however many causes come and go, so an
+ * answer to one cause must not silence the next.
  */
 export function coverOf(
   scope: string,
@@ -521,6 +543,7 @@ export function coverOf(
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const open = mine.find((item) => !isTerminal(item.state));
   if (open) return { item: open, answered: false };
+  if (status !== "failing") return null;
   const began = ms(since);
   const answered = mine.find((item) => began !== null && (ms(item.updatedAt) ?? 0) >= began);
   return answered ? { item: answered, answered: true } : null;
@@ -596,12 +619,14 @@ export function reviewRecord(input: {
   verdict: (typeof REVIEW_VERDICTS)[number];
   note: string;
   at: Date;
+  /** Unique among the records made in this millisecond: a grouped verdict writes many at once. */
+  seq: number;
 }): Json {
   const { proposal } = input;
   return {
     v: 1,
     kind: REVIEW_KIND,
-    id: `review-${input.at.getTime()}`,
+    id: `review-${input.at.getTime()}-${input.seq}`,
     scope: input.scope,
     key: proposal.key,
     verdict: input.verdict,

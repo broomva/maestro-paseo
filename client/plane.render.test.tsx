@@ -31,7 +31,7 @@ import type { PluginClientStateSource } from "@getpaseo/plugin/client/host";
 import { Window } from "happy-dom";
 import type { ReactNode } from "react";
 import type { MaestroConfig, Scoreboard, WakeEntry, WorkItem } from "../shared/contracts";
-import type { FleetNotice, FleetProposal, FleetView } from "../shared/fleet";
+import { type FleetNotice, type FleetProposal, type FleetView, groupProposals } from "../shared/fleet";
 import type { HistoryEvent } from "../shared/records";
 import { groupOf, type OrchState } from "../shared/states";
 
@@ -416,7 +416,7 @@ const fleetView = (scope: string | undefined): FleetView => {
         needsYou: false,
       },
       lastTick: { tick: 6, at: new Date(Date.now() - 40 * H).toISOString(), status: "ok" as const },
-      unreviewed: 0,
+      unreviewed: groupProposals(sriProposals).filter((group) => group.review === null).length,
       openAsks: 0,
     },
   ];
@@ -1500,7 +1500,7 @@ describe("the Fleet view", () => {
   test("a scope chip reads that scope", async () => {
     const view = await mount(surface(false));
     await view.press(fleetTab(view));
-    await view.press(view.byLabel("sri, Not scheduled"));
+    await view.press(view.byLabel("sri, Not scheduled, 1 proposal to review"));
     expect(sent("fleet.get").at(-1)).toEqual({ scope: "sri", ticks: 24 });
     expect(view.text()).toContain("Not scheduled: no LaunchAgent runs it.");
   });
@@ -1508,13 +1508,19 @@ describe("the Fleet view", () => {
   test("one class and one action across sessions is one card: one verdict writes every session's key", async () => {
     const view = await mount(surface(false));
     await view.press(fleetTab(view));
-    await view.press(view.byLabel("sri, Not scheduled"));
+    await view.press(view.byLabel("sri, Not scheduled, 1 proposal to review"));
     expect(view.text()).toContain("Would report only");
     expect(view.text()).toContain("4 sessions · Class 10, unmanaged");
     expect(view.text()).toContain("aaaa1111 sri-aaaa1111");
     expect(view.text()).not.toContain("dddd4444 sri-dddd4444");
     await view.press(view.byLabel("Show all sessions: report only"));
     expect(view.text()).toContain("dddd4444 sri-dddd4444");
+    expect(view.byLabel("sri, Not scheduled, 1 proposal to review")).not.toBeNull();
+    // The refetch after is held: the card and the chip's badge say it from the host's answer alone.
+    let release = () => {};
+    fleetHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     await view.press(view.byLabel("Accept: report only, 4 sessions"));
     expect(sent("fleet.review").at(-1)).toEqual({
       scope: "sri",
@@ -1528,6 +1534,36 @@ describe("the Fleet view", () => {
       note: "",
     });
     expect(view.text()).toContain("You accepted this just now");
+    expect(view.byLabel("sri, Not scheduled")).not.toBeNull();
+    fleetHeld = null;
+    release();
+    await settle(30);
+  });
+
+  test("on a phone, a group's verdict sits above its sessions, each with its evidence", async () => {
+    const view = await mount(surface(true));
+    await view.press(fleetTab(view));
+    await view.press(view.byLabel("sri, Not scheduled, 1 proposal to review"));
+    const text = view.text();
+    expect(text.indexOf("Accept all 4")).toBeGreaterThan(-1);
+    expect(text.indexOf("Accept all 4")).toBeLessThan(text.indexOf("aaaa1111 sri-aaaa1111"));
+    expect(text).toContain("aaaa1111 sri-aaaa1111no fleet key, not adopted");
+  });
+
+  test("Reject's note closes on the host's answer, while the refetch after is still on its way", async () => {
+    const view = await mount(surface(false));
+    await view.press(fleetTab(view));
+    let release = () => {};
+    fleetHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await view.press(view.byLabel("Reject: report, de2dd335 sri-sti-2761-rce"));
+    await view.press(view.byLabel("Confirm reject: report, de2dd335 sri-sti-2761-rce"));
+    expect(view.byLabel("Why reject: report, de2dd335 sri-sti-2761-rce")).toBeNull();
+    expect(view.text()).toContain("You rejected this just now");
+    fleetHeld = null;
+    release();
+    await settle(30);
   });
 
   test("a missed tick shows above the work, and opens the Fleet view at its scope", async () => {

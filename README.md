@@ -241,10 +241,14 @@ The **Fleet** view shows the rest, per scope, read from those files:
   off (the fleet's kill switch), or not scheduled (no LaunchAgent runs it).
   - A scope is missed when it is scheduled and no tick has started for over 2 hours, or two of its
     intervals if that is longer.
-  - The clock counts from the later of the last tick and the Mac's last wake or boot, which the
-    kernel reports (`kern.waketime`, `kern.boottime`). launchd skips ticks while the Mac sleeps or
-    is off, so a morning, a cold boot or a plugin reload does not read as missed.
-  - A tick the Mac slept through has its time budget counted from the wake.
+  - The 2 hours are awake time, which is how launchd counts `StartInterval`. A laptop that naps
+    between meetings ticks about once per hour awake, however the sleeps fall: a fleet that stopped
+    is still missed after 2 hours awake, and a night's sleep is never a false alarm.
+  - Awake time comes from the plugin's monotonic clock, which stops while the Mac sleeps. The
+    plugin records it on each read, and before its first record (a reload, a cold boot) counts
+    from that record. A stall is then flagged 2 hours awake after the reload, never sooner.
+  - A tick's time budget runs on awake time too, so a tick the Mac slept through mid-run is still
+    running after the wake. A tick that died days ago stays dead.
 - **Asks and alerts.**
   - The open asks are every ask the newest report counts as open: those still open, those new this
     tick, and those it could not check.
@@ -253,13 +257,19 @@ The **Fleet** view shows the rest, per scope, read from those files:
   - You answer them there, at the gate; they are never copied.
 - **Would do.** These are proposals: each in-scope session whose "would do" in the newest report is
   something other than nothing, plus any verb the coordinator logged under dry run.
-  - Proposals that read the same, one class and one action across many sessions, are one card, and
-    one verdict covers all of them. sri's 28 rows are a few decisions, not 28.
+  - Proposals that read the same and stand the same with you are one card, and one verdict covers
+    all of them: one class and one action across many sessions, all waiting or all judged alike.
+    sri's 28 rows are a few decisions, not 28.
+    - A session you judged differently stands in its own card, so a verdict on a card never
+      overwrites one you gave a single session.
+    - A coordinator verb is always its own card, its text shown.
+    - Each card's verbs sit above its sessions, each session with its evidence.
   - Accept or reject each one; a reject asks for an optional note first.
   - A proposal's key binds its session, its class and its words. For a coordinator verb, the key
     binds the label and whether it adds or removes it, or the mail's template and text. So one
     verdict holds while the fleet proposes the same thing, and a verdict made on a page gone stale
-    is refused rather than recorded against different words.
+    is refused rather than recorded against different words. A tick that lands while a verdict is
+    checked stops it too.
 - **Ticks.** The last 24, each with its time, its exit and which step failed, and its class counts.
 - **Report.** The newest `report.md`, drawn natively, up to 128 KB. On a phone, its tables become
   one card per row.
@@ -271,7 +281,9 @@ is `tick-<step>` for a failed step, or `lock`, `config`, `statedir` or `tick` fo
 start. The rule depends on the alert's state:
 
 - In Needs you: counted there, and not again as a notice.
-- Answered (done or canceled) after the condition began: already yours, so not counted again.
+- For a failing tick, answered (done or canceled) after that tick began: already yours, so not
+  counted again. Never for a missed tick: its last tick stays put while causes come and go, and an
+  answer to one cause must not silence the next.
 - Still queued: the notice counts, and links to it.
 
 **Your verdicts go to the fleet, and change nothing it does.** The fleet has no verb that records a
@@ -280,8 +292,9 @@ review, so Maestro defines one file for it to read: `proposal-reviews.jsonl` bes
 
 - Each verdict is one JSON line per key, all in one append. The file is mode 0600 and fsynced, and
   the latest line for a key wins.
-- Maestro writes it only where a fleet ledger is, never through a symlink, and only lines of its
-  own shape (`by: owner`, `via: maestro`) are read back.
+- Maestro writes it only where a fleet ledger is, never through a symlink or onto a file with
+  another hard link, and checks every byte was written. Each line has its own `id`. Only lines of
+  its own shape (`by: owner`, `via: maestro`) are read back.
 - Like the ledger, it is not a boundary: any process running as you can write it.
 
 ```json
@@ -296,13 +309,19 @@ Nothing else in the fleet's files is written:
 - not its ledger;
 - not its config, mode, dry run or kill switch.
 
-Verdicts are yours alone, so the agent socket refuses `fleet.review`. Every file is read without
-following a symlink, and a FIFO is refused rather than waited on.
+Verdicts are yours alone, so the agent socket refuses `fleet.review`.
+
+A state dir can be written by the fleet's sessions, so any file there is read only if it is a
+regular file: never through a symlink as its last name, never with another hard link, and never a
+FIFO, which is refused rather than waited on. A file that cannot be read is said in the view,
+never taken for absent. Your config and LaunchAgent are read as they are linked.
 
 The fleet's files are found where it keeps them:
 
-- the config: `FLEET_CONFIG`, else `~/.config/ctx/fleet.json`. A scope with a relative `state_dir`
-  is left out. A config caught mid-edit keeps the scopes it last named, and the view says why.
+- the config: `FLEET_CONFIG`, else `~/.config/ctx/fleet.json`.
+  - A scope with a relative `state_dir` is left out, and the view says so.
+  - A config caught mid-edit keeps the scopes it last named, and the view says why.
+  - A config that is gone is no error: the state dirs on disk are what there is.
 - the state dirs that config names.
 - the LaunchAgents in `~/Library/LaunchAgents`.
 
@@ -311,7 +330,7 @@ For a second daemon or a test, these override the defaults:
 - `MAESTRO_PASEO_FLEET_CONFIG` overrides the config.
 - `MAESTRO_PASEO_FLEET_STATE` overrides where state dirs are looked for when no config names them.
 - `MAESTRO_PASEO_FLEET_AGENTS` overrides the LaunchAgents folder.
-- `MAESTRO_PASEO_FLEET_AWAKE` (epoch ms) overrides the kernel's wake time.
+- `MAESTRO_PASEO_FLEET_AWAKE_CLOCK=wall` counts awake time as wall time.
 
 ## The agent's instructions
 

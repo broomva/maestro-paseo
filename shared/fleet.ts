@@ -171,7 +171,7 @@ export const FleetScopeSchema = z.object({
   dryRun: z.boolean().nullable(),
   health: FleetHealthSchema,
   lastTick: z.object({ tick: z.number(), at: z.string().nullable(), status: z.enum(TICK_STATUS) }).nullable(),
-  /** Groups of proposals (groupProposals) with any proposal you have not given a verdict. */
+  /** Groups of proposals (groupProposals) still waiting on your verdict. */
   unreviewed: z.number(),
   openAsks: z.number(),
 });
@@ -231,9 +231,13 @@ export const reviewProposal = defineRpc({
 });
 
 /**
- * Proposals that read the same, grouped: one class and one action across many
- * sessions is one decision ("would only report unmanaged sessions"), made once
- * for all of them. A coordinator verb names its target, so it stands alone.
+ * Proposals that read the same and stand the same with you, grouped: one
+ * class and one action across many sessions, not yet reviewed (or given one
+ * verdict and note), is one decision made once for all of them. A session
+ * you judged differently stands in a group of its own, so a verdict on a
+ * group never overwrites one you gave a single session. A coordinator verb
+ * stands alone: its words name one target. Groups keep the fleet's order,
+ * the ones still waiting on you first within each action.
  */
 export interface ProposalGroup {
   key: string;
@@ -242,17 +246,19 @@ export interface ProposalGroup {
   className: string | null;
   source: FleetProposal["source"];
   proposals: FleetProposal[];
-  accepted: number;
-  rejected: number;
-  unreviewed: number;
-  /** The newest verdict, when every proposal in the group has the same one. */
+  /** The verdict every proposal in the group has (the newest), or null when none has one. */
   review: FleetReview | null;
 }
 
 export function groupProposals(proposals: readonly FleetProposal[]): ProposalGroup[] {
-  const groups = new Map<string, ProposalGroup>();
+  const groups = new Map<string, ProposalGroup & { order: number; rank: number }>();
+  const actions = new Map<string, number>();
   for (const proposal of proposals) {
-    const key = `${proposal.source}:${proposal.classId ?? ""}:${proposal.action}`;
+    const what = proposal.source === "act" ? proposal.key : `${proposal.classId ?? ""}:${proposal.action}`;
+    const order = actions.get(what) ?? actions.size;
+    actions.set(what, order);
+    const stands = proposal.review ? `${proposal.review.verdict}:${proposal.review.note ?? ""}` : "";
+    const key = `${proposal.source}:${what}:${stands}`;
     let group = groups.get(key);
     if (!group) {
       group = {
@@ -262,26 +268,18 @@ export function groupProposals(proposals: readonly FleetProposal[]): ProposalGro
         className: proposal.className,
         source: proposal.source,
         proposals: [],
-        accepted: 0,
-        rejected: 0,
-        unreviewed: 0,
         review: null,
+        order,
+        rank: proposal.review ? 1 : 0,
       };
       groups.set(key, group);
     }
     group.proposals.push(proposal);
-    if (proposal.review?.verdict === "accept") group.accepted += 1;
-    else if (proposal.review?.verdict === "reject") group.rejected += 1;
-    else group.unreviewed += 1;
+    if (proposal.review && (!group.review || proposal.review.at > group.review.at)) group.review = proposal.review;
   }
-  for (const group of groups.values()) {
-    const reviews = group.proposals.map((proposal) => proposal.review);
-    const [first] = reviews;
-    if (first && reviews.every((review) => review?.verdict === first.verdict)) {
-      group.review = reviews.reduce((newest, review) => (review && newest && review.at > newest.at ? review : newest));
-    }
-  }
-  return [...groups.values()];
+  return [...groups.values()]
+    .sort((a, b) => a.order - b.order || a.rank - b.rank)
+    .map(({ order: _order, rank: _rank, ...group }) => group);
 }
 
 /**

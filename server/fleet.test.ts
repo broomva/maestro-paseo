@@ -1,12 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkItem } from "../shared/contracts";
 import { groupOf, type OrchState } from "../shared/states";
-import { askBatch, H, report, writeFleet } from "./fake-fleet";
-import { DISABLED_NOTICE, Fleet, kernelAwakeSince, REVIEWS_FILE } from "./fleet";
+import { askBatch, H, report, session, writeFleet } from "./fake-fleet";
+import { AwakeClock, DISABLED_NOTICE, Fleet, REVIEWS_FILE, wallClock } from "./fleet";
 
 const roots: string[] = [];
 afterAll(async () => {
@@ -44,37 +44,46 @@ function work(id: string, title: string, state: OrchState): WorkItem {
   };
 }
 
-/** A Fleet on a test's own files, its clock and the kernel's wake time held by the test (by default: booted long ago). */
-async function setup(items: WorkItem[] = [], options: { awake?: number | null; started?: number } = {}) {
+/**
+ * A Fleet on a test's own files, with its wall clock and its awake clock held
+ * by the test. By default the Mac was awake the whole time: the first record
+ * is taken far back, so awake time since any tick equals wall time.
+ */
+async function setup(items: WorkItem[] = [], options: { fresh?: boolean; beforeWrite?: () => Promise<void> } = {}) {
   const root = await mkdtemp(join(tmpdir(), "maestro-fleet-"));
   roots.push(root);
   const paths = { config: join(root, "fleet.json"), state: join(root, "state"), agents: join(root, "agents") };
-  let now = options.started ?? NOW;
-  let awake: number | null = "awake" in options ? (options.awake ?? null) : NOW - 100 * H;
+  let now = NOW;
+  let awake = 1_000_000_000;
+  const clock = new AwakeClock(
+    () => now,
+    () => awake,
+  );
+  if (!options.fresh) {
+    // A record from 100 h ago, awake since: the plugin has been running and the Mac has not slept.
+    now = NOW - 100 * H;
+    awake -= 100 * H;
+    clock.read();
+    now = NOW;
+    awake += 100 * H;
+  }
   const logs: string[] = [];
   const fleet = new Fleet({
     configPath: paths.config,
     stateRoot: paths.state,
     agentsDir: paths.agents,
     items: async () => items,
-    awakeSince: async () => awake,
+    clock,
+    beforeWrite: options.beforeWrite,
     now: () => now,
     log: (message) => logs.push(message),
   });
-  now = NOW;
-  return {
-    root,
-    paths,
-    fleet,
-    logs,
-    items,
-    setNow: (at: number) => {
-      now = at;
-    },
-    setAwake: (at: number | null) => {
-      awake = at;
-    },
+  /** Moves the wall clock by `wallMs`, of which `awakeMs` awake (the rest asleep). */
+  const pass = (wallMs: number, awakeMs: number = wallMs) => {
+    now += wallMs;
+    awake += awakeMs;
   };
+  return { root, paths, fleet, logs, items, pass };
 }
 
 describe("reading the fleet", () => {
@@ -175,29 +184,50 @@ describe("reading the fleet", () => {
     expect((await fleet.notices([other])).length).toBe(1);
   });
 
-  test("time the Mac slept or was off is not counted toward a missed tick: the clock starts at the wake", async () => {
-    const { paths, fleet, setNow, setAwake } = await setup();
-    await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: ago(8), exit: 0 }] } });
-    // Booted (or woke) half an hour ago; the last tick was 8 h ago, before the Mac went down.
-    setAwake(NOW - 0.5 * H);
-    expect(await fleet.notices([])).toEqual([]);
-    expect((await fleet.get()).scopes[0]?.health.status).toBe("ok");
-    // 2 h after the wake with still no tick, it is missed, and says how long since the last.
-    setNow(NOW + 1.4 * H);
-    expect(await fleet.notices([])).toEqual([]);
-    setNow(NOW + 1.6 * H);
+  test("only time the Mac was awake counts toward a missed tick, as launchd counts its interval", async () => {
+    const { paths, fleet, pass } = await setup([], { fresh: true });
+    await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: new Date(NOW), exit: 0 }] } });
+    await fleet.notices([]);
+    // Short naps between meetings: 6 h of wall time, 1.5 h of it awake. launchd has not owed two ticks.
+    for (let hour = 0; hour < 6; hour += 1) {
+      pass(H, 15 * 60_000);
+      expect(await fleet.notices([])).toEqual([]);
+    }
+    // Awake another 35 minutes: 2h 5m awake with no tick, which is missed however the sleeps fell.
+    pass(35 * 60_000);
     expect(await fleet.notices([])).toMatchObject([
       { status: "missed", reason: "No tick since tick 35. It runs every hour." },
     ]);
-    expect((await fleet.get()).scopes[0]?.health.reason).toContain("No tick for 9h 36m");
+    expect((await fleet.get()).scopes[0]?.health.reason).toBe(
+      "No tick for 6h 35m (2h 5m of it awake): the last was tick 35. It runs every hour.",
+    );
   });
 
-  test("when the kernel cannot say when the Mac woke, the plugin's own start stands in: no false alarm at load", async () => {
-    const { paths, fleet, setNow } = await setup([], { awake: null, started: NOW - 0.25 * H });
+  test("a reload or a cold boot never raises a false alarm: time before the plugin started is not counted", async () => {
+    const { paths, fleet, pass } = await setup([], { fresh: true });
     await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: ago(8), exit: 0 }] } });
     expect(await fleet.notices([])).toEqual([]);
-    setNow(NOW + 2 * H);
+    pass(1.9 * H);
+    expect(await fleet.notices([])).toEqual([]);
+    pass(0.2 * H);
     expect((await fleet.notices([]))[0]?.status).toBe("missed");
+  });
+
+  test("a tick that died stays dead after a wake; one the Mac slept through mid-run is still running", async () => {
+    // The plugin has been running all along, as the daemon does: its clock knows both ticks' starts.
+    const { paths, fleet, pass } = await setup();
+    await writeFleet(paths, {
+      alpha: { ticks: [{ tick: 36, at: new Date(NOW - 5 * 60_000) }] },
+      beta: { ticks: [{ tick: 9, at: ago(72) }] },
+    });
+    await fleet.get();
+    // Asleep 4 h, then awake 5 minutes.
+    pass(4 * H, 5 * 60_000);
+    const view = await fleet.get();
+    expect(view.scopes.map((scope) => [scope.id, scope.lastTick?.status])).toEqual([
+      ["alpha", "running"],
+      ["beta", "died"],
+    ]);
   });
 
   test("the kill switch and an unscheduled scope never need you, even when its last tick by hand failed", async () => {
@@ -256,8 +286,48 @@ describe("reading the fleet", () => {
     });
     const view = await fleet.get();
     expect(view.scopes.map((scope) => scope.id)).toEqual(["alpha"]);
+    expect(view.error).toBe("Left out of the Fleet view: beta (state_dir relative/beta is relative).");
     // 15 minutes into a 15 + 5 minute budget: still running, not died.
     expect(view.detail?.ticks[0]?.status).toBe("running");
+  });
+
+  test("a config that is gone is no error: the state dirs on disk are what there is, not the last config", async () => {
+    const { root, paths, fleet } = await setup();
+    const elsewhere = join(root, "elsewhere");
+    await writeFleet({ ...paths, state: elsewhere }, { alpha: { ticks: [{ tick: 1, at: ago(0.2), exit: 0 }] } });
+    expect((await fleet.get()).scopes.map((scope) => scope.id)).toEqual(["alpha"]);
+    await rm(paths.config);
+    const view = await fleet.get();
+    expect(view.error).toBeNull();
+    expect(view.scopes).toEqual([]);
+  });
+
+  test("the config and the LaunchAgent are yours and are read as linked: a dotfiles repo still schedules", async () => {
+    const { root, paths, fleet } = await setup();
+    await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: ago(0.5), exit: 0 }] } });
+    const dotfiles = join(root, "dotfiles");
+    await mkdir(dotfiles);
+    for (const [from, name] of [
+      [paths.config, "fleet.json"],
+      [join(paths.agents, "com.broomva.fleet-reconcile.alpha.plist"), "agent.plist"],
+    ] as const) {
+      await writeFile(join(dotfiles, name), await readFile(from));
+      await rm(from);
+      await symlink(join(dotfiles, name), from);
+    }
+    const view = await fleet.get();
+    expect(view.error).toBeNull();
+    expect(view.detail?.schedule).toEqual({ scheduled: true, intervalMinutes: 60 });
+    expect(view.scopes[0]?.health.status).toBe("ok");
+  });
+
+  test("a ledger that cannot be read is said, not taken for no ledger", async () => {
+    const { paths, fleet } = await setup();
+    await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: ago(0.5), exit: 0 }] } });
+    const ledger = join(paths.state, "alpha", "ledger.jsonl");
+    await rm(ledger);
+    await mkdir(ledger);
+    expect((await fleet.get()).detail?.warnings.join(" ")).toContain("The ledger could not be read");
   });
 
   test("a tick folder with no ledger record (a report run by hand) does not stand for the newest tick", async () => {
@@ -324,6 +394,17 @@ describe("reading the fleet", () => {
     expect(detail?.ticks.map((tick) => tick.tick)).toEqual([35, 34]);
   });
 
+  test("a scope's count to review is its groups, not its sessions: one class and action is one decision", async () => {
+    const { paths, fleet } = await setup();
+    const sessions = ["a", "b", "c"].map((id) => session(`${id}0000000-x`, "10", "report only"));
+    await writeFleet(paths, {
+      alpha: { ticks: [{ tick: 35, at: ago(0.2), exit: 0, report: report(35, ago(0.2), { sessions }) }] },
+    });
+    const view = await fleet.get();
+    expect(view.detail?.proposals).toHaveLength(3);
+    expect(view.scopes[0]?.unreviewed).toBe(1);
+  });
+
   test("a coordinator's dry verbs are proposals beside the report's", async () => {
     const { paths, fleet } = await setup();
     await writeFleet(paths, {
@@ -360,11 +441,53 @@ describe("reading the fleet", () => {
   });
 });
 
-test("the kernel's wake time is the later of boot and wake; a test may give its own", async () => {
-  expect(await kernelAwakeSince({ MAESTRO_PASEO_FLEET_AWAKE: "1790000000000" })).toBe(1_790_000_000_000);
-  const kernel = await kernelAwakeSince({});
-  // Wherever sysctl answers (macOS), it is a time in the past; elsewhere it cannot say.
-  if (kernel !== null) expect(kernel).toBeLessThanOrEqual(Date.now());
+describe("the awake clock", () => {
+  test("reads awake time off its records: a gap between two records was awake first, then asleep", () => {
+    let wall = 0;
+    let awake = 0;
+    const clock = new AwakeClock(
+      () => wall,
+      () => awake,
+    );
+    clock.read();
+    // 10 minutes awake, then asleep 3 h, then awake 20 minutes; the plugin read only at the start and the end.
+    wall += 10 * 60_000 + 3 * H + 20 * 60_000;
+    awake += 30 * 60_000;
+    const since = clock.read();
+    expect(since(0)).toEqual({ ms: 30 * 60_000, whole: true });
+    expect(since(5 * 60_000)).toEqual({ ms: 25 * 60_000, whole: true });
+    // From inside the gap: it cannot tell where in the gap the Mac was awake, and counts as if first, so never more.
+    expect(since(2 * H)).toEqual({ ms: 0, whole: true });
+    // From before the first record: counted from it, a lower bound, and said to be one.
+    expect(since(-10 * H)).toEqual({ ms: 30 * 60_000, whole: false });
+    // Awake two more hours with a record after the gap: from inside the gap, the gap gives at most what it held.
+    wall += 2 * H;
+    awake += 2 * H;
+    const later = clock.read();
+    expect(later(2 * H)).toEqual({ ms: 2 * H, whole: true });
+  });
+
+  test("keeps a record at most once a minute, and forgets those past eight days", () => {
+    let wall = 0;
+    let awake = 0;
+    const clock = new AwakeClock(
+      () => wall,
+      () => awake,
+    );
+    clock.read();
+    wall += 30_000;
+    awake += 30_000;
+    clock.read();
+    wall += 9 * 24 * H;
+    awake += 9 * 24 * H;
+    const since = clock.read();
+    // The first record is gone: from day 0 counts from the newest kept, which is now.
+    expect(since(0)).toEqual({ ms: 0, whole: false });
+  });
+
+  test("the wall clock is awake time with no sleep accounted, for a test of the plugin", () => {
+    expect(wallClock(() => 5000).read()(1000)).toEqual({ ms: 4000, whole: true });
+  });
 });
 
 describe("your verdict", () => {
@@ -456,6 +579,53 @@ describe("your verdict", () => {
       fleet.review({ scope: "alpha", keys: [first?.key ?? ""], verdict: "accept", note: "" }),
     ).rejects.toThrow("Your verdict was not recorded");
     expect(await readFile(target, "utf8")).toBe("export PATH=/usr/bin\n");
+  });
+
+  test("a review file with another hard link is not written: the verdict is refused, the other name untouched", async () => {
+    const { root, paths, fleet } = await setup();
+    await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: ago(0.2), exit: 0 }] } });
+    const target = join(root, "dotfile");
+    await writeFile(target, "export PATH=/usr/bin\n");
+    await link(target, join(paths.state, "alpha", REVIEWS_FILE));
+    const [first] = await proposalsOf(fleet);
+    await expect(
+      fleet.review({ scope: "alpha", keys: [first?.key ?? ""], verdict: "accept", note: "" }),
+    ).rejects.toThrow("has another hard link");
+    expect(await readFile(target, "utf8")).toBe("export PATH=/usr/bin\n");
+  });
+
+  test("a tick that lands while a verdict is checked stops it: nothing is written, and it says to look again", async () => {
+    let tickNow: (() => Promise<void>) | null = null;
+    const { paths, fleet } = await setup([], { beforeWrite: async () => tickNow?.() });
+    await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: ago(0.2), exit: 0 }] } });
+    const [first] = await proposalsOf(fleet);
+    tickNow = async () => {
+      const dir = join(paths.state, "alpha", "ticks", "00036");
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "report.json"), JSON.stringify(report(36, new Date(NOW), {}, "alpha")));
+    };
+    await expect(
+      fleet.review({ scope: "alpha", keys: [first?.key ?? ""], verdict: "accept", note: "" }),
+    ).rejects.toThrow("The fleet ticked while you decided");
+    await expect(stat(join(paths.state, "alpha", REVIEWS_FILE))).rejects.toThrow();
+    // Looked at again, the same words are still proposed, and the verdict goes in.
+    tickNow = null;
+    const { proposals } = await fleet.review({ scope: "alpha", keys: [first?.key ?? ""], verdict: "accept", note: "" });
+    expect(proposals[0]?.review?.verdict).toBe("accept");
+  });
+
+  test("a key sent twice is one line; every line has an id of its own", async () => {
+    const { paths, fleet } = await setup();
+    await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: ago(0.2), exit: 0 }] } });
+    const keys = (await proposalsOf(fleet)).map((proposal) => proposal.key);
+    await fleet.review({ scope: "alpha", keys: [...keys, ...keys], verdict: "accept", note: "" });
+    await fleet.review({ scope: "alpha", keys, verdict: "reject", note: "" });
+    const lines = (await readFile(join(paths.state, "alpha", REVIEWS_FILE), "utf8"))
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line).id);
+    expect(lines).toHaveLength(4);
+    expect(new Set(lines).size).toBe(4);
   });
 
   test("a state dir that holds no fleet ledger gets no verdict", async () => {

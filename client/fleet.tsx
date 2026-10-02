@@ -265,7 +265,7 @@ function useApplyReviews() {
       const proposals = view.detail.proposals.map((proposal) =>
         byKey.has(proposal.key) ? { ...proposal, review: byKey.get(proposal.key) ?? null } : proposal,
       );
-      const unreviewed = groupProposals(proposals).filter((group) => group.unreviewed > 0).length;
+      const unreviewed = groupProposals(proposals).filter((group) => group.review === null).length;
       return {
         ...view,
         scopes: view.scopes.map((entry) => (entry.id === scope ? { ...entry, unreviewed } : entry)),
@@ -344,27 +344,6 @@ function ProposalCard({
         <Text style={text.muted} numberOfLines={3}>
           {first.evidence}
         </Text>
-      ) : null}
-      {many ? (
-        <View style={{ gap: 2 }}>
-          {shown.map((proposal) => (
-            <Text key={proposal.key} style={text.small} numberOfLines={1}>
-              {proposalSubject(proposal)}
-            </Text>
-          ))}
-          {sessions.length > GROUP_SHOWN ? (
-            <View style={{ flexDirection: "row" }}>
-              <Button
-                theme={theme}
-                variant="quiet"
-                label={all ? "Show fewer" : `Show all ${sessions.length}`}
-                compact={compact}
-                accessibilityLabel={`${all ? "Show fewer" : "Show all"} sessions: ${group.action}`}
-                onPress={() => setAll((open) => !open)}
-              />
-            </View>
-          ) : null}
-        </View>
       ) : null}
       <Text
         style={[
@@ -446,6 +425,35 @@ function ProposalCard({
           />
         </View>
       )}
+      {/* The sessions under the verbs: a long list never pushes the verdict off the screen. */}
+      {many ? (
+        <View style={{ gap: space[1] }}>
+          {shown.map((proposal) => (
+            <View key={proposal.key} style={{ gap: 2 }}>
+              <Text style={text.small} numberOfLines={1}>
+                {proposalSubject(proposal)}
+              </Text>
+              {proposal.evidence ? (
+                <Text style={[text.small, { paddingLeft: space[3] }]} numberOfLines={2}>
+                  {proposal.evidence}
+                </Text>
+              ) : null}
+            </View>
+          ))}
+          {sessions.length > GROUP_SHOWN ? (
+            <View style={{ flexDirection: "row" }}>
+              <Button
+                theme={theme}
+                variant="quiet"
+                label={all ? "Show fewer" : `Show all ${sessions.length}`}
+                compact={compact}
+                accessibilityLabel={`${all ? "Show fewer" : "Show all"} sessions: ${group.action}`}
+                onPress={() => setAll((open) => !open)}
+              />
+            </View>
+          ) : null}
+        </View>
+      ) : null}
     </Card>
   );
 }
@@ -589,9 +597,11 @@ export function FleetView({
             meta={detail.proposals.length > 0 ? proposalsHeading(groupProposals(detail.proposals)) : undefined}
           >
             <Text style={text.small}>
-              {current.dryRun === false
-                ? "What the fleet proposes. Your verdict is recorded for the fleet; it changes nothing it does."
-                : "Under dry run nothing here was done. Your verdict is recorded for the fleet's phase-3 review; it changes nothing it does."}
+              {current.dryRun === true
+                ? "Under dry run nothing here was done. Your verdict is recorded for the fleet's phase-3 review; it changes nothing it does."
+                : current.dryRun === false
+                  ? "What the fleet proposes, live. Your verdict is recorded for the fleet; it changes nothing it does."
+                  : "What the fleet proposes. Your verdict is recorded for the fleet; it changes nothing it does."}
             </Text>
             {detail.proposals.length === 0 ? (
               <Text style={text.muted}>The latest report proposes nothing.</Text>

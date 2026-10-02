@@ -141,20 +141,13 @@ export function lastTickText(scope: FleetScope, now: number = Date.now()): strin
 
 /** The Would do heading's count: the groups, and how many still wait on you. */
 export function proposalsHeading(groups: readonly ProposalGroup[]): string {
-  const open = groups.filter((group) => group.unreviewed > 0).length;
+  const open = groups.filter((group) => group.review === null).length;
   return open > 0 ? `${groups.length} · ${open} to review` : `${groups.length} · all reviewed`;
 }
 
-/** Where a group stands with you: one verdict for all, or how they split. */
+/** Where a group stands with you: every proposal in it stands the same (shared/fleet.ts groupProposals). */
 export function groupReviewText(group: ProposalGroup, now: number = Date.now()): string {
-  if (group.review) return reviewText(group.review, now);
-  if (group.accepted === 0 && group.rejected === 0) return "Not reviewed";
-  const parts = [
-    group.accepted > 0 ? `${group.accepted} accepted` : null,
-    group.rejected > 0 ? `${group.rejected} rejected` : null,
-    group.unreviewed > 0 ? `${group.unreviewed} not reviewed` : null,
-  ].filter(Boolean);
-  return parts.join(", ");
+  return reviewText(group.review, now);
 }
 
 /** What a group is about: its one session or verb, or how many sessions. */
@@ -164,9 +157,9 @@ export function groupSubject(group: ProposalGroup): string {
   return plural(group.proposals.length, "session");
 }
 
-/** The keys a verdict writes: those not already given it, so pressing again adds no lines. */
+/** The keys a verdict writes: the group's, unless they all have it already (then none, and no lines are added). */
 export function keysFor(group: ProposalGroup, verdict: FleetReview["verdict"]): string[] {
-  return group.proposals.filter((proposal) => proposal.review?.verdict !== verdict).map((proposal) => proposal.key);
+  return group.review?.verdict === verdict ? [] : group.proposals.map((proposal) => proposal.key);
 }
 
 /** A fleet notice as the header area says it: the scope, what is wrong, for how long, and why. */

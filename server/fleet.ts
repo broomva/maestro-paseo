@@ -7,20 +7,19 @@
 // read (BRO-2766). Nothing here runs a fleet verb, writes the fleet's ledger,
 // or changes its mode, dry run or kill switch.
 //
-// Every file is opened without following a symlink, and only a regular file
-// is read or written: a link planted in a state dir can neither show another
-// file on your phone nor carry your verdict into one. A FIFO is not waited on.
+// A file in a state dir (which the fleet's sessions can write) is opened
+// without following a symlink as its last name, and must be a regular file
+// with no other hard link: a link planted there can neither show another file
+// on your phone nor carry your verdict into one. A FIFO is not waited on. The
+// config and the LaunchAgent are yours, and are read as they are linked.
 //
-// A missed tick is measured against time the Mac was awake: launchd skips an
-// interval that falls while it sleeps or is off, and the next tick comes up to
-// an interval after the wake (spec §5.7). The last wake is the kernel's
-// (kern.waketime, kern.boottime), so it holds across a reload and a cold boot.
+// A missed tick, and a tick that died, are measured in time the Mac was awake
+// (AwakeClock): launchd counts StartInterval in it, so a tick comes about an
+// hour of awake time after the last, however the sleeps fall (spec §5.7).
 
-import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { type FileHandle, open, readdir, stat } from "node:fs/promises";
+import { type FileHandle, open, readdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { promisify } from "node:util";
 import type { WorkItem } from "../shared/contracts";
 import {
   FLEET_REPORT_BYTES,
@@ -37,8 +36,10 @@ import {
 } from "../shared/fleet";
 import { UserError } from "./engine";
 import {
+  type AwakeFor,
   actProposals,
   asksOf,
+  awakeAsWall,
   coverOf,
   fleetItem,
   foldLedger,
@@ -68,31 +69,62 @@ const BUDGET_GRACE_MS = 5 * 60_000;
 const DEFAULT_TICK_MINUTES = 15;
 /** The ledger, a report or the review file is read up to this size; past it the read is refused, not cut. */
 const READ_LIMIT = 32 * 1024 * 1024;
-/** The kernel's wake time is asked again after this long. */
-const WAKE_TTL_MS = 30_000;
 /** Ticks whose coordinator verbs still stand as proposals. */
 const ACT_TICKS = 24;
 
-const run = promisify(execFile);
+/** A record is kept at most this often, and for this long. */
+const SAMPLE_MS = 60_000;
+const SAMPLES_KEPT_MS = 8 * 24 * 60 * 60 * 1000;
 
 /**
- * When this Mac last woke or booted, whichever is later, as the kernel says
- * (`sysctl kern.boottime kern.waketime`; a Mac that never slept says 0 for
- * the wake). Null when it cannot be read. MAESTRO_PASEO_FLEET_AWAKE (epoch
- * ms) stands in for the kernel, for a test.
+ * Time the Mac was awake between two wall-clock times, as launchd counts its
+ * interval. The plugin's monotonic clock (performance.now: mach_absolute_time
+ * on macOS, CLOCK_MONOTONIC on Linux) does not advance while the Mac sleeps.
+ * Each read records (wall, awake), at most once a minute; the awake time
+ * since a wall time is read off the record around it, assuming the Mac was
+ * awake first and asleep after within one gap between records, which counts
+ * no more than it was awake. Before the
+ * first record (a tick from before this process started) it counts from that
+ * record, a lower bound: a reload never raises a false alarm, and a stall is
+ * flagged once 2 h awake have passed since.
  */
-export async function kernelAwakeSince(env: NodeJS.ProcessEnv = process.env): Promise<number | null> {
-  const given = Number(env.MAESTRO_PASEO_FLEET_AWAKE);
-  if (env.MAESTRO_PASEO_FLEET_AWAKE && Number.isFinite(given)) return given;
-  try {
-    const { stdout } = await run("/usr/sbin/sysctl", ["-n", "kern.boottime", "kern.waketime"], { timeout: 2000 });
-    const seconds = [...stdout.matchAll(/sec = (\d+)/g)].map((match) => Number(match[1]));
-    const latest = Math.max(0, ...seconds);
-    return latest > 0 ? latest * 1000 : null;
-  } catch {
-    return null;
+export class AwakeClock {
+  private readonly samples: { wall: number; awake: number }[] = [];
+
+  constructor(
+    private readonly wall: () => number = Date.now,
+    private readonly awake: () => number = () => performance.now(),
+  ) {}
+
+  /** Records now, and returns the awake milliseconds from a wall time to now. */
+  read(): AwakeFor {
+    const now = { wall: this.wall(), awake: this.awake() };
+    const last = this.samples.at(-1);
+    if (!last || now.wall - last.wall >= SAMPLE_MS) this.samples.push(now);
+    while (this.samples.length > 1 && now.wall - (this.samples[0]?.wall ?? now.wall) > SAMPLES_KEPT_MS) {
+      this.samples.shift();
+    }
+    const samples = [...this.samples];
+    return (from) => {
+      const [first] = samples;
+      if (!first || from < first.wall)
+        return { ms: Math.max(0, now.awake - (first?.awake ?? now.awake)), whole: false };
+      let at = first;
+      let next: { wall: number; awake: number } = now;
+      for (let index = 0; index < samples.length; index += 1) {
+        const sample = samples[index];
+        if (!sample || sample.wall > from) break;
+        at = sample;
+        next = samples[index + 1] ?? now;
+      }
+      const awakeAt = at.awake + Math.min(from - at.wall, next.awake - at.awake);
+      return { ms: Math.max(0, now.awake - awakeAt), whole: true };
+    };
   }
 }
+
+/** Awake time counted as wall time: no sleep accounting. For a test, through MAESTRO_PASEO_FLEET_AWAKE_CLOCK=wall. */
+export const wallClock = (now: () => number = Date.now) => ({ read: (): AwakeFor => awakeAsWall(now()) });
 
 export interface FleetOptions {
   /** The fleet config, its state root and its LaunchAgents: server/paths.ts fleetPaths when not given. */
@@ -101,12 +133,10 @@ export interface FleetOptions {
   agentsDir?: string;
   /** Maestro's work, from the files alone (no session reconcile): the fleet's asks and alerts are items in it. */
   items: () => Promise<readonly WorkItem[]>;
-  /**
-   * When the Mac last woke or booted (kernelAwakeSince). When it cannot say,
-   * this process's start stands in: a fleet quiet since before Maestro
-   * started is then missed only 2 h after it did, never sooner.
-   */
-  awakeSince?: () => Promise<number | null>;
+  /** Awake time (AwakeClock by default; wallClock when MAESTRO_PASEO_FLEET_AWAKE_CLOCK=wall). */
+  clock?: { read(): AwakeFor };
+  /** Called between checking a verdict and writing it: for a test to land a tick there. */
+  beforeWrite?: () => Promise<void>;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -150,7 +180,9 @@ async function withRegular<T>(
 ): Promise<T> {
   const handle = await open(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK, mode);
   try {
-    if (!(await handle.stat()).isFile()) throw new Error(`${path} is not a regular file`);
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Error(`${path} is not a regular file`);
+    if (info.nlink > 1) throw new Error(`${path} has another hard link`);
     return await use(handle);
   } finally {
     await handle.close();
@@ -163,17 +195,18 @@ function readRegular(path: string, limit = READ_LIMIT) {
     const info = await handle.stat();
     const length = Math.min(info.size, limit);
     const buffer = Buffer.alloc(length);
-    await handle.read(buffer, 0, length, 0);
-    return { text: buffer.toString("utf8"), stamp: stampOf(info), truncated: info.size > limit };
+    const { bytesRead } = await handle.read(buffer, 0, length, 0);
+    return { text: buffer.toString("utf8", 0, bytesRead), stamp: stampOf(info), truncated: info.size > limit };
   });
 }
 
-/** The stamp of a regular file, without following a link; null when absent or not one. */
+/** The stamp of a regular file, without following a link; null when absent. Any other failure throws, to be said. */
 async function stampAt(path: string): Promise<Stamp | null> {
   try {
     return await withRegular(path, constants.O_RDONLY, async (handle) => stampOf(await handle.stat()));
-  } catch {
-    return null;
+  } catch (error) {
+    if (code(error) === "ENOENT") return null;
+    throw error;
   }
 }
 
@@ -183,13 +216,14 @@ export class Fleet {
   private readonly agentsDir: string;
   private readonly now: () => number;
   private readonly log: (message: string) => void;
-  private readonly started: number;
+  private readonly clock: { read(): AwakeFor };
+  /** Distinguishes review records made in one millisecond. */
+  private seq = 0;
   private readonly ledgers = new Map<string, { stamp: Stamp; fold: LedgerFold; bad: number }>();
   /** Each report.json read, by path, until it changes: one that would not parse is kept as its error. */
   private readonly reports = new Map<string, { stamp: Stamp; summary: ReportSummary | null; error: string | null }>();
   /** The scopes the config last named: a config caught mid-edit keeps them rather than lose the state dirs it names. */
   private lastGood: ScopeConfig[] | null = null;
-  private wake: { at: number; value: number | null } | null = null;
   private writes: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: FleetOptions) {
@@ -199,33 +233,30 @@ export class Fleet {
     this.agentsDir = options.agentsDir ?? paths.agents;
     this.now = options.now ?? Date.now;
     this.log = options.log ?? ((message) => console.log(`[maestro] ${message}`));
-    this.started = this.now();
-  }
-
-  /** When the Mac last woke or booted, or this process started, whichever is latest it can say. */
-  private async awakeSince(): Promise<number> {
-    const now = this.now();
-    if (!this.wake || now - this.wake.at > WAKE_TTL_MS) {
-      this.wake = { at: now, value: await (this.options.awakeSince ?? kernelAwakeSince)() };
-    }
-    return this.wake.value ?? this.started;
+    this.clock =
+      options.clock ??
+      (process.env.MAESTRO_PASEO_FLEET_AWAKE_CLOCK === "wall" ? wallClock(this.now) : new AwakeClock(this.now));
   }
 
   // ── Reading ────────────────────────────────────────────────────────────────
 
   /**
-   * The scopes, from the fleet config. A config that cannot be read or parsed
-   * says why (`error`) and keeps the scopes it last named; with none named
-   * yet, the state dirs under the state root that hold a ledger or ticks. No
-   * config at all is no error: the fleet may not be installed.
+   * The scopes, from the fleet config, read as it is linked (it is yours). A
+   * config that cannot be read or parsed says why (`error`) and keeps the
+   * scopes it last named; with none named yet, the state dirs under the state
+   * root that hold a ledger or ticks. No config at all is no error: the fleet
+   * may not be installed, and the state dirs on disk are what there is.
    */
   private async scopes(): Promise<{ scopes: ScopeConfig[]; error: string | null }> {
-    const fallback = async (error: string | null) => ({ scopes: this.lastGood ?? (await this.discovered()), error });
+    const fallback = async (error: string) => ({ scopes: this.lastGood ?? (await this.discovered()), error });
     let raw: string;
     try {
-      raw = (await readRegular(this.configPath)).text;
+      raw = await readFile(this.configPath, "utf8");
     } catch (error) {
-      if (code(error) === "ENOENT") return fallback(null);
+      if (code(error) === "ENOENT") {
+        this.lastGood = null;
+        return { scopes: await this.discovered(), error: null };
+      }
       return fallback(`The fleet config could not be read: ${(error as Error).message}`);
     }
     let parsed: unknown;
@@ -239,12 +270,16 @@ export class Fleet {
       return fallback(`The fleet config (${this.configPath}) has no scopes.`);
     }
     const scopes: ScopeConfig[] = [];
+    const left: string[] = [];
     for (const [id, value] of Object.entries(sections)) {
       if (!SCOPE_ID.test(id) || typeof value !== "object" || value === null) continue;
       const section = value as Record<string, unknown>;
       const named = typeof section.state_dir === "string" && section.state_dir ? expandHome(section.state_dir) : null;
-      // A relative state dir would resolve against the daemon's folder, not the fleet's: such a scope is left out.
-      if (named !== null && !isAbsolute(named)) continue;
+      // A relative state dir would resolve against whichever folder a process starts in: left out, and said.
+      if (named !== null && !isAbsolute(named)) {
+        left.push(`${id} (state_dir ${named} is relative)`);
+        continue;
+      }
       const minutes = section.tick_timeout_min;
       const budget =
         typeof minutes === "number" && Number.isInteger(minutes) && minutes > 0 ? minutes : DEFAULT_TICK_MINUTES;
@@ -257,7 +292,7 @@ export class Fleet {
       });
     }
     this.lastGood = scopes;
-    return { scopes, error: null };
+    return { scopes, error: left.length > 0 ? `Left out of the Fleet view: ${left.join("; ")}.` : null };
   }
 
   /** State dirs that hold a ledger or ticks: what the fleet wrote, when its config says nothing. */
@@ -289,7 +324,13 @@ export class Fleet {
   }
 
   private async ledger(path: string, warnings: string[]): Promise<LedgerFold> {
-    const stamp = await stampAt(path);
+    let stamp: Stamp | null;
+    try {
+      stamp = await stampAt(path);
+    } catch (error) {
+      warnings.push(`The ledger could not be read: ${(error as Error).message}`);
+      return foldLedger([]);
+    }
     if (stamp === null) return foldLedger([]);
     let cached = this.ledgers.get(path);
     if (cached?.stamp !== stamp) {
@@ -314,7 +355,13 @@ export class Fleet {
 
   private async report(scope: string, stateDir: string, tick: number, warnings: string[]) {
     const path = this.reportPath(stateDir, tick, "report.json");
-    const stamp = await stampAt(path);
+    let stamp: Stamp | null;
+    try {
+      stamp = await stampAt(path);
+    } catch (error) {
+      warnings.push(`Tick ${tick}'s report.json could not be read: ${(error as Error).message}`);
+      return null;
+    }
     if (stamp === null) return null;
     let cached = this.reports.get(path);
     if (cached?.stamp !== stamp) {
@@ -337,8 +384,9 @@ export class Fleet {
   private async schedule(scope: string): Promise<ScopeRead["schedule"]> {
     const path = join(this.agentsDir, plistName(scope));
     try {
-      const [info, read] = await Promise.all([stat(path), readRegular(path, 64 * 1024)]);
-      const interval = /<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(read.text)?.[1];
+      // Yours, like the config: read as it is linked (a LaunchAgent kept in a dotfiles repo is still scheduled).
+      const [info, text] = await Promise.all([stat(path), readFile(path, "utf8")]);
+      const interval = /<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(text)?.[1];
       return { scheduled: true, intervalMs: interval ? Number(interval) * 1000 : null, at: info.mtimeMs };
     } catch {
       return { scheduled: false, intervalMs: null, at: null };
@@ -394,7 +442,7 @@ export class Fleet {
    * tick folder with no ledger record (a report run by hand under any number)
    * stands in only while the ledger holds none, dated by its report.
    */
-  private async newestTick(read: ScopeRead, now: number, awake: number): Promise<FleetTick | null> {
+  private async newestTick(read: ScopeRead, now: number, awake: AwakeFor): Promise<FleetTick | null> {
     const { budgetMs } = read.config;
     const started = [...read.fold.ticks.values()].filter((entry) => entry.fireAt !== null);
     const newest = started.reduce<(typeof started)[number] | null>(
@@ -417,7 +465,7 @@ export class Fleet {
     read: ScopeRead,
     items: readonly WorkItem[],
     now: number,
-    awake: number,
+    awake: AwakeFor,
   ): Promise<{ health: FleetHealth; latest: FleetTick | null }> {
     const latest = await this.newestTick(read, now, awake);
     const base = healthOf({
@@ -426,7 +474,7 @@ export class Fleet {
       intervalMs: read.schedule.intervalMs,
       scheduledAt: read.schedule.at,
       latest,
-      awakeSince: awake,
+      awakeFor: awake,
       now,
     });
     const cover = coverOf(read.config.id, base.status, latest?.failedStep ?? null, base.since, items);
@@ -439,7 +487,8 @@ export class Fleet {
 
   /** What needs you on its own (work.attention): each scope's missed or failing tick not already in Needs you as the fleet's item. */
   async notices(items: readonly WorkItem[]): Promise<FleetNotice[]> {
-    const [{ scopes }, awake] = await Promise.all([this.scopes(), this.awakeSince()]);
+    const { scopes } = await this.scopes();
+    const awake = this.clock.read();
     const now = this.now();
     const reads = await Promise.all(scopes.map((scope) => this.readScope(scope)));
     const out: FleetNotice[] = [];
@@ -453,11 +502,8 @@ export class Fleet {
 
   /** Every scope's summary, and one scope in full: `scope`, else the first. */
   async get(scope?: string, ticks: number = FLEET_TICKS.default): Promise<FleetView> {
-    const [{ scopes, error }, items, awake] = await Promise.all([
-      this.scopes(),
-      this.options.items(),
-      this.awakeSince(),
-    ]);
+    const [{ scopes, error }, items] = await Promise.all([this.scopes(), this.options.items()]);
+    const awake = this.clock.read();
     const now = this.now();
     const reads = await Promise.all(scopes.map((config) => this.readScope(config)));
     const summaries: FleetScope[] = [];
@@ -481,7 +527,7 @@ export class Fleet {
         dryRun: latest?.dryRun ?? newest?.dryRun ?? read.config.dryRun,
         health,
         lastTick: latest ? { tick: latest.tick, at: latest.at, status: latest.status } : null,
-        unreviewed: groupProposals(proposals).filter((group) => group.unreviewed > 0).length,
+        unreviewed: groupProposals(proposals).filter((group) => group.review === null).length,
         openAsks: asks.length,
       });
       if (read !== chosen) continue;
@@ -524,6 +570,15 @@ export class Fleet {
 
   // ── Your verdict ───────────────────────────────────────────────────────────
 
+  /** The newest tick folder and its report's stamp: what a verdict was checked against. */
+  private async reportMark(config: ScopeConfig): Promise<string> {
+    const ticks = await readdir(join(config.stateDir, "ticks")).catch(() => [] as string[]);
+    const newest = ticks.filter((name) => /^\d+$/.test(name)).sort((a, b) => Number(b) - Number(a))[0];
+    if (newest === undefined) return "none";
+    const stamp = await stampAt(this.reportPath(config.stateDir, Number(newest), "report.json")).catch(() => "unread");
+    return `${newest}:${stamp}`;
+  }
+
   /**
    * Records your verdict on proposals in the scope's review file, and returns
    * them with it: one line per key, in one append, fsynced. Every key must be
@@ -549,8 +604,10 @@ export class Fleet {
     const { scopes } = await this.scopes();
     const config = scopes.find((scope) => scope.id === input.scope);
     if (!config) throw new UserError(`The fleet has no scope named ${input.scope}.`);
+    const mark = await this.reportMark(config);
     const view = await this.get(config.id, 1);
-    const current = new Map((view.detail?.proposals ?? []).map((proposal) => [proposal.key, proposal]));
+    const detail = view.detail?.id === config.id ? view.detail : null;
+    const current = new Map((detail?.proposals ?? []).map((proposal) => [proposal.key, proposal]));
     const proposals: FleetProposal[] = [];
     for (const key of new Set(input.keys)) {
       const proposal = current.get(key);
@@ -562,13 +619,20 @@ export class Fleet {
       proposals.push(proposal);
     }
     // Only beside the fleet's own ledger: a config's state_dir that is not a fleet state dir gets nothing.
-    if ((await stampAt(join(config.stateDir, "ledger.jsonl"))) === null) {
+    const ledger = await stampAt(join(config.stateDir, "ledger.jsonl")).catch(() => null);
+    if (ledger === null) {
       throw new UserError(`${config.stateDir} holds no fleet ledger, so no verdict was recorded there.`);
     }
+    await this.options.beforeWrite?.();
+    // A tick that landed while this was checked may propose something else: the verdict waits for a look at it.
+    if ((await this.reportMark(config)) !== mark) {
+      throw new UserError("The fleet ticked while you decided, so nothing was recorded. Look at the Fleet view again.");
+    }
     const at = new Date(this.now());
-    const records = proposals.map((proposal) =>
-      reviewRecord({ scope: config.id, proposal, verdict: input.verdict, note: input.note, at }),
-    );
+    const records = proposals.map((proposal) => {
+      this.seq += 1;
+      return reviewRecord({ scope: config.id, proposal, verdict: input.verdict, note: input.note, at, seq: this.seq });
+    });
     const path = join(config.stateDir, REVIEWS_FILE);
     const flags = constants.O_RDWR | constants.O_APPEND | constants.O_CREAT;
     try {
@@ -584,7 +648,9 @@ export class Fleet {
             await handle.read(last, 0, 1, size - 1);
             lead = last[0] === 0x0a ? "" : "\n";
           }
-          await handle.write(`${lead}${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+          const lines = Buffer.from(`${lead}${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+          const { bytesWritten } = await handle.write(lines);
+          if (bytesWritten !== lines.length) throw new Error(`wrote ${bytesWritten} of ${lines.length} bytes`);
           await handle.sync();
         },
         0o600,

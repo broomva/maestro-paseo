@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { WorkItem } from "../shared/contracts";
-import type { FleetTick } from "../shared/fleet";
+import { type FleetTick, groupProposals } from "../shared/fleet";
 import { groupOf, type OrchState } from "../shared/states";
 import { askBatch, H, report, session } from "./fake-fleet";
 import {
   actProposals,
   asksOf,
+  awakeAsWall,
   coverOf,
   failedStepOf,
   foldLedger,
@@ -139,6 +140,21 @@ describe("the ledger", () => {
       { source: "act", action: "spawn a driver for broomva/workspace#9", verb: "spawn" },
     ]);
     expect(actProposals(fold.dryActs, 6)).toEqual([]);
+    // A verb run by hand outside a tick has no tick number: old news inside a window, never a standing proposal.
+    const byHand = foldLedger([
+      {
+        kind: "intent",
+        id: "owner-1",
+        verb: "resume",
+        key: "session:x",
+        dry_run: true,
+        tick: null,
+        target: { session_id: "x" },
+      },
+      { kind: "done", of: "owner-1", verb: "resume", key: "session:x", dry_run: true, tick: null, ts: at(1) },
+    ]);
+    expect(actProposals(byHand.dryActs, null)).toHaveLength(1);
+    expect(actProposals(byHand.dryActs, 5)).toEqual([]);
   });
 
   test("two verbs under one fleet key are two proposals, each named by what it would do", () => {
@@ -174,6 +190,53 @@ describe("the ledger", () => {
   });
 });
 
+describe("grouping proposals", () => {
+  test("two mails of one template to one recipient with other text are two keys and two cards, never one", () => {
+    const dry = (id: string, text: string) => [
+      {
+        kind: "intent",
+        id,
+        verb: "mail",
+        key: "session:abc",
+        dry_run: true,
+        tick: 7,
+        target: { name: "walrus", template: "stalled", text },
+      },
+      { kind: "done", of: id, verb: "mail", key: "session:abc", dry_run: true, tick: 7, ts: at(0.5) },
+    ];
+    const proposals = actProposals(
+      foldLedger([...dry("7-1", "Still there?"), ...dry("7-2", "Rebase onto main")]).dryActs,
+      null,
+    );
+    expect(proposals.map((proposal) => proposal.action)).toEqual(["mail walrus (stalled)", "mail walrus (stalled)"]);
+    expect(proposals[0]?.key).not.toBe(proposals[1]?.key);
+    // Each card shows its text, so the words a verdict binds are the words on screen.
+    expect(proposals.map((proposal) => proposal.evidence)).toEqual(["text: Rebase onto main", "text: Still there?"]);
+    expect(groupProposals(proposals).map((group) => group.proposals.length)).toEqual([1, 1]);
+  });
+
+  test("sessions judged apart stand apart: a group verdict never overwrites one given a single session", () => {
+    const summary = summarizeReport(
+      report(35, new Date(NOW), {
+        sessions: ["a", "b", "c"].map((id) => session(`${id}0000000-x`, "10", "report only")),
+      }),
+      "alpha",
+      35,
+    );
+    const [a, b, c] = summary?.proposals ?? [];
+    if (!a || !b || !c) throw new Error("three proposals");
+    const rejected = { verdict: "reject" as const, note: "mine", at: at(1), tick: 34 };
+    const groups = groupProposals([{ ...a, review: rejected }, b, c]);
+    // The two still waiting come first, the one you rejected after, each its own decision.
+    expect(
+      groups.map((group) => [group.review?.verdict ?? null, group.proposals.map((p) => p.session?.short)]),
+    ).toEqual([
+      [null, ["b0000000", "c0000000"]],
+      ["reject", ["a0000000"]],
+    ]);
+  });
+});
+
 describe("ticks", () => {
   test("the failed step is the first non-zero of the steps that fail a tick; compare's verdict is not the tick's", () => {
     expect(failedStepOf("recover=0 observe=0 report=0 compare=1 ask=0")).toBeNull();
@@ -199,8 +262,12 @@ describe("ticks", () => {
     expect(tickStatusOf({ ...started(25), ended: true, exit: 1 }, NOW, budget)).toBe("failed");
     expect(tickStatusOf(undefined, NOW, budget)).toBe("unknown");
     // A tick the Mac slept through has its budget from the wake.
-    expect(tickStatusOf(started(240), NOW, budget, NOW - 10 * 60_000)).toBe("running");
-    expect(tickStatusOf(started(240), NOW, budget, NOW - 30 * 60_000)).toBe("died");
+    // Its budget runs on awake time: a tick the Mac slept through after 5 minutes of work is still running...
+    expect(tickStatusOf(started(240), NOW, budget, () => ({ ms: 15 * 60_000, whole: true }))).toBe("running");
+    // ...one that died days ago stays dead after a wake: its awake time since is long past the budget...
+    expect(tickStatusOf(started(3 * 24 * 60), NOW, budget, () => ({ ms: 30 * H, whole: true }))).toBe("died");
+    // ...and one from before the plugin started is judged by wall time, not given a fresh budget at a reload.
+    expect(tickStatusOf(started(3 * 24 * 60), NOW, budget, () => ({ ms: 5 * 60_000, whole: false }))).toBe("died");
   });
 
   test("rows join the ledger with the reports, newest first, up to the limit", () => {
@@ -279,7 +346,8 @@ describe("health", () => {
     scheduled: true,
     intervalMs: H,
     scheduledAt: NOW - 100 * H,
-    awakeSince: null,
+    // Awake the whole time, unless a test says how long it slept.
+    awakeFor: awakeAsWall(NOW),
     now: NOW,
   };
 
@@ -292,10 +360,20 @@ describe("health", () => {
     expect(healthOf({ ...base, latest: tick(35, "ok", 1.9) })).toMatchObject({ status: "ok" });
   });
 
-  test("the time the Mac slept does not count: missed only 2 h after it woke with no tick", () => {
-    const slept = { ...base, latest: tick(35, "ok", 9) };
-    expect(healthOf({ ...slept, awakeSince: NOW - 1.5 * H }).status).toBe("ok");
-    expect(healthOf({ ...slept, awakeSince: NOW - 2.5 * H }).status).toBe("missed");
+  test("only awake time counts, as launchd counts its interval: however the sleeps fall, 2 h awake is missed", () => {
+    const slept = (sleptMs: number) => ({
+      ...base,
+      latest: tick(35, "ok", 9),
+      awakeFor: (from: number) => ({ ms: NOW - from - sleptMs, whole: true }),
+    });
+    // 9 h since the last tick, 7.5 h of them asleep: 1.5 h awake, so launchd has had no fair chance to miss two.
+    expect(healthOf(slept(7.5 * H)).status).toBe("ok");
+    // 6.5 h asleep in short naps between meetings: 2.5 h awake, missed, and the reason says how much was sleep.
+    expect(healthOf(slept(6.5 * H))).toMatchObject({
+      status: "missed",
+      reason: "No tick for 9h (2h 30m of it awake): the last was tick 35. It runs every hour.",
+      notice: "No tick since tick 35. It runs every hour.",
+    });
   });
 
   test("a longer interval stretches the threshold to two intervals", () => {
@@ -383,6 +461,14 @@ describe("the fleet's work in Maestro", () => {
     expect(coverOf("alpha", "missed", null, at(3), observe)).toBeNull();
   });
 
+  test("a missed tick is covered only by an open alert: an answer to one cause must not silence the next", () => {
+    const answered = {
+      ...work("w", "fleet alpha: lock [fleet-reconcile alpha alert lock]", "done"),
+      updatedAt: at(0.5),
+    };
+    expect(coverOf("alpha", "missed", null, at(3), [answered])).toBeNull();
+  });
+
   test("an alert you answered after the failure began counts as answered: the failure is yours already", () => {
     const answered = {
       ...work("w", "fleet alpha: tick-ask [fleet-reconcile alpha alert tick-ask]", "done"),
@@ -448,11 +534,11 @@ describe("reviews", () => {
   });
 
   test("a record says what you decided about which proposal, as the fleet reads it, by you through Maestro", () => {
-    const record = reviewRecord({ scope: "alpha", proposal, verdict: "reject", note: "  ", at: new Date(NOW) });
+    const record = reviewRecord({ scope: "alpha", proposal, verdict: "reject", note: "  ", at: new Date(NOW), seq: 7 });
     expect(record).toEqual({
       v: 1,
       kind: REVIEW_KIND,
-      id: `review-${NOW}`,
+      id: `review-${NOW}-7`,
       scope: "alpha",
       key: proposal.key,
       verdict: "reject",

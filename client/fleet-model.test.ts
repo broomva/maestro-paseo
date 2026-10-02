@@ -83,34 +83,35 @@ describe("the Fleet view's words", () => {
     );
   });
 
-  test("proposals that read the same are one group, in the fleet's order; a group's verdict is one, or how they split", () => {
+  test("proposals that read the same and stand the same with you are one group; waiting ones first", () => {
     const at = (minutes: number) => ({ verdict: "accept" as const, note: null, at: minutesAgo(minutes), tick: 35 });
     const groups = groupProposals([
       proposal("a", { review: at(9) }),
       proposal("b", { classId: "4", className: "error", action: "report" }),
       proposal("c", { review: at(2) }),
       proposal("d"),
+      proposal("e"),
     ]);
-    expect(groups.map((group) => [group.action, group.proposals.map((entry) => entry.key)])).toEqual([
-      ["report", ["a", "c", "d"]],
-      ["report", ["b"]],
+    expect(
+      groups.map((group) => [group.action, group.review?.verdict ?? null, group.proposals.map((p) => p.key)]),
+    ).toEqual([
+      ["report", null, ["d", "e"]],
+      ["report", "accept", ["a", "c"]],
+      ["report", null, ["b"]],
     ]);
-    const [unmanaged, error] = groups;
-    if (!unmanaged || !error) throw new Error("two groups");
-    expect([unmanaged.accepted, unmanaged.rejected, unmanaged.unreviewed]).toEqual([2, 0, 1]);
-    expect(groupReviewText(unmanaged, NOW)).toBe("2 accepted, 1 not reviewed");
-    expect(groupReviewText(error, NOW)).toBe("Not reviewed");
-    expect(groupSubject(unmanaged)).toBe("3 sessions");
+    const [waiting, accepted, error] = groups;
+    if (!waiting || !accepted || !error) throw new Error("three groups");
+    expect(groupReviewText(waiting, NOW)).toBe("Not reviewed");
+    // One verdict for the group, the newest time.
+    expect(groupReviewText(accepted, NOW)).toBe("You accepted this 2m ago");
+    expect(groupSubject(waiting)).toBe("2 sessions");
     expect(groupSubject(error)).toBe("b worried-walrus");
-    expect(proposalsHeading(groups)).toBe("2 · 2 to review");
-    // A verdict writes only the keys not already given it: pressing Accept again adds no lines.
-    expect(keysFor(unmanaged, "accept")).toEqual(["d"]);
-    expect(keysFor(unmanaged, "reject")).toEqual(["a", "c", "d"]);
-    // All given one verdict: the group says it once, with the newest time.
-    const [all] = groupProposals([proposal("a", { review: at(9) }), proposal("c", { review: at(2) })]);
-    expect(all?.review?.at).toBe(minutesAgo(2));
-    expect(all && groupReviewText(all, NOW)).toBe("You accepted this 2m ago");
-    expect(all && proposalsHeading([all])).toBe("1 · all reviewed");
+    expect(proposalsHeading(groups)).toBe("3 · 2 to review");
+    expect(proposalsHeading([accepted])).toBe("1 · all reviewed");
+    // A verdict writes the group's keys, unless it already has that verdict: then none, and no lines.
+    expect(keysFor(waiting, "accept")).toEqual(["d", "e"]);
+    expect(keysFor(accepted, "accept")).toEqual([]);
+    expect(keysFor(accepted, "reject")).toEqual(["a", "c"]);
   });
 
   test("a notice says the scope, what is wrong, for how long, and the fleet's still words", () => {
