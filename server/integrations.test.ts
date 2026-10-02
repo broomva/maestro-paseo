@@ -45,6 +45,8 @@ async function withPlugin(
     MAESTRO_PASEO_FLEET_CONFIG: join(root, "fleet", "fleet.json"),
     MAESTRO_PASEO_FLEET_STATE: join(root, "fleet", "state"),
     MAESTRO_PASEO_FLEET_AGENTS: join(root, "fleet", "agents"),
+    // Awake for days: what counts toward a missed tick is the test's, not this machine's last wake.
+    MAESTRO_PASEO_FLEET_AWAKE: String(Date.now() - 100 * 3_600_000),
   };
   const saved = {
     MAESTRO_PASEO_CONFIG: process.env.MAESTRO_PASEO_CONFIG,
@@ -166,13 +168,13 @@ test("the Fleet view, your verdict and a missed tick in the header count, throug
 
     const [proposal] = view.detail?.proposals ?? [];
     if (!proposal) throw new Error("the fixture proposes nothing");
-    const { proposal: reviewed } = (await call("fleet.review", {
+    const { proposals } = (await call("fleet.review", {
       scope: "broomva",
-      key: proposal.key,
+      keys: [proposal.key],
       verdict: "reject",
       note: "Not yet",
-    })) as { proposal: FleetView["scopes"][number] & { review: { verdict: string; note: string } } };
-    expect(reviewed.review).toMatchObject({ verdict: "reject", note: "Not yet" });
+    })) as { proposals: NonNullable<FleetView["detail"]>["proposals"] };
+    expect(proposals[0]?.review).toMatchObject({ verdict: "reject", note: "Not yet" });
     const lines = (await readFile(join(fleet.state, "broomva", "proposal-reviews.jsonl"), "utf8")).trim().split("\n");
     expect(lines.map((line) => JSON.parse(line).verdict)).toEqual(["reject"]);
   });

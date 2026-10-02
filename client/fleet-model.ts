@@ -6,10 +6,12 @@ import type {
   ClassCount,
   FleetAsk,
   FleetHealthStatus,
+  FleetNotice,
   FleetProposal,
   FleetReview,
   FleetScope,
   FleetTick,
+  ProposalGroup,
   TickStatus,
 } from "../shared/fleet";
 import { PLAIN_VOICE } from "../shared/states";
@@ -82,11 +84,6 @@ export function tickLabel(tick: FleetTick, now: number = Date.now()): string {
   return `Tick ${tick.tick}, ${TICK_LABEL[tick.status].toLowerCase()}${step}, ${agoText(tick.at, now) ?? "time unknown"}`;
 }
 
-/** Proposals without your verdict first, each group in the fleet's order. */
-export function sortProposals(proposals: readonly FleetProposal[]): FleetProposal[] {
-  return [...proposals.filter((p) => p.review === null), ...proposals.filter((p) => p.review !== null)];
-}
-
 /** Where a proposal stands with you, in words. */
 export function reviewText(review: FleetReview | null, now: number = Date.now()): string {
   if (!review) return "Not reviewed";
@@ -142,7 +139,40 @@ export function lastTickText(scope: FleetScope, now: number = Date.now()): strin
   return `Tick ${last.tick}${when ? `, ${when}` : ""}`;
 }
 
-export function proposalsHeading(proposals: readonly FleetProposal[]): string {
-  const open = proposals.filter((p) => p.review === null).length;
-  return open > 0 ? `${proposals.length} · ${open} to review` : `${proposals.length} · all reviewed`;
+/** The Would do heading's count: the groups, and how many still wait on you. */
+export function proposalsHeading(groups: readonly ProposalGroup[]): string {
+  const open = groups.filter((group) => group.unreviewed > 0).length;
+  return open > 0 ? `${groups.length} · ${open} to review` : `${groups.length} · all reviewed`;
+}
+
+/** Where a group stands with you: one verdict for all, or how they split. */
+export function groupReviewText(group: ProposalGroup, now: number = Date.now()): string {
+  if (group.review) return reviewText(group.review, now);
+  if (group.accepted === 0 && group.rejected === 0) return "Not reviewed";
+  const parts = [
+    group.accepted > 0 ? `${group.accepted} accepted` : null,
+    group.rejected > 0 ? `${group.rejected} rejected` : null,
+    group.unreviewed > 0 ? `${group.unreviewed} not reviewed` : null,
+  ].filter(Boolean);
+  return parts.join(", ");
+}
+
+/** What a group is about: its one session or verb, or how many sessions. */
+export function groupSubject(group: ProposalGroup): string {
+  const [first] = group.proposals;
+  if (group.proposals.length === 1 && first) return proposalSubject(first);
+  return plural(group.proposals.length, "session");
+}
+
+/** The keys a verdict writes: those not already given it, so pressing again adds no lines. */
+export function keysFor(group: ProposalGroup, verdict: FleetReview["verdict"]): string[] {
+  return group.proposals.filter((proposal) => proposal.review?.verdict !== verdict).map((proposal) => proposal.key);
+}
+
+/** A fleet notice as the header area says it: the scope, what is wrong, for how long, and why. */
+export function noticeText(notice: FleetNotice, now: number = Date.now()): string {
+  const what = notice.status === "missed" ? "missed tick" : "failing tick";
+  const since = notice.since ? ago(notice.since, now) : "";
+  const span = since && since !== "now" ? ` for ${since}` : "";
+  return `Fleet ${notice.scope}: ${what}${span}. ${notice.reason}`;
 }

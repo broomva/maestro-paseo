@@ -106,7 +106,12 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   }
 
   const listPane = (
-    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: pad, gap: space[5] }}>
+    // A tap on a button below a note field acts on the first tap, not only closes the keyboard.
+    <ScrollView
+      style={{ flex: 1 }}
+      contentContainerStyle={{ padding: pad, gap: space[5] }}
+      keyboardShouldPersistTaps="handled"
+    >
       <View style={{ gap: space[2] }}>
         <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[3] }}>
           <View style={{ flex: 1, gap: space[1] }}>

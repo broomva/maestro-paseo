@@ -37,6 +37,8 @@ export type TickStatus = (typeof TICK_STATUS)[number];
 export const REVIEW_VERDICTS = ["accept", "reject"] as const;
 export type ReviewVerdict = (typeof REVIEW_VERDICTS)[number];
 export const REVIEW_NOTE_CHARS = 1000;
+/** Keys one verdict may cover: a group's sessions. */
+export const REVIEW_KEYS_MAX = 500;
 
 /** The fleet's spec's class table (§5.4), for class counts whose report names none. */
 export const FLEET_CLASSES: Record<string, string> = {
@@ -67,16 +69,19 @@ export type FleetItem = z.infer<typeof FleetItemSchema>;
 
 export const FleetHealthSchema = z.object({
   status: z.enum(FLEET_HEALTH),
-  /** In words, one sentence. */
+  /** In words, one sentence, with how long when it matters. */
   reason: z.string(),
+  /** The same, without a running span: what a notice says (FleetNoticeSchema). */
+  notice: z.string(),
   /** When the condition began: the last tick's start for `missed`, the failing tick's for `failing`. */
   since: z.string().nullable(),
   /** The fleet's own open alert item for this condition, when it raised one. */
   item: FleetItemSchema.nullable(),
   /**
-   * Whether this needs you on its own: `missed` or `failing`, and not already
-   * in Needs you as the fleet's alert item (`item`). It is then shown and
-   * counted once, as the fleet's item, never twice.
+   * Whether this needs you on its own: a missed tick, or a failing one on a
+   * scheduled scope, and not already in Needs you as the fleet's alert item
+   * (`item`; then it is counted once, there) nor answered there since it
+   * began (`item` done or canceled after `since`).
    */
   needsYou: z.boolean(),
 });
@@ -166,7 +171,7 @@ export const FleetScopeSchema = z.object({
   dryRun: z.boolean().nullable(),
   health: FleetHealthSchema,
   lastTick: z.object({ tick: z.number(), at: z.string().nullable(), status: z.enum(TICK_STATUS) }).nullable(),
-  /** Proposals in the latest report with no verdict from you. */
+  /** Groups of proposals (groupProposals) with any proposal you have not given a verdict. */
   unreviewed: z.number(),
   openAsks: z.number(),
 });
@@ -208,19 +213,83 @@ export const getFleet = defineRpc({
 });
 export type FleetView = z.infer<typeof getFleet.output>;
 
-/** Your verdict on a proposal, written to the fleet's review file. Yours alone: never on the agent socket. */
+/**
+ * Your verdict on proposals, written to the scope's review file: one line per
+ * key, all in one append, or none when any key is no longer proposed. Each key
+ * binds the proposal's words (proposalKey), so a verdict cannot land on words
+ * you did not see. Yours alone: never on the agent socket.
+ */
 export const reviewProposal = defineRpc({
   name: "fleet.review",
   input: z.object({
     scope: z.string().min(1),
-    key: z.string().min(1),
+    keys: z.array(z.string().min(1)).min(1).max(REVIEW_KEYS_MAX),
     verdict: z.enum(REVIEW_VERDICTS),
     note: z.string().max(REVIEW_NOTE_CHARS).default(""),
   }),
-  output: z.object({ proposal: FleetProposalSchema }),
+  output: z.object({ proposals: z.array(FleetProposalSchema) }),
 });
 
-/** A scope's tick that needs you on its own (FleetHealth.needsYou), as work.attention carries it. */
+/**
+ * Proposals that read the same, grouped: one class and one action across many
+ * sessions is one decision ("would only report unmanaged sessions"), made once
+ * for all of them. A coordinator verb names its target, so it stands alone.
+ */
+export interface ProposalGroup {
+  key: string;
+  action: string;
+  classId: string | null;
+  className: string | null;
+  source: FleetProposal["source"];
+  proposals: FleetProposal[];
+  accepted: number;
+  rejected: number;
+  unreviewed: number;
+  /** The newest verdict, when every proposal in the group has the same one. */
+  review: FleetReview | null;
+}
+
+export function groupProposals(proposals: readonly FleetProposal[]): ProposalGroup[] {
+  const groups = new Map<string, ProposalGroup>();
+  for (const proposal of proposals) {
+    const key = `${proposal.source}:${proposal.classId ?? ""}:${proposal.action}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        key,
+        action: proposal.action,
+        classId: proposal.classId,
+        className: proposal.className,
+        source: proposal.source,
+        proposals: [],
+        accepted: 0,
+        rejected: 0,
+        unreviewed: 0,
+        review: null,
+      };
+      groups.set(key, group);
+    }
+    group.proposals.push(proposal);
+    if (proposal.review?.verdict === "accept") group.accepted += 1;
+    else if (proposal.review?.verdict === "reject") group.rejected += 1;
+    else group.unreviewed += 1;
+  }
+  for (const group of groups.values()) {
+    const reviews = group.proposals.map((proposal) => proposal.review);
+    const [first] = reviews;
+    if (first && reviews.every((review) => review?.verdict === first.verdict)) {
+      group.review = reviews.reduce((newest, review) => (review && newest && review.at > newest.at ? review : newest));
+    }
+  }
+  return [...groups.values()];
+}
+
+/**
+ * A scope's tick that needs you on its own (FleetHealth.needsYou), as
+ * work.attention carries it. Its words hold still while the condition lasts
+ * (no running span: the client says how long from `since`), so the header
+ * count's poller can see nothing changed and slow down.
+ */
 export const FleetNoticeSchema = z.object({
   scope: z.string(),
   status: z.enum(["missed", "failing"]),

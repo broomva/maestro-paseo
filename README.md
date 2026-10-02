@@ -241,29 +241,48 @@ The **Fleet** view shows the rest, per scope, read from those files:
   off (the fleet's kill switch), or not scheduled (no LaunchAgent runs it).
   - A scope is missed when it is scheduled and no tick has started for over 2 hours, or two of its
     intervals if that is longer.
-  - The clock counts from the later of the last tick and the Mac's last wake. launchd skips ticks
-    while the Mac sleeps, so a morning does not read as missed.
-- **Asks and alerts.** Each open ask in the newest report links to the work the fleet raised for
-  its batch, and the scope's open alerts link to theirs. You answer them there, at the gate; they
-  are never copied.
+  - The clock counts from the later of the last tick and the Mac's last wake or boot, which the
+    kernel reports (`kern.waketime`, `kern.boottime`). launchd skips ticks while the Mac sleeps or
+    is off, so a morning, a cold boot or a plugin reload does not read as missed.
+  - A tick the Mac slept through has its time budget counted from the wake.
+- **Asks and alerts.**
+  - The open asks are every ask the newest report counts as open: those still open, those new this
+    tick, and those it could not check.
+  - Each links to the work the fleet recorded for its batch. The scope's open alerts link to
+    theirs.
+  - You answer them there, at the gate; they are never copied.
 - **Would do.** These are proposals: each in-scope session whose "would do" in the newest report is
-  something other than nothing, plus any verb the coordinator logged under dry run. Accept or
-  reject each one, with an optional note on a reject. A proposal keeps its key from tick to tick
-  while its session, class and words stay the same, so one verdict holds until the fleet proposes
-  something else.
+  something other than nothing, plus any verb the coordinator logged under dry run.
+  - Proposals that read the same, one class and one action across many sessions, are one card, and
+    one verdict covers all of them. sri's 28 rows are a few decisions, not 28.
+  - Accept or reject each one; a reject asks for an optional note first.
+  - A proposal's key binds its session, its class and its words. For a coordinator verb, the key
+    binds the label and whether it adds or removes it, or the mail's template and text. So one
+    verdict holds while the fleet proposes the same thing, and a verdict made on a page gone stale
+    is refused rather than recorded against different words.
 - **Ticks.** The last 24, each with its time, its exit and which step failed, and its class counts.
-- **Report.** The newest `report.md`, drawn natively. On a phone, its tables become one card per
-  row.
+- **Report.** The newest `report.md`, drawn natively, up to 128 KB. On a phone, its tables become
+  one card per row.
 
 A missed or failing tick also shows above every other view and in the header count, so it reaches
-the phone. When the fleet raised its own alert for it (`tick-<step>` for a failed step, or `lock`,
-`config` or `statedir` for ticks that never start) and that alert is in Needs you, it is counted
-there, once.
+the phone. A failing tick counts only on a scheduled scope; one run by hand was seen by whoever ran
+it. When the fleet raised its own alert for the condition, it is counted there, once. That alert
+is `tick-<step>` for a failed step, or `lock`, `config`, `statedir` or `tick` for ticks that never
+start. The rule depends on the alert's state:
 
-**Your verdicts go to the fleet, and change nothing it does.** The fleet has no verb that records
-a review, so Maestro appends each verdict to `proposal-reviews.jsonl` in the scope's state dir:
-one JSON line per verdict, mode 0600, fsynced, with the latest line for a key winning. The fleet
-does not read the file yet: BRO-2766 adds that, so its report shows each verdict.
+- In Needs you: counted there, and not again as a notice.
+- Answered (done or canceled) after the condition began: already yours, so not counted again.
+- Still queued: the notice counts, and links to it.
+
+**Your verdicts go to the fleet, and change nothing it does.** The fleet has no verb that records a
+review, so Maestro defines one file for it to read: `proposal-reviews.jsonl` beside the scope's
+`ledger.jsonl`. BRO-2766 asks the fleet to read it, so its report shows each verdict.
+
+- Each verdict is one JSON line per key, all in one append. The file is mode 0600 and fsynced, and
+  the latest line for a key wins.
+- Maestro writes it only where a fleet ledger is, never through a symlink, and only lines of its
+  own shape (`by: owner`, `via: maestro`) are read back.
+- Like the ledger, it is not a boundary: any process running as you can write it.
 
 ```json
 {"v":1,"kind":"proposal_review","id":"review-1791000000000","scope":"broomva",
@@ -277,16 +296,22 @@ Nothing else in the fleet's files is written:
 - not its ledger;
 - not its config, mode, dry run or kill switch.
 
-Verdicts are yours alone, so the agent socket refuses `fleet.review`.
+Verdicts are yours alone, so the agent socket refuses `fleet.review`. Every file is read without
+following a symlink, and a FIFO is refused rather than waited on.
 
 The fleet's files are found where it keeps them:
 
-- the config: `FLEET_CONFIG`, else `~/.config/ctx/fleet.json`;
-- the state dirs that config names;
+- the config: `FLEET_CONFIG`, else `~/.config/ctx/fleet.json`. A scope with a relative `state_dir`
+  is left out. A config caught mid-edit keeps the scopes it last named, and the view says why.
+- the state dirs that config names.
 - the LaunchAgents in `~/Library/LaunchAgents`.
 
-`MAESTRO_PASEO_FLEET_CONFIG`, `MAESTRO_PASEO_FLEET_STATE` and `MAESTRO_PASEO_FLEET_AGENTS` override
-each for a second daemon or a test.
+For a second daemon or a test, these override the defaults:
+
+- `MAESTRO_PASEO_FLEET_CONFIG` overrides the config.
+- `MAESTRO_PASEO_FLEET_STATE` overrides where state dirs are looked for when no config names them.
+- `MAESTRO_PASEO_FLEET_AGENTS` overrides the LaunchAgents folder.
+- `MAESTRO_PASEO_FLEET_AWAKE` (epoch ms) overrides the kernel's wake time.
 
 ## The agent's instructions
 

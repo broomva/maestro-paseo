@@ -11,7 +11,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { attentionWork } from "../shared/contracts";
@@ -20,9 +20,12 @@ import {
   type FleetDetail,
   type FleetItem,
   type FleetProposal,
+  type FleetView as FleetRead,
   type FleetScope,
   type FleetTick,
   getFleet,
+  groupProposals,
+  type ProposalGroup,
   type ReviewVerdict,
   reviewProposal,
 } from "../shared/fleet";
@@ -32,16 +35,17 @@ import {
   askMeta,
   askWhere,
   classText,
+  groupReviewText,
+  groupSubject,
   HEALTH_LABEL,
   healthTone,
+  keysFor,
   lastTickText,
   modeText,
-  proposalClass,
+  noticeText,
   proposalSubject,
   proposalsHeading,
-  reviewText,
   scopeChipLabel,
-  sortProposals,
   TICK_LABEL,
   tickLabel,
   tickTone,
@@ -247,29 +251,68 @@ function AskRow({
   );
 }
 
+/**
+ * Puts verdicts the host has just recorded into every Fleet read held, so the
+ * card says so at once: no second tap on a button that still reads Accept,
+ * and nothing moves under the finger while the refetch is on its way.
+ */
+function useApplyReviews() {
+  const client = useQueryClient();
+  return (scope: string, reviewed: readonly FleetProposal[]) => {
+    const byKey = new Map(reviewed.map((proposal) => [proposal.key, proposal.review]));
+    client.setQueriesData<FleetRead>({ queryKey: ["maestro", "fleet"] }, (view) => {
+      if (!view?.detail || view.detail.id !== scope) return view;
+      const proposals = view.detail.proposals.map((proposal) =>
+        byKey.has(proposal.key) ? { ...proposal, review: byKey.get(proposal.key) ?? null } : proposal,
+      );
+      const unreviewed = groupProposals(proposals).filter((group) => group.unreviewed > 0).length;
+      return {
+        ...view,
+        scopes: view.scopes.map((entry) => (entry.id === scope ? { ...entry, unreviewed } : entry)),
+        detail: { ...view.detail, proposals },
+      };
+    });
+  };
+}
+
+/** How many sessions a group lists before "Show all". */
+const GROUP_SHOWN = 3;
+
 function ProposalCard({
   theme,
   scope,
-  proposal,
+  group,
   compact,
 }: {
   theme: PluginTheme;
   scope: string;
-  proposal: FleetProposal;
+  group: ProposalGroup;
   compact: boolean;
 }) {
   const text = useText(theme);
   const toast = useToast();
   const refresh = useRefresh();
+  const apply = useApplyReviews();
   const send = useRpc(reviewProposal);
-  const review = useMutation({ mutationFn: send, onSettled: refresh });
+  // The card says it from the host's answer at once. The refetch after is not waited on: an onSettled that
+  // returned its promise would hold every callback below until it landed, on a slow relay too.
+  const review = useMutation({
+    mutationFn: send,
+    onSuccess: ({ proposals }, sent) => apply(sent.scope, proposals),
+    onSettled: () => {
+      void refresh();
+    },
+  });
   const [rejecting, setRejecting] = useState(false);
   const [note, setNote] = useState("");
-  const verdict = proposal.review?.verdict ?? null;
-  const subject = proposalSubject(proposal);
-  const decide = (choice: ReviewVerdict, words = "") =>
+  const [all, setAll] = useState(false);
+  const subject = groupSubject(group);
+  const many = group.proposals.length > 1;
+  const decide = (choice: ReviewVerdict, words = "") => {
+    const keys = keysFor(group, choice);
+    if (keys.length === 0) return;
     review.mutate(
-      { scope, key: proposal.key, verdict: choice, note: words },
+      { scope, keys, verdict: choice, note: words },
       {
         onSuccess: () => {
           setRejecting(false);
@@ -278,17 +321,50 @@ function ProposalCard({
         onError: (error) => toast.error(errorText(error)),
       },
     );
-  const klass = proposalClass(proposal);
+  };
+  const klass = group.classId
+    ? group.className
+      ? `Class ${group.classId}, ${group.className}`
+      : `Class ${group.classId}`
+    : null;
+  const [first] = group.proposals;
+  const sessions = group.proposals.filter((proposal) => proposal.session);
+  const shown = all ? sessions : sessions.slice(0, GROUP_SHOWN);
+  const verdict = group.review?.verdict ?? null;
+  const label = `${group.action}, ${subject}`;
   return (
     <Card theme={theme} style={{ gap: space[2] }}>
-      <Text style={[text.body, { fontWeight: "600" }]}>Would {proposal.action}</Text>
+      <Text style={[text.body, { fontWeight: "600" }]}>Would {group.action}</Text>
       <Text style={text.small} numberOfLines={2}>
-        {[subject, klass, proposal.tick !== null ? `tick ${proposal.tick}` : null].filter(Boolean).join(" · ")}
+        {[subject, klass, first?.tick !== null && first?.tick !== undefined ? `tick ${first.tick}` : null]
+          .filter(Boolean)
+          .join(" · ")}
       </Text>
-      {proposal.evidence ? (
+      {!many && first?.evidence ? (
         <Text style={text.muted} numberOfLines={3}>
-          {proposal.evidence}
+          {first.evidence}
         </Text>
+      ) : null}
+      {many ? (
+        <View style={{ gap: 2 }}>
+          {shown.map((proposal) => (
+            <Text key={proposal.key} style={text.small} numberOfLines={1}>
+              {proposalSubject(proposal)}
+            </Text>
+          ))}
+          {sessions.length > GROUP_SHOWN ? (
+            <View style={{ flexDirection: "row" }}>
+              <Button
+                theme={theme}
+                variant="quiet"
+                label={all ? "Show fewer" : `Show all ${sessions.length}`}
+                compact={compact}
+                accessibilityLabel={`${all ? "Show fewer" : "Show all"} sessions: ${group.action}`}
+                onPress={() => setAll((open) => !open)}
+              />
+            </View>
+          ) : null}
+        </View>
       ) : null}
       <Text
         style={[
@@ -303,7 +379,7 @@ function ProposalCard({
           },
         ]}
       >
-        {reviewText(proposal.review)}
+        {groupReviewText(group)}
       </Text>
       {rejecting ? (
         <View style={{ gap: space[2] }}>
@@ -313,7 +389,7 @@ function ProposalCard({
             multiline
             placeholder="Why not? (optional)"
             placeholderTextColor={theme.colors.foregroundMuted}
-            accessibilityLabel={`Why reject: ${proposal.action}, ${subject}`}
+            accessibilityLabel={`Why reject: ${label}`}
             style={{
               minHeight: 56,
               padding: space[3],
@@ -330,10 +406,10 @@ function ProposalCard({
             <Button
               theme={theme}
               variant="primary"
-              label="Reject"
+              label={many ? `Reject all ${group.proposals.length}` : "Reject"}
               compact={compact}
               busy={review.isPending}
-              accessibilityLabel={`Confirm reject: ${proposal.action}, ${subject}`}
+              accessibilityLabel={`Confirm reject: ${label}`}
               onPress={() => decide("reject", note)}
             />
             <Button
@@ -341,6 +417,7 @@ function ProposalCard({
               variant="quiet"
               label="Keep it"
               compact={compact}
+              disabled={review.isPending}
               onPress={() => setRejecting(false)}
             />
           </View>
@@ -351,11 +428,11 @@ function ProposalCard({
             theme={theme}
             variant={verdict === "accept" ? "secondary" : "primary"}
             icon="Check"
-            label={verdict === "accept" ? "Accepted" : "Accept"}
+            label={verdict === "accept" ? "Accepted" : many ? `Accept all ${group.proposals.length}` : "Accept"}
             compact={compact}
-            busy={review.isPending && review.variables?.verdict === "accept"}
+            busy={review.isPending}
             disabled={verdict === "accept"}
-            accessibilityLabel={`Accept: ${proposal.action}, ${subject}`}
+            accessibilityLabel={`Accept: ${label}`}
             onPress={() => decide("accept")}
           />
           <Button
@@ -363,8 +440,8 @@ function ProposalCard({
             icon="X"
             label={verdict === "reject" ? "Rejected" : "Reject"}
             compact={compact}
-            disabled={verdict === "reject"}
-            accessibilityLabel={`Reject: ${proposal.action}, ${subject}`}
+            disabled={verdict === "reject" || review.isPending}
+            accessibilityLabel={`Reject: ${label}`}
             onPress={() => setRejecting(true)}
           />
         </View>
@@ -509,7 +586,7 @@ export function FleetView({
           <Section
             theme={theme}
             title="Would do"
-            meta={detail.proposals.length > 0 ? proposalsHeading(detail.proposals) : undefined}
+            meta={detail.proposals.length > 0 ? proposalsHeading(groupProposals(detail.proposals)) : undefined}
           >
             <Text style={text.small}>
               {current.dryRun === false
@@ -519,14 +596,8 @@ export function FleetView({
             {detail.proposals.length === 0 ? (
               <Text style={text.muted}>The latest report proposes nothing.</Text>
             ) : (
-              sortProposals(detail.proposals).map((proposal) => (
-                <ProposalCard
-                  key={proposal.key}
-                  theme={theme}
-                  scope={current.id}
-                  proposal={proposal}
-                  compact={compact}
-                />
+              groupProposals(detail.proposals).map((group) => (
+                <ProposalCard key={group.key} theme={theme} scope={current.id} group={group} compact={compact} />
               ))
             )}
           </Section>
@@ -613,7 +684,7 @@ export function FleetNotices({
             />
           }
         >
-          {`Fleet ${notice.scope}: ${notice.status === "missed" ? "missed tick" : "failing tick"}. ${notice.reason}`}
+          {noticeText(notice)}
         </Notice>
       ))}
     </View>

@@ -365,11 +365,30 @@ const fleetProposals = (): FleetProposal[] => [
 const FLEET_REPORT =
   "# fleet-reconcile · broomva · tick 35\n\nReport only (phase 1).\n\n## Classes\n\n| # | class | sessions |\n|---|---|---|\n| 1 | out of scope | 53 |\n| 4 | error | 1 |\n";
 let fleetNotices: FleetNotice[] = [];
+/** While set, fleet.get answers only once it resolves: a refetch still on its way. */
+let fleetHeld: Promise<void> | null = null;
+/** sri: one class and one action across three sessions, which is one decision. */
+let sriProposals: FleetProposal[] = [];
+const sriFixture = (): FleetProposal[] =>
+  ["aaaa1111", "bbbb2222", "cccc3333", "dddd4444"].map((short) => ({
+    key: `session:${short}:10:feedface`,
+    source: "report" as const,
+    tick: 6,
+    at: null,
+    action: "report only",
+    session: { id: `${short}-x`, short, name: `sri-${short}`, kind: "background", status: "done", cwd: "~" },
+    classId: "10",
+    className: "unmanaged",
+    evidence: "no fleet key, not adopted",
+    verb: null,
+    review: null,
+  }));
 let proposalsNow = fleetProposals();
 const fleetView = (scope: string | undefined): FleetView => {
   const missed = {
     status: "missed" as const,
     reason: "No tick for 3h: the last was tick 35. It runs every hour.",
+    notice: "No tick since tick 35. It runs every hour.",
     since: new Date(Date.now() - 3 * H).toISOString(),
     item: null,
     needsYou: true,
@@ -391,6 +410,7 @@ const fleetView = (scope: string | undefined): FleetView => {
       health: {
         status: "unscheduled" as const,
         reason: "Not scheduled: no LaunchAgent runs it.",
+        notice: "Not scheduled: no LaunchAgent runs it.",
         since: null,
         item: null,
         needsYou: false,
@@ -442,7 +462,7 @@ const fleetView = (scope: string | undefined): FleetView => {
         },
       ],
       report: id === "broomva" ? { tick: 35, markdown: FLEET_REPORT, truncated: false } : null,
-      proposals: id === "broomva" ? proposalsNow : [],
+      proposals: id === "broomva" ? proposalsNow : sriProposals,
       asks:
         id === "broomva"
           ? [
@@ -476,12 +496,18 @@ const invoke = async (method: string, input: unknown) => {
   if (method === "work.list") return { root: "/work", items, warnings: [], scoreboard: board() };
   if (method === "work.history") return { events: history(), capped: false };
   if (method === "work.attention") return { waiting: [], sessions: [], fleet: fleetNotices };
-  if (method === "fleet.get") return fleetView((input as { scope?: string }).scope);
+  if (method === "fleet.get") {
+    if (fleetHeld) await fleetHeld;
+    return fleetView((input as { scope?: string }).scope);
+  }
   if (method === "fleet.review") {
-    const { key, verdict, note } = input as { key: string; verdict: "accept" | "reject"; note: string };
+    const { keys, verdict, note } = input as { keys: string[]; verdict: "accept" | "reject"; note: string };
     const review = { verdict, note: note || null, at: new Date().toISOString(), tick: 35 };
-    proposalsNow = proposalsNow.map((entry) => (entry.key === key ? { ...entry, review } : entry));
-    return { proposal: proposalsNow.find((entry) => entry.key === key) };
+    const mark = (list: FleetProposal[]) =>
+      list.map((entry) => (keys.includes(entry.key) ? { ...entry, review } : entry));
+    proposalsNow = mark(proposalsNow);
+    sriProposals = mark(sriProposals);
+    return { proposals: [...proposalsNow, ...sriProposals].filter((entry) => keys.includes(entry.key)) };
   }
   if (method === "work.files") return { files };
   if (method === "work.file") {
@@ -640,7 +666,9 @@ afterEach(async () => {
   stopRefusal = null;
   stopHeld = null;
   fleetNotices = [];
+  fleetHeld = null;
   proposalsNow = fleetProposals();
+  sriProposals = sriFixture();
   calls.length = 0;
   setReduced(true);
   // The message and its first argument: React's act warning names the component there ("An update to %s").
@@ -1438,13 +1466,22 @@ describe("the Fleet view", () => {
   test("Accept records your verdict; Reject asks why first, and sends the note", async () => {
     const view = await mount(surface(false));
     await view.press(fleetTab(view));
+    // The refetch that follows is held: what the card says next comes from the host's answer alone.
+    let release = () => {};
+    fleetHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     await view.press(view.byLabel("Accept: report, de2dd335 sri-sti-2761-rce"));
     expect(sent("fleet.review")).toEqual([
-      { scope: "broomva", key: "session:de2dd335:4:aaaa1111", verdict: "accept", note: "" },
+      { scope: "broomva", keys: ["session:de2dd335:4:aaaa1111"], verdict: "accept", note: "" },
     ]);
-    await view.refetch();
+    // Said at once, from the host's answer: no button left reading Accept for a second tap, nothing reordered.
     expect(view.text()).toContain("You accepted this just now");
     expect(view.text()).toContain("2 · all reviewed");
+    expect(view.text().indexOf("Would report only")).toBeGreaterThan(view.text().indexOf("Would report"));
+    fleetHeld = null;
+    release();
+    await settle(30);
 
     await view.press(view.byLabel("Reject: report only, 5dd4ed18 worried-walrus"));
     expect(sent("fleet.review")).toHaveLength(1);
@@ -1452,7 +1489,7 @@ describe("the Fleet view", () => {
     await view.press(view.byLabel("Confirm reject: report only, 5dd4ed18 worried-walrus"));
     expect(sent("fleet.review").at(-1)).toEqual({
       scope: "broomva",
-      key: "session:5dd4ed18:10:bbbb2222",
+      keys: ["session:5dd4ed18:10:bbbb2222"],
       verdict: "reject",
       note: "Unmanaged sessions are mine",
     });
@@ -1466,7 +1503,31 @@ describe("the Fleet view", () => {
     await view.press(view.byLabel("sri, Not scheduled"));
     expect(sent("fleet.get").at(-1)).toEqual({ scope: "sri", ticks: 24 });
     expect(view.text()).toContain("Not scheduled: no LaunchAgent runs it.");
-    expect(view.text()).toContain("The latest report proposes nothing.");
+  });
+
+  test("one class and one action across sessions is one card: one verdict writes every session's key", async () => {
+    const view = await mount(surface(false));
+    await view.press(fleetTab(view));
+    await view.press(view.byLabel("sri, Not scheduled"));
+    expect(view.text()).toContain("Would report only");
+    expect(view.text()).toContain("4 sessions · Class 10, unmanaged");
+    expect(view.text()).toContain("aaaa1111 sri-aaaa1111");
+    expect(view.text()).not.toContain("dddd4444 sri-dddd4444");
+    await view.press(view.byLabel("Show all sessions: report only"));
+    expect(view.text()).toContain("dddd4444 sri-dddd4444");
+    await view.press(view.byLabel("Accept: report only, 4 sessions"));
+    expect(sent("fleet.review").at(-1)).toEqual({
+      scope: "sri",
+      keys: [
+        "session:aaaa1111:10:feedface",
+        "session:bbbb2222:10:feedface",
+        "session:cccc3333:10:feedface",
+        "session:dddd4444:10:feedface",
+      ],
+      verdict: "accept",
+      note: "",
+    });
+    expect(view.text()).toContain("You accepted this just now");
   });
 
   test("a missed tick shows above the work, and opens the Fleet view at its scope", async () => {
@@ -1474,12 +1535,12 @@ describe("the Fleet view", () => {
       {
         scope: "broomva",
         status: "missed",
-        reason: "No tick for 3h: the last was tick 35. It runs every hour.",
-        since: null,
+        reason: "No tick since tick 35. It runs every hour.",
+        since: new Date(Date.now() - 3 * H).toISOString(),
       },
     ];
     const view = await mount(surface(false));
-    expect(view.text()).toContain("Fleet broomva: missed tick. No tick for 3h");
+    expect(view.text()).toContain("Fleet broomva: missed tick for 3h. No tick since tick 35.");
     await view.press(view.byLabel("Open Fleet, broomva"));
     expect(fleetTab(view)?.getAttribute("aria-selected")).toBe("true");
     expect(sent("fleet.get").at(-1)).toEqual({ scope: "broomva", ticks: 24 });
@@ -1501,8 +1562,8 @@ describe("the Fleet view", () => {
     expect(view.text()).not.toContain("Report only (phase 1).");
     await view.press(view.byLabel("Show the report"));
     expect(view.text()).toContain("Report only (phase 1).");
-    // Each row stands alone, its cells under their column names.
-    expect(view.text()).toContain("classout of scope");
-    expect(view.text()).toContain("sessions53");
+    // Each row stands alone: a bare number leads with the cell after it, the rest under their column names.
+    expect(view.text()).toContain("1 · out of scopesessions53");
+    expect(view.text()).not.toContain("classout of scope");
   });
 });

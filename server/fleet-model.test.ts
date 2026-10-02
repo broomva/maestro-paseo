@@ -79,15 +79,18 @@ describe("the ledger", () => {
     expect(bad).toBe(2);
   });
 
-  test("folds each tick's start and exit, and an exit record with no code reads as no code", () => {
+  test("folds each tick's start and exit; the first ticks' exit_code is their exit, and no code reads as none", () => {
     const fold = foldLedger([
       { kind: "tick_fire", tick: 1, ts: at(3), dry_run: true },
-      { kind: "runner_exit", tick: 1, ts: at(2.9), detail: "observe=0 report=0" },
+      { kind: "runner_exit", tick: 1, ts: at(2.9), detail: "observe=0 report=0", exit_code: 0 },
+      { kind: "tick_fire", tick: 4, ts: at(0.5) },
+      { kind: "runner_exit", tick: 4, ts: at(0.4) },
       { kind: "tick_fire", tick: 2, ts: at(2) },
       { kind: "runner_exit", tick: 2, ts: at(1.9), exit: 1, detail: "recover=0 observe=1" },
       { kind: "tick_fire", tick: 3, ts: at(1) },
     ]);
-    expect(fold.ticks.get(1)).toMatchObject({ ended: true, exit: null, dryRun: true });
+    expect(fold.ticks.get(1)).toMatchObject({ ended: true, exit: 0, dryRun: true });
+    expect(fold.ticks.get(4)).toMatchObject({ ended: true, exit: null });
     expect(fold.ticks.get(2)).toMatchObject({ ended: true, exit: 1, detail: "recover=0 observe=1" });
     expect(fold.ticks.get(3)).toMatchObject({ ended: false, exit: null });
   });
@@ -120,39 +123,54 @@ describe("the ledger", () => {
         kind: "intent",
         id: "5-1",
         verb: "spawn",
-        key: "drv:alpha:ws#9",
+        key: "alpha-workspace-pr9",
         dry_run: true,
         tick: 5,
-        target: { repo: "o/ws", pr: 9, role: "driver" },
+        target: { repo: "broomva/workspace", pr: 9, role: "driver", name: "alpha-workspace-pr9" },
       },
-      {
-        kind: "done",
-        of: "5-1",
-        verb: "spawn",
-        key: "drv:alpha:ws#9",
-        dry_run: true,
-        tick: 5,
-        ts: at(1),
-        result: { would: true },
-      },
-      { kind: "intent", id: "5-2", verb: "label", key: "lbl", dry_run: false, tick: 5, target: {} },
-      { kind: "done", of: "5-2", verb: "label", key: "lbl", dry_run: false, tick: 5 },
-      { kind: "intent", id: "5-3", verb: "mail", key: "mail:x", dry_run: true, tick: 5, target: {} },
-      { kind: "failed", of: "5-3", verb: "mail", key: "mail:x", dry_run: true, tick: 5 },
+      { kind: "done", of: "5-1", verb: "spawn", key: "alpha-workspace-pr9", dry_run: true, tick: 5, ts: at(1) },
+      { kind: "intent", id: "5-2", verb: "label", key: "o/r#12", dry_run: false, tick: 5, target: {} },
+      { kind: "done", of: "5-2", verb: "label", key: "o/r#12", dry_run: false, tick: 5 },
+      { kind: "intent", id: "5-3", verb: "mail", key: "session:abc", dry_run: true, tick: 5, target: {} },
+      { kind: "failed", of: "5-3", verb: "mail", key: "session:abc", dry_run: true, tick: 5 },
     ]);
-    expect(fold.dryActs).toEqual([
-      { verb: "spawn", key: "drv:alpha:ws#9", tick: 5, at: at(1), target: { repo: "o/ws", pr: 9, role: "driver" } },
-    ]);
+    expect(fold.dryActs.map((act) => [act.verb, act.key, act.tick])).toEqual([["spawn", "alpha-workspace-pr9", 5]]);
     expect(actProposals(fold.dryActs, null)).toMatchObject([
-      {
-        key: "act:spawn:drv:alpha:ws#9",
-        source: "act",
-        action: "spawn o/ws #9",
-        evidence: "role driver",
-        verb: "spawn",
-      },
+      { source: "act", action: "spawn a driver for broomva/workspace#9", verb: "spawn" },
     ]);
     expect(actProposals(fold.dryActs, 6)).toEqual([]);
+  });
+
+  test("two verbs under one fleet key are two proposals, each named by what it would do", () => {
+    // The fleet keys a label by its PR and a mail by its recipient (fleetlib/act.py).
+    const dry = (id: string, verb: string, key: string, target: Record<string, unknown>) => [
+      { kind: "intent", id, verb, key, dry_run: true, tick: 7, target },
+      { kind: "done", of: id, verb, key, dry_run: true, tick: 7, ts: at(0.5) },
+    ];
+    const proposals = actProposals(
+      foldLedger([
+        ...dry("7-1", "label", "o/r#12", { repo: "o/r", pr: 12, label: "ready", op: "add" }),
+        ...dry("7-2", "label", "o/r#12", { repo: "o/r", pr: 12, label: "ready", op: "remove" }),
+        ...dry("7-3", "mail", "session:abc", { name: "walrus", template: "stalled", text: "Still there?" }),
+        ...dry("7-4", "mail", "session:abc", { name: "walrus", template: "hung", text: "Stuck?" }),
+        ...dry("7-5", "resume", "session:def", { session_id: "def12345-x" }),
+      ]).dryActs,
+      null,
+    );
+    expect(proposals.map((proposal) => proposal.action)).toEqual([
+      "resume def12345",
+      "mail walrus (hung)",
+      "mail walrus (stalled)",
+      'remove label "ready" on o/r#12',
+      'add label "ready" on o/r#12',
+    ]);
+    expect(new Set(proposals.map((proposal) => proposal.key)).size).toBe(5);
+    // The same verb again, word for word, is the same proposal: one verdict holds.
+    const again = actProposals(
+      foldLedger(dry("8-1", "label", "o/r#12", { repo: "o/r", pr: 12, label: "ready", op: "add" })).dryActs,
+      null,
+    );
+    expect(again[0]?.key).toBe(proposals[4]?.key);
   });
 });
 
@@ -180,6 +198,9 @@ describe("ticks", () => {
     expect(tickStatusOf({ ...started(25), ended: true, exit: 0 }, NOW, budget)).toBe("ok");
     expect(tickStatusOf({ ...started(25), ended: true, exit: 1 }, NOW, budget)).toBe("failed");
     expect(tickStatusOf(undefined, NOW, budget)).toBe("unknown");
+    // A tick the Mac slept through has its budget from the wake.
+    expect(tickStatusOf(started(240), NOW, budget, NOW - 10 * 60_000)).toBe("running");
+    expect(tickStatusOf(started(240), NOW, budget, NOW - 30 * 60_000)).toBe("died");
   });
 
   test("rows join the ledger with the reports, newest first, up to the limit", () => {
@@ -230,6 +251,25 @@ describe("a report's proposals", () => {
     expect(
       summarizeReport({ sessions: [session("5555", "4", "report", { class: undefined })] }, "alpha", 7)?.tick,
     ).toBe(7);
+  });
+});
+
+describe("a report's open asks", () => {
+  test("are those still open, those new this tick and those it could not check, as report.md counts them", () => {
+    const summary = summarizeReport(
+      {
+        tick: 4,
+        asks_open: [{ id: "a1", key: "k1", first_tick: 2 }],
+        asks: [
+          { id: "a1", key: "k2" },
+          { id: "a2", key: "k1" },
+        ],
+        asks_unchecked: [{ id: "a1", key: "k3", first_tick: 1 }, { id: "x" }],
+      },
+      "alpha",
+      4,
+    );
+    expect(summary?.asksOpen.map((ask) => ask.key)).toEqual(["k1", "k2", "k3"]);
   });
 });
 
@@ -325,11 +365,31 @@ describe("the fleet's work in Maestro", () => {
       work("w3", "fleet alpha: tick-report [fleet-reconcile alpha alert tick-report]", "done"),
       work("w4", "fleet beta: tick-report [fleet-reconcile beta alert tick-report]", "review"),
     ];
-    expect(coverOf("alpha", "failing", "observe", items)?.id).toBe("w1");
-    expect(coverOf("alpha", "failing", "report", items)).toBeNull();
-    expect(coverOf("alpha", "missed", null, items)?.id).toBe("w2");
-    expect(coverOf("alpha", "failing", null, items)).toBeNull();
-    expect(coverOf("alpha", "ok", null, items)).toBeNull();
+    const since = at(1);
+    expect(coverOf("alpha", "failing", "observe", since, items)).toMatchObject({ item: { id: "w1" }, answered: false });
+    // Closed before this failure began: an answer to an older one.
+    expect(coverOf("alpha", "failing", "report", since, items)).toBeNull();
+    expect(coverOf("alpha", "missed", null, since, items)?.item.id).toBe("w2");
+    expect(coverOf("alpha", "failing", null, since, items)).toBeNull();
+    expect(coverOf("alpha", "ok", null, since, items)).toBeNull();
+  });
+
+  test("each alert that stops ticks before they start covers a missed tick; a tick alert does not", () => {
+    for (const kind of ["lock", "config", "statedir", "tick"]) {
+      const items = [work("w", `fleet alpha: ${kind} [fleet-reconcile alpha alert ${kind}]`, "review")];
+      expect(coverOf("alpha", "missed", null, at(3), items)?.item.id).toBe("w");
+    }
+    const observe = [work("w", "fleet alpha: tick-observe [fleet-reconcile alpha alert tick-observe]", "review")];
+    expect(coverOf("alpha", "missed", null, at(3), observe)).toBeNull();
+  });
+
+  test("an alert you answered after the failure began counts as answered: the failure is yours already", () => {
+    const answered = {
+      ...work("w", "fleet alpha: tick-ask [fleet-reconcile alpha alert tick-ask]", "done"),
+      updatedAt: at(0.5),
+    };
+    expect(coverOf("alpha", "failing", "ask", at(1), [answered])).toMatchObject({ item: { id: "w" }, answered: true });
+    expect(coverOf("alpha", "failing", "ask", at(0.25), [answered])).toBeNull();
   });
 
   test("an open ask links to the open work raised for its batch, else to the item the ledger recorded", () => {
@@ -353,12 +413,14 @@ describe("the fleet's work in Maestro", () => {
       items,
     );
     expect(asks.map((ask) => [ask.key, ask.batch, ask.item?.id ?? null, ask.item?.needsYou ?? null])).toEqual([
+      // The ledger recorded old-item, which Maestro no longer has: the open item under the batch's marker stands in.
       ["k1", "2-3", "open", true],
       ["k2", "7-3", null, null],
       ["k9", null, null, null],
     ]);
-    // With the open one gone, the ledger's recorded item stands, even when it is done.
-    const recorded = asksOf("alpha", [{ id: "a1", key: "k1" }], fold, [work("old-item", "renamed", "done")]);
+    // The item the ledger recorded comes first, even done, over any title that claims the batch.
+    const spoof = work("spoof", "1 ask [fleet-reconcile alpha batch 2-3]", "review");
+    const recorded = asksOf("alpha", [{ id: "a1", key: "k1" }], fold, [spoof, work("old-item", "renamed", "done")]);
     expect(recorded[0]?.item).toMatchObject({ id: "old-item", state: "done", needsYou: false });
   });
 });
@@ -367,14 +429,18 @@ describe("reviews", () => {
   const proposal = summarizeReport(report(35, new Date(NOW)), "alpha", 35)?.proposals[0];
   if (!proposal) throw new Error("the fixture proposes nothing");
 
-  test("the latest verdict on a key holds; other scopes, other kinds and bad verdicts are skipped", () => {
+  test("the latest verdict on a key holds; other scopes, kinds, verdicts and writers are skipped", () => {
+    const mine = { kind: REVIEW_KIND, scope: "alpha", by: "owner", via: "maestro" };
     const reviews = foldReviews(
       [
-        { kind: REVIEW_KIND, scope: "alpha", key: "k", verdict: "accept", ts: at(2), tick: 33 },
-        { kind: REVIEW_KIND, scope: "alpha", key: "k", verdict: "reject", note: "not this", ts: at(1), tick: 34 },
-        { kind: REVIEW_KIND, scope: "beta", key: "k", verdict: "accept", ts: at(0.5) },
-        { kind: "ack", scope: "alpha", key: "k", verdict: "accept", ts: at(0.4) },
-        { kind: REVIEW_KIND, scope: "alpha", key: "k", verdict: "maybe", ts: at(0.3) },
+        { ...mine, key: "k", verdict: "accept", ts: at(2), tick: 33 },
+        { ...mine, key: "k", verdict: "reject", note: "not this", ts: at(1), tick: 34 },
+        { ...mine, scope: "beta", key: "k", verdict: "accept", ts: at(0.5) },
+        { ...mine, kind: "ack", key: "k", verdict: "accept", ts: at(0.4) },
+        { ...mine, key: "k", verdict: "maybe", ts: at(0.3) },
+        // A line of another shape is not yours, whatever it says.
+        { kind: REVIEW_KIND, scope: "alpha", key: "k", verdict: "accept", ts: at(0.2) },
+        { ...mine, by: "tick", key: "k", verdict: "accept", ts: at(0.1) },
       ],
       "alpha",
     );

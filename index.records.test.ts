@@ -29,6 +29,10 @@ test("work.list and work.get carry the changed line; History and files are serve
     JSON.stringify({ workRoot: join(root, "work"), provider: "claude/test", modeId: null, isolation: "worktree" }),
   );
   const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
+  // No fleet here: the plugin's Fleet view reads this test's empty folder, never the machine's fleet.
+  const fleet = ["MAESTRO_PASEO_FLEET_CONFIG", "MAESTRO_PASEO_FLEET_STATE", "MAESTRO_PASEO_FLEET_AGENTS"] as const;
+  const savedFleet = fleet.map((key) => [key, process.env[key]] as const);
+  for (const key of fleet) process.env[key] = join(root, "no-fleet", key);
   process.env.MAESTRO_PASEO_CONFIG = config;
   process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
   const handlers = new Map<string, Handler>();
@@ -88,5 +92,9 @@ test("work.list and work.get carry the changed line; History and files are serve
     process.env.MAESTRO_PASEO_SOCKET = saved.socket;
     if (saved.config === undefined) delete process.env.MAESTRO_PASEO_CONFIG;
     if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
+    for (const [key, value] of savedFleet) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });

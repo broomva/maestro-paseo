@@ -79,7 +79,6 @@ export default function contribute(host: PluginServerContext) {
   server.handle(getWork, ({ id }, { paseo }) => engine.get(id).then((got) => records.withChangedItem(paseo, got)));
   // fleet-reconcile's runs (server/fleet.ts): read from the fleet's files, with the work it raised read from ours.
   const fleet = new Fleet({ items: () => engine.list().then(({ items }) => items), log });
-  fleet.start();
   // No client handed to list: the header count and pills poll this, and must not reconcile sessions.
   // A fleet that cannot be read costs the count its fleet notices, never the work's.
   server.handle(attentionWork, async () => {
@@ -116,7 +115,7 @@ export default function contribute(host: PluginServerContext) {
   server.handle(inspectFolder, ({ path }) => inspect(path));
   // The Fleet view, and your verdict on a proposal: yours alone, never on the agent socket.
   server.handle(getFleet, ({ scope, ticks }) => fleet.get(scope, ticks));
-  server.handle(reviewProposal, ({ scope, key, verdict, note }) => fleet.review({ scope, key, verdict, note }));
+  server.handle(reviewProposal, ({ scope, keys, verdict, note }) => fleet.review({ scope, keys, verdict, note }));
   server.handle(getConfig, () => loadConfig());
   // Saved Settings may turn the loop on or off, or change its period: arm it again from them.
   server.handle(setConfig, async (input) => {
@@ -149,7 +148,6 @@ export default function contribute(host: PluginServerContext) {
 
   return async () => {
     loop.stop();
-    fleet.stop();
     engine.stop();
     await stopSocket();
   };

@@ -62,7 +62,7 @@ export interface TickEntry {
   tick: number;
   fireAt: string | null;
   exitAt: string | null;
-  /** A runner_exit record was written; `exit` is null when it carried no code (ticks 1 to 3 wrote none). */
+  /** A runner_exit record was written; `exit` is null when it carried no code. */
   ended: boolean;
   exit: number | null;
   detail: string | null;
@@ -117,7 +117,9 @@ export function foldLedger(records: readonly Json[]): LedgerFold {
       const at = entry(tick);
       at.ended = true;
       at.exitAt = str(record.ts);
-      at.exit = typeof record.exit === "number" ? record.exit : null;
+      // The first ticks wrote `exit_code`; later ones write `exit`.
+      const code = typeof record.exit === "number" ? record.exit : record.exit_code;
+      at.exit = typeof code === "number" ? code : null;
       at.detail = str(record.detail);
       at.dryRun ??= bool(record.dry_run);
     } else if (kind === "intent" && verb === "ask" && id) {
@@ -166,12 +168,22 @@ export function failedStepOf(detail: string | null): string | null {
   return null;
 }
 
-export function tickStatusOf(entry: TickEntry | undefined, now: number, budgetMs: number): TickStatus {
+/**
+ * A tick with no exit is running inside its budget and died past it, the
+ * budget counted from the later of its start and the Mac's last wake: a tick
+ * the Mac slept through finishes after the wake.
+ */
+export function tickStatusOf(
+  entry: TickEntry | undefined,
+  now: number,
+  budgetMs: number,
+  awakeSince: number | null = null,
+): TickStatus {
   if (!entry) return "unknown";
   if (entry.ended) return entry.exit === null ? "unknown" : entry.exit === 0 ? "ok" : "failed";
   const started = ms(entry.fireAt);
   if (started === null) return "unknown";
-  return now - started <= budgetMs ? "running" : "died";
+  return now - Math.max(started, awakeSince ?? 0) <= budgetMs ? "running" : "died";
 }
 
 /** What one report.json says, kept small: the rest of the file is not held. */
@@ -244,8 +256,27 @@ export function summarizeReport(raw: unknown, scope: string, fallbackTick: numbe
     dryRun: bool(raw.dry_run),
     classCounts,
     proposals,
-    asksOpen: Array.isArray(raw.asks_open) ? raw.asks_open.filter(isObject) : [],
+    asksOpen: openAsksOf(raw),
   };
+}
+
+/**
+ * Every ask open at the tick, as report.md counts them: still open from
+ * earlier ticks (`asks_open`), new this tick (`asks`), and open but not
+ * checked this tick because their surface could not be read (`asks_unchecked`).
+ */
+function openAsksOf(raw: Json): Json[] {
+  const seen = new Set<string>();
+  const out: Json[] = [];
+  for (const list of [raw.asks_open, raw.asks, raw.asks_unchecked]) {
+    for (const ask of Array.isArray(list) ? list.filter(isObject) : []) {
+      const key = str(ask.key);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(ask);
+    }
+  }
+  return out;
 }
 
 /** The class table's order: 1, 2, ... 9, 9a, 10, then anything else. */
@@ -255,32 +286,58 @@ function classOrder(id: string): number {
   return n * 2 + (id.endsWith("a") ? 1 : 0);
 }
 
-/** A coordinator's dry verb as a proposal: the newest of each verb and key. */
+/**
+ * What a coordinator verb would do, in words, from its intent's target
+ * (fleetlib/act.py): the label and whether it adds or removes it, the mail's
+ * template, the role spawned. The fleet keys a label by its PR and a mail by
+ * its recipient, so these words are what tell two verbs under one key apart.
+ */
+export function actWords(verb: string, key: string, target: Json): string {
+  const pr = str(target.repo) && int(target.pr) !== null ? `${target.repo}#${target.pr}` : null;
+  const who = str(target.name) ?? str(target.session_id)?.slice(0, 8) ?? key;
+  switch (verb) {
+    case "label":
+      return `${str(target.op) === "remove" ? "remove" : "add"} label "${str(target.label) ?? "?"}" on ${pr ?? key}`;
+    case "mail":
+      return `mail ${who} (${str(target.template) ?? "no template"})`;
+    case "spawn":
+      return `spawn a ${str(target.role) ?? "driver"} for ${pr ?? key}`;
+    case "resume":
+      return `resume ${who}`;
+    default:
+      return `${verb} ${key}`;
+  }
+}
+
+/**
+ * A coordinator's dry verbs as proposals: the newest of each, keyed by its
+ * verb, the fleet's key and a hash of its words and text, so a different
+ * label, op or mail under the same fleet key is a different proposal.
+ */
 export function actProposals(acts: readonly DryAct[], sinceTick: number | null): FleetProposal[] {
-  const newest = new Map<string, DryAct>();
+  const newest = new Map<string, { act: DryAct; words: string }>();
   for (const act of acts) {
     if (sinceTick !== null && act.tick !== null && act.tick < sinceTick) continue;
-    newest.set(`act:${act.verb}:${act.key}`, act);
+    const words = actWords(act.verb, act.key, act.target);
+    const hash = createHash("sha256")
+      .update(`${words}\n${str(act.target.text) ?? ""}`)
+      .digest("hex")
+      .slice(0, 8);
+    newest.set(`act:${act.verb}:${act.key}:${hash}`, { act, words });
   }
-  return [...newest.entries()].reverse().map(([key, act]) => {
-    const target = act.target;
-    const about = [str(target.repo), int(target.pr) !== null ? `#${target.pr}` : null, str(target.session_id)]
-      .filter(Boolean)
-      .join(" ");
-    return {
-      key,
-      source: "act" as const,
-      tick: act.tick,
-      at: act.at,
-      action: about ? `${act.verb} ${about}` : `${act.verb} ${act.key}`,
-      session: null,
-      classId: null,
-      className: null,
-      evidence: str(target.role) ? `role ${target.role}` : null,
-      verb: act.verb,
-      review: null,
-    };
-  });
+  return [...newest.entries()].reverse().map(([key, { act, words }]) => ({
+    key,
+    source: "act" as const,
+    tick: act.tick,
+    at: act.at,
+    action: words,
+    session: null,
+    classId: null,
+    className: null,
+    evidence: str(act.target.text) ? `text: ${str(act.target.text)?.slice(0, 200)}` : null,
+    verb: act.verb,
+    review: null,
+  }));
 }
 
 export function tickRows(
@@ -290,6 +347,7 @@ export function tickRows(
   now: number,
   budgetMs: number,
   limit: number,
+  awakeSince: number | null = null,
 ): FleetTick[] {
   const numbers = [...new Set([...fold.ticks.keys(), ...tickDirs])].sort((a, b) => b - a).slice(0, limit);
   return numbers.map((tick) => {
@@ -299,7 +357,7 @@ export function tickRows(
       tick,
       at: entry?.fireAt ?? report?.ts ?? null,
       finishedAt: entry?.exitAt ?? null,
-      status: tickStatusOf(entry, now, budgetMs),
+      status: tickStatusOf(entry, now, budgetMs, awakeSince),
       exit: entry?.exit ?? null,
       steps: entry?.detail ?? null,
       failedStep: failedStepOf(entry?.detail ?? null),
@@ -350,50 +408,64 @@ export interface HealthInput {
   now: number;
 }
 
-export function healthOf(input: HealthInput): { status: FleetHealthStatus; reason: string; since: string | null } {
+export interface Health {
+  status: FleetHealthStatus;
+  reason: string;
+  /** The reason without a running span: what a notice carries, still while the condition lasts. */
+  notice: string;
+  since: string | null;
+}
+
+export function healthOf(input: HealthInput): Health {
   const { latest, now } = input;
   if (input.disabled) {
-    return { status: "off", reason: "Off: the fleet's kill switch is set, so no tick runs.", since: null };
+    const reason = "Off: the fleet's kill switch is set, so no tick runs.";
+    return { status: "off", reason, notice: reason, since: null };
   }
   const startedAt = ms(latest?.at ?? null);
   if (input.scheduled) {
     const from = Math.max(startedAt ?? input.scheduledAt ?? now, input.awakeSince ?? 0);
     if (now - from > missedAfter(input.intervalMs)) {
       const quiet = span(now - (startedAt ?? input.scheduledAt ?? now));
+      const runs = `It runs ${every(input.intervalMs)}.`;
       return {
         status: "missed",
         reason: latest
-          ? `No tick for ${quiet}: the last was tick ${latest.tick}. It runs ${every(input.intervalMs)}.`
-          : `No tick yet, ${quiet} after it was scheduled. It runs ${every(input.intervalMs)}.`,
+          ? `No tick for ${quiet}: the last was tick ${latest.tick}. ${runs}`
+          : `No tick yet, ${quiet} after it was scheduled. ${runs}`,
+        notice: latest ? `No tick since tick ${latest.tick}. ${runs}` : `No tick since it was scheduled. ${runs}`,
         since: latest?.at ?? (input.scheduledAt !== null ? new Date(input.scheduledAt).toISOString() : null),
       };
     }
   }
   if (latest?.status === "failed") {
+    const failed = `Tick ${latest.tick} failed${latest.failedStep ? ` at ${latest.failedStep}` : ""}`;
     return {
       status: "failing",
-      reason: `Tick ${latest.tick} failed${latest.failedStep ? ` at ${latest.failedStep}` : ""}${latest.steps ? ` (${latest.steps})` : ""}.`,
+      reason: `${failed}${latest.steps ? ` (${latest.steps})` : ""}.`,
+      notice: `${failed}.`,
       since: latest.at,
     };
   }
   if (latest?.status === "died") {
     const ago = startedAt !== null ? ` ${span(now - startedAt)} ago` : "";
-    return { status: "failing", reason: `Tick ${latest.tick} started${ago} and never finished.`, since: latest.at };
-  }
-  if (!input.scheduled) {
     return {
-      status: "unscheduled",
-      reason: "Not scheduled: no LaunchAgent runs it, so it ticks only when run by hand.",
-      since: null,
+      status: "failing",
+      reason: `Tick ${latest.tick} started${ago} and never finished.`,
+      notice: `Tick ${latest.tick} never finished.`,
+      since: latest.at,
     };
   }
-  if (!latest) return { status: "ok", reason: `Scheduled ${every(input.intervalMs)}; no tick yet.`, since: null };
-  if (latest.status === "running") return { status: "ok", reason: `Tick ${latest.tick} is running.`, since: latest.at };
-  return {
-    status: "ok",
-    reason: `Ticks ${every(input.intervalMs)}. The last, tick ${latest.tick}, ${latest.status === "ok" ? "passed" : "finished"}.`,
-    since: latest.at,
-  };
+  if (!input.scheduled) {
+    const reason = "Not scheduled: no LaunchAgent runs it, so it ticks only when run by hand.";
+    return { status: "unscheduled", reason, notice: reason, since: null };
+  }
+  const ok = (reason: string) => ({ status: "ok" as const, reason, notice: reason, since: latest?.at ?? null });
+  if (!latest) return ok(`Scheduled ${every(input.intervalMs)}; no tick yet.`);
+  if (latest.status === "running") return ok(`Tick ${latest.tick} is running.`);
+  return ok(
+    `Ticks ${every(input.intervalMs)}. The last, tick ${latest.tick}, ${latest.status === "ok" ? "passed" : "finished"}.`,
+  );
 }
 
 // ── The fleet's Maestro work ─────────────────────────────────────────────────
@@ -423,21 +495,35 @@ export function openAlerts(scope: string, items: readonly WorkItem[]): WorkItem[
 const BEFORE_A_TICK = new Set(["lock", "config", "statedir", "tick"]);
 
 /**
- * The fleet's own open alert for a scope's health, when it raised one: a
- * failed tick's `tick-<step>` alert, or for a missed tick an alert that stops
- * ticks before they start. A tick that died raises none.
+ * The fleet's own alert for a scope's health, when it raised one: a failed
+ * tick's `tick-<step>` alert, or for a missed tick an alert that stops ticks
+ * before they start. A tick that died raises none. An open alert stands for
+ * every later alert of its kind (the fleet adopts it rather than raise
+ * another); a closed one counts only when it was closed after the condition
+ * began (`since`): you answered it, so the condition is yours already.
  */
 export function coverOf(
   scope: string,
   status: FleetHealthStatus,
   failedStep: string | null,
+  since: string | null,
   items: readonly WorkItem[],
-): WorkItem | null {
-  const alerts = openAlerts(scope, items);
-  const kind = (item: WorkItem) => markerOf(item.title)?.id ?? "";
-  if (status === "failing" && failedStep) return alerts.find((item) => kind(item) === `tick-${failedStep}`) ?? null;
-  if (status === "missed") return alerts.find((item) => BEFORE_A_TICK.has(kind(item))) ?? null;
-  return null;
+): { item: WorkItem; answered: boolean } | null {
+  const fits = (kind: string) =>
+    status === "failing"
+      ? failedStep !== null && kind === `tick-${failedStep}`
+      : status === "missed" && BEFORE_A_TICK.has(kind);
+  const mine = items
+    .filter((item) => {
+      const marker = markerOf(item.title);
+      return marker?.scope === scope && marker.what === "alert" && fits(marker.id);
+    })
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const open = mine.find((item) => !isTerminal(item.state));
+  if (open) return { item: open, answered: false };
+  const began = ms(since);
+  const answered = mine.find((item) => began !== null && (ms(item.updatedAt) ?? 0) >= began);
+  return answered ? { item: answered, answered: true } : null;
 }
 
 /** The open asks in the newest report, each with the batch that carries it and the work raised for that batch. */
@@ -453,11 +539,11 @@ export function asksOf(
     if (marker?.scope !== scope || marker.what !== "batch") continue;
     byBatch.set(marker.id, [...(byBatch.get(marker.id) ?? []), item]);
   }
+  // The item the fleet recorded for the batch comes first: a title can be written by anyone who makes work.
   const workFor = (batch: string): WorkItem | null => {
+    const recorded = items.find((item) => item.id === fold.itemOfBatch.get(batch));
     const raised = byBatch.get(batch) ?? [];
-    const recorded = fold.itemOfBatch.get(batch);
-    const found = raised.find((item) => !isTerminal(item.state)) ?? raised.find((item) => item.id === recorded);
-    return found ?? items.find((item) => item.id === recorded) ?? raised[0] ?? null;
+    return recorded ?? raised.find((item) => !isTerminal(item.state)) ?? raised[0] ?? null;
   };
   return asksOpen.flatMap((ask) => {
     const key = str(ask.key);
@@ -490,7 +576,10 @@ export function foldReviews(records: readonly Json[], scope: string): Map<string
     const key = str(record.key);
     const verdict = REVIEW_VERDICTS.find((value) => value === record.verdict);
     const at = str(record.ts);
-    if (record.kind !== REVIEW_KIND || record.scope !== scope || !key || !verdict || !at) continue;
+    // Only what Maestro wrote for you: the file is not a boundary (any process running as you can write
+    // it), so this keeps lines of another shape out, not a forger.
+    const yours = record.by === "owner" && record.via === "maestro";
+    if (record.kind !== REVIEW_KIND || record.scope !== scope || !yours || !key || !verdict || !at) continue;
     out.set(key, { verdict, note: str(record.note), at, tick: int(record.tick) });
   }
   return out;
