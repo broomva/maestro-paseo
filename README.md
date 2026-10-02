@@ -244,9 +244,12 @@ The **Fleet** view shows the rest, per scope, read from those files:
   - The 2 hours are awake time, which is how launchd counts `StartInterval`. A laptop that naps
     between meetings ticks about once per hour awake, however the sleeps fall: a fleet that stopped
     is still missed after 2 hours awake, and a night's sleep is never a false alarm.
-  - Awake time comes from the plugin's monotonic clock, which stops while the Mac sleeps. The
-    plugin records it on each read, and before its first record (a reload, a cold boot) counts
-    from that record. A stall is then flagged 2 hours awake after the reload, never sooner.
+  - Awake time comes from a heartbeat. The plugin beats once a minute from the moment it starts,
+    whether any client is looking or not.
+    - While the Mac sleeps the daemon is suspended, so a beat that arrives minutes late counts as
+      sleep. No clock Node offers stops in sleep on macOS: its monotonic clock counts sleep too.
+    - Before the plugin's first beat (a reload, a cold boot) the count starts at that beat, and the
+      view says "at least". A stall is then flagged 2 hours awake after the reload, never sooner.
   - A tick's time budget runs on awake time too, so a tick the Mac slept through mid-run is still
     running after the wake. A tick that died days ago stays dead.
 - **Asks and alerts.**
@@ -268,8 +271,8 @@ The **Fleet** view shows the rest, per scope, read from those files:
   - A proposal's key binds its session, its class and its words. For a coordinator verb, the key
     binds the label and whether it adds or removes it, or the mail's template and text. So one
     verdict holds while the fleet proposes the same thing, and a verdict made on a page gone stale
-    is refused rather than recorded against different words. A tick that lands while a verdict is
-    checked stops it too.
+    is refused rather than recorded against different words. Each line names the tick whose words
+    you judged.
 - **Ticks.** The last 24, each with its time, its exit and which step failed, and its class counts.
 - **Report.** The newest `report.md`, drawn natively, up to 128 KB. On a phone, its tables become
   one card per row.
@@ -293,8 +296,10 @@ review, so Maestro defines one file for it to read: `proposal-reviews.jsonl` bes
 - Each verdict is one JSON line per key, all in one append. The file is mode 0600 and fsynced, and
   the latest line for a key wins.
 - Maestro writes it only where a fleet ledger is, never through a symlink or onto a file with
-  another hard link, and checks every byte was written. Each line has its own `id`. Only lines of
-  its own shape (`by: owner`, `via: maestro`) are read back.
+  another hard link.
+- A short write is taken back out, so a verdict is recorded whole or not at all.
+- Each line has its own `id`, and only lines of Maestro's own shape (`by: owner`, `via: maestro`)
+  are read back.
 - Like the ledger, it is not a boundary: any process running as you can write it.
 
 ```json
@@ -314,7 +319,11 @@ Verdicts are yours alone, so the agent socket refuses `fleet.review`.
 A state dir can be written by the fleet's sessions, so any file there is read only if it is a
 regular file: never through a symlink as its last name, never with another hard link, and never a
 FIFO, which is refused rather than waited on. A file that cannot be read is said in the view,
-never taken for absent. Your config and LaunchAgent are read as they are linked.
+never taken for absent.
+
+Your config and LaunchAgent are read as they are linked, but only as regular files under 1 MB and
+never waited on. A LaunchAgent that cannot be read is said, and still counts as scheduled, so a
+failed read never silences a missed tick.
 
 The fleet's files are found where it keeps them:
 

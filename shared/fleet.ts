@@ -13,8 +13,9 @@ import { GROUP_ORDER, ORCH_STATES } from "./states";
  * - `ok`: it ticks on time and the latest tick passed (or is running);
  * - `failing`: the latest tick failed, or started and never finished;
  * - `missed`: it is scheduled, and no tick has started for longer than the
- *   threshold (FLEET_MISSED_MS, or two of its intervals if longer), counted
- *   from the later of the last tick and the Mac's last wake;
+ *   threshold (FLEET_MISSED_MS, or two of its intervals if longer) of time
+ *   the Mac was awake, as launchd counts its interval (server/fleet.ts
+ *   AwakeClock);
  * - `off`: the fleet's kill switch is off, so no tick runs, by your choice;
  * - `unscheduled`: no LaunchAgent runs it: ticks happen only by hand.
  */
@@ -270,7 +271,9 @@ export function groupProposals(proposals: readonly FleetProposal[]): ProposalGro
         proposals: [],
         review: null,
         order,
-        rank: proposal.review ? 1 : 0,
+        // Waiting first, then accepted, then rejected: deciding a waiting card leaves an accepted one in its
+        // place, so a second tap lands on a button that is done, never on a rejection it would overwrite.
+        rank: proposal.review ? (proposal.review.verdict === "accept" ? 1 : 2) : 0,
       };
       groups.set(key, group);
     }

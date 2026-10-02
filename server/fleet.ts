@@ -18,7 +18,7 @@
 // hour of awake time after the last, however the sleeps fall (spec §5.7).
 
 import { constants } from "node:fs";
-import { type FileHandle, open, readdir, readFile, stat } from "node:fs/promises";
+import { type FileHandle, open, readdir, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { WorkItem } from "../shared/contracts";
 import {
@@ -72,43 +72,73 @@ const READ_LIMIT = 32 * 1024 * 1024;
 /** Ticks whose coordinator verbs still stand as proposals. */
 const ACT_TICKS = 24;
 
-/** A record is kept at most this often, and for this long. */
-const SAMPLE_MS = 60_000;
+/** The clock beats this often, and keeps a record at most this often. */
+const BEAT_MS = 60_000;
+/** A beat this late means the process was suspended: the Mac slept for all but a beat of it. */
+const LATE_MS = 3 * BEAT_MS;
 const SAMPLES_KEPT_MS = 8 * 24 * 60 * 60 * 1000;
 
 /**
  * Time the Mac was awake between two wall-clock times, as launchd counts its
- * interval. The plugin's monotonic clock (performance.now: mach_absolute_time
- * on macOS, CLOCK_MONOTONIC on Linux) does not advance while the Mac sleeps.
- * Each read records (wall, awake), at most once a minute; the awake time
- * since a wall time is read off the record around it, assuming the Mac was
- * awake first and asleep after within one gap between records, which counts
- * no more than it was awake. Before the
- * first record (a tick from before this process started) it counts from that
- * record, a lower bound: a reload never raises a false alarm, and a stall is
- * flagged once 2 h awake have passed since.
+ * interval. No clock the plugin can read stops in sleep: Node's monotonic
+ * clock (performance.now, hrtime) counts it on macOS, measured against
+ * kern.boottime. So the clock beats once a minute on a timer that does not
+ * keep the daemon alive. The daemon is suspended while the Mac sleeps, so a
+ * beat that comes more than three minutes late counts one beat as awake and
+ * the rest as asleep. A beat that comes on time counts all of it.
+ *
+ * It records (wall, awake) at each beat and each read. The awake time since a
+ * wall time is read off the records around it. Before the first record (a
+ * tick from before the plugin started) it counts from that record, as a lower
+ * bound, and says so (`whole: false`). A reload therefore never raises a
+ * false alarm, and a stall is flagged once 2 h awake have passed since. An
+ * event loop held for minutes reads as sleep and counts less awake time,
+ * never more.
  */
 export class AwakeClock {
   private readonly samples: { wall: number; awake: number }[] = [];
+  private awake = 0;
+  private last: number;
+  private clear: (() => void) | null = null;
 
-  constructor(
-    private readonly wall: () => number = Date.now,
-    private readonly awake: () => number = () => performance.now(),
-  ) {}
+  constructor(private readonly wall: () => number = Date.now) {
+    this.last = wall();
+    this.samples.push({ wall: this.last, awake: 0 });
+  }
 
-  /** Records now, and returns the awake milliseconds from a wall time to now. */
-  read(): AwakeFor {
-    const now = { wall: this.wall(), awake: this.awake() };
+  /** Beats every minute until stop(), on a timer that does not keep the process alive. */
+  start(every: (beat: () => void, ms: number) => () => void = defaultEvery): void {
+    if (this.clear) return;
+    this.clear = every(() => this.beat(), BEAT_MS);
+  }
+
+  stop(): void {
+    this.clear?.();
+    this.clear = null;
+  }
+
+  /** Counts the time since the last beat: all of it when on time, one beat when late (the rest asleep). */
+  beat(): void {
+    const now = this.wall();
+    const step = now - this.last;
+    if (step <= 0) return;
+    this.last = now;
+    this.awake += step <= LATE_MS ? step : BEAT_MS;
     const last = this.samples.at(-1);
-    if (!last || now.wall - last.wall >= SAMPLE_MS) this.samples.push(now);
-    while (this.samples.length > 1 && now.wall - (this.samples[0]?.wall ?? now.wall) > SAMPLES_KEPT_MS) {
-      this.samples.shift();
-    }
+    if (!last || now - last.wall >= BEAT_MS) this.samples.push({ wall: now, awake: this.awake });
+    while (this.samples.length > 1 && now - (this.samples[0]?.wall ?? now) > SAMPLES_KEPT_MS) this.samples.shift();
+  }
+
+  /** Beats, and returns the awake milliseconds from a wall time to now. */
+  read(): AwakeFor {
+    this.beat();
+    const now = { wall: this.last, awake: this.awake };
     const samples = [...this.samples];
     return (from) => {
       const [first] = samples;
-      if (!first || from < first.wall)
+      if (!first || from < first.wall) {
         return { ms: Math.max(0, now.awake - (first?.awake ?? now.awake)), whole: false };
+      }
       let at = first;
       let next: { wall: number; awake: number } = now;
       for (let index = 0; index < samples.length; index += 1) {
@@ -117,10 +147,17 @@ export class AwakeClock {
         at = sample;
         next = samples[index + 1] ?? now;
       }
+      // Within one gap between records the awake share is at most a beat (a later beat would have recorded it).
       const awakeAt = at.awake + Math.min(from - at.wall, next.awake - at.awake);
       return { ms: Math.max(0, now.awake - awakeAt), whole: true };
     };
   }
+}
+
+function defaultEvery(beat: () => void, ms: number): () => void {
+  const timer = setInterval(beat, ms);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
 
 /** Awake time counted as wall time: no sleep accounting. For a test, through MAESTRO_PASEO_FLEET_AWAKE_CLOCK=wall. */
@@ -135,8 +172,8 @@ export interface FleetOptions {
   items: () => Promise<readonly WorkItem[]>;
   /** Awake time (AwakeClock by default; wallClock when MAESTRO_PASEO_FLEET_AWAKE_CLOCK=wall). */
   clock?: { read(): AwakeFor };
-  /** Called between checking a verdict and writing it: for a test to land a tick there. */
-  beforeWrite?: () => Promise<void>;
+  /** How the default clock beats: an unref'd setInterval, unless given. */
+  every?: (beat: () => void, ms: number) => () => void;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -177,12 +214,14 @@ async function withRegular<T>(
   flags: number,
   use: (handle: FileHandle) => Promise<T>,
   mode?: number,
+  /** Yours (the config, a LaunchAgent): followed as linked, still only a regular file, never waited on. */
+  own = false,
 ): Promise<T> {
-  const handle = await open(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK, mode);
+  const handle = await open(path, flags | constants.O_NONBLOCK | (own ? 0 : constants.O_NOFOLLOW), mode);
   try {
     const info = await handle.stat();
     if (!info.isFile()) throw new Error(`${path} is not a regular file`);
-    if (info.nlink > 1) throw new Error(`${path} has another hard link`);
+    if (!own && info.nlink > 1) throw new Error(`${path} has another hard link`);
     return await use(handle);
   } finally {
     await handle.close();
@@ -190,15 +229,24 @@ async function withRegular<T>(
 }
 
 /** A regular file's first `limit` bytes as text, its stamp, and whether there was more. */
-function readRegular(path: string, limit = READ_LIMIT) {
-  return withRegular(path, constants.O_RDONLY, async (handle) => {
-    const info = await handle.stat();
-    const length = Math.min(info.size, limit);
-    const buffer = Buffer.alloc(length);
-    const { bytesRead } = await handle.read(buffer, 0, length, 0);
-    return { text: buffer.toString("utf8", 0, bytesRead), stamp: stampOf(info), truncated: info.size > limit };
-  });
+function readRegular(path: string, limit = READ_LIMIT, own = false) {
+  return withRegular(
+    path,
+    constants.O_RDONLY,
+    async (handle) => {
+      const info = await handle.stat();
+      const length = Math.min(info.size, limit);
+      const buffer = Buffer.alloc(length);
+      const { bytesRead } = await handle.read(buffer, 0, length, 0);
+      return { text: buffer.toString("utf8", 0, bytesRead), stamp: stampOf(info), truncated: info.size > limit };
+    },
+    undefined,
+    own,
+  );
 }
+
+/** Your config and LaunchAgent are small: past this they are refused, not read. */
+const OWN_LIMIT = 1024 * 1024;
 
 /** The stamp of a regular file, without following a link; null when absent. Any other failure throws, to be said. */
 async function stampAt(path: string): Promise<Stamp | null> {
@@ -219,6 +267,7 @@ export class Fleet {
   private readonly clock: { read(): AwakeFor };
   /** Distinguishes review records made in one millisecond. */
   private seq = 0;
+  private stopClock: () => void = () => undefined;
   private readonly ledgers = new Map<string, { stamp: Stamp; fold: LedgerFold; bad: number }>();
   /** Each report.json read, by path, until it changes: one that would not parse is kept as its error. */
   private readonly reports = new Map<string, { stamp: Stamp; summary: ReportSummary | null; error: string | null }>();
@@ -233,9 +282,22 @@ export class Fleet {
     this.agentsDir = options.agentsDir ?? paths.agents;
     this.now = options.now ?? Date.now;
     this.log = options.log ?? ((message) => console.log(`[maestro] ${message}`));
-    this.clock =
-      options.clock ??
-      (process.env.MAESTRO_PASEO_FLEET_AWAKE_CLOCK === "wall" ? wallClock(this.now) : new AwakeClock(this.now));
+    if (options.clock) {
+      this.clock = options.clock;
+    } else if (process.env.MAESTRO_PASEO_FLEET_AWAKE_CLOCK === "wall") {
+      this.clock = wallClock(this.now);
+    } else {
+      // Beating from the start: awake time is known from when the plugin started, whoever reads it or not.
+      const clock = new AwakeClock(this.now);
+      clock.start(options.every);
+      this.clock = clock;
+      this.stopClock = () => clock.stop();
+    }
+  }
+
+  /** Stops the awake clock's beat (the plugin's cleanup). */
+  stop(): void {
+    this.stopClock();
   }
 
   // ── Reading ────────────────────────────────────────────────────────────────
@@ -251,7 +313,9 @@ export class Fleet {
     const fallback = async (error: string) => ({ scopes: this.lastGood ?? (await this.discovered()), error });
     let raw: string;
     try {
-      raw = await readFile(this.configPath, "utf8");
+      const read = await readRegular(this.configPath, OWN_LIMIT, true);
+      if (read.truncated) throw new Error(`it is over ${OWN_LIMIT} bytes`);
+      raw = read.text;
     } catch (error) {
       if (code(error) === "ENOENT") {
         this.lastGood = null;
@@ -381,15 +445,21 @@ export class Fleet {
     return cached.summary;
   }
 
-  private async schedule(scope: string): Promise<ScopeRead["schedule"]> {
+  /**
+   * The scope's LaunchAgent: none (ENOENT) is not scheduled. One that cannot
+   * be read is said, and counts as scheduled with no known interval, so a
+   * missed tick still needs you: a read that fails must not silence it.
+   */
+  private async schedule(scope: string, warnings: string[]): Promise<ScopeRead["schedule"]> {
     const path = join(this.agentsDir, plistName(scope));
     try {
-      // Yours, like the config: read as it is linked (a LaunchAgent kept in a dotfiles repo is still scheduled).
-      const [info, text] = await Promise.all([stat(path), readFile(path, "utf8")]);
-      const interval = /<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(text)?.[1];
+      const [info, read] = await Promise.all([stat(path), readRegular(path, OWN_LIMIT, true)]);
+      const interval = /<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(read.text)?.[1];
       return { scheduled: true, intervalMs: interval ? Number(interval) * 1000 : null, at: info.mtimeMs };
-    } catch {
-      return { scheduled: false, intervalMs: null, at: null };
+    } catch (error) {
+      if (code(error) === "ENOENT") return { scheduled: false, intervalMs: null, at: null };
+      warnings.push(`The LaunchAgent ${plistName(scope)} could not be read: ${(error as Error).message}`);
+      return { scheduled: true, intervalMs: null, at: null };
     }
   }
 
@@ -405,10 +475,14 @@ export class Fleet {
           return [] as number[];
         },
       ),
-      this.schedule(config.id),
+      this.schedule(config.id, warnings),
       stat(join(config.stateDir, DISABLED_NOTICE)).then(
         () => true,
-        () => false,
+        (error) => {
+          if (code(error) !== "ENOENT")
+            warnings.push(`The kill switch's notice could not be read: ${(error as Error).message}`);
+          return false;
+        },
       ),
     ]);
     return { config, fold, tickDirs, schedule, disabled, warnings };
@@ -570,19 +644,13 @@ export class Fleet {
 
   // ── Your verdict ───────────────────────────────────────────────────────────
 
-  /** The newest tick folder and its report's stamp: what a verdict was checked against. */
-  private async reportMark(config: ScopeConfig): Promise<string> {
-    const ticks = await readdir(join(config.stateDir, "ticks")).catch(() => [] as string[]);
-    const newest = ticks.filter((name) => /^\d+$/.test(name)).sort((a, b) => Number(b) - Number(a))[0];
-    if (newest === undefined) return "none";
-    const stamp = await stampAt(this.reportPath(config.stateDir, Number(newest), "report.json")).catch(() => "unread");
-    return `${newest}:${stamp}`;
-  }
-
   /**
    * Records your verdict on proposals in the scope's review file, and returns
-   * them with it: one line per key, in one append, fsynced. Every key must be
-   * one the fleet proposes now, else nothing is written. Writes run one at a time.
+   * them with it: one line per key, in one append, fsynced, or none. Every key
+   * must be one the fleet proposes now, else nothing is written. A key binds
+   * the words you saw (session, class and action, or a verb's target and
+   * text), and each line names the tick you saw them at, so a tick landing as
+   * you decide changes nothing a verdict says. Writes run one at a time.
    */
   review(input: {
     scope: string;
@@ -604,7 +672,6 @@ export class Fleet {
     const { scopes } = await this.scopes();
     const config = scopes.find((scope) => scope.id === input.scope);
     if (!config) throw new UserError(`The fleet has no scope named ${input.scope}.`);
-    const mark = await this.reportMark(config);
     const view = await this.get(config.id, 1);
     const detail = view.detail?.id === config.id ? view.detail : null;
     const current = new Map((detail?.proposals ?? []).map((proposal) => [proposal.key, proposal]));
@@ -622,11 +689,6 @@ export class Fleet {
     const ledger = await stampAt(join(config.stateDir, "ledger.jsonl")).catch(() => null);
     if (ledger === null) {
       throw new UserError(`${config.stateDir} holds no fleet ledger, so no verdict was recorded there.`);
-    }
-    await this.options.beforeWrite?.();
-    // A tick that landed while this was checked may propose something else: the verdict waits for a look at it.
-    if ((await this.reportMark(config)) !== mark) {
-      throw new UserError("The fleet ticked while you decided, so nothing was recorded. Look at the Fleet view again.");
     }
     const at = new Date(this.now());
     const records = proposals.map((proposal) => {
@@ -649,9 +711,15 @@ export class Fleet {
             lead = last[0] === 0x0a ? "" : "\n";
           }
           const lines = Buffer.from(`${lead}${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
-          const { bytesWritten } = await handle.write(lines);
-          if (bytesWritten !== lines.length) throw new Error(`wrote ${bytesWritten} of ${lines.length} bytes`);
-          await handle.sync();
+          try {
+            const { bytesWritten } = await handle.write(lines);
+            if (bytesWritten !== lines.length) throw new Error(`wrote ${bytesWritten} of ${lines.length} bytes`);
+            await handle.sync();
+          } catch (error) {
+            // All or none: lines that made it in before a short write are taken back out.
+            await handle.truncate(size).catch(() => undefined);
+            throw error;
+          }
         },
         0o600,
       );

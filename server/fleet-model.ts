@@ -350,7 +350,8 @@ export function actProposals(acts: readonly DryAct[], sinceTick: number | null):
     session: null,
     classId: null,
     className: null,
-    evidence: str(act.target.text) ? `text: ${str(act.target.text)?.slice(0, 200)}` : null,
+    // The whole text: the key binds all of it, so the card shows all of it.
+    evidence: str(act.target.text) ? `text: ${str(act.target.text)}` : null,
     verb: act.verb,
     review: null,
   }));
@@ -442,11 +443,12 @@ export function healthOf(input: HealthInput): Health {
   const quietFrom = startedAt ?? input.scheduledAt;
   if (input.scheduled && quietFrom !== null) {
     // A lower bound when the quiet began before the plugin's first record: never a false alarm at a reload.
-    const awake = input.awakeFor(quietFrom).ms;
+    const { ms: awake, whole } = input.awakeFor(quietFrom);
     if (awake > missedAfter(input.intervalMs)) {
       const wall = now - quietFrom;
-      // Said in wall time, as people read a clock; the awake part when sleep took a real share of it.
-      const quiet = wall - awake > 10 * 60_000 ? `${span(wall)} (${span(awake)} of it awake)` : span(wall);
+      // Said in wall time, as people read a clock; the awake part when sleep (or not knowing) took a real share of it.
+      const share = `${whole ? "" : "at least "}${span(awake)} of it awake`;
+      const quiet = wall - awake > 10 * 60_000 ? `${span(wall)} (${share})` : span(wall);
       const runs = `It runs ${every(input.intervalMs)}.`;
       return {
         status: "missed",

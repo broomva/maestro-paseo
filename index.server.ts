@@ -148,6 +148,7 @@ export default function contribute(host: PluginServerContext) {
 
   return async () => {
     loop.stop();
+    fleet.stop();
     engine.stop();
     await stopSocket();
   };

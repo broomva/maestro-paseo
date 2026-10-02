@@ -237,6 +237,35 @@ describe("grouping proposals", () => {
   });
 });
 
+describe("group order", () => {
+  test("waiting first, then accepted, then rejected; a reject's note is part of where it stands", () => {
+    const summary = summarizeReport(
+      report(35, new Date(NOW), {
+        sessions: ["a", "b", "c", "d"].map((id) => session(`${id}0000000-x`, "10", "report only")),
+      }),
+      "alpha",
+      35,
+    );
+    const [a, b, c, d] = summary?.proposals ?? [];
+    if (!a || !b || !c || !d) throw new Error("four proposals");
+    const verdict = (kind: "accept" | "reject", note: string | null) => ({ verdict: kind, note, at: at(1), tick: 34 });
+    const groups = groupProposals([
+      { ...a, review: verdict("reject", "mine") },
+      { ...b, review: verdict("reject", "not yet") },
+      { ...c, review: verdict("accept", null) },
+      d,
+    ]);
+    expect(
+      groups.map((group) => [group.review?.verdict ?? null, group.review?.note ?? null, group.proposals.length]),
+    ).toEqual([
+      [null, null, 1],
+      ["accept", null, 1],
+      ["reject", "mine", 1],
+      ["reject", "not yet", 1],
+    ]);
+  });
+});
+
 describe("ticks", () => {
   test("the failed step is the first non-zero of the steps that fail a tick; compare's verdict is not the tick's", () => {
     expect(failedStepOf("recover=0 observe=0 report=0 compare=1 ask=0")).toBeNull();
@@ -262,7 +291,7 @@ describe("ticks", () => {
     expect(tickStatusOf({ ...started(25), ended: true, exit: 1 }, NOW, budget)).toBe("failed");
     expect(tickStatusOf(undefined, NOW, budget)).toBe("unknown");
     // A tick the Mac slept through has its budget from the wake.
-    // Its budget runs on awake time: a tick the Mac slept through after 5 minutes of work is still running...
+    // Its budget runs on awake time: a tick the Mac slept through mid-run is still running after the wake...
     expect(tickStatusOf(started(240), NOW, budget, () => ({ ms: 15 * 60_000, whole: true }))).toBe("running");
     // ...one that died days ago stays dead after a wake: its awake time since is long past the budget...
     expect(tickStatusOf(started(3 * 24 * 60), NOW, budget, () => ({ ms: 30 * H, whole: true }))).toBe("died");
