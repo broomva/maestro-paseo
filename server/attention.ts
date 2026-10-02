@@ -6,6 +6,7 @@ import type { Attention, WorkItem } from "../shared/contracts";
 import type { FleetNotice } from "../shared/fleet";
 import { needsYouOf } from "../shared/needs-you";
 import { isTerminal } from "../shared/states";
+import type { TimelineNotice } from "../shared/timeline";
 
 /** How long finished work keeps its pill: long enough to see it closed, not forever. */
 export const RECENT_MS = 24 * 60 * 60 * 1000;
@@ -16,8 +17,15 @@ export const RECENT_MS = 24 * 60 * 60 * 1000;
  * order (attention first), which the pills rely on when two items name one
  * session. `fleet`: each fleet scope whose tick is missed or failing and is
  * not already in Needs you as the fleet's own alert item (server/fleet.ts).
+ * `timeline`: each scheduled source whose run failed or was missed, other
+ * than a fleet scope, which `fleet` already counts (server/timeline.ts).
  */
-export function attentionOf(items: readonly WorkItem[], now: number, fleet: readonly FleetNotice[] = []): Attention {
+export function attentionOf(
+  items: readonly WorkItem[],
+  now: number,
+  fleet: readonly FleetNotice[] = [],
+  timeline: readonly TimelineNotice[] = [],
+): Attention {
   const waiting = needsYouOf(items).map(({ id, group, flag }) => ({ id, group, flag }));
   const sessions: Attention["sessions"] = [];
   for (const item of items) {
@@ -32,5 +40,5 @@ export function attentionOf(items: readonly WorkItem[], now: number, fleet: read
       workspaceId: worker.workspaceId,
     });
   }
-  return { waiting, sessions, fleet: [...fleet] };
+  return { waiting, sessions, fleet: [...fleet], timeline: [...timeline] };
 }

@@ -96,6 +96,7 @@ export function startIntegrations(
   const open = opener(client);
   let waiting: Attention["waiting"] = [];
   let fleet: Attention["fleet"] = [];
+  let timeline: Attention["timeline"] = [];
   let workspaces: string[] = [];
   /** What the last good read showed, and for how many reads in a row it has held. */
   let shown: string | null = null;
@@ -117,7 +118,7 @@ export function startIntegrations(
           // Read at press time, so the target always matches the count on the button.
           button: {
             ...headerFace(spec.count),
-            behavior: { kind: "action", onPress: () => open(needsYouTarget(waiting, fleet)) },
+            behavior: { kind: "action", onPress: () => open(needsYouTarget(waiting, fleet, timeline)) },
           },
         }),
       update: (handle, spec) => handle.update(headerFace(spec.count)),
@@ -173,13 +174,15 @@ export function startIntegrations(
         waiting = read.value.waiting;
         // A daemon from before the fleet notices answers without them.
         fleet = read.value.fleet ?? [];
+        // Nor the timeline's, from a daemon before the Timeline.
+        timeline = read.value.timeline ?? [];
         const next = JSON.stringify(read.value);
         calm = next === shown ? calm + 1 : 0;
         shown = next;
         pills.sync(pillSpecs(read.value.sessions));
       }
       report(read.status === "rejected" ? read.reason : spaces.status === "rejected" ? spaces.reason : null);
-      headers.sync(headerSpecs(workspaces, needsYouCount(waiting, fleet)));
+      headers.sync(headerSpecs(workspaces, needsYouCount(waiting, fleet, timeline)));
     } finally {
       busy = false;
       if (!stopped) schedule();

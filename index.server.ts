@@ -6,10 +6,13 @@ import { Engine } from "./server/engine";
 import { Fleet } from "./server/fleet";
 import { inspectFolder as inspect } from "./server/folders";
 import { GateCards } from "./server/gate-card";
+import { Launchd } from "./server/launchd";
 import { Loop } from "./server/loop";
-import { socketPath } from "./server/paths";
+import { launchdPrefix, paseoSchedulesDir, socketPath, wakeLogPath } from "./server/paths";
 import { Records } from "./server/records";
 import type { Paseo } from "./server/runs";
+import { Timeline } from "./server/timeline";
+import { WAKE_LOG_MAX, WakeLog } from "./server/wake-log";
 import {
   adoptAgent,
   attentionWork,
@@ -32,6 +35,7 @@ import {
 } from "./shared/contracts";
 import { getFleet, reviewProposal } from "./shared/fleet";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
+import { getTimeline } from "./shared/timeline";
 
 const log = (message: string) => console.log(`[maestro] ${message}`);
 
@@ -79,16 +83,36 @@ export default function contribute(host: PluginServerContext) {
   server.handle(getWork, ({ id }, { paseo }) => engine.get(id).then((got) => records.withChangedItem(paseo, got)));
   // fleet-reconcile's runs (server/fleet.ts): read from the fleet's files, with the work it raised read from ours.
   const fleet = new Fleet({ items: () => engine.list().then(({ items }) => items), log });
+  // Every scheduled thing on one axis (server/timeline.ts): Paseo's schedules, launchd, the loop, the fleet. Read-only.
+  const wakes = new WakeLog(wakeLogPath(), log);
+  const prefix = launchdPrefix();
+  const timeline = new Timeline({
+    launchd: prefix ? new Launchd({ prefix }) : null,
+    launchdPrefix: prefix ?? undefined,
+    schedulesDir: paseoSchedulesDir(),
+    loop: () => loop.get(),
+    wakes: () => wakes.recent(WAKE_LOG_MAX),
+    wakeLogPath: wakes.path,
+    fleet,
+    log,
+  });
   // No client handed to list: the header count and pills poll this, and must not reconcile sessions.
-  // A fleet that cannot be read costs the count its fleet notices, never the work's.
+  // A fleet or a timeline that cannot be read costs the count its notices, never the work's.
   server.handle(attentionWork, async () => {
     const { items } = await engine.list();
-    const notices = await fleet.notices(items).catch((error) => {
-      log(`reading the fleet for the header count: ${(error as Error).message}`);
-      return [];
-    });
-    return attentionOf(items, Date.now(), notices);
+    const [notices, scheduled] = await Promise.all([
+      fleet.notices(items).catch((error) => {
+        log(`reading the fleet for the header count: ${(error as Error).message}`);
+        return [];
+      }),
+      timeline.notices().catch((error) => {
+        log(`reading the timeline for the header count: ${(error as Error).message}`);
+        return [];
+      }),
+    ]);
+    return attentionOf(items, Date.now(), notices, scheduled);
   });
+  server.handle(getTimeline, () => timeline.get());
   server.handle(historyWork, ({ days }) => records.history(days));
   server.handle(workFiles, ({ id }) => records.files(id));
   server.handle(readWorkFile, ({ id, name }) => records.file(id, name));

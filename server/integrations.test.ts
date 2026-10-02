@@ -8,6 +8,7 @@ import { join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "../index.server";
 import type { FleetView } from "../shared/fleet";
+import type { TimelineView } from "../shared/timeline";
 import { H, writeFleet } from "./fake-fleet";
 import { fakePaseo } from "./fake-paseo";
 
@@ -28,6 +29,8 @@ async function withPlugin(
     fake: ReturnType<typeof fakePaseo>;
     /** Where the fleet's files go: its config, its state root and its LaunchAgents. */
     fleet: { config: string; state: string; agents: string };
+    /** Where Paseo's schedule files go, for the Timeline. */
+    schedules: string;
   }) => Promise<void>,
 ) {
   const root = await mkdtemp(join(tmpdir(), "maestro-plugin-integrations-"));
@@ -48,14 +51,18 @@ async function withPlugin(
     // Awake time is wall time here: what counts toward a missed tick is the test's, not this machine's sleeps.
     MAESTRO_PASEO_FLEET_AWAKE_CLOCK: "wall",
   };
+  // So are Paseo's schedules, and no launchd job is read: the machine's own never reach a test.
+  const timelineEnv = { MAESTRO_PASEO_SCHEDULES: join(root, "paseo", "schedules"), MAESTRO_PASEO_LAUNCHD: "off" };
   const saved = {
     MAESTRO_PASEO_CONFIG: process.env.MAESTRO_PASEO_CONFIG,
     MAESTRO_PASEO_SOCKET: process.env.MAESTRO_PASEO_SOCKET,
-    ...Object.fromEntries(Object.keys(fleetEnv).map((key) => [key, process.env[key]])),
+    ...Object.fromEntries(
+      [...Object.keys(fleetEnv), ...Object.keys(timelineEnv)].map((key) => [key, process.env[key]]),
+    ),
   };
   process.env.MAESTRO_PASEO_CONFIG = config;
   process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
-  Object.assign(process.env, fleetEnv);
+  Object.assign(process.env, fleetEnv, timelineEnv);
   const handlers = new Map<string, Handler>();
   const hooks = new Map<string, Handler>();
   const host = {
@@ -81,6 +88,7 @@ async function withPlugin(
         state: fleetEnv.MAESTRO_PASEO_FLEET_STATE,
         agents: fleetEnv.MAESTRO_PASEO_FLEET_AGENTS,
       },
+      schedules: timelineEnv.MAESTRO_PASEO_SCHEDULES,
     });
   } finally {
     await cleanup();
@@ -133,6 +141,7 @@ test("work.attention reads the files and reconciles no session; work.list does",
       waiting: [],
       sessions: [{ workId: item.id, title: "Counted", state: "running", agentId: "agent-1", workspaceId: "ws-1" }],
       fleet: [],
+      timeline: [],
     });
     const agent = fake.agents.get("agent-1");
     if (agent) agent.status = "idle";
@@ -177,5 +186,54 @@ test("the Fleet view, your verdict and a missed tick in the header count, throug
     expect(proposals[0]?.review).toMatchObject({ verdict: "reject", note: "Not yet" });
     const lines = (await readFile(join(fleet.state, "broomva", "proposal-reviews.jsonl"), "utf8")).trim().split("\n");
     expect(lines.map((line) => JSON.parse(line).verdict)).toEqual(["reject"]);
+  });
+});
+
+test("the Timeline and a failed scheduled run in the header count, through the plugin's handlers", async () => {
+  await withPlugin(async ({ call, schedules }) => {
+    const now = Date.now();
+    await mkdir(schedules, { recursive: true });
+    await writeFile(
+      join(schedules, "aa11.json"),
+      JSON.stringify({
+        id: "aa11",
+        name: "Nightly digest",
+        prompt: "Write the digest.",
+        cadence: { type: "cron", expression: "0 9 * * *", timezone: "UTC" },
+        target: { type: "new-agent", config: { provider: "claude", cwd: "/repo" } },
+        status: "active",
+        createdAt: new Date(now - 48 * H).toISOString(),
+        updatedAt: new Date(now - H).toISOString(),
+        nextRunAt: new Date(now + 10 * H).toISOString(),
+        lastRunAt: new Date(now - H).toISOString(),
+        pausedAt: null,
+        expiresAt: null,
+        maxRuns: null,
+        runs: [
+          {
+            id: "r1",
+            scheduledFor: new Date(now - H).toISOString(),
+            startedAt: new Date(now - H).toISOString(),
+            endedAt: new Date(now - H + 60_000).toISOString(),
+            status: "failed",
+            agentId: null,
+            workspaceId: null,
+            output: null,
+            error: "Provider quota exhausted",
+          },
+        ],
+      }),
+    );
+    const view = (await call("timeline.get", {})) as TimelineView;
+    const digest = view.sources.find((source) => source.id === "schedule:aa11");
+    expect(digest).toMatchObject({
+      status: "failed",
+      needsYou: true,
+      reason: "Its last run failed: Provider quota exhausted.",
+    });
+    // No launchd job of the machine's reaches the test, and the loop is there, off.
+    expect(view.sources.map((source) => source.kind).sort()).toEqual(["loop", "schedule"]);
+    const attention = (await call("work.attention", {})) as { timeline: { id: string; status: string }[] };
+    expect(attention.timeline.map((notice) => [notice.id, notice.status])).toEqual([["schedule:aa11", "failed"]]);
   });
 });

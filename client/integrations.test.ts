@@ -449,3 +449,38 @@ test("workspace ids are read page by page", async () => {
   expect(await workspaceIds(paseo)).toEqual(["a", "b", "c"]);
   expect(cursors).toEqual([undefined, "c1"]);
 });
+
+describe("the header count and the timeline", () => {
+  const notice = (id: string, name: string) => ({
+    id,
+    kind: "launchd" as const,
+    name,
+    status: "failed" as const,
+    reason: "Its last run failed: exit 1.",
+    since: "2026-10-02T07:30:00Z",
+  });
+
+  test("a failed or missed run is counted beside the work; a daemon that sends none counts none", async () => {
+    const fake = fakeClient();
+    fake.state.workspaces = ["ws1"];
+    fake.state.attention = { waiting: [waiting("r")], sessions: [], fleet: [], timeline: [notice("launchd:x", "x")] };
+    const { clock } = start(fake);
+    await settle();
+    expect(face(fake.headers[0] as Registered)).toMatchObject({ label: "2 need you", visible: true });
+    // A daemon from before the Timeline answers without it: the count is the work's.
+    fake.state.attention = { waiting: [], sessions: [], fleet: [] };
+    await clock.advance(REFRESH.everyMs);
+    expect(face(fake.headers[0] as Registered)).toMatchObject({ visible: false });
+  });
+
+  test("pressing it with only timeline notices waiting opens the Timeline", async () => {
+    const fake = fakeClient();
+    fake.state.attention = { waiting: [], sessions: [], fleet: [], timeline: [notice("launchd:x", "x")] };
+    start(fake);
+    await settle();
+    const behavior = face(fake.headers[0] as Registered).behavior;
+    if (behavior.kind !== "action") throw new Error("the header count is an action");
+    void behavior.onPress();
+    expect(takeIntent()).toEqual({ kind: "timeline" });
+  });
+});

@@ -5,6 +5,7 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { FleetNoticeSchema } from "./fleet";
 import { GATE_MODES, GROUP_ORDER, KINDS, ORCH_STATES, VERDICTS } from "./states";
+import { TimelineNoticeSchema } from "./timeline";
 
 /** Bounds on what a work may pass to a provider as feature values. */
 export const ISOLATIONS = ["worktree", "directory"] as const;
@@ -354,7 +355,9 @@ export const setConfig = defineRpc({
  * first, then work the loop flagged (`flag`, null for the others); `sessions`
  * are the workers of work that is live or changed in the last day; `fleet`
  * are fleet scopes whose tick is missed or failing and needs you on its own
- * (shared/fleet.ts FleetHealth.needsYou). The header count counts both.
+ * (shared/fleet.ts FleetHealth.needsYou); `timeline` are the other scheduled
+ * sources whose run failed or was missed (shared/timeline.ts). The header
+ * count counts all three.
  */
 export const attentionWork = defineRpc({
   name: "work.attention",
@@ -372,6 +375,8 @@ export const attentionWork = defineRpc({
     ),
     /** Absent from a daemon older than the fleet notices. */
     fleet: z.array(FleetNoticeSchema).optional(),
+    /** Scheduled sources whose run failed or was missed (shared/timeline.ts); absent from a daemon older than the timeline. */
+    timeline: z.array(TimelineNoticeSchema).optional(),
   }),
 });
 export type Attention = z.infer<typeof attentionWork.output>;

@@ -14,7 +14,8 @@ export type MaestroIntent =
   | { kind: "select"; id: string }
   | { kind: "new" }
   | { kind: "filter"; group: Group }
-  | { kind: "fleet"; scope: string | null };
+  | { kind: "fleet"; scope: string | null }
+  | { kind: "timeline" };
 
 export const INTENT_TTL_MS = 30_000;
 

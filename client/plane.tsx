@@ -5,7 +5,8 @@
 // and the Fleet take the width and open the item beside them. Compact windows
 // show the feed, History or the Fleet and push the item over it, with a way
 // back. A fleet tick that is missed or failing shows above every view but the
-// Fleet, as the header count counts it.
+// Fleet, as the header count counts it; so does any other scheduled run that
+// failed or was missed, above every view but the Timeline (client/timeline.tsx).
 
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
@@ -37,6 +38,7 @@ import {
 } from "./plane-model";
 import { BoardView, FeedView, ListView } from "./plane-views";
 import { ScoreboardCard } from "./scoreboard";
+import { TimelineNotices, TimelineView } from "./timeline";
 import { Button, Card, IconButton, Notice, space, useText } from "./ui";
 
 export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps) {
@@ -59,12 +61,15 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     if (intent.kind === "select") setSelected(intent.id);
     else if (intent.kind === "new") setCreating(true);
     else if (intent.kind === "fleet") openFleet(intent.scope);
+    else if (intent.kind === "timeline") setView("timeline");
     else {
       // A filter opened from elsewhere means that group across all work, where its chips show.
       setFilter(intent.group);
       setScope(null);
-      // The Board splits by state, History lists receipts and the Fleet is not work: none applies the chips.
-      setView((view) => (view === "board" || view === "history" || view === "fleet" ? "feed" : view));
+      // The Board splits by state, History lists receipts, and the Fleet and the Timeline are not work: none applies the chips.
+      setView((view) =>
+        view === "board" || view === "history" || view === "fleet" || view === "timeline" ? "feed" : view,
+      );
     }
   });
   const compact = layout.compact;
@@ -137,11 +142,22 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
       {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
 
       {view === "fleet" ? null : <FleetNotices theme={theme} compact={compact} onOpen={openFleet} />}
+      {view === "timeline" ? null : (
+        <TimelineNotices theme={theme} compact={compact} onOpen={() => setView("timeline")} />
+      )}
 
       <ViewSwitch theme={theme} view={view} onView={chooseView} views={viewsFor(compact)} />
 
       {view === "fleet" ? (
         <FleetView theme={theme} compact={compact} scope={fleetScope} onScope={setFleetScope} onSelect={setSelected} />
+      ) : view === "timeline" ? (
+        <TimelineView
+          theme={theme}
+          compact={compact}
+          navigation={navigation}
+          onOpenFleet={openFleet}
+          onOpenLoop={() => setLoopOpen(true)}
+        />
       ) : list.isPending ? (
         <ActivityIndicator color={theme.colors.foregroundMuted} />
       ) : list.isError ? (
@@ -223,7 +239,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     );
   }
 
-  // The board, the list, History and the Fleet want the width: the item opens beside them only when one is picked.
+  // The board, the list, History, the Fleet and the Timeline want the width: the item opens beside them only when one is picked.
   const wide = view !== "feed";
   return (
     <ChangeScope>
