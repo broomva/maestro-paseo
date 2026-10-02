@@ -133,13 +133,7 @@ async function setup() {
     throw new Error(`unexpected ${command}`);
   };
   let now = NOW;
-  const launchd = new Launchd({
-    run,
-    uid: 501,
-    agentsDir: agents,
-    now: () => now,
-    awakeSince: async () => 1790948115000,
-  });
+  const launchd = new Launchd({ run, uid: 501, agentsDir: agents, now: () => now });
   return {
     launchd,
     calls,
@@ -171,7 +165,6 @@ describe("reading the jobs", () => {
     expect(compile?.logWrittenAt).toBe(Date.parse("2026-10-02T07:00:18Z"));
     expect(molt?.runningSince).toBe(NOW - 120_000);
     expect(old?.printed).toBeNull();
-    expect(read.awakeSince).toBe(1790948115 * 1000);
     expect(read.warnings).toEqual([]);
   });
 

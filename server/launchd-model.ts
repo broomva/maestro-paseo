@@ -13,11 +13,22 @@
 
 import type { RunStatus, SourceStatus, TimelineRun } from "../shared/timeline";
 import { type CronSpec, dueTimes } from "./cron";
-import { span } from "./fleet-model";
+import { type AwakeFor, span } from "./fleet-model";
+
+/**
+ * Awake milliseconds between two wall-clock times, from the plugin's awake
+ * clock (server/fleet.ts AwakeClock): what launchd counts for StartInterval,
+ * and the only time in which a job could have run. Before the clock's first
+ * record it counts from that record, so it is a lower bound, never more.
+ */
+export function awakeBetween(awake: AwakeFor, from: number, to: number): number {
+  if (to <= from) return 0;
+  return Math.max(0, awake(from).ms - awake(to).ms);
+}
 
 /** A run counts as missed this long after its interval would have fired twice. */
 export const INTERVAL_GRACE_MS = 5 * 60_000;
-/** A calendar run counts as missed this long after it was due, or after the Mac woke if it slept through. */
+/** A calendar run counts as missed this long, in awake time, after it was due (launchd runs one the Mac slept through at wake). */
 export const CALENDAR_GRACE_MS = 30 * 60_000;
 /** A run starting this close to a due time, or this close to a run seen elsewhere, is the same run. */
 export const MATCH_SLACK_MS = 2 * 60_000;
@@ -323,8 +334,8 @@ export interface LaunchdStatusInput {
   seen: Seen | null;
   /** When the job's plist was written: it cannot have missed a run due before it existed. */
   installedAt: number | null;
-  /** When the Mac last woke (or booted): launchd fires nothing while it sleeps. */
-  awakeSince: number | null;
+  /** Awake time (server/fleet.ts AwakeClock): launchd fires nothing while the Mac sleeps. */
+  awake: AwakeFor;
 }
 
 export interface Judged {
@@ -349,8 +360,8 @@ const MISSED_SHOWN = 24;
  * A job now. Not loaded is off. A run going is running. A newest run that
  * failed is failed. Otherwise it is missed when a run came due inside what
  * the unified log saw (`seen`) and did not start: on an interval, no run for
- * two intervals and a grace of awake time; on a calendar, a due time that
- * passed its grace, counted from the Mac's wake if it slept through. Only
+ * two intervals and a grace of awake time; on a calendar, a due time with
+ * its grace of awake time gone (one the Mac slept through runs at wake). Only
  * the part of `seen` after the newest run's end and after the plist was
  * written counts: launchd folds runs a sleep or a long run skipped into one.
  * A newest run whose exit nobody recorded is unknown, never on time.
@@ -376,10 +387,9 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
     const from = Math.max(seen.from, newestEnd ?? seen.from, input.installedAt ?? seen.from, to - 8 * 86_400_000);
     const sinceLast = newestEnd !== null && newestEnd >= seen.from;
     if (schedule.calendar) {
-      const due = dueTimes(schedule.calendar, undefined, from + MATCH_SLACK_MS, to, 1440 * 2).filter((at) => {
-        const woke = input.awakeSince !== null && input.awakeSince > at ? input.awakeSince : at;
-        return to > woke + CALENDAR_GRACE_MS;
-      });
+      const due = dueTimes(schedule.calendar, undefined, from + MATCH_SLACK_MS, to, 1440 * 2).filter(
+        (at) => awakeBetween(input.awake, at, to) > CALENDAR_GRACE_MS,
+      );
       const [first] = due;
       if (first !== undefined) {
         return {
@@ -394,9 +404,9 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
       }
     }
     if (schedule.intervalMs !== null) {
-      const base = Math.max(from, input.awakeSince ?? from);
-      if (to - base > 2 * schedule.intervalMs + INTERVAL_GRACE_MS) {
-        const dueAt = base + schedule.intervalMs;
+      if (awakeBetween(input.awake, from, to) > 2 * schedule.intervalMs + INTERVAL_GRACE_MS) {
+        // Due an interval after it; in wall time, where no sleep fell between.
+        const dueAt = from + schedule.intervalMs;
         return {
           status: "missed",
           reason: sinceLast

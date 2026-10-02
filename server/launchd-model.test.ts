@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { calendarSpecs } from "./cron";
+import { sleptThrough } from "./fake-awake";
 import {
   CALENDAR_GRACE_MS,
   elapsedMs,
@@ -335,7 +336,7 @@ const run = (at: number, status: "ok" | "failed" | "unknown" | "running" = "ok")
   detail: null,
 });
 const interval = { intervalMs: 15 * M, calendar: null };
-const base = { loaded: true, seen: { from: NOW - 20 * H, to: NOW }, awakeSince: null, installedAt: null };
+const base = { loaded: true, seen: { from: NOW - 20 * H, to: NOW }, awake: sleptThrough(NOW), installedAt: null };
 
 describe("a job's status", () => {
   test("not loaded is off; a run going is running; a newest run that failed is failed", () => {
@@ -364,14 +365,24 @@ describe("a job's status", () => {
     expect(launchdStatus({ ...base, schedule: interval, runs: [run(ended - 1000 + 2)] }).status).toBe("ok");
   });
 
-  test("on an interval: a Mac that slept has the time from its wake", () => {
+  test("on an interval: only awake time counts, so a Mac that slept since its last run is given the sleep", () => {
     const last = NOW - 6 * H;
-    expect(launchdStatus({ ...base, awakeSince: NOW - 10 * M, schedule: interval, runs: [run(last)] }).status).toBe(
-      "ok",
-    );
-    expect(launchdStatus({ ...base, awakeSince: NOW - 40 * M, schedule: interval, runs: [run(last)] }).status).toBe(
-      "missed",
-    );
+    expect(
+      launchdStatus({
+        ...base,
+        awake: sleptThrough(NOW, [[last + 1000, NOW - 10 * M]]),
+        schedule: interval,
+        runs: [run(last)],
+      }).status,
+    ).toBe("ok");
+    expect(
+      launchdStatus({
+        ...base,
+        awake: sleptThrough(NOW, [[last + 1000, NOW - 40 * M]]),
+        schedule: interval,
+        runs: [run(last)],
+      }).status,
+    ).toBe("missed");
   });
 
   test("with no run seen: missed only from where the log reaches, and unknown when it reaches nowhere", () => {
@@ -425,11 +436,18 @@ describe("a job's status", () => {
     );
   });
 
-  test("on a calendar: a Mac asleep at the due time is given its grace from the wake", () => {
+  test("on a calendar: a Mac asleep at the due time has its grace in awake time, from the wake", () => {
     const calendar = { intervalMs: null, calendar: calendarSpecs({ Minute: 0 }) };
     const lastRan = Date.parse("2026-10-02T19:00:05Z");
     const woke = NOW - CALENDAR_GRACE_MS + M;
-    expect(launchdStatus({ ...base, awakeSince: woke, schedule: calendar, runs: [run(lastRan)] }).status).toBe("ok");
+    expect(
+      launchdStatus({
+        ...base,
+        awake: sleptThrough(NOW, [[lastRan + 1000, woke]]),
+        schedule: calendar,
+        runs: [run(lastRan)],
+      }).status,
+    ).toBe("ok");
   });
 
   test("on a calendar: a due time before the log reaches is not judged", () => {

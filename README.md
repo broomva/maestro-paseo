@@ -377,16 +377,17 @@ now and the next 24 to its right. It reads four kinds of source:
   a signal, or Paseo's `failed`. A later run that passes puts it back on time; the red mark stays
   on the track. A run whose exit nobody recorded is *not known*, never on time, and a SIGTERM
   launchd sent itself (at logout, or an unload) stops a run without failing it.
-- **When a run counts as missed.** It counts against time the Mac was awake (the kernel's wake or
-  boot), since launchd fires nothing while it sleeps and runs a missed calendar job once at wake:
-  - A launchd job on an interval: no run for two intervals and 5 minutes after its newest run ended.
-  - A launchd job on a calendar: a due time after its newest run ended, 30 minutes past due (or past
-    the wake, if the Mac slept through it). Never one due before its plist was written.
-  - A Paseo schedule: its next run 10 minutes overdue (or past the wake) with no run started at or
-    after it was due. A paused, completed or expired schedule never needs you, whatever its last
-    run did: it will not run again on its own.
-  - The loop: a wake 5 minutes overdue, and at least a period and 5 minutes after the Mac woke (its
-    timer does not count the sleep).
+- **When a run counts as missed.** Every grace is awake time, from the plugin's one awake clock,
+  which the Fleet view counts in too (a heartbeat, since no clock the plugin can read stops in sleep).
+  launchd fires nothing while the Mac sleeps, and runs a calendar job it slept through once at wake:
+  - A launchd job on an interval: two intervals and 5 minutes of awake time with no run, after its
+    newest run ended.
+  - A launchd job on a calendar: a due time after its newest run ended, with 30 minutes of awake time
+    gone since. Never one due before its plist was written.
+  - A Paseo schedule: its next run 10 minutes of awake time overdue, with no run started at or after
+    it was due. A paused, completed or expired schedule never needs you, whatever its last run did:
+    it will not run again on its own.
+  - The loop: a wake 5 minutes of awake time overdue.
   - A fleet scope: the Fleet view's own rule.
 - **A read that fails is said, never read as healthy.** A command that exits non-zero, or a plist
   that will not convert, is a warning in the view and costs only what it would have said. A launchd
@@ -489,6 +490,8 @@ It is pinned to 0.8.0 so one build serves 0.8 and 0.9 hosts.
     An older run is known only if the job stamps its own log, and a run before the log's reach is
     never called missed.
   - A job whose log carries no timestamps shows its last run at the time the log was last written.
+  - A calendar a plist gives that this cannot read (a value out of range) is said in its cadence, and
+    its runs are neither drawn nor judged.
   - On the night the clocks go back, a calendar job in the repeated hour is due twice by the wall
     clock; if launchd runs it once, the second can read as missed. Bogotá, with no daylight saving,
     is not affected.

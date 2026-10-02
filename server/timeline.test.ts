@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FleetView } from "../shared/fleet";
+import { sleptThrough } from "./fake-awake";
 import type { LaunchdJob, LaunchdRead } from "./launchd";
 import { LAUNCHD_NOTICE_MS, LAUNCHD_VIEW_MS, NOTICE_WAIT_MS, Timeline, VIEW_MS } from "./timeline";
 
@@ -127,7 +128,6 @@ async function setup(options: { launchdMs?: number } = {}) {
         coverage: logRead ? NOW - 20 * H : null,
         exitsUntil: logRead ? readAt : null,
         warnings: logRead ? [] : ["The unified log could not be read, so launchd runs are not all shown: timed out"],
-        awakeSince: null,
       };
     },
   };
@@ -375,26 +375,29 @@ describe("the timeline", () => {
     expect(reads()).toBe(2);
   });
 
-  test("with launchd off, the loop and the schedules still get the Mac's wake time", async () => {
+  test("with launchd off, the loop and the schedules still count awake time from the plugin's clock", async () => {
     const root = await mkdtemp(join(tmpdir(), "maestro-timeline-"));
     roots.push(root);
     const asked: string[] = [];
     const timeline = new Timeline({
       launchd: null,
       schedulesDir: join(root, "missing"),
-      // Due three hours ago; the Mac woke 3 min ago: within a period and the grace of the wake.
+      // Due three hours ago; three minutes of it awake: inside the grace.
       loop: async () => ({ minutes: 15, nextAt: iso(NOW - 3 * H), ticking: false }),
       wakes: async () => [],
       fleet: null,
-      awakeSince: async () => {
-        asked.push("wake");
-        return NOW - 3 * M;
+      // The Mac slept from just after the wake was due until three minutes ago.
+      clock: {
+        read: () => {
+          asked.push("awake");
+          return sleptThrough(NOW, [[NOW - 3 * H, NOW - 3 * M]]);
+        },
       },
       now: () => NOW,
       log: () => undefined,
     });
     const view = await timeline.get();
-    expect(asked).toEqual(["wake"]);
+    expect(asked).toEqual(["awake"]);
     expect(view.sources.find((source) => source.id === "loop")?.status).toBe("ok");
   });
 

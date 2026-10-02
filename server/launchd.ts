@@ -1,9 +1,9 @@
 // The broomva launchd jobs, read from the Mac: `launchctl list` and
 // `launchctl print` for each job, its plist through `plutil`, its own log's
 // tail, the run ends the unified log keeps (`log show`), and how far back
-// that log reaches; when the Mac last woke is the Fleet view's own read
-// (server/fleet.ts kernelAwakeSince). The parsing is pure
-// (server/launchd-model.ts); this is only the reading.
+// that log reaches. Awake time is the plugin's one clock (server/fleet.ts
+// AwakeClock), not read here. The parsing is pure (server/launchd-model.ts);
+// this is only the reading.
 //
 // Read-only, and held to it: every command goes through `readOnly`, which
 // runs a fixed binary only with a verb that reads (list, print, show,
@@ -18,7 +18,6 @@ import { spawn } from "node:child_process";
 import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { TIMELINE_WINDOW_MS } from "../shared/timeline";
-import { kernelAwakeSince } from "./fleet";
 import {
   elapsedMs,
   exitKey,
@@ -151,7 +150,6 @@ export interface LaunchdRead {
    * that came due since is not called missed on no evidence.
    */
   exitsUntil: number | null;
-  awakeSince: number | null;
   warnings: string[];
 }
 
@@ -169,8 +167,6 @@ export interface LaunchdOptions {
   /** Labels that start with this are read. */
   prefix?: string;
   agentsDir?: string;
-  /** When the Mac last woke or booted: server/fleet.ts kernelAwakeSince when not given. */
-  awakeSince?: () => Promise<number | null>;
   now?: () => number;
 }
 
@@ -184,7 +180,6 @@ export class Launchd {
   private readonly prefix: string;
   private readonly agentsDir: string;
   private readonly now: () => number;
-  private readonly awakeSince: () => Promise<number | null>;
   private readonly exits = new Map<string, LaunchdExit>();
   /** Where the last successful read of the unified log ended. */
   private readTo: number | null = null;
@@ -199,7 +194,6 @@ export class Launchd {
     if (!LABEL_PREFIX.test(this.prefix)) throw new Error(`Not a launchd label prefix: ${JSON.stringify(this.prefix)}`);
     this.agentsDir = options.agentsDir ?? expandHome("~/Library/LaunchAgents");
     this.now = options.now ?? Date.now;
-    this.awakeSince = options.awakeSince ?? (() => kernelAwakeSince());
   }
 
   /** A read that exited non-zero is a failed read, never an empty answer. */
@@ -222,7 +216,7 @@ export class Launchd {
   private async readNow(): Promise<LaunchdRead> {
     const readAt = this.now();
     const warnings: string[] = [];
-    const [listed, plists, awakeSince] = await Promise.all([
+    const [listed, plists] = await Promise.all([
       this.stdout(LAUNCHCTL, ["list"], SHORT_MS).then(
         (text) => parseList(text, this.prefix),
         (error) => {
@@ -234,7 +228,6 @@ export class Launchd {
         (names) => names.filter((name) => name.startsWith(this.prefix) && name.endsWith(".plist")),
         () => [] as string[],
       ),
-      this.awakeSince().catch(() => null),
       this.readExits(readAt, warnings),
     ]);
     const loaded = new Map((listed ?? []).map((job) => [job.label, job]));
@@ -251,7 +244,6 @@ export class Launchd {
       exits: [...this.exits.values()].sort((a, b) => a.endedAt - b.endedAt),
       coverage: this.reach === null ? null : Math.max(this.reach, readAt - KEEP_MS),
       exitsUntil: this.readTo,
-      awakeSince,
       warnings,
     };
   }

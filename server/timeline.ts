@@ -16,6 +16,7 @@ import { join } from "node:path";
 import type { WakeEntry } from "../shared/contracts";
 import type { FleetDetail, FleetView } from "../shared/fleet";
 import { TIMELINE_WINDOW_MS, type TimelineNotice, type TimelineSource, type TimelineView } from "../shared/timeline";
+import { type AwakeFor, awakeAsWall } from "./fleet-model";
 import type { LaunchdRead } from "./launchd";
 import {
   fleetLabel,
@@ -54,8 +55,12 @@ export interface TimelineOptions {
   wakeLogPath?: string | null;
   /** The Fleet view's read; null when there is none. */
   fleet: { get(scope?: string, ticks?: number): Promise<FleetView> } | null;
-  /** When the Mac last woke or booted, when launchd's read does not say (server/fleet.ts kernelAwakeSince). */
-  awakeSince?: () => Promise<number | null>;
+  /**
+   * Awake time: the plugin's one clock, shared with the Fleet view
+   * (server/fleet.ts AwakeClock). Wall time when not given, which accounts
+   * no sleep, so a sleep then reads as time the jobs could have run.
+   */
+  clock?: { read(): AwakeFor };
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -145,10 +150,10 @@ export class Timeline {
     const launchdAt = this.launchd?.at ?? null;
     const now = this.now();
     const window: Window = { now, from: now - TIMELINE_WINDOW_MS, to: now + TIMELINE_WINDOW_MS };
-    const awakeSince = launchd?.awakeSince ?? (await this.options.awakeSince?.().catch(() => null)) ?? null;
+    const awake = this.options.clock?.read() ?? awakeAsWall(now);
     const [schedules, loop, fleet] = await Promise.all([
-      this.schedules(window, awakeSince, warnings),
-      this.loop(window, awakeSince, warnings),
+      this.schedules(window, awake, warnings),
+      this.loop(window, awake, warnings),
       this.fleet(window, warnings),
     ]);
     const fleetScopes = new Set(fleet.map((source) => source.id.slice("fleet:".length)));
@@ -169,7 +174,7 @@ export class Timeline {
           {
             exits: (launchd?.exits ?? []).filter((exit) => exit.label === job.label),
             seen,
-            awakeSince,
+            awake,
             prefix,
           },
           window,
@@ -193,7 +198,7 @@ export class Timeline {
     return view;
   }
 
-  private async schedules(window: Window, awakeSince: number | null, warnings: string[]): Promise<TimelineSource[]> {
+  private async schedules(window: Window, awake: AwakeFor, warnings: string[]): Promise<TimelineSource[]> {
     const dir = this.options.schedulesDir;
     let names: string[];
     try {
@@ -220,16 +225,16 @@ export class Timeline {
         warnings.push(`Paseo schedule ${name} is in a shape the timeline does not read.`);
         continue;
       }
-      const source = scheduleSource(parsed.data, window, path, awakeSince);
+      const source = scheduleSource(parsed.data, window, path, awake);
       if (source) sources.push(source);
     }
     return sources;
   }
 
-  private async loop(window: Window, awakeSince: number | null, warnings: string[]): Promise<TimelineSource | null> {
+  private async loop(window: Window, awake: AwakeFor, warnings: string[]): Promise<TimelineSource | null> {
     try {
       const [state, wakes] = await Promise.all([this.options.loop(), this.options.wakes()]);
-      return loopSource(state, wakes, window, awakeSince, this.options.wakeLogPath ?? null);
+      return loopSource(state, wakes, window, awake, this.options.wakeLogPath ?? null);
     } catch (error) {
       warnings.push(`Maestro's loop could not be read: ${(error as Error).message}`);
       return null;

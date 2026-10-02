@@ -22,8 +22,10 @@ import {
 } from "../shared/timeline";
 import { calendarCadence, calendarSpecs, dueTimes, everyWords, knownZone, parseCron } from "./cron";
 import { plistName } from "./fleet";
+import type { AwakeFor } from "./fleet-model";
 import type { LaunchdJob } from "./launchd";
 import {
+  awakeBetween,
   type LaunchdExit,
   type LaunchdSchedule,
   launchdRuns,
@@ -34,9 +36,9 @@ import {
   stampRuns,
 } from "./launchd-model";
 
-/** A Paseo schedule counts as missed this long after its next run was due with no run started. */
+/** A Paseo schedule counts as missed this long, in awake time, after its next run was due with no run started. */
 export const SCHEDULE_GRACE_MS = 10 * 60_000;
-/** The loop counts as missed this long after its wake was due (or after the Mac woke, if later). */
+/** The loop counts as missed this long, in awake time, after its wake was due. */
 export const LOOP_GRACE_MS = 5 * 60_000;
 
 /** Now and the window either side of it. */
@@ -184,15 +186,14 @@ function scheduleUpcoming(schedule: StoredSchedule, next: number | null, window:
  * completed and expired are off, whatever their last run did: they will not
  * run again on their own, so a failure there is history, never a page. An
  * active one whose newest run failed is failed. It is missed when its next
- * run is SCHEDULE_GRACE_MS overdue, counted from the Mac's wake if it slept
- * through, and no run started at or after it was due (a file the daemon has
- * not yet moved on is not a miss).
+ * run is SCHEDULE_GRACE_MS of awake time overdue, and no run started at or
+ * after it was due (a file the daemon has not yet moved on is not a miss).
  */
 export function scheduleSource(
   schedule: StoredSchedule,
   window: Window,
   file: string | null,
-  awakeSince: number | null,
+  awake: AwakeFor,
 ): TimelineSource | null {
   const { now } = window;
   const kind = schedule.target.type === "agent" ? "heartbeat" : "schedule";
@@ -232,7 +233,7 @@ export function scheduleSource(
     since = newest.at;
   } else if (
     nextAt !== null &&
-    now > Math.max(nextAt, awakeSince ?? 0) + SCHEDULE_GRACE_MS &&
+    awakeBetween(awake, nextAt, now) > SCHEDULE_GRACE_MS &&
     !(newestAt !== null && newestAt >= nextAt - DUE_SLACK_MS)
   ) {
     status = "missed";
@@ -292,17 +293,16 @@ export function wakeSummary(entry: WakeEntry): string {
 
 /**
  * The loop as a source. Off when it has no period (its past wakes, Wake now
- * included, still show). Waking is running. A wake due LOOP_GRACE_MS ago that
- * has not run is missed: the loop's timer should have fired. A timer does
- * not count time the Mac sleeps, so after a wake it can take up to a whole
- * period to fire: the grace runs from the later of the due time and a
- * period after the wake.
+ * included, still show). Waking is running. A wake LOOP_GRACE_MS of awake
+ * time overdue that has not run is missed: the loop's timer should have
+ * fired. Node's timers count the Mac's sleep (server/fleet.ts AwakeClock), so
+ * one that fell due in a sleep fires at the wake.
  */
 export function loopSource(
   loop: LoopNow,
   wakes: readonly WakeEntry[],
   window: Window,
-  awakeSince: number | null,
+  awake: AwakeFor,
   wakeLog: string | null,
 ): TimelineSource {
   const { now } = window;
@@ -326,7 +326,7 @@ export function loopSource(
   } else if (nextAt === null) {
     status = "unknown";
     reason = "On, with no wake armed yet.";
-  } else if (now > Math.max(nextAt, awakeSince === null ? 0 : awakeSince + (periodMs ?? 0)) + LOOP_GRACE_MS) {
+  } else if (awakeBetween(awake, nextAt, now) > LOOP_GRACE_MS) {
     status = "missed";
     reason = "A wake came due and has not run.";
     since = iso(nextAt);
@@ -465,7 +465,13 @@ export function launchdSchedule(job: Pick<LaunchdJob, "plist" | "printed">): Lau
 
 export function launchdCadence(job: Pick<LaunchdJob, "plist" | "printed">): string {
   const plist = job.plist ?? {};
-  if (plist.StartCalendarInterval !== undefined) return calendarCadence(plist.StartCalendarInterval);
+  if (plist.StartCalendarInterval !== undefined) {
+    const words = calendarCadence(plist.StartCalendarInterval);
+    // A value launchd's own format allows no reading of: no run of it is drawn or judged, and the row says so.
+    return calendarSpecs(plist.StartCalendarInterval)
+      ? words
+      : `${words} (a calendar this cannot read, so its runs are not judged)`;
+  }
   const { intervalMs } = launchdSchedule(job);
   if (intervalMs !== null) return everyWords(intervalMs);
   if (plist.KeepAlive) return "kept running";
@@ -488,7 +494,7 @@ export interface LaunchdContext {
   exits: readonly LaunchdExit[];
   /** What the unified log saw (launchd-model.ts Seen), or null when it has not been read: no miss is judged without it. */
   seen: Seen | null;
-  awakeSince: number | null;
+  awake: AwakeFor;
   prefix: string;
 }
 
@@ -521,7 +527,7 @@ export function launchdSource(job: LaunchdJob, context: LaunchdContext, window: 
     runs: all,
     seen: context.seen,
     installedAt: job.installedAt,
-    awakeSince: context.awakeSince,
+    awake: context.awake,
   });
   const newest = all[0] ? ms(all[0].at) : null;
   const { next, upcoming } = job.loaded

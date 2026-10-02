@@ -3,7 +3,7 @@ import { agentMethods, keepServing } from "./server/agent-socket";
 import { attentionOf } from "./server/attention";
 import { loadConfig, saveConfig } from "./server/config";
 import { Engine } from "./server/engine";
-import { Fleet, kernelAwakeSince } from "./server/fleet";
+import { AwakeClock, Fleet, wallClock } from "./server/fleet";
 import { inspectFolder as inspect } from "./server/folders";
 import { GateCards } from "./server/gate-card";
 import { Launchd } from "./server/launchd";
@@ -82,7 +82,12 @@ export default function contribute(host: PluginServerContext) {
   server.handle(listWork, (_input, { paseo }) => engine.list(paseo).then((list) => records.withChanged(paseo, list)));
   server.handle(getWork, ({ id }, { paseo }) => engine.get(id).then((got) => records.withChangedItem(paseo, got)));
   // fleet-reconcile's runs (server/fleet.ts): read from the fleet's files, with the work it raised read from ours.
-  const fleet = new Fleet({ items: () => engine.list().then(({ items }) => items), log });
+  // One awake clock for the plugin, so the Fleet view and the Timeline count the same awake time
+  // (wall time for a test, as the Fleet view takes it: MAESTRO_PASEO_FLEET_AWAKE_CLOCK=wall).
+  const awakeClock = process.env.MAESTRO_PASEO_FLEET_AWAKE_CLOCK === "wall" ? null : new AwakeClock();
+  awakeClock?.start();
+  const clock = awakeClock ?? wallClock();
+  const fleet = new Fleet({ items: () => engine.list().then(({ items }) => items), clock, log });
   // Every scheduled thing on one axis (server/timeline.ts): Paseo's schedules, launchd, the loop, the fleet. Read-only.
   const wakes = new WakeLog(wakeLogPath(), log);
   const prefix = launchdPrefix();
@@ -98,7 +103,7 @@ export default function contribute(host: PluginServerContext) {
     wakes: () => wakes.recent(WAKE_LOG_MAX),
     wakeLogPath: wakes.path,
     fleet,
-    awakeSince: () => kernelAwakeSince(),
+    clock,
     log,
   });
   // No client handed to list: the header count and pills poll this, and must not reconcile sessions.
@@ -180,6 +185,7 @@ export default function contribute(host: PluginServerContext) {
   return async () => {
     loop.stop();
     fleet.stop();
+    awakeClock?.stop();
     engine.stop();
     await stopSocket();
   };
