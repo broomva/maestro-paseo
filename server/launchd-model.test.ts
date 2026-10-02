@@ -119,6 +119,7 @@ describe("the unified log", () => {
       exit: 0,
       signal: null,
       byLaunchd: false,
+      reason: null,
       ranMs: 39,
     });
     expect(
@@ -138,6 +139,25 @@ describe("the unified log", () => {
       ),
     ).toBeNull();
     expect(parseExitLine("{not json")).toBeNull();
+    // The system's memory-pressure kill names its reason and nothing else: it is a failure, said as one.
+    const jetsam = parseExitLine(
+      line(
+        "com.broomva.moltbook-loop",
+        9,
+        "2026-10-02 03:00:00.000000-0500",
+        "exited with exit reason (namespace: 1 code: 0x2) - OS_REASON_JETSAM, ran for 41ms",
+      ),
+    );
+    expect(jetsam).toMatchObject({ exit: null, signal: null, reason: "JETSAM" });
+    const [killed] = launchdRuns({
+      exits: jetsam ? [jetsam] : [],
+      logged: [],
+      logWrittenAt: null,
+      lastExit: null,
+      running: null,
+      now: NOW,
+    });
+    expect(killed).toMatchObject({ status: "failed", detail: "killed by the system under memory pressure (jetsam)" });
   });
 
   test("a stream: run ends oldest first, the closing summary and any noise skipped", () => {
@@ -190,6 +210,7 @@ const exit = (
   exit: code,
   signal,
   byLaunchd,
+  reason: null,
   ranMs,
 });
 
@@ -336,7 +357,13 @@ const run = (at: number, status: "ok" | "failed" | "unknown" | "running" = "ok")
   detail: null,
 });
 const interval = { intervalMs: 15 * M, calendar: null };
-const base = { loaded: true, seen: { from: NOW - 20 * H, to: NOW }, awake: sleptThrough(NOW), installedAt: null };
+const base = {
+  loaded: true,
+  seen: { from: NOW - 20 * H, to: NOW },
+  awake: sleptThrough(NOW),
+  // Seen loaded by a read a month ago and every read since.
+  loadedSince: NOW - 30 * 24 * H,
+};
 
 describe("a job's status", () => {
   test("not loaded is off; a run going is running; a newest run that failed is failed", () => {
@@ -483,9 +510,9 @@ describe("a job's status", () => {
     expect(launchdStatus({ ...base, schedule: calendar, runs: [across] }).status).toBe("ok");
   });
 
-  test("a job cannot miss a run due before its plist was written", () => {
+  test("a job cannot miss a run due before a read first saw it loaded (an unload and reload included)", () => {
     const calendar = { intervalMs: null, calendar: calendarSpecs({ Minute: 0 }) };
-    // No run yet, the log reaches 3 h back, and 20:00 passed its grace: missed, unless the job is newer than that.
+    // No run yet, the log reaches 3 h back, and 20:00 passed its grace: missed, unless no read saw it loaded then.
     expect(launchdStatus({ ...base, seen: { from: NOW - 3 * H, to: NOW }, schedule: calendar, runs: [] }).status).toBe(
       "missed",
     );
@@ -493,7 +520,7 @@ describe("a job's status", () => {
       launchdStatus({
         ...base,
         seen: { from: NOW - 3 * H, to: NOW },
-        installedAt: NOW - 40 * M,
+        loadedSince: NOW - 40 * M,
         schedule: calendar,
         runs: [],
       }).status,

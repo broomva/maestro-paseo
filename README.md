@@ -390,10 +390,16 @@ now and the next 24 to its right. It reads four kinds of source:
   - The loop: a wake 5 minutes of awake time overdue.
   - A fleet scope: the Fleet view's own rule.
 - **A read that fails is said, never read as healthy.** A command that exits non-zero, or a plist
-  that will not convert, is a warning in the view and costs only what it would have said. A launchd
-  run is called missed only if it came due inside what the unified log saw: from as far back as it
-  reaches to where its last good read ended. So a log that has never read, an old read, or a run due
-  before the log's reach is never a miss; the row says when it cannot tell.
+  that will not convert, is a warning in the view and costs only what it would have said.
+- **A miss is judged only on what was seen.** The launchd reader keeps one stretch the unified log is
+  proven to have held. Each read asks the log for the first launchd event at or after where the read
+  starts. Only when that event sits at the start (the log still held it) does the read extend the
+  stretch; a gap the log no longer holds, or a probe that fails, starts it again at what the log
+  holds now. A job is proven loaded from the first read that saw it loaded, again after a read finds
+  its unload in the log (`removing service: <label>`), and again whenever the stretch starts over. A
+  run is called missed only if it came due inside the stretch, after the newest run ended and since
+  the job was proven loaded. So nothing due before the plugin's first read is ever called missed, and
+  the row says when it cannot tell.
 - **In Needs you.** A failed or missed source shows above every other view, with *Open Timeline*,
   and counts in the header count, so it reaches the phone. Fleet scopes are counted once, by the
   Fleet view's notice or the fleet's own alert work, and never again by the Timeline. The launchd

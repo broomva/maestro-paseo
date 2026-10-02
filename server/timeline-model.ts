@@ -205,7 +205,8 @@ export function scheduleSource(
   });
   const expired = (ms(schedule.expiresAt) ?? Number.POSITIVE_INFINITY) < now;
   const active = schedule.status === "active" && !expired;
-  const nextAt = active ? ms(schedule.nextRunAt) : null;
+  // Through instant(): a time the wire does not take would fail the whole view.
+  const nextAt = active ? ms(instant(schedule.nextRunAt)) : null;
   const newest = lastRun(all);
   const newestAt = newest ? ms(newest.at) : null;
   const failure = newest?.status === "failed" ? `Its last run failed: ${newest.detail}.`.replace(/\.\.$/, ".") : null;
@@ -492,21 +493,10 @@ export function tailOf(text: string | null): string | null {
 export interface LaunchdContext {
   /** This job's run ends from the unified log. */
   exits: readonly LaunchdExit[];
-  /** What the unified log saw (launchd-model.ts Seen), or null when it has not been read: no miss is judged without it. */
+  /** What the unified log is proven to have held (server/launchd.ts LaunchdRead.seen), or null: no miss is judged without it. */
   seen: Seen | null;
   awake: AwakeFor;
   prefix: string;
-}
-
-/**
- * The stretch the unified log saw, from a launchd read: as far back as it
- * reaches, to the earlier of now and where its last good read ended. Null
- * when either end is not known.
- */
-export function seenOf(read: { coverage: number | null; exitsUntil: number | null }, now: number): Seen | null {
-  if (read.coverage === null || read.exitsUntil === null) return null;
-  const to = Math.min(now, read.exitsUntil);
-  return to > read.coverage ? { from: read.coverage, to } : null;
 }
 
 /** One launchd job as a source. */
@@ -526,7 +516,7 @@ export function launchdSource(job: LaunchdJob, context: LaunchdContext, window: 
     schedule,
     runs: all,
     seen: context.seen,
-    installedAt: job.installedAt,
+    loadedSince: job.loadedSince,
     awake: context.awake,
   });
   const newest = all[0] ? ms(all[0].at) : null;

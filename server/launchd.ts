@@ -13,6 +13,16 @@
 // The unified log costs seconds to search a day of, so it is read once in
 // full and then only from where the last read ended, its run ends kept in
 // memory for a day and an hour.
+//
+// What the log saw is observed, never inferred (LaunchdRead.seen): each read
+// asks the log for the first launchd event at or after where it starts, and
+// only when that event sits at the start (the log still held it) does the
+// read extend the stretch the last one proved. A gap the log no longer holds,
+// a probe that fails, or a first read starts the stretch again at what the
+// log proves it holds now. A job's loaded-since is the first read that saw it
+// loaded, never a file's date, and it starts again at a read that finds an
+// unload of it in the log, or that had to start the stretch again (an unload
+// in a gap the log no longer holds could not be seen).
 
 import { spawn } from "node:child_process";
 import { open, readdir, stat } from "node:fs/promises";
@@ -28,6 +38,8 @@ import {
   parseExits,
   parseList,
   parsePrint,
+  parseUnloads,
+  type Seen,
 } from "./launchd-model";
 import { expandHome, LABEL_PREFIX } from "./paths";
 
@@ -120,8 +132,13 @@ export interface LaunchdJob {
   printed: PrintedJob | null;
   /** Its plist, as plutil reads it. */
   plist: Record<string, unknown> | null;
-  /** When its plist was last written: it cannot have missed a run due before that. */
-  installedAt: number | null;
+  /**
+   * Since when it is proven loaded: the first read, in an unbroken line of
+   * reads that saw it loaded with no unload of it logged between and no gap
+   * in what the log held, that saw it loaded. It cannot have missed a run due
+   * before that, as far as this reader saw. Null when it is not loaded.
+   */
+  loadedSince: number | null;
   /**
    * launchd's last exit code since the job was loaded: print's, else (print
    * failed) a non-zero status from the list. The list says 0 also for a job
@@ -142,14 +159,12 @@ export interface LaunchdRead {
   jobs: LaunchdJob[];
   /** Every run end known, oldest first. */
   exits: LaunchdExit[];
-  /** How far back run ends are known: absence before it proves nothing. */
-  coverage: number | null;
   /**
-   * How far forward run ends are known: where the last good read of the
-   * unified log ended. A read that failed leaves it where it was, so a run
-   * that came due since is not called missed on no evidence.
+   * The stretch the unified log is proven to have held, unbroken, through
+   * the reads so far; null when nothing is proven (no good read yet, or the
+   * last probe failed). Inside it, no run end is evidence that no run ended.
    */
-  exitsUntil: number | null;
+  seen: Seen | null;
   warnings: string[];
 }
 
@@ -158,6 +173,13 @@ export const LOG_TAIL_BYTES = 64 * 1024;
 const KEEP_MS = TIMELINE_WINDOW_MS + 60 * 60_000;
 /** An incremental read starts this far before the last one ended, so a run end on the edge is not lost. */
 const OVERLAP_MS = 2 * 60_000;
+/**
+ * The first launchd event at or after a read's start this close to it means
+ * the log still held the start. launchd writes every few seconds; a quiet
+ * stretch longer than this reads as a gap, which only costs judging.
+ */
+export const HELD_SLACK_MS = 10 * 60_000;
+const DAY_MS = 24 * 60 * 60_000;
 const SHORT_MS = 10_000;
 const LOG_MS = 90_000;
 
@@ -183,8 +205,12 @@ export class Launchd {
   private readonly exits = new Map<string, LaunchdExit>();
   /** Where the last successful read of the unified log ended. */
   private readTo: number | null = null;
-  /** How far back the first read reached; the reads since keep it continuous. */
-  private reach: number | null = null;
+  /** What the log is proven to have held, unbroken, up to readTo (LaunchdRead.seen). */
+  private stretch: Seen | null = null;
+  /** Each loaded job's loaded-since (LaunchdJob.loadedSince). */
+  private readonly loadedSince = new Map<string, number>();
+  /** Unloads already seen, by label and time, so the overlap of two reads counts one once. */
+  private readonly unloads = new Map<string, number>();
   private inFlight: Promise<LaunchdRead> | null = null;
 
   constructor(options: LaunchdOptions = {}) {
@@ -216,7 +242,7 @@ export class Launchd {
   private async readNow(): Promise<LaunchdRead> {
     const readAt = this.now();
     const warnings: string[] = [];
-    const [listed, plists] = await Promise.all([
+    const [listed, plists, logged] = await Promise.all([
       this.stdout(LAUNCHCTL, ["list"], SHORT_MS).then(
         (text) => parseList(text, this.prefix),
         (error) => {
@@ -231,6 +257,16 @@ export class Launchd {
       this.readExits(readAt, warnings),
     ]);
     const loaded = new Map((listed ?? []).map((job) => [job.label, job]));
+    // A list that read says which jobs are loaded now; one that did not says nothing, so nothing changes.
+    if (listed) {
+      for (const label of [...this.loadedSince.keys()]) if (!loaded.has(label)) this.loadedSince.delete(label);
+      for (const label of loaded.keys()) {
+        // Proven loaded from here: first seen, unloaded and back since the last read, or nothing proves it stayed.
+        if (!this.loadedSince.has(label) || logged.restarted || logged.unloaded.has(label)) {
+          this.loadedSince.set(label, readAt);
+        }
+      }
+    }
     const labels = new Set([...loaded.keys(), ...plists.map((name) => name.slice(0, -".plist".length))]);
     const jobs = await Promise.all(
       [...labels]
@@ -242,8 +278,7 @@ export class Launchd {
       // When launchctl list itself failed, whether a job is loaded is not known: only the listed ones are kept.
       jobs: jobs.filter((job): job is LaunchdJob => job !== null),
       exits: [...this.exits.values()].sort((a, b) => a.endedAt - b.endedAt),
-      coverage: this.reach === null ? null : Math.max(this.reach, readAt - KEEP_MS),
-      exitsUntil: this.readTo,
+      seen: this.stretch ? { ...this.stretch } : null,
       warnings,
     };
   }
@@ -271,10 +306,6 @@ export class Launchd {
       warnings.push(`The plist of ${label} could not be read: ${errorText(error)}`);
       return null;
     });
-    const installedAt = await stat(plistPath).then(
-      (info) => info.mtimeMs,
-      () => null,
-    );
     // When print failed, the list's pid still says whether a run is going.
     const pid = printed ? printed.pid : listed ? listed.pid : null;
     const running = printed?.state === "running" || pid !== null;
@@ -296,7 +327,7 @@ export class Launchd {
       loaded,
       printed,
       plist,
-      installedAt,
+      loadedSince: loaded ? (this.loadedSince.get(label) ?? null) : null,
       lastExit: printed ? printed.lastExit : listed && listed.status !== 0 ? listed.status : null,
       running,
       runningSince,
@@ -313,39 +344,59 @@ export class Launchd {
     return value as Record<string, unknown>;
   }
 
-  /** New run ends since the last read (a day of them the first time), and how far back the log reaches. */
-  private async readExits(readAt: number, warnings: string[]): Promise<void> {
-    const predicate = `process == "launchd" AND subsystem BEGINSWITH "gui/${this.uid}/${this.prefix}" AND eventMessage BEGINSWITH "exited"`;
-    // After a long gap, read no further back than what is kept.
-    const range =
-      this.readTo === null
-        ? ["--last", "24h"]
-        : ["--start", logStartArg(Math.max(this.readTo - OVERLAP_MS, readAt - KEEP_MS))];
-    const first = this.reach === null;
+  /**
+   * New run ends since the last read (a day of them the first time), and
+   * what the log is proven to hold. Both queries start at the same second:
+   * the run ends, and the first launchd event of any kind, which says where
+   * the log really begins now. The stretch extends only when that event sits
+   * at the start.
+   */
+  private async readExits(
+    readAt: number,
+    warnings: string[],
+  ): Promise<{ restarted: boolean; unloaded: ReadonlySet<string> }> {
+    const own = `subsystem BEGINSWITH "gui/${this.uid}/${this.prefix}" AND (eventMessage BEGINSWITH "exited" OR eventMessage BEGINSWITH "bootout initiated")`;
+    const predicate = `process == "launchd" AND ((${own}) OR eventMessage BEGINSWITH "removing service: ${this.prefix}")`;
+    // To the second, as `log show --start` reads it.
+    const start = Math.floor((this.readTo === null ? readAt - DAY_MS : this.readTo - OVERLAP_MS) / 1000) * 1000;
+    const from = ["--start", logStartArg(start)];
     const [shown, probe] = await Promise.allSettled([
-      this.stdout(LOG, ["show", ...range, "--style", "ndjson", "--predicate", predicate], LOG_MS),
-      // The oldest launchd event the log still holds, read once: before it, no run end could have been seen.
-      first
-        ? this.run(LOG, ["show", "--last", "24h", "--style", "ndjson", "--predicate", 'process == "launchd"'], {
-            timeoutMs: LOG_MS,
-            firstLine: true,
-          })
-        : Promise.resolve(null),
+      this.stdout(LOG, ["show", ...from, "--style", "ndjson", "--predicate", predicate], LOG_MS),
+      this.run(LOG, ["show", ...from, "--style", "ndjson", "--predicate", 'process == "launchd"'], {
+        timeoutMs: LOG_MS,
+        firstLine: true,
+      }),
     ]);
     if (shown.status === "rejected") {
+      // Nothing new was read: the stretch and where reads end stay put.
       warnings.push(`The unified log could not be read, so launchd runs are not all shown: ${errorText(shown.reason)}`);
-      return;
+      return { restarted: false, unloaded: new Set() };
     }
-    const found = parseExits(shown.value);
-    for (const exit of found) this.exits.set(exitKey(exit), exit);
+    for (const exit of parseExits(shown.value)) this.exits.set(exitKey(exit), exit);
     for (const [key, exit] of this.exits) if (exit.endedAt < readAt - KEEP_MS) this.exits.delete(key);
-    if (first) {
-      const oldestFound = found[0]?.endedAt ?? null;
-      const probed = probe.status === "fulfilled" && probe.value ? probeTime(probe.value.stdout) : null;
-      const reaches = [oldestFound, probed].filter((at): at is number => at !== null);
-      this.reach = reaches.length > 0 ? Math.min(...reaches) : null;
+    // An unload is new once: the read overlaps the last, which may have seen it already.
+    const unloaded = new Set<string>();
+    for (const unload of parseUnloads(shown.value)) {
+      const key = `${unload.label}:${unload.at}`;
+      if (this.unloads.has(key)) continue;
+      this.unloads.set(key, unload.at);
+      unloaded.add(unload.label);
+    }
+    for (const [key, at] of this.unloads) if (at < readAt - KEEP_MS) this.unloads.delete(key);
+    const held = probe.status === "fulfilled" ? probeTime(probe.value.stdout) : null;
+    let restarted = true;
+    if (held === null) {
+      this.stretch = null;
+      warnings.push("How far back the unified log reaches could not be read, so no launchd run is called missed.");
+    } else if (this.stretch && this.stretch.to >= start && Math.abs(held - start) <= HELD_SLACK_MS) {
+      this.stretch = { from: this.stretch.from, to: readAt };
+      restarted = false;
+    } else {
+      // The first read, or a gap the log no longer holds: only what it holds now is proven.
+      this.stretch = { from: Math.max(held, start), to: readAt };
     }
     this.readTo = readAt;
+    return { restarted, unloaded };
   }
 }
 

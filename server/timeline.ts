@@ -16,7 +16,7 @@ import { join } from "node:path";
 import type { WakeEntry } from "../shared/contracts";
 import type { FleetDetail, FleetView } from "../shared/fleet";
 import { TIMELINE_WINDOW_MS, type TimelineNotice, type TimelineSource, type TimelineView } from "../shared/timeline";
-import { type AwakeFor, awakeAsWall } from "./fleet-model";
+import type { AwakeFor } from "./fleet-model";
 import type { LaunchdRead } from "./launchd";
 import {
   fleetLabel,
@@ -26,7 +26,6 @@ import {
   loopSource,
   StoredScheduleSchema,
   scheduleSource,
-  seenOf,
   tailOf,
   timelineNotices,
   type Window,
@@ -57,10 +56,10 @@ export interface TimelineOptions {
   fleet: { get(scope?: string, ticks?: number): Promise<FleetView> } | null;
   /**
    * Awake time: the plugin's one clock, shared with the Fleet view
-   * (server/fleet.ts AwakeClock). Wall time when not given, which accounts
-   * no sleep, so a sleep then reads as time the jobs could have run.
+   * (server/fleet.ts AwakeClock). Required: wall time would count every
+   * night's sleep as time the jobs could have run.
    */
-  clock?: { read(): AwakeFor };
+  clock: { read(): AwakeFor };
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -150,7 +149,7 @@ export class Timeline {
     const launchdAt = this.launchd?.at ?? null;
     const now = this.now();
     const window: Window = { now, from: now - TIMELINE_WINDOW_MS, to: now + TIMELINE_WINDOW_MS };
-    const awake = this.options.clock?.read() ?? awakeAsWall(now);
+    const awake = this.options.clock.read();
     const [schedules, loop, fleet] = await Promise.all([
       this.schedules(window, awake, warnings),
       this.loop(window, awake, warnings),
@@ -158,8 +157,8 @@ export class Timeline {
     ]);
     const fleetScopes = new Set(fleet.map((source) => source.id.slice("fleet:".length)));
     const prefix = this.options.launchdPrefix ?? "com.broomva.";
-    // A miss is judged only inside what the unified log saw: an old read, or one whose log read failed, cannot page.
-    const seen = launchd ? seenOf(launchd, now) : null;
+    // A miss is judged only inside what the unified log is proven to have held (server/launchd.ts).
+    const seen = launchd?.seen ? { from: launchd.seen.from, to: Math.min(launchd.seen.to, now) } : null;
     if (launchd && now - launchd.readAt > 2 * LAUNCHD_NOTICE_MS) {
       warnings.push(
         "launchd has not been read for a while; its rows show the last read, and nothing since is called missed.",

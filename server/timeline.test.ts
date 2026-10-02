@@ -31,7 +31,7 @@ function job(label: string, extra: Partial<LaunchdJob> = {}): LaunchdJob {
     },
     lastExit: 0,
     plist: { StartInterval: 900 },
-    installedAt: NOW - 30 * 24 * H,
+    loadedSince: NOW - 30 * 24 * H,
     runningSince: null,
     running: false,
     logPath: null,
@@ -109,6 +109,7 @@ async function setup(options: { launchdMs?: number } = {}) {
       exit: 0,
       signal: null,
       byLaunchd: false,
+      reason: null,
       ranMs: 20,
     },
   ];
@@ -125,8 +126,7 @@ async function setup(options: { launchdMs?: number } = {}) {
           job("com.broomva.fleet-reconcile.broomva", { plist: { StartInterval: 3600 } }),
         ],
         exits,
-        coverage: logRead ? NOW - 20 * H : null,
-        exitsUntil: logRead ? readAt : null,
+        seen: logRead ? { from: NOW - 20 * H, to: readAt } : null,
         warnings: logRead ? [] : ["The unified log could not be read, so launchd runs are not all shown: timed out"],
       };
     },
@@ -138,6 +138,7 @@ async function setup(options: { launchdMs?: number } = {}) {
     loop: async () => ({ minutes: 15, nextAt: iso(now + 5 * M), ticking: false }),
     wakes: async () => [],
     wakeLogPath: "/wake-log.jsonl",
+    clock: { read: () => sleptThrough(now) },
     fleet: {
       get: async (scope) => {
         fleetCalls.push(scope);
@@ -256,6 +257,7 @@ describe("the timeline", () => {
         exit: 1,
         signal: null,
         byLaunchd: false,
+        reason: null,
         ranMs: 20,
       },
     ]);
@@ -275,6 +277,7 @@ describe("the timeline", () => {
         exit: 1,
         signal: null,
         byLaunchd: false,
+        reason: null,
         ranMs: 20,
       },
     ]);
@@ -334,6 +337,7 @@ describe("the timeline", () => {
         exit: 0,
         signal: null,
         byLaunchd: false,
+        reason: null,
         ranMs: 20,
       },
     ]);
@@ -417,6 +421,7 @@ describe("the timeline", () => {
       loop: async () => ({ minutes: null, nextAt: null, ticking: false }),
       wakes: async () => [],
       fleet: null,
+      clock: { read: () => sleptThrough(NOW) },
       now: () => NOW,
       log: () => undefined,
     });

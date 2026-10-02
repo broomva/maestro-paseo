@@ -115,6 +115,8 @@ export interface LaunchdExit {
   signal: string | null;
   /** launchd itself sent the signal: a job stopped at logout or unload, not one that failed. */
   byLaunchd: boolean;
+  /** The system's reason, when it ended the run itself (`OS_REASON_JETSAM`: memory pressure). */
+  reason: string | null;
   ranMs: number | null;
 }
 
@@ -163,6 +165,7 @@ export function parseExitLine(line: string): LaunchdExit | null {
     exit: exit?.[1] !== undefined ? Number(exit[1]) : null,
     signal: exit ? null : (signal?.[1] ?? null),
     byLaunchd: !exit && /sent by launchd\[/.test(message),
+    reason: exit ? null : (/OS_REASON_([A-Z_]+)/.exec(message)?.[1] ?? null),
     ranMs: ran?.[1] ? Number(ran[1]) : null,
   };
 }
@@ -176,6 +179,38 @@ export function parseExits(text: string): LaunchdExit[] {
     if (exit) exits.push(exit);
   }
   return exits.sort((a, b) => a.endedAt - b.endedAt);
+}
+
+/**
+ * An unload launchd logged, `bootout initiated by: …` on the job's own
+ * subsystem or `removing service: <label>` on its domain: the job was not
+ * loaded from then until it was loaded again.
+ */
+export interface LaunchdUnload {
+  label: string;
+  at: number;
+}
+
+/** Every unload in a `log show --style ndjson` stream; anything else is skipped. */
+export function parseUnloads(text: string): LaunchdUnload[] {
+  const unloads: LaunchdUnload[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("{")) continue;
+    let event: { subsystem?: unknown; eventMessage?: unknown; timestamp?: unknown };
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof event.subsystem !== "string" || typeof event.eventMessage !== "string") continue;
+    const at = typeof event.timestamp === "string" ? logTime(event.timestamp) : null;
+    if (at === null) continue;
+    const own = /^gui\/\d+\/(\S+?)(?: \[\d+\])?$/.exec(event.subsystem);
+    const removed = /^removing service: (\S+)$/.exec(event.eventMessage);
+    if (own?.[1] && event.eventMessage.startsWith("bootout initiated")) unloads.push({ label: own[1], at });
+    else if (/^gui\/\d+ \[\d+\]$/.test(event.subsystem) && removed?.[1]) unloads.push({ label: removed[1], at });
+  }
+  return unloads;
 }
 
 /** The same run end read twice (an incremental read overlaps the last) is one. */
@@ -211,16 +246,28 @@ const iso = (at: number) => new Date(at).toISOString();
 /** SIGTERM from launchd stops a job (logout, unload): it is not the job failing, and not a pass either. */
 const stoppedByLaunchd = (signal: string | null, byLaunchd: boolean) => byLaunchd && signal === "SIGTERM";
 
-function exitStatus(exit: number | null, signal: string | null, byLaunchd = false): RunStatus {
+function exitStatus(
+  exit: number | null,
+  signal: string | null,
+  byLaunchd = false,
+  reason: string | null = null,
+): RunStatus {
   if (exit === 0) return "ok";
   if (stoppedByLaunchd(signal, byLaunchd)) return "unknown";
-  if (exit !== null || signal !== null) return "failed";
+  if (exit !== null || signal !== null || reason !== null) return "failed";
   return "unknown";
 }
 
-export function exitDetail(exit: number | null, signal: string | null, byLaunchd = false): string | null {
+export function exitDetail(
+  exit: number | null,
+  signal: string | null,
+  byLaunchd = false,
+  reason: string | null = null,
+): string | null {
   if (stoppedByLaunchd(signal, byLaunchd)) return "stopped by launchd (SIGTERM)";
   if (signal) return `killed by ${signal}`;
+  if (reason === "JETSAM") return "killed by the system under memory pressure (jetsam)";
+  if (reason) return `ended by the system (${reason.toLowerCase()})`;
   if (exit !== null) return `exit ${exit}`;
   return null;
 }
@@ -251,9 +298,9 @@ export function launchdRuns(evidence: LaunchdEvidence): TimelineRun[] {
     return {
       at: iso(start),
       endedAt: iso(exit.endedAt),
-      status: exitStatus(exit.exit, exit.signal, exit.byLaunchd),
+      status: exitStatus(exit.exit, exit.signal, exit.byLaunchd, exit.reason),
       exit: exit.exit,
-      detail: exitDetail(exit.exit, exit.signal, exit.byLaunchd),
+      detail: exitDetail(exit.exit, exit.signal, exit.byLaunchd, exit.reason),
       start,
       end: exit.endedAt,
     };
@@ -332,8 +379,8 @@ export interface LaunchdStatusInput {
    * failed (first or later) or is old never pages.
    */
   seen: Seen | null;
-  /** When the job's plist was written: it cannot have missed a run due before it existed. */
-  installedAt: number | null;
+  /** The first read that saw the job loaded (server/launchd.ts LaunchdJob.loadedSince): no miss is judged before it. */
+  loadedSince: number | null;
   /** Awake time (server/fleet.ts AwakeClock): launchd fires nothing while the Mac sleeps. */
   awake: AwakeFor;
 }
@@ -362,8 +409,8 @@ const MISSED_SHOWN = 24;
  * the unified log saw (`seen`) and did not start: on an interval, no run for
  * two intervals and a grace of awake time; on a calendar, a due time with
  * its grace of awake time gone (one the Mac slept through runs at wake). Only
- * the part of `seen` after the newest run's end and after the plist was
- * written counts: launchd folds runs a sleep or a long run skipped into one.
+ * the part of `seen` after the newest run's end and after a read first saw
+ * the job loaded counts: launchd folds runs a sleep or a long run skipped into one.
  * A newest run whose exit nobody recorded is unknown, never on time.
  */
 export function launchdStatus(input: LaunchdStatusInput): Judged {
@@ -383,8 +430,8 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
   }
   if (seen) {
     const { to } = seen;
-    // Inside what the log saw, after the newest run ended and the plist was written, and at most a week back.
-    const from = Math.max(seen.from, newestEnd ?? seen.from, input.installedAt ?? seen.from, to - 8 * 86_400_000);
+    // Inside what the log saw, after the newest run ended and since a read saw it loaded, at most a week back.
+    const from = Math.max(seen.from, newestEnd ?? seen.from, input.loadedSince ?? to, to - 8 * 86_400_000);
     const sinceLast = newestEnd !== null && newestEnd >= seen.from;
     if (schedule.calendar) {
       const due = dueTimes(schedule.calendar, undefined, from + MATCH_SLACK_MS, to, 1440 * 2).filter(

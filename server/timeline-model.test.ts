@@ -13,7 +13,6 @@ import {
   type StoredSchedule,
   StoredScheduleSchema,
   scheduleSource,
-  seenOf,
   tailOf,
   timelineNotices,
   wakeSummary,
@@ -224,6 +223,11 @@ describe("a Paseo schedule", () => {
     );
     expect(source?.cadence).toBe("cron 0 9 * * * (Mars/Olympus, a time zone this host does not know)");
     expect(source?.upcoming).toEqual(["2026-10-03T14:00:00.000Z"]);
+  });
+
+  test("a next run in a year the wire does not take is no next run, never sent to fail the view", () => {
+    const source = scheduleSource(schedule({ nextRunAt: "+010000-01-01T00:00:00.000Z" }), window, null, wall);
+    expect(source).toMatchObject({ next: null, upcoming: [] });
   });
 
   test("a time in the file that does not read is left out, never sent as one", () => {
@@ -512,7 +516,7 @@ function job(extra: Partial<LaunchdJob> = {}): LaunchdJob {
     },
     lastExit: 0,
     plist: { StartCalendarInterval: { Weekday: 0, Hour: 2, Minute: 30 } },
-    installedAt: Date.parse("2026-09-20T00:00:00Z"),
+    loadedSince: Date.parse("2026-09-20T00:00:00Z"),
     runningSince: null,
     running: false,
     logPath: "/tmp/kg-lint.log",
@@ -558,6 +562,7 @@ describe("a launchd job", () => {
             exit: 1,
             signal: null,
             byLaunchd: false,
+            reason: null,
             ranMs: 2000,
           },
         ],
@@ -595,6 +600,7 @@ describe("a launchd job", () => {
         exit: 0,
         signal: null,
         byLaunchd: false,
+        reason: null,
         ranMs: 20,
       },
     ];
@@ -624,16 +630,18 @@ describe("a launchd job", () => {
       logWrittenAt: null,
     });
     const exits = [
-      { label: tick.label, pid: 1, endedAt: NOW - 5 * M, exit: 1, signal: null, byLaunchd: false, ranMs: 10_000 },
+      {
+        label: tick.label,
+        pid: 1,
+        endedAt: NOW - 5 * M,
+        exit: 1,
+        signal: null,
+        byLaunchd: false,
+        reason: null,
+        ranMs: 10_000,
+      },
     ];
     expect(launchdSource(tick, { ...context, exits }, window)).toMatchObject({ status: "failed", needsYou: true });
-  });
-
-  test("what the unified log saw, from a read: its reach to where its last good read ended, never past now", () => {
-    expect(seenOf({ coverage: NOW - 20 * H, exitsUntil: NOW - M }, NOW)).toEqual({ from: NOW - 20 * H, to: NOW - M });
-    expect(seenOf({ coverage: NOW - 20 * H, exitsUntil: NOW + M }, NOW)).toEqual({ from: NOW - 20 * H, to: NOW });
-    expect(seenOf({ coverage: null, exitsUntil: NOW }, NOW)).toBeNull();
-    expect(seenOf({ coverage: NOW - H, exitsUntil: null }, NOW)).toBeNull();
   });
 
   test("a calendar launchd's plist gives that this cannot read is said in its cadence, never read as no schedule", () => {

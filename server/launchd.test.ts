@@ -2,8 +2,11 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { calendarSpecs, dueTimes } from "./cron";
+import { sleptThrough } from "./fake-awake";
 import { LAUNCHCTL, Launchd, LOG, NotARead, PLUTIL, PS, type Runner, readOnly } from "./launchd";
 import { logStartArg } from "./launchd-model";
+import { launchdSource } from "./timeline-model";
 
 const roots: string[] = [];
 afterAll(async () => {
@@ -65,6 +68,32 @@ describe("the timeline only reads", () => {
 const exitLine = (label: string, pid: number, timestamp: string, message: string) =>
   JSON.stringify({ subsystem: `gui/501/${label} [${pid}]`, eventMessage: message, timestamp });
 
+const H = 3_600_000;
+const M = 60_000;
+const two = (n: number) => String(n).padStart(2, "0");
+
+/** A time as `log show` writes it: the Mac's own zone, with its offset. */
+function localStamp(at: number): string {
+  const d = new Date(at);
+  const offset = -d.getTimezoneOffset();
+  const zone = `${offset >= 0 ? "+" : "-"}${two(Math.floor(Math.abs(offset) / 60))}${two(Math.abs(offset) % 60)}`;
+  const ms = String(d.getMilliseconds()).padStart(3, "0");
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}.${ms}000${zone}`;
+}
+
+/** `log show --start`'s argument back to an instant: the Mac's own zone, to the second. */
+function startOf(args: readonly string[], now: number): number {
+  const at = args.indexOf("--start");
+  if (at < 0) return now - 24 * H;
+  const [date = "", time = ""] = String(args[at + 1]).split(" ");
+  const [y = 0, mo = 1, d = 1] = date.split("-").map(Number);
+  const [h = 0, mi = 0, s = 0] = time.split(":").map(Number);
+  return new Date(y, mo - 1, d, h, mi, s).getTime();
+}
+
+/** The first launchd event a log holds at or after `from`: launchd writes every minute, and the log forgets past `retain`. */
+const heldFrom = (from: number, now: number, retain: number) => Math.ceil(Math.max(from, now - retain) / M) * M;
+
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), "maestro-launchd-"));
   roots.push(root);
@@ -95,16 +124,23 @@ async function setup() {
   let compileStatus = 0;
   let showExit = 0;
   let printFails = false;
+  let probeFails = false;
+  let retain = 19 * H;
+  let listed = ["com.broomva.kg-compile", "com.broomva.moltbook-loop"];
   const brokenPlists = new Set<string>();
   const run: Runner = async (command, args, options) => {
     calls.push([command, ...args, ...(options.firstLine ? ["(first line)"] : [])]);
     if (command === LAUNCHCTL && args[0] === "list") {
       if (listFails) throw new Error("launchctl is unhappy");
       if (listExit !== 0) return { stdout: "", code: listExit };
-      return {
-        stdout: `PID\tStatus\tLabel\n-\t${compileStatus}\tcom.broomva.kg-compile\n4321\t0\tcom.broomva.moltbook-loop\n-\t0\tcom.apple.x\n`,
-        code: 0,
-      };
+      const rows = listed.map((label) =>
+        label === "com.broomva.kg-compile"
+          ? `-\t${compileStatus}\t${label}`
+          : label.includes("moltbook")
+            ? `4321\t0\t${label}`
+            : `-\t0\t${label}`,
+      );
+      return { stdout: `PID\tStatus\tLabel\n${rows.join("\n")}\n-\t0\tcom.apple.x\n`, code: 0 };
     }
     if (command === LAUNCHCTL && args[0] === "print") {
       if (printFails) return { stdout: "", code: 113 };
@@ -127,7 +163,8 @@ async function setup() {
     }
     if (command === PS) return { stdout: "  02:00\n", code: 0 };
     if (command === LOG && options.firstLine) {
-      return { stdout: JSON.stringify({ timestamp: "2026-10-01 22:01:16.787692-0500" }), code: 0 };
+      if (probeFails) throw new Error("log took longer than 90 s");
+      return { stdout: JSON.stringify({ timestamp: localStamp(heldFrom(startOf(args, now), now, retain)) }), code: 0 };
     }
     if (command === LOG) return { stdout: showExit === 0 ? shown : "", code: showExit };
     throw new Error(`unexpected ${command}`);
@@ -144,6 +181,9 @@ async function setup() {
     exitList: (code: number) => (listExit = code),
     exitShow: (code: number) => (showExit = code),
     failPrint: () => (printFails = true),
+    failProbe: () => (probeFails = true),
+    setRetain: (ms: number) => (retain = ms),
+    setListed: (labels: string[]) => (listed = labels),
     listStatus: (code: number) => (compileStatus = code),
     breakPlist: (label: string) => brokenPlists.add(label),
   };
@@ -175,15 +215,16 @@ describe("reading the jobs", () => {
       ["com.broomva.kg-compile", 0],
       ["com.broomva.moltbook-loop", 0],
     ]);
-    // It reaches back as far as the oldest event the log holds, or the oldest run end, whichever is older.
-    expect(first.coverage).toBe(Date.parse("2026-10-02T03:01:16.787Z"));
     const shows = () => calls.filter((call) => call[0] === LOG);
+    // Both queries start a day back; the log proves it holds only its last 19 h, so that is what was seen.
+    const dayBack = logStartArg(Math.floor((NOW - 24 * H) / 1000) * 1000);
     expect(shows().map((call) => call.slice(1, 3))).toEqual([
-      ["show", "--last"],
-      ["show", "--last"],
+      ["show", "--start"],
+      ["show", "--start"],
     ]);
+    expect(shows().every((call) => call[3] === dayBack)).toBe(true);
     expect(shows()[0]?.join(" ")).toContain('subsystem BEGINSWITH "gui/501/com.broomva."');
-    expect(shows().filter((call) => call.includes("(first line)"))).toHaveLength(1);
+    expect(first.seen).toEqual({ from: heldFrom(NOW - 24 * H, NOW, 19 * H), to: NOW });
 
     setNow(NOW + 60_000);
     setShown(
@@ -205,23 +246,95 @@ describe("reading the jobs", () => {
     );
     const second = await launchd.read();
     expect(second.exits.map((exit) => exit.exit)).toEqual([0, 0, 2]);
-    const last = shows()[shows().length - 1] ?? [];
-    expect(last.slice(1, 3)).toEqual(["show", "--start"]);
-    // No second probe: how far back the log reaches is read once.
-    expect(shows().filter((call) => call.includes("(first line)"))).toHaveLength(1);
+    const start = logStartArg(Math.floor((NOW - 2 * M) / 1000) * 1000);
+    expect(
+      shows()
+        .slice(-2)
+        .every((call) => call[3] === start),
+    ).toBe(true);
+    // Every read probes; this one found the log still holding where the last ended, so the stretch goes on.
+    expect(shows().filter((call) => call.includes("(first line)"))).toHaveLength(2);
+    expect(second.seen).toEqual({ from: heldFrom(NOW - 24 * H, NOW, 19 * H), to: NOW + 60_000 });
   });
 
-  test("run ends older than a day and an hour are let go", async () => {
+  test("after a gap the log no longer holds, only what it proves it holds now is seen", async () => {
     const { launchd, setNow, setShown, calls } = await setup();
-    await launchd.read();
-    setNow(NOW + 26 * 3_600_000);
+    const first = await launchd.read();
+    expect(first.seen?.to).toBe(NOW);
+    setNow(NOW + 26 * H);
     setShown("");
     const read = await launchd.read();
+    // Run ends older than a day and an hour are let go.
     expect(read.exits).toEqual([]);
-    expect(read.coverage).toBe(NOW + 26 * 3_600_000 - 25 * 3_600_000);
-    // After the gap it reads back no further than it keeps, not to where it last stopped.
+    // It asked from where it last stopped; the log begins 19 h back now, so the stretch begins there, not before.
     const last = calls.filter((call) => call[0] === LOG).at(-1) ?? [];
-    expect(last.slice(1, 4)).toEqual(["show", "--start", logStartArg(NOW + 26 * 3_600_000 - 25 * 3_600_000)]);
+    expect(last.slice(1, 3)).toEqual(["show", "--start"]);
+    expect(last[3]).toBe(logStartArg(Math.floor((NOW - 2 * M) / 1000) * 1000));
+    expect(read.seen).toEqual({ from: heldFrom(NOW + 26 * H - 19 * H, NOW + 26 * H, 19 * H), to: NOW + 26 * H });
+  });
+
+  test("a probe that fails proves nothing: no stretch, said; the next good one starts it again", async () => {
+    const { launchd, failProbe, setNow } = await setup();
+    await launchd.read();
+    failProbe();
+    setNow(NOW + 5 * M);
+    const read = await launchd.read();
+    expect(read.seen).toBeNull();
+    expect(read.warnings).toEqual([expect.stringContaining("How far back the unified log reaches could not be read")]);
+  });
+
+  test("an unload the log shows between two reads that both saw the job loaded starts its loaded-since again", async () => {
+    const { launchd, setNow, setShown } = await setup();
+    const first = await launchd.read();
+    expect(first.jobs.find((job) => job.label === "com.broomva.moltbook-loop")?.loadedSince).toBe(NOW);
+    setNow(NOW + H);
+    setShown(
+      [
+        JSON.stringify({
+          subsystem: "gui/501/com.broomva.moltbook-loop",
+          eventMessage: "bootout initiated by: launchctl[1]<-zsh[2]",
+          timestamp: localStamp(NOW + 30 * M),
+        }),
+        JSON.stringify({
+          subsystem: "gui/501 [100024]",
+          eventMessage: "removing service: com.broomva.moltbook-loop",
+          timestamp: localStamp(NOW + 30 * M),
+        }),
+      ].join("\n"),
+    );
+    const read = await launchd.read();
+    expect(read.jobs.find((job) => job.label === "com.broomva.moltbook-loop")?.loadedSince).toBe(NOW + H);
+    expect(read.jobs.find((job) => job.label === "com.broomva.kg-compile")?.loadedSince).toBe(NOW);
+    // The next read overlaps this one and sees the same unload: it is not new, so nothing starts again.
+    setNow(NOW + 2 * H);
+    const again = await launchd.read();
+    expect(again.jobs.find((job) => job.label === "com.broomva.moltbook-loop")?.loadedSince).toBe(NOW + H);
+  });
+
+  test("a stretch that starts again (a gap the log no longer holds) starts every job's loaded-since again", async () => {
+    const { launchd, setNow } = await setup();
+    await launchd.read();
+    setNow(NOW + 26 * H);
+    const read = await launchd.read();
+    expect(read.jobs.find((job) => job.label === "com.broomva.kg-compile")?.loadedSince).toBe(NOW + 26 * H);
+  });
+
+  test("loaded-since is the first read that saw a job loaded; an unload and a reload start it again", async () => {
+    const { launchd, setNow, setListed } = await setup();
+    const since = (read: Awaited<ReturnType<typeof launchd.read>>, label: string) =>
+      read.jobs.find((job) => job.label === label)?.loadedSince;
+    const first = await launchd.read();
+    expect(since(first, "com.broomva.moltbook-loop")).toBe(NOW);
+    expect(since(first, "com.broomva.old-job")).toBeNull();
+    setNow(NOW + H);
+    setListed(["com.broomva.kg-compile"]);
+    const unloaded = await launchd.read();
+    expect(since(unloaded, "com.broomva.moltbook-loop")).toBeNull();
+    expect(since(unloaded, "com.broomva.kg-compile")).toBe(NOW);
+    setNow(NOW + 2 * H);
+    setListed(["com.broomva.kg-compile", "com.broomva.moltbook-loop"]);
+    const reloaded = await launchd.read();
+    expect(since(reloaded, "com.broomva.moltbook-loop")).toBe(NOW + 2 * H);
   });
 
   test("a launchctl that cannot list is said, and no job is guessed at", async () => {
@@ -253,15 +366,15 @@ describe("a read that fails is said, and never reads as healthy", () => {
     expect(read.warnings).toEqual([expect.stringContaining("The plist of com.broomva.kg-compile could not be read")]);
   });
 
-  test("a log show that exits non-zero is a failed read: said, and how far the evidence reaches stays put", async () => {
+  test("a log show that exits non-zero is a failed read: said, and what was seen stays put", async () => {
     const { launchd, exitShow, setNow } = await setup();
     const first = await launchd.read();
-    expect(first.exitsUntil).toBe(NOW);
+    expect(first.seen?.to).toBe(NOW);
     exitShow(1);
     setNow(NOW + 60 * 60_000);
     const second = await launchd.read();
     expect(second.warnings).toEqual([expect.stringContaining("The unified log could not be read")]);
-    expect(second.exitsUntil).toBe(NOW);
+    expect(second.seen).toEqual(first.seen);
     expect(second.exits).toHaveLength(2);
   });
 
@@ -295,14 +408,101 @@ describe("a read that fails is said, and never reads as healthy", () => {
     expect(quiet.jobs.find((job) => job.label === "com.broomva.kg-compile")?.lastExit).toBeNull();
   });
 
-  test("each job carries when its plist was written", async () => {
-    const { launchd } = await setup();
-    const read = await launchd.read();
-    expect(read.jobs.every((job) => typeof job.installedAt === "number")).toBe(true);
-  });
-
   test("a prefix that is not a label prefix is refused before anything runs", () => {
     expect(() => new Launchd({ prefix: 'com.broomva." OR process == "x' })).toThrow("Not a launchd label prefix");
     expect(() => new Launchd({ prefix: "" })).toThrow("Not a launchd label prefix");
   });
+});
+
+/** A small seeded random, so a failing sequence can be run again. */
+function mulberry32(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+describe("what was seen is what the log held", () => {
+  test("over many reads, gaps longer than the log keeps, and a job unloaded and reloaded, no run it did not see is called missed", async () => {
+    const label = "com.broomva.job";
+    // Hourly, every six hours, or daily: a long period is what lets a gap swallow the only run since the last.
+    const cadences = [{ Minute: 0 }, [0, 6, 12, 18].map((Hour) => ({ Hour, Minute: 0 })), { Hour: 4, Minute: 0 }];
+    let found = 0;
+    for (let seed = 1; seed <= 90; seed += 1) {
+      const random = mulberry32(seed);
+      const calendar = cadences[seed % cadences.length];
+      const specs = calendarSpecs(calendar);
+      if (!specs) throw new Error("did not read");
+      const t0 = Date.parse("2026-10-01T00:00:00Z");
+      const end = t0 + 5 * 24 * H;
+      const retain = (12 + random() * 12) * H;
+      // The truth: due every hour; unloaded over one stretch; a few due times skipped while loaded. No log file.
+      // Unloaded once: half the time for hours; half the time for minutes around one of its own due times,
+      // which reads mostly fall either side of, so only the log's "removing service" line shows it.
+      const own = dueTimes(specs, undefined, t0 + 24 * H, t0 + 4 * 24 * H, 1000);
+      const around = own[Math.floor(random() * own.length)] ?? t0 + 2 * 24 * H;
+      const short = random() < 0.5;
+      const unloadAt = short ? around - (1 + random() * 20) * M : t0 + random() * 4 * 24 * H;
+      const unloadUntil = short ? around + (5 + random() * 25) * M : unloadAt + random() * 10 * H;
+      const loadedAt = (at: number) => !(at >= unloadAt && at < unloadAt + (unloadUntil - unloadAt));
+      const due = dueTimes(specs, undefined, t0 - 25 * H, end, 100_000);
+      const skipped = new Set(due.filter(() => random() < 0.1));
+      const ends = due.filter((at) => loadedAt(at) && !skipped.has(at)).map((at) => at + 5000);
+      let now = t0;
+      const run: Runner = async (command, args, options) => {
+        if (command === LAUNCHCTL && args[0] === "list") {
+          return { stdout: `PID\tStatus\tLabel\n${loadedAt(now) ? `-\t0\t${label}\n` : ""}`, code: 0 };
+        }
+        if (command === LAUNCHCTL) return { stdout: "x = {\n\tstate = not running\n\tlast exit code = 0\n}", code: 0 };
+        if (command === PLUTIL) return { stdout: JSON.stringify({ StartCalendarInterval: calendar }), code: 0 };
+        if (command === LOG) {
+          const begins = heldFrom(startOf(args, now), now, retain);
+          if (options.firstLine) return { stdout: JSON.stringify({ timestamp: localStamp(begins) }), code: 0 };
+          const lines = ends
+            .filter((at) => at >= begins && at <= now)
+            .map((at) => exitLine(label, at % 99_991, localStamp(at), "exited due to exit(0), ran for 20ms"));
+          // launchd logs the unload on the domain, as it does: "removing service: <label>".
+          if (unloadAt >= begins && unloadAt <= now) {
+            lines.push(
+              JSON.stringify({
+                subsystem: "gui/501 [100024]",
+                eventMessage: `removing service: ${label}`,
+                timestamp: localStamp(unloadAt),
+              }),
+            );
+          }
+          return { stdout: lines.join("\n"), code: 0 };
+        }
+        throw new Error(`unexpected ${command} ${args.join(" ")}`);
+      };
+      const launchd = new Launchd({ run, uid: 501, agentsDir: "/nonexistent/LaunchAgents", now: () => now });
+      while (now < end) {
+        // The next read: mostly minutes to two hours on, sometimes past what the log keeps.
+        now = Math.min(end, now + (random() < 0.15 ? (retain / H + 1 + random() * 8) * H : (1 + random() * 120) * M));
+        const read = await launchd.read();
+        const job = read.jobs.find((one) => one.label === label);
+        if (!job) continue;
+        const source = launchdSource(
+          job,
+          { exits: read.exits, seen: read.seen, awake: sleptThrough(now), prefix: "com.broomva." },
+          { now, from: now - 24 * H, to: now + 24 * H },
+        );
+        if (source.status !== "missed") continue;
+        const at = Date.parse(source.since ?? "");
+        // Every miss called is a true one: a run was due then, the job was loaded, and it did not run.
+        expect({ seed, at: new Date(at).toISOString(), loaded: loadedAt(at), ran: ends.includes(at + 5000) }).toEqual({
+          seed,
+          at: new Date(at).toISOString(),
+          loaded: true,
+          ran: false,
+        });
+        found += 1;
+      }
+    }
+    // Not vacuous: real misses were called.
+    expect(found).toBeGreaterThan(10);
+  }, 60_000);
 });
