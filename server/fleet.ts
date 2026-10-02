@@ -17,9 +17,11 @@
 // (AwakeClock): launchd counts StartInterval in it, so a tick comes about an
 // hour of awake time after the last, however the sleeps fall (spec §5.7).
 
+import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { type FileHandle, open, readdir, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { promisify } from "node:util";
 import type { WorkItem } from "../shared/contracts";
 import {
   FLEET_REPORT_BYTES,
@@ -72,44 +74,73 @@ const READ_LIMIT = 32 * 1024 * 1024;
 /** Ticks whose coordinator verbs still stand as proposals. */
 const ACT_TICKS = 24;
 
-/** The clock beats this often, and keeps a record at most this often. */
+/** The clock takes a record this often, and keeps records for this long. */
 const BEAT_MS = 60_000;
-/** A beat this late means the process was suspended: the Mac slept for all but a beat of it. */
-const LATE_MS = 3 * BEAT_MS;
 const SAMPLES_KEPT_MS = 8 * 24 * 60 * 60 * 1000;
+
+const run = promisify(execFile);
+
+/**
+ * CLOCK_UPTIME_RAW in milliseconds: the macOS clock that stops while the Mac
+ * sleeps and runs while its CPU does, DarkWake included, which is what
+ * launchd counts StartInterval in. Node offers no such clock (performance.now
+ * and hrtime count sleep on macOS), so it is read through the system perl
+ * (clock id 8). Null when it cannot be read.
+ */
+export async function uptimeRaw(): Promise<number | null> {
+  try {
+    const { stdout } = await run(
+      "/usr/bin/perl",
+      ["-MTime::HiRes=clock_gettime", "-e", "printf '%.3f', clock_gettime(8)"],
+      {
+        timeout: 5000,
+      },
+    );
+    const seconds = Number(stdout.trim());
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Time the Mac was awake between two wall-clock times, as launchd counts its
- * interval. No clock the plugin can read stops in sleep: Node's monotonic
- * clock (performance.now, hrtime) counts it on macOS, measured against
- * kern.boottime. So the clock beats once a minute on a timer that does not
- * keep the daemon alive. The daemon is suspended while the Mac sleeps, so a
- * beat that comes more than three minutes late counts one beat as awake and
- * the rest as asleep. A beat that comes on time counts all of it.
+ * interval: CLOCK_UPTIME_RAW (uptimeRaw), which does not advance in sleep. A
+ * held event loop, a late timer or a DarkWake cannot skew it either way, since
+ * the count is the kernel's, not a guess from when a beat came.
  *
- * It records (wall, awake) at each beat and each read. The awake time since a
- * wall time is read off the records around it. Before the first record (a
- * tick from before the plugin started) it counts from that record, as a lower
- * bound, and says so (`whole: false`). A reload therefore never raises a
- * false alarm, and a stall is flagged once 2 h awake have passed since. An
- * event loop held for minutes reads as sleep and counts less awake time,
- * never more.
+ * Records (wall, awake) once a minute on an unref'd timer, and at each read.
+ * The awake time since a wall time is read off the records around it. A gap
+ * between records holds at most a minute of awake time while the timer runs,
+ * and that minute is put at the gap's start, so the count is never more than
+ * the Mac was awake. Before the first record (a tick from before the plugin
+ * started) it counts from that record, as a lower bound, and says so
+ * (`whole: false`).
+ *
+ * A wall clock set back starts the records over: the wall times before the
+ * step no longer map onto the kernel's count. A read the kernel cannot answer
+ * adds no record and says why (`error`). The awake count then stops growing,
+ * which can only delay a missed tick, never invent one.
  */
 export class AwakeClock {
   private readonly samples: { wall: number; awake: number }[] = [];
-  private awake = 0;
-  private last: number;
+  /** The newest read of both clocks, which a read counts to. */
+  private latest: { wall: number; awake: number } | null = null;
   private clear: (() => void) | null = null;
+  private pending: Promise<void> = Promise.resolve();
+  /** Why the last read of the kernel's clock failed, or null. */
+  error: string | null = null;
 
-  constructor(private readonly wall: () => number = Date.now) {
-    this.last = wall();
-    this.samples.push({ wall: this.last, awake: 0 });
-  }
+  constructor(
+    private readonly wall: () => number = Date.now,
+    private readonly uptime: () => Promise<number | null> = uptimeRaw,
+  ) {}
 
-  /** Beats every minute until stop(), on a timer that does not keep the process alive. */
+  /** Takes a record every minute until stop(), on a timer that does not keep the process alive. */
   start(every: (beat: () => void, ms: number) => () => void = defaultEvery): void {
     if (this.clear) return;
-    this.clear = every(() => this.beat(), BEAT_MS);
+    this.clear = every(() => void this.beat(), BEAT_MS);
+    void this.beat();
   }
 
   stop(): void {
@@ -117,28 +148,41 @@ export class AwakeClock {
     this.clear = null;
   }
 
-  /** Counts the time since the last beat: all of it when on time, one beat when late (the rest asleep). */
-  beat(): void {
-    const now = this.wall();
-    const step = now - this.last;
-    if (step <= 0) return;
-    this.last = now;
-    this.awake += step <= LATE_MS ? step : BEAT_MS;
-    const last = this.samples.at(-1);
-    if (!last || now - last.wall >= BEAT_MS) this.samples.push({ wall: now, awake: this.awake });
-    while (this.samples.length > 1 && now - (this.samples[0]?.wall ?? now) > SAMPLES_KEPT_MS) this.samples.shift();
+  /** Takes one record now; records are taken one at a time, in order. */
+  beat(): Promise<void> {
+    const next = this.pending.then(() => this.record());
+    this.pending = next.catch(() => undefined);
+    return next;
   }
 
-  /** Beats, and returns the awake milliseconds from a wall time to now. */
-  read(): AwakeFor {
-    this.beat();
-    const now = { wall: this.last, awake: this.awake };
+  private async record(): Promise<void> {
+    const awake = await this.uptime();
+    const wall = this.wall();
+    if (awake === null) {
+      this.error =
+        "The Mac's awake time could not be read (CLOCK_UPTIME_RAW), so missed ticks are judged late or not at all.";
+      return;
+    }
+    this.error = null;
+    const last = this.samples.at(-1);
+    // The kernel's count went back (a reboot under a live process cannot happen; a stale read can), or the
+    // wall clock was set back: either way the old records no longer map wall times onto awake time.
+    if (last && (wall < last.wall || awake < last.awake)) this.samples.length = 0;
+    const kept = this.samples.at(-1);
+    if (!kept || wall - kept.wall >= BEAT_MS) this.samples.push({ wall, awake });
+    while (this.samples.length > 1 && wall - (this.samples[0]?.wall ?? wall) > SAMPLES_KEPT_MS) this.samples.shift();
+    this.latest = { wall, awake };
+  }
+
+  /** Takes a record, and returns the awake milliseconds from a wall time to now. */
+  async read(): Promise<AwakeFor> {
+    await this.beat();
+    const now = this.latest;
     const samples = [...this.samples];
     return (from) => {
       const [first] = samples;
-      if (!first || from < first.wall) {
-        return { ms: Math.max(0, now.awake - (first?.awake ?? now.awake)), whole: false };
-      }
+      if (!now || !first) return { ms: 0, whole: false };
+      if (from < first.wall) return { ms: Math.max(0, now.awake - first.awake), whole: false };
       let at = first;
       let next: { wall: number; awake: number } = now;
       for (let index = 0; index < samples.length; index += 1) {
@@ -147,7 +191,6 @@ export class AwakeClock {
         at = sample;
         next = samples[index + 1] ?? now;
       }
-      // Within one gap between records the awake share is at most a beat (a later beat would have recorded it).
       const awakeAt = at.awake + Math.min(from - at.wall, next.awake - at.awake);
       return { ms: Math.max(0, now.awake - awakeAt), whole: true };
     };
@@ -161,7 +204,10 @@ function defaultEvery(beat: () => void, ms: number): () => void {
 }
 
 /** Awake time counted as wall time: no sleep accounting. For a test, through MAESTRO_PASEO_FLEET_AWAKE_CLOCK=wall. */
-export const wallClock = (now: () => number = Date.now) => ({ read: (): AwakeFor => awakeAsWall(now()) });
+export const wallClock = (now: () => number = Date.now) => ({
+  read: async (): Promise<AwakeFor> => awakeAsWall(now()),
+  error: null as string | null,
+});
 
 export interface FleetOptions {
   /** The fleet config, its state root and its LaunchAgents: server/paths.ts fleetPaths when not given. */
@@ -171,8 +217,8 @@ export interface FleetOptions {
   /** Maestro's work, from the files alone (no session reconcile): the fleet's asks and alerts are items in it. */
   items: () => Promise<readonly WorkItem[]>;
   /** Awake time (AwakeClock by default; wallClock when MAESTRO_PASEO_FLEET_AWAKE_CLOCK=wall). */
-  clock?: { read(): AwakeFor };
-  /** How the default clock beats: an unref'd setInterval, unless given. */
+  clock?: { read(): Promise<AwakeFor>; error: string | null };
+  /** How the default clock takes its records: an unref'd setInterval, unless given. */
   every?: (beat: () => void, ms: number) => () => void;
   now?: () => number;
   log?: (message: string) => void;
@@ -264,7 +310,7 @@ export class Fleet {
   private readonly agentsDir: string;
   private readonly now: () => number;
   private readonly log: (message: string) => void;
-  private readonly clock: { read(): AwakeFor };
+  private readonly clock: { read(): Promise<AwakeFor>; error: string | null };
   /** Distinguishes review records made in one millisecond. */
   private seq = 0;
   private stopClock: () => void = () => undefined;
@@ -562,7 +608,7 @@ export class Fleet {
   /** What needs you on its own (work.attention): each scope's missed or failing tick not already in Needs you as the fleet's item. */
   async notices(items: readonly WorkItem[]): Promise<FleetNotice[]> {
     const { scopes } = await this.scopes();
-    const awake = this.clock.read();
+    const awake = await this.clock.read();
     const now = this.now();
     const reads = await Promise.all(scopes.map((scope) => this.readScope(scope)));
     const out: FleetNotice[] = [];
@@ -577,7 +623,7 @@ export class Fleet {
   /** Every scope's summary, and one scope in full: `scope`, else the first. */
   async get(scope?: string, ticks: number = FLEET_TICKS.default): Promise<FleetView> {
     const [{ scopes, error }, items] = await Promise.all([this.scopes(), this.options.items()]);
-    const awake = this.clock.read();
+    const awake = await this.clock.read();
     const now = this.now();
     const reads = await Promise.all(scopes.map((config) => this.readScope(config)));
     const summaries: FleetScope[] = [];
@@ -585,7 +631,7 @@ export class Fleet {
     const chosen = reads.find((read) => read.config.id === scope) ?? reads[0];
     for (const read of reads) {
       const { id, stateDir } = read.config;
-      const warnings = [...read.warnings];
+      const warnings = [...read.warnings, ...(this.clock.error ? [this.clock.error] : [])];
       const { health, latest } = await this.healthOf(read, items, now, awake);
       const newest = await this.newestReport(read, warnings);
       const reviews = await this.reviews(stateDir, id, warnings);

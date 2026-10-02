@@ -244,12 +244,18 @@ The **Fleet** view shows the rest, per scope, read from those files:
   - The 2 hours are awake time, which is how launchd counts `StartInterval`. A laptop that naps
     between meetings ticks about once per hour awake, however the sleeps fall: a fleet that stopped
     is still missed after 2 hours awake, and a night's sleep is never a false alarm.
-  - Awake time comes from a heartbeat. The plugin beats once a minute from the moment it starts,
-    whether any client is looking or not.
-    - While the Mac sleeps the daemon is suspended, so a beat that arrives minutes late counts as
-      sleep. No clock Node offers stops in sleep on macOS: its monotonic clock counts sleep too.
-    - Before the plugin's first beat (a reload, a cold boot) the count starts at that beat, and the
-      view says "at least". A stall is then flagged 2 hours awake after the reload, never sooner.
+  - Awake time is the kernel's own count, CLOCK_UPTIME_RAW. It stops while the Mac sleeps and runs
+    while its CPU does, DarkWake included, which is how launchd counts.
+    - Node offers no such clock (its monotonic clock counts sleep on macOS), so the plugin reads it
+      through the system perl once a minute, from the moment it starts, whether a client is looking
+      or not.
+    - A night of Power Nap wakes is not mistaken for being awake, and a busy moment is not mistaken
+      for sleep.
+    - Before the plugin's first record (a reload, a cold boot) the count starts at that record, and
+      the view says "at least". A stall is then flagged 2 hours awake after the reload, never sooner.
+    - A wall clock set back starts the records over.
+    - If the kernel's clock cannot be read, the view says so, and missed ticks are judged late or
+      not at all, never early.
   - A tick's time budget runs on awake time too, so a tick the Mac slept through mid-run is still
     running after the wake. A tick that died days ago stays dead.
 - **Asks and alerts.**

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { WorkItem } from "../shared/contracts";
 import { groupOf, type OrchState } from "../shared/states";
 import { askBatch, H, report, session, writeFleet } from "./fake-fleet";
-import { AwakeClock, DISABLED_NOTICE, Fleet, REVIEWS_FILE, wallClock } from "./fleet";
+import { AwakeClock, DISABLED_NOTICE, Fleet, REVIEWS_FILE, uptimeRaw, wallClock } from "./fleet";
 
 const roots: string[] = [];
 afterAll(async () => {
@@ -46,17 +46,25 @@ function work(id: string, title: string, state: OrchState): WorkItem {
 
 /**
  * A Fleet on a test's own files, with the wall clock held by the test. Its
- * awake time is wall time, unless the test asks for the plugin's beating
- * clock (`beating`), started `beating` ms before NOW: then `awakeFor` and
- * `sleepFor` move the clock as the Mac would, beating every minute while
- * awake and not at all while asleep.
+ * awake time is wall time, unless the test asks for the plugin's AwakeClock
+ * (`beating`, its first record that many ms before NOW). The kernel's awake
+ * count is then the test's too: `awakeFor` moves both clocks and takes a
+ * record each minute, as the timer does; `sleepFor` moves only the wall
+ * clock; `darkWake` moves the wall clock and credits only the CPU's seconds.
  */
 async function setup(items: WorkItem[] = [], options: { beating?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), "maestro-fleet-"));
   roots.push(root);
   const paths = { config: join(root, "fleet.json"), state: join(root, "state"), agents: join(root, "agents") };
   let now = options.beating === undefined ? NOW : NOW - options.beating;
-  const beating = options.beating === undefined ? null : new AwakeClock(() => now);
+  let uptime = 1_000_000_000;
+  const beating =
+    options.beating === undefined
+      ? null
+      : new AwakeClock(
+          () => now,
+          async () => uptime,
+        );
   const logs: string[] = [];
   const fleet = new Fleet({
     configPath: paths.config,
@@ -67,17 +75,30 @@ async function setup(items: WorkItem[] = [], options: { beating?: number } = {})
     now: () => now,
     log: (message) => logs.push(message),
   });
-  const awakeFor = (ms: number) => {
+  const awakeFor = async (ms: number) => {
     for (let step = 0; step < ms; step += 60_000) {
-      now += Math.min(60_000, ms - step);
-      beating?.beat();
+      const by = Math.min(60_000, ms - step);
+      now += by;
+      uptime += by;
+      await beating?.beat();
     }
   };
   const sleepFor = (ms: number) => {
     now += ms;
   };
-  if (beating) awakeFor(NOW - now);
-  return { root, paths, fleet, logs, items, awakeFor, sleepFor };
+  /** A night of DarkWakes: every `everyMs` the CPU wakes for `cpuMs` and the timer takes a record. */
+  const darkWake = async (ms: number, everyMs: number, cpuMs: number) => {
+    for (let step = 0; step < ms; step += everyMs) {
+      now += everyMs;
+      uptime += cpuMs;
+      await beating?.beat();
+    }
+  };
+  if (beating) {
+    await beating.beat();
+    await awakeFor(NOW - now);
+  }
+  return { root, paths, fleet, logs, items, awakeFor, sleepFor, darkWake };
 }
 
 describe("reading the fleet", () => {
@@ -181,29 +202,41 @@ describe("reading the fleet", () => {
   test("only time the Mac was awake counts toward a missed tick, as launchd counts its interval", async () => {
     const { paths, fleet, awakeFor, sleepFor } = await setup([], { beating: 10 * 60_000 });
     await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: new Date(NOW), exit: 0 }] } });
-    // Short naps between meetings: 6 h of wall time, about 1.5 h of it awake. launchd has not owed two ticks.
+    // Short naps between meetings: 6 h of wall time, 1.5 h of it awake. launchd has not owed two ticks.
     for (let hour = 0; hour < 6; hour += 1) {
-      awakeFor(15 * 60_000);
+      await awakeFor(15 * 60_000);
       sleepFor(45 * 60_000);
       expect(await fleet.notices([])).toEqual([]);
     }
-    // Awake another half hour: past 2 h awake with no tick, which is missed however the sleeps fell.
-    awakeFor(30 * 60_000);
+    // Awake 29 more minutes: 1h 59m awake, not missed. Two more: 2h 1m awake, missed, however the sleeps fell.
+    await awakeFor(29 * 60_000);
+    expect(await fleet.notices([])).toEqual([]);
+    await awakeFor(2 * 60_000);
     expect(await fleet.notices([])).toMatchObject([
       { status: "missed", reason: "No tick since tick 35. It runs every hour." },
     ]);
     expect((await fleet.get()).scopes[0]?.health.reason).toBe(
-      "No tick for 6h 30m (2h 6m of it awake): the last was tick 35. It runs every hour.",
+      "No tick for 6h 31m (2h 1m of it awake): the last was tick 35. It runs every hour.",
     );
+  });
+
+  test("a night of DarkWakes is not awake time: no false alarm in the morning", async () => {
+    const { paths, fleet, darkWake, awakeFor } = await setup([], { beating: 10 * 60_000 });
+    await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: new Date(NOW), exit: 0 }] } });
+    // 8 h asleep, the CPU up 5 s every 100 s (Power Nap): the timer fires at each wake, the kernel counts 24 min.
+    await darkWake(8 * H, 100_000, 5_000);
+    expect(await fleet.notices([])).toEqual([]);
+    await awakeFor(60 * 60_000);
+    expect(await fleet.notices([])).toEqual([]);
   });
 
   test("a reload or a cold boot never raises a false alarm: time before the plugin started is not counted", async () => {
     const { paths, fleet, awakeFor } = await setup([], { beating: 0 });
     await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: ago(8), exit: 0 }] } });
     expect(await fleet.notices([])).toEqual([]);
-    awakeFor(1.9 * H);
+    await awakeFor(1.9 * H);
     expect(await fleet.notices([])).toEqual([]);
-    awakeFor(0.2 * H);
+    await awakeFor(0.2 * H);
     expect((await fleet.notices([]))[0]?.status).toBe("missed");
     // What it cannot know, it does not claim: the awake share is a lower bound, and says so.
     expect((await fleet.get()).scopes[0]?.health.reason).toContain("(at least 2h 6m of it awake)");
@@ -217,7 +250,7 @@ describe("reading the fleet", () => {
     });
     await fleet.get();
     sleepFor(4 * H);
-    awakeFor(5 * 60_000);
+    await awakeFor(5 * 60_000);
     const view = await fleet.get();
     expect(view.scopes.map((scope) => [scope.id, scope.lastTick?.status])).toEqual([
       ["alpha", "running"],
@@ -351,6 +384,24 @@ describe("reading the fleet", () => {
     expect(view.scopes).toEqual([]);
   });
 
+  test("an awake clock that cannot read the kernel is said in the view", async () => {
+    const { root } = await setup();
+    const paths = { config: join(root, "f2.json"), state: join(root, "s2"), agents: join(root, "a2") };
+    await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: ago(0.5), exit: 0 }] } });
+    const fleet = new Fleet({
+      configPath: paths.config,
+      stateRoot: paths.state,
+      agentsDir: paths.agents,
+      items: async () => [],
+      clock: new AwakeClock(
+        () => NOW,
+        async () => null,
+      ),
+      now: () => NOW,
+    });
+    expect((await fleet.get()).detail?.warnings.join(" ")).toContain("awake time could not be read");
+  });
+
   test("a ledger that cannot be read is said, not taken for no ledger", async () => {
     const { paths, fleet } = await setup();
     await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: ago(0.5), exit: 0 }] } });
@@ -472,55 +523,111 @@ describe("reading the fleet", () => {
 });
 
 describe("the awake clock", () => {
-  const beating = () => {
+  const clocks = () => {
     let wall = 0;
-    const clock = new AwakeClock(() => wall);
-    const awake = (ms: number) => {
+    let uptime = 5_000_000;
+    let reads = 0;
+    let broken = false;
+    const clock = new AwakeClock(
+      () => wall,
+      async () => {
+        reads += 1;
+        return broken ? null : uptime;
+      },
+    );
+    const awake = async (ms: number) => {
       for (let step = 0; step < ms; step += 60_000) {
         wall += Math.min(60_000, ms - step);
-        clock.beat();
+        uptime += Math.min(60_000, ms - step);
+        await clock.beat();
       }
     };
-    const asleep = (ms: number) => {
-      wall += ms;
+    return {
+      clock,
+      awake,
+      asleep: (ms: number) => {
+        wall += ms;
+      },
+      held: (ms: number) => {
+        wall += ms;
+        uptime += ms;
+      },
+      setBack: (ms: number) => {
+        wall -= ms;
+      },
+      reads: () => reads,
+      breakKernel: (value: boolean) => {
+        broken = value;
+      },
     };
-    return { clock, awake, asleep, at: () => wall };
   };
 
-  test("a beat on time counts all its time awake; a late one (the daemon was suspended) counts one beat", () => {
-    const { clock, awake, asleep } = beating();
-    awake(10 * 60_000);
+  test("counts the kernel's awake time: sleep never, a held event loop or a late timer all of it", async () => {
+    const { clock, awake, asleep, held } = clocks();
+    await clock.beat();
+    await awake(10 * 60_000);
     asleep(3 * H);
-    awake(20 * 60_000);
-    const since = clock.read();
-    // 10 minutes, the late beat's one, then 19 more on time.
+    await awake(20 * 60_000);
+    let since = await clock.read();
     expect(since(0)).toEqual({ ms: 30 * 60_000, whole: true });
-    expect(since(5 * 60_000)).toEqual({ ms: 25 * 60_000, whole: true });
-    // From inside the sleep: what came after it. The late beat's minute is put at the gap's start, so it counts
-    // no more than was awake (19 of the 20 minutes).
+    // From inside the sleep: what came after it, less the gap's one awake minute, which is put at the gap's
+    // start so the count is never more than the Mac was awake (19 of the 20 minutes).
     expect(since(2 * H)).toEqual({ ms: 19 * 60_000, whole: true });
+    // The event loop held for 5 minutes, no record taken in between: awake all the same.
+    held(5 * 60_000);
+    since = await clock.read();
+    expect(since(0)).toEqual({ ms: 35 * 60_000, whole: true });
   });
 
-  test("before its first record it counts from that record, a lower bound, and says so; at the record it is whole", () => {
-    const { clock, awake } = beating();
-    awake(30 * 60_000);
-    const since = clock.read();
+  test("before its first record it counts from that record, a lower bound, and says so; at the record it is whole", async () => {
+    const { clock, awake } = clocks();
+    await clock.beat();
+    await awake(30 * 60_000);
+    const since = await clock.read();
     expect(since(-10 * H)).toEqual({ ms: 30 * 60_000, whole: false });
     expect(since(0)).toEqual({ ms: 30 * 60_000, whole: true });
   });
 
-  test("keeps a record a minute at most, and none past eight days", () => {
-    const { clock, awake, asleep } = beating();
-    asleep(9 * 24 * H);
-    awake(60_000);
-    const since = clock.read();
-    // The first record is gone: from day 0 counts from the oldest kept, after the long sleep.
-    expect(since(0).whole).toBe(false);
-    expect(since(0).ms).toBeLessThanOrEqual(2 * 60_000);
+  test("a wall clock set back starts the records over, and the count goes on from there, never frozen", async () => {
+    const { clock, awake, setBack } = clocks();
+    await clock.beat();
+    await awake(30 * 60_000);
+    setBack(H);
+    await awake(10 * 60_000);
+    const since = await clock.read();
+    // Wall times before the step no longer map: a lower bound from the first record after it, not a guess.
+    expect(since(-2 * H)).toEqual({ ms: 9 * 60_000, whole: false });
+    // After the step the count runs on (records at -29 min ... -20 min wall): five minutes since -25 min.
+    expect(since(-25 * 60_000)).toEqual({ ms: 5 * 60_000, whole: true });
   });
 
-  test("beats on its timer until stopped", () => {
-    const { clock, at } = beating();
+  test("a kernel it cannot read takes no record and says so; the count does not grow on a guess", async () => {
+    const { clock, awake, breakKernel } = clocks();
+    await clock.beat();
+    await awake(30 * 60_000);
+    breakKernel(true);
+    await awake(60 * 60_000);
+    let since = await clock.read();
+    expect(clock.error).toContain("could not be read");
+    expect(since(0)).toEqual({ ms: 30 * 60_000, whole: true });
+    breakKernel(false);
+    since = await clock.read();
+    expect(clock.error).toBeNull();
+    expect(since(0)).toEqual({ ms: 90 * 60_000, whole: true });
+  });
+
+  test("keeps a record a minute at most, and none past eight days", async () => {
+    const { clock, awake, asleep } = clocks();
+    await clock.beat();
+    asleep(9 * 24 * H);
+    await awake(60_000);
+    const since = await clock.read();
+    // The first record is gone: from day 0 counts from the oldest kept, after the long sleep.
+    expect(since(0)).toEqual({ ms: 0, whole: false });
+  });
+
+  test("its timer takes a record on each beat, from the start, until stopped", async () => {
+    const { clock, reads } = clocks();
     let beat: (() => void) | null = null;
     let stopped = false;
     clock.start((run, ms) => {
@@ -530,13 +637,17 @@ describe("the awake clock", () => {
         stopped = true;
       };
     });
-    expect(beat).not.toBeNull();
+    await clock.read();
+    const before = reads();
+    (beat as unknown as () => void)();
+    await clock.read();
+    // The timer's beat asked the kernel once, the read once more.
+    expect(reads() - before).toBe(2);
     clock.stop();
     expect(stopped).toBe(true);
-    expect(at()).toBe(0);
   });
 
-  test("the Fleet's own clock beats from the start, and stops with it", async () => {
+  test("the Fleet's own clock takes records from the start, and stops with it", async () => {
     const beats: (() => void)[] = [];
     let stopped = 0;
     const fleet = new Fleet({
@@ -556,8 +667,20 @@ describe("the awake clock", () => {
     expect(stopped).toBe(1);
   });
 
-  test("the wall clock is awake time with no sleep accounted, for a test of the plugin", () => {
-    expect(wallClock(() => 5000).read()(1000)).toEqual({ ms: 4000, whole: true });
+  test("the kernel's clock on this machine stops in sleep, where it can be read (macOS)", async () => {
+    const value = await uptimeRaw();
+    if (process.platform !== "darwin") {
+      expect(value === null || value > 0).toBe(true);
+      return;
+    }
+    // CLOCK_UPTIME_RAW never runs ahead of wall time since boot, and is no later than a moment ago.
+    expect(value).not.toBeNull();
+    expect(value as number).toBeGreaterThan(0);
+    expect(value as number).toBeLessThanOrEqual(performance.timeOrigin + performance.now());
+  });
+
+  test("the wall clock is awake time with no sleep accounted, for a test of the plugin", async () => {
+    expect((await wallClock(() => 5000).read())(1000)).toEqual({ ms: 4000, whole: true });
   });
 });
 
