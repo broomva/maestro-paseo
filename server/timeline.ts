@@ -25,6 +25,7 @@ import {
   loopSource,
   StoredScheduleSchema,
   scheduleSource,
+  tailOf,
   timelineNotices,
   type Window,
 } from "./timeline-model";
@@ -62,9 +63,9 @@ export class Timeline {
   private readonly now: () => number;
   private readonly log: (message: string) => void;
   private launchd: { at: number; read: LaunchdRead } | null = null;
-  private launchdReading: Promise<void> | null = null;
   private computed: { at: number; view: TimelineView } | null = null;
-  private computing: Promise<TimelineView> | null = null;
+  /** The compute in flight, and the launchd age it accepts: a caller wanting fresher waits for its own. */
+  private computing: { maxAgeMs: number; view: Promise<TimelineView> } | null = null;
   /** The warning last logged, so a poll does not repeat it. */
   private logged = "";
 
@@ -94,33 +95,41 @@ export class Timeline {
     return view ? timelineNotices(view.sources) : [];
   }
 
+  /** The end of a launchd job's log (timeline.log), from the latest read; a source with no log has none. */
+  async logOf(id: string): Promise<{ path: string | null; tail: string | null }> {
+    if (!this.launchd) await this.readLaunchd(LAUNCHD_VIEW_MS, []);
+    const job = this.launchd?.read.jobs.find((one) => `launchd:${one.label}` === id);
+    return { path: job?.logPath ?? null, tail: tailOf(job?.logText ?? null) };
+  }
+
   private view(launchdMaxAgeMs: number): Promise<TimelineView> {
     const now = this.now();
     const fresh = this.computed && now - this.computed.at < VIEW_MS;
     const launchdFresh = !this.options.launchd || (this.launchd && now - this.launchd.at < launchdMaxAgeMs);
     if (fresh && launchdFresh && this.computed) return Promise.resolve(this.computed.view);
-    this.computing ??= this.compute(launchdMaxAgeMs).finally(() => {
-      this.computing = null;
-    });
-    return this.computing;
+    const running = this.computing;
+    // One in flight that accepts launchd at least as fresh as this caller wants answers it too.
+    if (running && running.maxAgeMs <= launchdMaxAgeMs) return running.view;
+    // Else this caller's compute runs after it, so two never read at once and neither answers the other's freshness.
+    const view = (running?.view.catch(() => undefined) ?? Promise.resolve())
+      .then(() => this.compute(launchdMaxAgeMs))
+      .finally(() => {
+        if (this.computing?.view === view) this.computing = null;
+      });
+    this.computing = { maxAgeMs: launchdMaxAgeMs, view };
+    return view;
   }
 
+  /** The latest launchd read, read again once older than `maxAgeMs`; a read that fails keeps the last, said in `warnings`. */
   private async readLaunchd(maxAgeMs: number, warnings: string[]): Promise<LaunchdRead | null> {
     const reader = this.options.launchd;
     if (!reader) return null;
     if (!this.launchd || this.now() - this.launchd.at >= maxAgeMs) {
-      this.launchdReading ??= reader
-        .read()
-        .then((read) => {
-          this.launchd = { at: this.now(), read };
-        })
-        .catch((error) => {
-          warnings.push(`launchd could not be read: ${(error as Error).message}`);
-        })
-        .finally(() => {
-          this.launchdReading = null;
-        });
-      await this.launchdReading;
+      try {
+        this.launchd = { at: this.now(), read: await reader.read() };
+      } catch (error) {
+        warnings.push(`launchd could not be read: ${(error as Error).message}`);
+      }
     }
     return this.launchd?.read ?? null;
   }
@@ -132,12 +141,19 @@ export class Timeline {
     const window: Window = { now, from: now - TIMELINE_WINDOW_MS, to: now + TIMELINE_WINDOW_MS };
     const awakeSince = launchd?.awakeSince ?? null;
     const [schedules, loop, fleet] = await Promise.all([
-      this.schedules(window, warnings),
+      this.schedules(window, awakeSince, warnings),
       this.loop(window, awakeSince, warnings),
       this.fleet(window, warnings),
     ]);
     const fleetScopes = new Set(fleet.map((source) => source.id.slice("fleet:".length)));
     const prefix = this.options.launchdPrefix ?? "com.broomva.";
+    // A miss is judged only as far as the read's evidence reaches: an old read, or one whose log read failed, cannot page.
+    const judgedAt = launchd ? (launchd.exitsUntil ?? launchd.readAt) : now;
+    if (launchd && now - launchd.readAt > 2 * LAUNCHD_NOTICE_MS) {
+      warnings.push(
+        "launchd has not been read for a while; its rows show the last read, and nothing since is called missed.",
+      );
+    }
     const jobs = (launchd?.jobs ?? [])
       // A fleet scope's tick job is the scope: its ticks are richer than launchd's run ends.
       .filter((job) => ![...fleetScopes].some((scope) => job.label === fleetLabel(scope)))
@@ -147,6 +163,7 @@ export class Timeline {
           {
             exits: (launchd?.exits ?? []).filter((exit) => exit.label === job.label),
             coverage: launchd?.coverage ?? null,
+            judgedAt,
             awakeSince,
             prefix,
           },
@@ -171,7 +188,7 @@ export class Timeline {
     return view;
   }
 
-  private async schedules(window: Window, warnings: string[]): Promise<TimelineSource[]> {
+  private async schedules(window: Window, awakeSince: number | null, warnings: string[]): Promise<TimelineSource[]> {
     const dir = this.options.schedulesDir;
     let names: string[];
     try {
@@ -198,7 +215,7 @@ export class Timeline {
         warnings.push(`Paseo schedule ${name} is in a shape the timeline does not read.`);
         continue;
       }
-      const source = scheduleSource(parsed.data, window, path);
+      const source = scheduleSource(parsed.data, window, path, awakeSince);
       if (source) sources.push(source);
     }
     return sources;

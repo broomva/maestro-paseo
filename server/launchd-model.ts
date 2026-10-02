@@ -54,11 +54,9 @@ export interface PrintedJob {
   path: string | null;
   state: string | null;
   pid: number | null;
-  runs: number | null;
   /** Null when it never exited since it was loaded. */
   lastExit: number | null;
   stdout: string | null;
-  stderr: string | null;
   intervalSeconds: number | null;
 }
 
@@ -79,10 +77,8 @@ export function parsePrint(text: string): PrintedJob {
     path: keys.get("path") ?? null,
     state: keys.get("state") ?? null,
     pid: whole("pid"),
-    runs: whole("runs"),
     lastExit: whole("last exit code"),
     stdout: keys.get("stdout path") ?? null,
-    stderr: keys.get("stderr path") ?? null,
     intervalSeconds: interval?.[1] ? Number(interval[1]) : null,
   };
 }
@@ -106,6 +102,8 @@ export interface LaunchdExit {
   exit: number | null;
   /** The signal that ended it, when one did. */
   signal: string | null;
+  /** launchd itself sent the signal: a job stopped at logout or unload, not one that failed. */
+  byLaunchd: boolean;
   ranMs: number | null;
 }
 
@@ -153,6 +151,7 @@ export function parseExitLine(line: string): LaunchdExit | null {
     endedAt,
     exit: exit?.[1] !== undefined ? Number(exit[1]) : null,
     signal: exit ? null : (signal?.[1] ?? null),
+    byLaunchd: !exit && /sent by launchd\[/.test(message),
     ranMs: ran?.[1] ? Number(ran[1]) : null,
   };
 }
@@ -198,13 +197,18 @@ export function stampRuns(stamps: readonly number[]): { start: number; end: numb
 
 const iso = (at: number) => new Date(at).toISOString();
 
-function exitStatus(exit: number | null, signal: string | null): RunStatus {
+/** SIGTERM from launchd stops a job (logout, unload): it is not the job failing, and not a pass either. */
+const stoppedByLaunchd = (signal: string | null, byLaunchd: boolean) => byLaunchd && signal === "SIGTERM";
+
+function exitStatus(exit: number | null, signal: string | null, byLaunchd = false): RunStatus {
   if (exit === 0) return "ok";
+  if (stoppedByLaunchd(signal, byLaunchd)) return "unknown";
   if (exit !== null || signal !== null) return "failed";
   return "unknown";
 }
 
-export function exitDetail(exit: number | null, signal: string | null): string | null {
+export function exitDetail(exit: number | null, signal: string | null, byLaunchd = false): string | null {
+  if (stoppedByLaunchd(signal, byLaunchd)) return "stopped by launchd (SIGTERM)";
   if (signal) return `killed by ${signal}`;
   if (exit !== null) return `exit ${exit}`;
   return null;
@@ -224,23 +228,31 @@ export interface LaunchdEvidence {
   now: number;
 }
 
-/** Every run the evidence shows, newest first. */
+/**
+ * Every run the evidence shows, newest first. What the job's log says about
+ * a run still going (its stamps, its last write) is that run, not a finished
+ * one, and a stamp from the future is a clock or a log gone wrong: neither is
+ * counted as a run.
+ */
 export function launchdRuns(evidence: LaunchdEvidence): TimelineRun[] {
   const runs: (TimelineRun & { start: number; end: number })[] = evidence.exits.map((exit) => {
     const start = exit.endedAt - (exit.ranMs ?? 0);
     return {
       at: iso(start),
       endedAt: iso(exit.endedAt),
-      status: exitStatus(exit.exit, exit.signal),
+      status: exitStatus(exit.exit, exit.signal, exit.byLaunchd),
       exit: exit.exit,
-      detail: exitDetail(exit.exit, exit.signal),
+      detail: exitDetail(exit.exit, exit.signal, exit.byLaunchd),
       start,
       end: exit.endedAt,
     };
   });
   const seen = (start: number, end: number) =>
     runs.some((run) => run.start - MATCH_SLACK_MS <= end && start <= run.end + MATCH_SLACK_MS);
+  const goingSince = evidence.running?.since ?? null;
+  const thisRun = (at: number) => goingSince !== null && at >= goingSince - MATCH_SLACK_MS;
   for (const stamped of evidence.logged) {
+    if (stamped.start > evidence.now + MATCH_SLACK_MS || thisRun(stamped.end)) continue;
     if (seen(stamped.start, stamped.end)) continue;
     runs.push({
       at: iso(stamped.start),
@@ -254,7 +266,7 @@ export function launchdRuns(evidence: LaunchdEvidence): TimelineRun[] {
   }
   const newestEnd = Math.max(-Infinity, ...runs.map((run) => run.end));
   const written = evidence.logWrittenAt;
-  if (written !== null && written > newestEnd + MATCH_SLACK_MS) {
+  if (written !== null && written > newestEnd + MATCH_SLACK_MS && !thisRun(written) && written <= evidence.now) {
     runs.push({
       at: iso(written),
       endedAt: iso(written),
@@ -293,7 +305,15 @@ export interface LaunchdStatusInput {
   schedule: LaunchdSchedule;
   /** Every known run, newest first (launchdRuns). */
   runs: readonly TimelineRun[];
+  /**
+   * The instant the evidence reaches: the end of the last good read of the
+   * unified log (else the read itself). A run that came due after it has not
+   * been looked for, so it is never called missed, however long ago the
+   * read was.
+   */
   now: number;
+  /** When the job's plist was written: it cannot have missed a run due before it existed. */
+  installedAt: number | null;
   /** When the Mac last woke (or booted): launchd fires nothing while it sleeps. */
   awakeSince: number | null;
   /** How far back the unified log reaches: a run due before it cannot be judged missed. */
@@ -321,11 +341,13 @@ const MISSED_SHOWN = 24;
 /**
  * A job now. Not loaded is off. A run going is running. A newest run that
  * failed is failed. Otherwise it is missed when a run came due and did not
- * start: on an interval, no run for two intervals and a grace of awake time;
- * on a calendar, a due time after its newest run (and after the log's
- * reach) that passed its grace, counted from the Mac's wake if it slept
- * through. launchd folds runs a sleep skipped into one at wake, so only due
- * times after the newest run are ever missed.
+ * start: on an interval, no run for two intervals and a grace of awake time
+ * after the newest run ended; on a calendar, a due time after the newest run
+ * ended (and after the log's reach and the plist's writing) that passed its
+ * grace, counted from the Mac's wake if it slept through. launchd folds runs
+ * a sleep or a long run skipped into one, so only due times after the
+ * newest run's end are ever missed. A newest run whose exit nobody recorded
+ * is unknown, never on time.
  */
 export function launchdStatus(input: LaunchdStatusInput): Judged {
   const { runs, now, schedule } = input;
@@ -333,7 +355,7 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
   const going = runs.find((run) => run.status === "running");
   if (going) return { status: "running", reason: "Running now.", since: going.at, missed: [] };
   const newest = runs[0] ?? null;
-  const newestAt = newest ? Date.parse(newest.at) : null;
+  const newestEnd = newest ? Date.parse(newest.endedAt ?? newest.at) : null;
   if (newest?.status === "failed") {
     return {
       status: "failed",
@@ -343,8 +365,8 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
     };
   }
   // A due time more than a week before now is not looked for: the window is a day either side.
-  const reach = newestAt ?? input.coverage;
-  const from = reach === null ? null : Math.max(reach, now - 8 * 86_400_000);
+  const reach = newestEnd ?? input.coverage;
+  const from = reach === null ? null : Math.max(reach, input.installedAt ?? reach, now - 8 * 86_400_000);
   if (schedule.calendar && from !== null) {
     const due = dueTimes(schedule.calendar, undefined, from + MATCH_SLACK_MS, now, 1440 * 2).filter((at) => {
       const woke = input.awakeSince !== null && input.awakeSince > at ? input.awakeSince : at;
@@ -356,7 +378,7 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
         status: "missed",
         reason:
           due.length === 1
-            ? `A run came due ${span(now - first)} ago and it has not run.`
+            ? "A run came due and it has not run."
             : `${due.length} runs came due since ${newest ? "its last run" : "the log begins"} and none ran.`,
         since: iso(first),
         missed: due.slice(-MISSED_SHOWN).reverse().map(missedRun),
@@ -370,8 +392,8 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
       return {
         status: "missed",
         reason: newest
-          ? `No run for ${span(now - (newestAt ?? now))}; it runs every ${span(schedule.intervalMs)}.`
-          : `No run since the log begins, ${span(now - from)} ago; it runs every ${span(schedule.intervalMs)}.`,
+          ? `No run since its last; it runs every ${span(schedule.intervalMs)}.`
+          : `No run seen since the log begins; it runs every ${span(schedule.intervalMs)}.`,
         since: iso(dueAt),
         missed: [missedRun(dueAt)],
       };
@@ -379,7 +401,14 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
   }
   if (!newest) return { status: "unknown", reason: "No run seen yet.", since: null, missed: [] };
   if (newest.status === "unknown") {
-    return { status: "ok", reason: "Its last run's exit was not recorded.", since: newest.at, missed: [] };
+    return {
+      status: "unknown",
+      reason: newest.detail?.startsWith("stopped by launchd")
+        ? "launchd stopped its last run (SIGTERM)."
+        : "Its last run's exit was not recorded.",
+      since: newest.at,
+      missed: [],
+    };
   }
   return { status: "ok", reason: "On schedule; its last run passed.", since: newest.at, missed: [] };
 }

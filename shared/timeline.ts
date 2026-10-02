@@ -44,10 +44,13 @@ export type RunStatus = (typeof RUN_STATUS)[number];
 export const SOURCE_STATUS = ["ok", "running", "failed", "missed", "off", "unknown"] as const;
 export type SourceStatus = (typeof SOURCE_STATUS)[number];
 
+/** An instant on the wire: always an ISO string in UTC, as the server writes every one (`toISOString`). */
+export const InstantSchema = z.iso.datetime();
+
 export const TimelineRunSchema = z.object({
   /** When it started; for a missed run, when it was due. */
-  at: z.string(),
-  endedAt: z.string().nullable(),
+  at: InstantSchema,
+  endedAt: InstantSchema.nullable(),
   status: z.enum(RUN_STATUS),
   /** The process exit code, when one was recorded. */
   exit: z.number().nullable(),
@@ -75,7 +78,7 @@ export const TimelineSourceSchema = z.object({
   /** The status in one sentence. */
   reason: z.string(),
   /** When the status began: the failed run's start, the missed run's due time. */
-  since: z.string().nullable(),
+  since: InstantSchema.nullable(),
   /**
    * Whether this needs you: failed or missed. A fleet scope needs you
    * through the Fleet view (its own notice, or the fleet's alert work), so
@@ -83,32 +86,33 @@ export const TimelineSourceSchema = z.object({
    */
   needsYou: z.boolean(),
   /** The next run, when one is scheduled; it may lie past the window. */
-  next: z.string().nullable(),
+  next: InstantSchema.nullable(),
   /** Runs still to come inside the window, soonest first, `next` among them. Capped at TIMELINE_UPCOMING. */
-  upcoming: z.array(z.string()),
+  upcoming: z.array(InstantSchema),
   /** Runs inside the window, newest first, missed ones included. Capped at TIMELINE_RUNS. */
   runs: z.array(TimelineRunSchema),
   /** The newest run there is, inside the window or before it. */
   last: TimelineRunSchema.nullable(),
-  /** Where its own record lives: a log file, a schedule's folder. */
+  /** Where its own record lives: a launchd job's log, a schedule's file, the loop's wake log. */
   where: z.string().nullable(),
-  /** The end of its log, for a launchd job: the newest lines, up to TIMELINE_TAIL_BYTES. */
-  tail: z.string().nullable(),
+  /** Whether timeline.log has a log end to show for it (a launchd job with a log). */
+  hasLog: z.boolean(),
   link: SourceLinkSchema.nullable(),
 });
 export type TimelineSource = z.infer<typeof TimelineSourceSchema>;
 
-export const TIMELINE_RUNS = 120;
-export const TIMELINE_UPCOMING = 120;
+/** Enough for a run every five minutes across the past day. */
+export const TIMELINE_RUNS = 300;
+export const TIMELINE_UPCOMING = 300;
 export const TIMELINE_TAIL_BYTES = 2048;
 
 export const getTimeline = defineRpc({
   name: "timeline.get",
   input: z.object({}),
   output: z.object({
-    now: z.string(),
-    from: z.string(),
-    to: z.string(),
+    now: InstantSchema,
+    from: InstantSchema,
+    to: InstantSchema,
     sources: z.array(TimelineSourceSchema),
     /** What could not be read, in words: a source that failed, a file that did not parse. */
     warnings: z.array(z.string()),
@@ -116,13 +120,25 @@ export const getTimeline = defineRpc({
 });
 export type TimelineView = z.infer<typeof getTimeline.output>;
 
+/**
+ * The end of a launchd job's log, asked for when you open its row: kept out
+ * of timeline.get, which every open client polls, so a log's lines travel
+ * only to the one who looks. `tail` is null when the job has no log to read.
+ */
+export const getTimelineLog = defineRpc({
+  name: "timeline.log",
+  input: z.object({ id: z.string().min(1) }),
+  output: z.object({ path: z.string().nullable(), tail: z.string().nullable() }),
+});
+
 /** A source that needs you on its own, as work.attention carries it (never a fleet scope: the Fleet view counts those). */
 export const TimelineNoticeSchema = z.object({
   id: z.string(),
   kind: z.enum(SOURCE_KINDS),
   name: z.string(),
   status: z.enum(["failed", "missed"]),
+  /** Without a running span, so the header count's read changes only when what needs you does. */
   reason: z.string(),
-  since: z.string().nullable(),
+  since: InstantSchema.nullable(),
 });
 export type TimelineNotice = z.infer<typeof TimelineNoticeSchema>;

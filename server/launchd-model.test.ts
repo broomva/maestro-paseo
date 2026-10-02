@@ -76,10 +76,8 @@ describe("launchctl", () => {
       path: "/Users/broomva/Library/LaunchAgents/com.broomva.kg-lint.plist",
       state: "not running",
       pid: null,
-      runs: 1,
       lastExit: 0,
       stdout: "/tmp/broomva-kg-lint.log",
-      stderr: "/tmp/broomva-kg-lint.log",
       intervalSeconds: null,
     });
     const running = parsePrint(
@@ -119,6 +117,7 @@ describe("the unified log", () => {
       endedAt: Date.parse("2026-10-02T02:55:17.002Z"),
       exit: 0,
       signal: null,
+      byLaunchd: false,
       ranMs: 39,
     });
     expect(
@@ -130,7 +129,7 @@ describe("the unified log", () => {
           "exited due to SIGKILL | sent by launchd[1], ran for 5000ms",
         ),
       ),
-    ).toMatchObject({ exit: null, signal: "SIGKILL", ranMs: 5000 });
+    ).toMatchObject({ exit: null, signal: "SIGKILL", byLaunchd: true, ranMs: 5000 });
     // Anything else launchd says about a job is not a run end.
     expect(
       parseExitLine(
@@ -177,12 +176,19 @@ describe("the job's own log", () => {
   });
 });
 
-const exit = (endedAt: number, code: number | null, ranMs = 1000, signal: string | null = null): LaunchdExit => ({
+const exit = (
+  endedAt: number,
+  code: number | null,
+  ranMs = 1000,
+  signal: string | null = null,
+  byLaunchd = false,
+): LaunchdExit => ({
   label: "com.broomva.x",
   pid: endedAt % 1000,
   endedAt,
   exit: code,
   signal,
+  byLaunchd,
   ranMs,
 });
 
@@ -263,6 +269,36 @@ describe("a job's runs", () => {
     ).toHaveLength(1);
   });
 
+  test("what the log says of a run still going is that run, never a finished one with the last exit", () => {
+    const runs = launchdRuns({
+      exits: [],
+      logged: [
+        { start: NOW - 2 * H, end: NOW - 2 * H },
+        { start: NOW - 4 * M, end: NOW - M },
+      ],
+      logWrittenAt: NOW - M,
+      lastExit: 1,
+      running: { since: NOW - 5 * M },
+      now: NOW,
+    });
+    expect(runs.map((run) => [run.at, run.status, run.exit])).toEqual([
+      [iso(NOW - 5 * M), "running", null],
+      [iso(NOW - 2 * H), "failed", 1],
+    ]);
+  });
+
+  test("a stamp from the future is not a run", () => {
+    const runs = launchdRuns({
+      exits: [exit(NOW - H, 0)],
+      logged: [{ start: NOW + 5 * H, end: NOW + 5 * H }],
+      logWrittenAt: null,
+      lastExit: 0,
+      running: null,
+      now: NOW,
+    });
+    expect(runs.map((run) => run.at)).toEqual([iso(NOW - H - 1000)]);
+  });
+
   test("a run going now comes first, and launchd's last exit stays with the run before it", () => {
     const runs = launchdRuns({
       exits: [],
@@ -299,7 +335,7 @@ const run = (at: number, status: "ok" | "failed" | "unknown" | "running" = "ok")
   detail: null,
 });
 const interval = { intervalMs: 15 * M, calendar: null };
-const base = { loaded: true, now: NOW, awakeSince: null, coverage: NOW - 20 * H };
+const base = { loaded: true, now: NOW, awakeSince: null, coverage: NOW - 20 * H, installedAt: null };
 
 describe("a job's status", () => {
   test("not loaded is off; a run going is running; a newest run that failed is failed", () => {
@@ -319,12 +355,13 @@ describe("a job's status", () => {
     ).toBe("ok");
   });
 
-  test("on an interval: missed after two intervals and a grace with no run", () => {
-    const last = NOW - (2 * 15 * M + INTERVAL_GRACE_MS) - 1;
-    const missed = launchdStatus({ ...base, schedule: interval, runs: [run(last)] });
-    expect(missed).toMatchObject({ status: "missed", since: iso(last + 15 * M) });
-    expect(missed.missed.map((one) => one.at)).toEqual([iso(last + 15 * M)]);
-    expect(launchdStatus({ ...base, schedule: interval, runs: [run(last + 2)] }).status).toBe("ok");
+  test("on an interval: missed after two intervals and a grace with no run, from the newest run's end", () => {
+    // run() lasts a second: this one ended two intervals and the grace ago, and a millisecond more.
+    const ended = NOW - (2 * 15 * M + INTERVAL_GRACE_MS) - 1;
+    const missed = launchdStatus({ ...base, schedule: interval, runs: [run(ended - 1000)] });
+    expect(missed).toMatchObject({ status: "missed", since: iso(ended + 15 * M) });
+    expect(missed.missed.map((one) => one.at)).toEqual([iso(ended + 15 * M)]);
+    expect(launchdStatus({ ...base, schedule: interval, runs: [run(ended - 1000 + 2)] }).status).toBe("ok");
   });
 
   test("on an interval: a Mac that slept has the time from its wake", () => {
@@ -377,11 +414,69 @@ describe("a job's status", () => {
     expect(launchdStatus({ ...base, coverage: NOW - 3 * H, schedule: calendar, runs: [] }).status).toBe("missed");
   });
 
-  test("a newest run whose exit was not recorded is on time, and says so", () => {
+  test("a newest run whose exit was not recorded is not known, never on time", () => {
     expect(launchdStatus({ ...base, schedule: interval, runs: [run(NOW - M, "unknown")] })).toMatchObject({
-      status: "ok",
+      status: "unknown",
       reason: "Its last run's exit was not recorded.",
     });
+  });
+
+  test("a long run that ended a moment ago is not missed: the clock runs from its end", () => {
+    // Every 15 minutes; the newest run started 40 minutes ago and ran 39 of them.
+    const long = { at: iso(NOW - 40 * M), endedAt: iso(NOW - M), status: "ok" as const, exit: 0, detail: null };
+    expect(launchdStatus({ ...base, schedule: interval, runs: [long] }).status).toBe("ok");
+    // A calendar due time that fell inside the run was folded into it.
+    const calendar = { intervalMs: null, calendar: calendarSpecs({ Minute: 0 }) };
+    const across = {
+      at: "2026-10-02T19:50:00.000Z",
+      endedAt: "2026-10-02T21:05:00.000Z",
+      status: "ok" as const,
+      exit: 0,
+      detail: null,
+    };
+    expect(launchdStatus({ ...base, schedule: calendar, runs: [across] }).status).toBe("ok");
+  });
+
+  test("a job cannot miss a run due before its plist was written", () => {
+    const calendar = { intervalMs: null, calendar: calendarSpecs({ Minute: 0 }) };
+    // No run yet, the log reaches 3 h back, and 20:00 passed its grace: missed, unless the job is newer than that.
+    expect(launchdStatus({ ...base, coverage: NOW - 3 * H, schedule: calendar, runs: [] }).status).toBe("missed");
+    expect(
+      launchdStatus({ ...base, coverage: NOW - 3 * H, installedAt: NOW - 40 * M, schedule: calendar, runs: [] }).status,
+    ).toBe("unknown");
+  });
+
+  test("judged at the read's horizon: what came due after it is not missed, however late it is now", () => {
+    const last = NOW - 3 * H;
+    expect(launchdStatus({ ...base, schedule: interval, runs: [run(last)] }).status).toBe("missed");
+    // The evidence reaches 10 minutes past that run: nothing was due yet then.
+    expect(launchdStatus({ ...base, now: last + 10 * M, schedule: interval, runs: [run(last)] }).status).toBe("ok");
+  });
+
+  test("launchd stopping a run (SIGTERM, at logout or unload) is not a failure", () => {
+    const [stopped] = launchdRuns({
+      exits: [exit(NOW - 5 * M, null, 10, "SIGTERM", true)],
+      logged: [],
+      logWrittenAt: null,
+      lastExit: null,
+      running: null,
+      now: NOW,
+    });
+    expect(stopped).toMatchObject({ status: "unknown", detail: "stopped by launchd (SIGTERM)" });
+    expect(launchdStatus({ ...base, schedule: interval, runs: stopped ? [stopped] : [] })).toMatchObject({
+      status: "unknown",
+      reason: "launchd stopped its last run (SIGTERM).",
+    });
+    // A SIGTERM from anyone else, or launchd's SIGKILL, still is.
+    const [killed] = launchdRuns({
+      exits: [exit(NOW - H, null, 10, "SIGKILL", true)],
+      logged: [],
+      logWrittenAt: null,
+      lastExit: null,
+      running: null,
+      now: NOW,
+    });
+    expect(killed?.status).toBe("failed");
   });
 });
 

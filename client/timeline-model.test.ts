@@ -3,6 +3,7 @@ import type { TimelineRun, TimelineSource } from "../shared/timeline";
 import {
   axisOf,
   axisTicks,
+  labelOffset,
   lastWords,
   MERGE_GAP,
   marksOf,
@@ -16,6 +17,7 @@ import {
   sortSources,
   statusLabel,
   summaryLine,
+  toneOf,
   tookWords,
   whenWords,
 } from "./timeline-model";
@@ -42,7 +44,7 @@ function source(id: string, extra: Partial<TimelineSource> = {}): TimelineSource
     runs: [],
     last: null,
     where: null,
-    tail: null,
+    hasLog: false,
     link: null,
     ...extra,
   };
@@ -203,7 +205,10 @@ describe("words", () => {
   test("statuses keep their words beside their color", () => {
     expect(
       ["failed", "missed", "running", "ok", "off", "unknown"].map((status) => statusLabel(status as never)),
-    ).toEqual(["Failed", "Missed", "Running", "On time", "Off", "No runs seen"]);
+    ).toEqual(["Failed", "Missed", "Running", "On time", "Off", "Not known"]);
+    expect(
+      ["failed", "missed", "ok", "running", "skipped", "unknown", "off"].map((status) => toneOf(status as never)),
+    ).toEqual(["danger", "warn", "success", "accent", "muted", "muted", "muted"]);
   });
 
   test("a row read aloud, and a notice", () => {
@@ -218,9 +223,23 @@ describe("words", () => {
     expect(rowLabel(row, NOW)).toBe(
       "kg-lint, launchd. Failed. Its last run failed: exit 1. No run yet. Next in 30 min",
     );
-    expect(noticeText({ name: "kg-lint", status: "missed", reason: "A run came due 2h ago and it has not run." })).toBe(
-      "kg-lint: missed run. A run came due 2h ago and it has not run.",
-    );
+    // Its time comes from `since`, so the words the header count reads do not change minute to minute.
+    const due = new Date(2026, 9, 2, 14, 0).getTime();
+    expect(
+      noticeText(
+        { name: "kg-lint", status: "missed", reason: "A run came due and it has not run.", since: iso(due) },
+        NOW,
+      ),
+    ).toBe("kg-lint: missed run 14:00. A run came due and it has not run.");
+    expect(
+      noticeText({ name: "kg-lint", status: "failed", reason: "Its last run failed: exit 1.", since: null }, NOW),
+    ).toBe("kg-lint: failed run. Its last run failed: exit 1.");
+  });
+
+  test("an axis label at either end stays inside the row", () => {
+    expect(labelOffset(0.01, 56)).toBe(0);
+    expect(labelOffset(0.5, 56)).toBe(-28);
+    expect(labelOffset(0.99, 56)).toBe(-56);
   });
 
   test("the detail lists a dozen runs and counts the rest", () => {

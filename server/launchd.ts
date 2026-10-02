@@ -101,6 +101,10 @@ export const execRunner: Runner = (command, args, { timeoutMs, firstLine }) =>
         const end = text.indexOf("\n");
         if (end >= 0) {
           child.kill("SIGTERM");
+          // One that ignores SIGTERM is not left running.
+          const kill = setTimeout(() => child.kill("SIGKILL"), 2000);
+          kill.unref?.();
+          child.once("close", () => clearTimeout(kill));
           finish({ stdout: text.slice(0, end), code: 0 });
         }
       }
@@ -117,6 +121,8 @@ export interface LaunchdJob {
   printed: PrintedJob | null;
   /** Its plist, as plutil reads it. */
   plist: Record<string, unknown> | null;
+  /** When its plist was last written: it cannot have missed a run due before that. */
+  installedAt: number | null;
   /** When the run going now started, if one is. */
   runningSince: number | null;
   running: boolean;
@@ -133,6 +139,12 @@ export interface LaunchdRead {
   exits: LaunchdExit[];
   /** How far back run ends are known: absence before it proves nothing. */
   coverage: number | null;
+  /**
+   * How far forward run ends are known: where the last good read of the
+   * unified log ended. A read that failed leaves it where it was, so a run
+   * that came due since is not called missed on no evidence.
+   */
+  exitsUntil: number | null;
   awakeSince: number | null;
   warnings: string[];
 }
@@ -160,6 +172,9 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** A label prefix that cannot reach a predicate or a launchctl target as anything but a name. */
+export const PREFIX = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 export class Launchd {
   private readonly run: Runner;
   private readonly uid: number;
@@ -178,9 +193,19 @@ export class Launchd {
     this.run = readOnly(options.run ?? execRunner);
     this.uid = options.uid ?? process.getuid?.() ?? 501;
     this.prefix = options.prefix ?? "com.broomva.";
+    if (!PREFIX.test(this.prefix)) throw new Error(`Not a launchd label prefix: ${JSON.stringify(this.prefix)}`);
     this.agentsDir = options.agentsDir ?? expandHome("~/Library/LaunchAgents");
     this.now = options.now ?? Date.now;
     this.awakeSince = options.awakeSince ?? (() => kernelAwakeSince());
+  }
+
+  /** A read that exited non-zero is a failed read, never an empty answer. */
+  private async stdout(command: string, args: readonly string[], timeoutMs: number): Promise<string> {
+    const result = await this.run(command, args, { timeoutMs });
+    if (result.code !== 0) {
+      throw new Error(`${command.split("/").pop()} ${args[0]} exited ${result.code ?? "on a signal"}`);
+    }
+    return result.stdout;
   }
 
   /** One read of everything; a read asked for while one runs gets that one. */
@@ -195,8 +220,8 @@ export class Launchd {
     const readAt = this.now();
     const warnings: string[] = [];
     const [listed, plists, awakeSince] = await Promise.all([
-      this.run(LAUNCHCTL, ["list"], { timeoutMs: SHORT_MS }).then(
-        (result) => parseList(result.stdout, this.prefix),
+      this.stdout(LAUNCHCTL, ["list"], SHORT_MS).then(
+        (text) => parseList(text, this.prefix),
         (error) => {
           warnings.push(`launchctl list could not be read: ${errorText(error)}`);
           return null;
@@ -212,7 +237,9 @@ export class Launchd {
     const loaded = new Map((listed ?? []).map((job) => [job.label, job]));
     const labels = new Set([...loaded.keys(), ...plists.map((name) => name.slice(0, -".plist".length))]);
     const jobs = await Promise.all(
-      [...labels].sort().map((label) => this.job(label, listed === null ? null : loaded.has(label), warnings)),
+      [...labels]
+        .sort()
+        .map((label) => this.job(label, listed === null ? null : (loaded.get(label) ?? false), warnings)),
     );
     return {
       readAt,
@@ -220,42 +247,47 @@ export class Launchd {
       jobs: jobs.filter((job): job is LaunchdJob => job !== null),
       exits: [...this.exits.values()].sort((a, b) => a.endedAt - b.endedAt),
       coverage: this.reach === null ? null : Math.max(this.reach, readAt - KEEP_MS),
+      exitsUntil: this.readTo,
       awakeSince,
       warnings,
     };
   }
 
-  private async job(label: string, loaded: boolean | null, warnings: string[]): Promise<LaunchdJob | null> {
-    if (loaded === null) return null;
+  /**
+   * One job. `listed` is its `launchctl list` row (false: not loaded; null:
+   * the list could not be read, so the job is not shown). Each read that
+   * fails costs only what it would have said, with a warning, never the job.
+   */
+  private async job(
+    label: string,
+    listed: { pid: number | null } | false | null,
+    warnings: string[],
+  ): Promise<LaunchdJob | null> {
+    if (listed === null) return null;
+    const loaded = listed !== false;
     const printed = loaded
-      ? await this.run(LAUNCHCTL, ["print", `gui/${this.uid}/${label}`], { timeoutMs: SHORT_MS }).then(
-          (result) => parsePrint(result.stdout),
-          (error) => {
-            warnings.push(`launchctl print ${label} could not be read: ${errorText(error)}`);
-            return null;
-          },
-        )
+      ? await this.stdout(LAUNCHCTL, ["print", `gui/${this.uid}/${label}`], SHORT_MS).then(parsePrint, (error) => {
+          warnings.push(`launchctl print ${label} could not be read: ${errorText(error)}`);
+          return null;
+        })
       : null;
     const plistPath = printed?.path ?? join(this.agentsDir, `${label}.plist`);
-    const plist = await this.run(PLUTIL, ["-convert", "json", "-o", "-", plistPath], { timeoutMs: SHORT_MS }).then(
-      (result) => {
-        const value = JSON.parse(result.stdout) as unknown;
-        return typeof value === "object" && value !== null && !Array.isArray(value)
-          ? (value as Record<string, unknown>)
-          : null;
-      },
-      (error) => {
-        warnings.push(`The plist of ${label} could not be read: ${errorText(error)}`);
-        return null;
-      },
+    const plist = await this.plist(plistPath).catch((error) => {
+      warnings.push(`The plist of ${label} could not be read: ${errorText(error)}`);
+      return null;
+    });
+    const installedAt = await stat(plistPath).then(
+      (info) => info.mtimeMs,
+      () => null,
     );
-    const pid = printed?.pid ?? null;
+    // When print failed, the list's pid still says whether a run is going.
+    const pid = printed ? printed.pid : listed ? listed.pid : null;
     const running = printed?.state === "running" || pid !== null;
     const runningSince =
       running && pid !== null
-        ? await this.run(PS, ["-o", "etime=", "-p", String(pid)], { timeoutMs: SHORT_MS }).then(
-            (result) => {
-              const elapsed = elapsedMs(result.stdout);
+        ? await this.stdout(PS, ["-o", "etime=", "-p", String(pid)], SHORT_MS).then(
+            (text) => {
+              const elapsed = elapsedMs(text);
               return elapsed === null ? null : this.now() - elapsed;
             },
             () => null,
@@ -269,6 +301,7 @@ export class Launchd {
       loaded,
       printed,
       plist,
+      installedAt,
       running,
       runningSince,
       logPath: outPath,
@@ -277,13 +310,20 @@ export class Launchd {
     };
   }
 
+  /** A plist as JSON; one that will not convert or is not a dictionary is an error. */
+  private async plist(path: string): Promise<Record<string, unknown>> {
+    const value = JSON.parse(await this.stdout(PLUTIL, ["-convert", "json", "-o", "-", path], SHORT_MS)) as unknown;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("it is not a dictionary");
+    return value as Record<string, unknown>;
+  }
+
   /** New run ends since the last read (a day of them the first time), and how far back the log reaches. */
   private async readExits(readAt: number, warnings: string[]): Promise<void> {
     const predicate = `process == "launchd" AND subsystem BEGINSWITH "gui/${this.uid}/${this.prefix}" AND eventMessage BEGINSWITH "exited"`;
     const range = this.readTo === null ? ["--last", "24h"] : ["--start", logStartArg(this.readTo - OVERLAP_MS)];
     const first = this.reach === null;
     const [shown, probe] = await Promise.allSettled([
-      this.run(LOG, ["show", ...range, "--style", "ndjson", "--predicate", predicate], { timeoutMs: LOG_MS }),
+      this.stdout(LOG, ["show", ...range, "--style", "ndjson", "--predicate", predicate], LOG_MS),
       // The oldest launchd event the log still holds, read once: before it, no run end could have been seen.
       first
         ? this.run(LOG, ["show", "--last", "24h", "--style", "ndjson", "--predicate", 'process == "launchd"'], {
@@ -296,7 +336,7 @@ export class Launchd {
       warnings.push(`The unified log could not be read, so launchd runs are not all shown: ${errorText(shown.reason)}`);
       return;
     }
-    const found = parseExits(shown.value.stdout);
+    const found = parseExits(shown.value);
     for (const exit of found) this.exits.set(exitKey(exit), exit);
     for (const [key, exit] of this.exits) if (exit.endedAt < readAt - KEEP_MS) this.exits.delete(key);
     if (first) {

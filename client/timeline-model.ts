@@ -13,22 +13,8 @@ export const TIMELINE_POLL_MS = 30_000;
 /** The tone a status or a run is drawn in: the theme's danger, warning, success, accent, or muted ink. */
 export type MarkTone = "danger" | "warn" | "success" | "accent" | "muted";
 
-export function runTone(status: RunStatus): MarkTone {
-  switch (status) {
-    case "failed":
-      return "danger";
-    case "missed":
-      return "warn";
-    case "ok":
-      return "success";
-    case "running":
-      return "accent";
-    default:
-      return "muted";
-  }
-}
-
-export function statusTone(status: SourceStatus): MarkTone {
+/** One run's tone, or a source's: the two share their words for failed, missed, passed and running. */
+export function toneOf(status: RunStatus | SourceStatus): MarkTone {
   switch (status) {
     case "failed":
       return "danger";
@@ -57,7 +43,7 @@ export function statusLabel(status: SourceStatus): string {
     case "off":
       return "Off";
     default:
-      return "No runs seen";
+      return "Not known";
   }
 }
 
@@ -148,7 +134,7 @@ export function marksOf(source: Pick<TimelineSource, "runs" | "upcoming" | "next
       const start = Date.parse(run.at);
       const end = run.endedAt ? Date.parse(run.endedAt) : run.status === "running" ? axis.now : start;
       const left = place(axis, start);
-      return { left, right: Math.max(left, place(axis, end)), tone: runTone(run.status), at: run.at };
+      return { left, right: Math.max(left, place(axis, end)), tone: toneOf(run.status), at: run.at };
     })
     .sort((a, b) => a.left - b.left);
   const joined: { left: number; right: number; tone: MarkTone; at: string }[] = [];
@@ -305,7 +291,18 @@ export function rowLabel(source: TimelineSource, now: number): string {
     .join(". ");
 }
 
-/** What a notice above the other views says for one source that needs you. */
-export function noticeText(notice: { name: string; status: "failed" | "missed"; reason: string }): string {
-  return `${notice.name}: ${notice.status === "failed" ? "failed run" : "missed run"}. ${notice.reason}`;
+/** What a notice above the other views says for one source that needs you: its time, from `since`, so the words stay put. */
+export function noticeText(
+  notice: { name: string; status: "failed" | "missed"; reason: string; since: string | null },
+  now: number,
+): string {
+  const when = notice.since ? ` ${whenWords(Date.parse(notice.since), now)}` : "";
+  return `${notice.name}: ${notice.status === "failed" ? "failed run" : "missed run"}${when}. ${notice.reason}`;
+}
+
+/** Where a label sits along the axis without hanging off either end: its offset, in points, from its place. */
+export function labelOffset(left: number, width: number): number {
+  if (left < 0.05) return 0;
+  if (left > 0.95) return -width;
+  return -width / 2;
 }

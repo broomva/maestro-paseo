@@ -15,13 +15,15 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { attentionWork } from "../shared/contracts";
-import { getTimeline, type TimelineSource } from "../shared/timeline";
+import { getTimeline, getTimelineLog, type TimelineSource } from "../shared/timeline";
 import { errorText } from "./format";
+import { keyedLines } from "./loop-model";
 import {
   type Axis,
   axisOf,
   axisTicks,
   kindLabel,
+  labelOffset,
   lastWords,
   type MarkTone,
   marksOf,
@@ -31,19 +33,29 @@ import {
   rowLabel,
   runLine,
   runsShown,
-  runTone,
   sinceWords,
   sortSources,
   statusLabel,
-  statusTone,
   summaryLine,
   TIMELINE_POLL_MS,
+  toneOf,
 } from "./timeline-model";
 import { Button, Card, IconButton, Notice, radius, size, space, useText } from "./ui";
 
 export function useTimeline() {
   const get = useRpc(getTimeline);
   return useQuery({ queryKey: ["maestro", "timeline"], queryFn: () => get({}), refetchInterval: TIMELINE_POLL_MS });
+}
+
+/** A launchd job's log end, read when its row opens, and with the view's poll while it stays open. */
+function useTimelineLog(id: string, enabled: boolean) {
+  const read = useRpc(getTimelineLog);
+  return useQuery({
+    queryKey: ["maestro", "timeline", "log", id],
+    queryFn: () => read({ id }),
+    enabled,
+    refetchInterval: TIMELINE_POLL_MS,
+  });
 }
 
 function ink(theme: PluginTheme, tone: MarkTone): string {
@@ -178,6 +190,7 @@ function Track({ theme, source, axis }: { theme: PluginTheme; source: TimelineSo
 function AxisLabels({ theme, axis, compact }: { theme: PluginTheme; axis: Axis; compact: boolean }) {
   const text = useText(theme);
   const ticks = axisTicks(axis, compact ? 12 : 6);
+  const width = 56;
   const label = (left: number, words: string, strong = false, key = words) => (
     <Text
       key={key}
@@ -187,9 +200,10 @@ function AxisLabels({ theme, axis, compact }: { theme: PluginTheme; axis: Axis; 
         {
           position: "absolute",
           left: `${left * 100}%`,
-          width: 56,
-          marginLeft: -28,
-          textAlign: "center",
+          width,
+          // Held inside the row at either end, not hung half off it.
+          marginLeft: labelOffset(left, width),
+          textAlign: left < 0.05 ? "left" : left > 0.95 ? "right" : "center",
           color: strong ? theme.colors.foreground : theme.colors.foregroundMuted,
           fontWeight: strong ? "600" : "400",
         },
@@ -209,10 +223,10 @@ function AxisLabels({ theme, axis, compact }: { theme: PluginTheme; axis: Axis; 
 function Legend({ theme }: { theme: PluginTheme }) {
   return (
     <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: space[3], rowGap: space[1] }}>
-      <Status theme={theme} tone={runTone("ok")} label="Passed" />
-      <Status theme={theme} tone={runTone("failed")} label="Failed" />
-      <Status theme={theme} tone={runTone("missed")} label="Missed" hollow />
-      <Status theme={theme} tone={runTone("unknown")} label="Exit not recorded" />
+      <Status theme={theme} tone={toneOf("ok")} label="Passed" />
+      <Status theme={theme} tone={toneOf("failed")} label="Failed" />
+      <Status theme={theme} tone={toneOf("missed")} label="Missed" hollow />
+      <Status theme={theme} tone={toneOf("unknown")} label="Exit not recorded" />
       <Status theme={theme} tone="accent" label="To come" hollow />
     </View>
   );
@@ -241,7 +255,7 @@ function SourceRow({
   const now = axis.now;
   const since = sinceWords(source, now);
   const next = nextWords(source, now);
-  const tone = statusTone(source.status);
+  const tone = toneOf(source.status);
   return (
     <View style={{ gap: space[2], paddingTop: space[3], borderTopWidth: 1, borderTopColor: theme.colors.border }}>
       <Pressable
@@ -317,6 +331,7 @@ function SourceDetail({
   const text = useText(theme);
   const { shown, more } = runsShown(source.runs);
   const link = linkLabel(source, canOpenAgent);
+  const log = useTimelineLog(source.id, source.hasLog);
   return (
     <View style={{ gap: space[3], paddingBottom: space[2] }}>
       {source.needsYou ? null : <Text style={text.body}>{source.reason}</Text>}
@@ -338,9 +353,9 @@ function SourceDetail({
                   height: 8,
                   marginTop: 4,
                   borderRadius: 8,
-                  backgroundColor: run.status === "missed" ? "transparent" : ink(theme, runTone(run.status)),
+                  backgroundColor: run.status === "missed" ? "transparent" : ink(theme, toneOf(run.status)),
                   borderWidth: run.status === "missed" ? 1.5 : 0,
-                  borderColor: ink(theme, runTone(run.status)),
+                  borderColor: ink(theme, toneOf(run.status)),
                 }}
               />
               <Text style={[text.small, text.tabular, { flex: 1, color: theme.colors.foreground }]}>
@@ -356,7 +371,7 @@ function SourceDetail({
           {source.where}
         </Text>
       ) : null}
-      {source.tail ? (
+      {log.data?.tail ? (
         <View
           style={{
             padding: space[2],
@@ -367,7 +382,7 @@ function SourceDetail({
           }}
         >
           <Text style={text.mono} selectable numberOfLines={compact ? 12 : 24}>
-            {source.tail}
+            {log.data.tail}
           </Text>
         </View>
       ) : null}
@@ -433,11 +448,14 @@ export function TimelineView({
         />
       </View>
       <Legend theme={theme} />
-      {view.warnings.slice(0, 3).map((warning) => (
-        <Notice key={warning} theme={theme} tone="warn">
-          {warning}
+      {keyedLines(view.warnings.slice(0, 3)).map(({ key, line }) => (
+        <Notice key={key} theme={theme} tone="warn">
+          {line}
         </Notice>
       ))}
+      {view.warnings.length > 3 ? (
+        <Text style={text.small}>{`And ${view.warnings.length - 3} more that could not be read.`}</Text>
+      ) : null}
       {sources.length === 0 ? (
         <Text style={text.muted}>
           Nothing is scheduled: no Paseo schedule, launchd job, loop or fleet tick was found.
@@ -501,7 +519,7 @@ export function TimelineNotices({
             />
           }
         >
-          {noticeText(notice)}
+          {noticeText(notice, Date.now())}
         </Notice>
       ))}
     </View>

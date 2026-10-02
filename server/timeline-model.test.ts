@@ -63,7 +63,7 @@ describe("a Paseo schedule", () => {
   });
 
   test("on time: its next run, the runs its cron makes of the window after it, and where it runs", () => {
-    const source = scheduleSource(schedule({ runs: [paseoRun(NOW - 7 * H, "succeeded")] }), window, "/s.json");
+    const source = scheduleSource(schedule({ runs: [paseoRun(NOW - 7 * H, "succeeded")] }), window, "/s.json", null);
     expect(source).toMatchObject({
       id: "schedule:63cc3450",
       kind: "schedule",
@@ -73,7 +73,7 @@ describe("a Paseo schedule", () => {
       needsYou: false,
       next: "2026-10-03T14:00:00.000Z",
       upcoming: ["2026-10-03T14:00:00.000Z"],
-      where: "/Users/me/broomva",
+      where: "/s.json",
       link: { kind: "agent", agentId: "4791055f-1726-4bb9-a010-1c201b43b7cf" },
     });
     expect(source?.runs.map((run) => [run.at, run.status])).toEqual([[iso(NOW - 7 * H), "ok"]]);
@@ -82,22 +82,24 @@ describe("a Paseo schedule", () => {
   test("an `every` cadence fills the window; a run limit and an expiry cut it short", () => {
     const every = { type: "every", everyMs: 6 * H };
     const next = iso(NOW + H);
-    expect(scheduleSource(schedule({ cadence: every, nextRunAt: next } as never), window, null)?.upcoming).toEqual([
-      iso(NOW + H),
-      iso(NOW + 7 * H),
-      iso(NOW + 13 * H),
-      iso(NOW + 19 * H),
-    ]);
+    expect(
+      scheduleSource(schedule({ cadence: every, nextRunAt: next } as never), window, null, null)?.upcoming,
+    ).toEqual([iso(NOW + H), iso(NOW + 7 * H), iso(NOW + 13 * H), iso(NOW + 19 * H)]);
     expect(
       scheduleSource(
         schedule({ cadence: every, nextRunAt: next, maxRuns: 3, runs: [paseoRun(NOW - 5 * H, "succeeded")] } as never),
         window,
         null,
+        null,
       )?.upcoming,
     ).toEqual([iso(NOW + H), iso(NOW + 7 * H)]);
     expect(
-      scheduleSource(schedule({ cadence: every, nextRunAt: next, expiresAt: iso(NOW + 8 * H) } as never), window, null)
-        ?.upcoming,
+      scheduleSource(
+        schedule({ cadence: every, nextRunAt: next, expiresAt: iso(NOW + 8 * H) } as never),
+        window,
+        null,
+        null,
+      )?.upcoming,
     ).toEqual([iso(NOW + H), iso(NOW + 7 * H)]);
   });
 
@@ -105,6 +107,7 @@ describe("a Paseo schedule", () => {
     const source = scheduleSource(
       schedule({ runs: [paseoRun(NOW - 3 * H, "failed", { error: "Provider quota exhausted" })] } as never),
       window,
+      null,
       null,
     );
     expect(source).toMatchObject({
@@ -118,22 +121,22 @@ describe("a Paseo schedule", () => {
 
   test("a next run overdue past its grace with none started is missed, drawn where it was due", () => {
     const due = NOW - SCHEDULE_GRACE_MS - M;
-    const source = scheduleSource(schedule({ nextRunAt: iso(due) }), window, null);
+    const source = scheduleSource(schedule({ nextRunAt: iso(due) }), window, null, null);
     expect(source).toMatchObject({ status: "missed", since: iso(due), needsYou: true });
     expect(source?.runs).toEqual([
       { at: iso(due), endedAt: null, status: "missed", exit: null, detail: "due, and it did not start" },
     ]);
     // Inside the grace it is only due.
-    expect(scheduleSource(schedule({ nextRunAt: iso(NOW - M) }), window, null)?.status).toBe("ok");
+    expect(scheduleSource(schedule({ nextRunAt: iso(NOW - M) }), window, null, null)?.status).toBe("ok");
     // A run going is running, however late.
     expect(
-      scheduleSource(schedule({ nextRunAt: iso(due), runs: [paseoRun(due, "running")] } as never), window, null)
+      scheduleSource(schedule({ nextRunAt: iso(due), runs: [paseoRun(due, "running")] } as never), window, null, null)
         ?.status,
     ).toBe("running");
   });
 
   test("paused is off and stays listed; completed or expired with nothing in the window is not listed", () => {
-    expect(scheduleSource(schedule({ status: "paused", nextRunAt: null }), window, null)).toMatchObject({
+    expect(scheduleSource(schedule({ status: "paused", nextRunAt: null }), window, null, null)).toMatchObject({
       status: "off",
       reason: "Paused.",
       next: null,
@@ -143,17 +146,88 @@ describe("a Paseo schedule", () => {
         schedule({ status: "completed", nextRunAt: null, runs: [paseoRun(NOW - 30 * H, "succeeded")] } as never),
         window,
         null,
+        null,
       ),
     ).toBeNull();
-    expect(scheduleSource(schedule({ expiresAt: iso(NOW - H) }), window, null)).toBeNull();
+    expect(scheduleSource(schedule({ expiresAt: iso(NOW - H) }), window, null, null)).toBeNull();
     // A one-shot that ran today stays, with its run.
     const ran = scheduleSource(
       schedule({ status: "completed", nextRunAt: null, runs: [paseoRun(NOW - 7 * H, "succeeded")] } as never),
       window,
       null,
+      null,
     );
     expect(ran).toMatchObject({ status: "off", reason: "Completed: it has no runs left." });
     expect(ran?.runs).toHaveLength(1);
+  });
+
+  test("paused, completed or expired, a failed last run is history: off, and it never needs you", () => {
+    const failed = [paseoRun(NOW - 72 * H, "failed", { error: "Provider quota exhausted" })];
+    for (const extra of [
+      { status: "paused", nextRunAt: null },
+      { status: "completed", nextRunAt: null, maxRuns: 1 },
+      { expiresAt: iso(NOW - H) },
+    ]) {
+      // Listed or not (a finished one with nothing in the window is not), it is never failed.
+      const source = scheduleSource(schedule({ ...extra, runs: failed } as never), window, null, null);
+      if (source) expect(source).toMatchObject({ status: "off", needsYou: false });
+    }
+    const paused = scheduleSource(
+      schedule({ status: "paused", nextRunAt: null, runs: failed } as never),
+      window,
+      null,
+      null,
+    );
+    expect(paused?.reason).toBe("Paused. Its last run failed: Provider quota exhausted.");
+  });
+
+  test("a next run overdue in the file is not a miss when a run started at or after it was due", () => {
+    const due = NOW - 2 * H;
+    // The daemon ran it and has not moved nextRunAt on yet.
+    const source = scheduleSource(
+      schedule({ nextRunAt: iso(due), runs: [paseoRun(due + 30_000, "succeeded")] } as never),
+      window,
+      null,
+      null,
+    );
+    expect(source).toMatchObject({ status: "ok", needsYou: false });
+    // A run that came before the due time does not cover it.
+    const earlier = scheduleSource(
+      schedule({ nextRunAt: iso(due), runs: [paseoRun(due - H, "succeeded")] } as never),
+      window,
+      null,
+      null,
+    );
+    expect(earlier?.status).toBe("missed");
+  });
+
+  test("a schedule the Mac slept through has its grace from the wake", () => {
+    const due = NOW - 2 * H;
+    expect(scheduleSource(schedule({ nextRunAt: iso(due) }), window, null, NOW - 5 * M)?.status).toBe("ok");
+    expect(scheduleSource(schedule({ nextRunAt: iso(due) }), window, null, NOW - 30 * M)?.status).toBe("missed");
+  });
+
+  test("a time zone this host does not know is said, and no runs are guessed in another", () => {
+    const source = scheduleSource(
+      schedule({ cadence: { type: "cron", expression: "0 9 * * *", timezone: "Mars/Olympus" } } as never),
+      window,
+      null,
+      null,
+    );
+    expect(source?.cadence).toBe("cron 0 9 * * * (Mars/Olympus, a time zone this host does not know)");
+    expect(source?.upcoming).toEqual(["2026-10-03T14:00:00.000Z"]);
+  });
+
+  test("a time in the file that does not read is left out, never sent as one", () => {
+    const source = scheduleSource(
+      schedule({
+        runs: [paseoRun(NOW - H, "succeeded"), { ...paseoRun(NOW - 2 * H, "failed"), startedAt: "yesterday" }],
+      } as never),
+      window,
+      null,
+      null,
+    );
+    expect(source?.runs.map((run) => run.status)).toEqual(["ok"]);
   });
 
   test("a heartbeat prompts its own session: kind, link and a name from its prompt when it has none", () => {
@@ -167,6 +241,7 @@ describe("a Paseo schedule", () => {
       } as never),
       window,
       "/h.json",
+      null,
     );
     expect(source).toMatchObject({
       id: "heartbeat:63cc3450",
@@ -249,6 +324,13 @@ describe("Maestro's loop", () => {
       next: null,
     });
     expect(loopSource({ minutes: 15, nextAt: iso(due), ticking: false }, [], window, NOW - M, null).status).toBe("ok");
+    // A timer does not count the sleep: up to a whole period after the wake it may still fire.
+    expect(
+      loopSource({ minutes: 15, nextAt: iso(NOW - 3 * H), ticking: false }, [], window, NOW - 18 * M, null).status,
+    ).toBe("ok");
+    expect(
+      loopSource({ minutes: 15, nextAt: iso(NOW - 3 * H), ticking: false }, [], window, NOW - 21 * M, null).status,
+    ).toBe("missed");
   });
 
   test("a wake in a line", () => {
@@ -404,13 +486,12 @@ function job(extra: Partial<LaunchdJob> = {}): LaunchdJob {
       path: "/LaunchAgents/com.broomva.kg-lint.plist",
       state: "not running",
       pid: null,
-      runs: 1,
       lastExit: 0,
       stdout: "/tmp/kg-lint.log",
-      stderr: null,
       intervalSeconds: null,
     },
     plist: { StartCalendarInterval: { Weekday: 0, Hour: 2, Minute: 30 } },
+    installedAt: Date.parse("2026-09-20T00:00:00Z"),
     runningSince: null,
     running: false,
     logPath: "/tmp/kg-lint.log",
@@ -422,7 +503,7 @@ function job(extra: Partial<LaunchdJob> = {}): LaunchdJob {
 }
 
 describe("a launchd job", () => {
-  const context = { exits: [], coverage: NOW - 20 * H, awakeSince: null, prefix: "com.broomva." };
+  const context = { exits: [], coverage: NOW - 20 * H, judgedAt: NOW, awakeSince: null, prefix: "com.broomva." };
 
   test("its name, cadence, its newest run from its own log with launchd's exit, and its log's end", () => {
     const source = launchdSource(job(), context, window);
@@ -437,7 +518,9 @@ describe("a launchd job", () => {
       link: null,
     });
     expect(source.last).toMatchObject({ at: "2026-09-29T16:00:50.000Z", status: "ok", exit: 0 });
-    expect(source.tail).toContain("SKIP: already fresh.");
+    // Its log end is asked for when the row opens (timeline.log), never carried by the polled view.
+    expect(source.hasLog).toBe(true);
+    expect("tail" in source).toBe(false);
     expect(source.next).toBe(iso(new Date(2026, 9, 4, 2, 30).getTime()));
   });
 
@@ -446,7 +529,17 @@ describe("a launchd job", () => {
       job({ plist: { StartInterval: 900 } }),
       {
         ...context,
-        exits: [{ label: "com.broomva.kg-lint", pid: 1, endedAt: NOW - 5 * M, exit: 1, signal: null, ranMs: 2000 }],
+        exits: [
+          {
+            label: "com.broomva.kg-lint",
+            pid: 1,
+            endedAt: NOW - 5 * M,
+            exit: 1,
+            signal: null,
+            byLaunchd: false,
+            ranMs: 2000,
+          },
+        ],
       },
       window,
     );
@@ -463,6 +556,56 @@ describe("a launchd job", () => {
     ]);
     const off = launchdSource(job({ loaded: false, printed: null }), context, window);
     expect(off).toMatchObject({ status: "off", next: null, upcoming: [] });
+  });
+
+  test("judged at the read's horizon: an old read cannot call a run missed that came due after it", () => {
+    const molt = job({
+      label: "com.broomva.moltbook-loop",
+      plist: { StartInterval: 900 },
+      logText: null,
+      logWrittenAt: null,
+      printed: null,
+    });
+    const ran = [
+      {
+        label: "com.broomva.moltbook-loop",
+        pid: 1,
+        endedAt: NOW - 60 * M,
+        exit: 0,
+        signal: null,
+        byLaunchd: false,
+        ranMs: 20,
+      },
+    ];
+    expect(launchdSource(molt, { ...context, exits: ran }, window).status).toBe("missed");
+    // The last good read of the unified log ended 50 minutes ago: ten minutes after that run, nothing was due.
+    const stale = launchdSource(molt, { ...context, exits: ran, judgedAt: NOW - 50 * M }, window);
+    expect(stale).toMatchObject({ status: "ok", needsYou: false });
+  });
+
+  test("a fleet scope's tick job shown here is never counted by the Timeline", () => {
+    const tick = job({
+      label: "com.broomva.fleet-reconcile.broomva",
+      plist: { StartInterval: 3600 },
+      logText: null,
+      logWrittenAt: null,
+    });
+    const failed = launchdSource(
+      tick,
+      {
+        ...context,
+        exits: [
+          { label: tick.label, pid: 1, endedAt: NOW - 5 * M, exit: 1, signal: null, byLaunchd: false, ranMs: 10_000 },
+        ],
+      },
+      window,
+    );
+    expect(failed).toMatchObject({
+      status: "failed",
+      needsYou: false,
+      reason: "Its last run failed: exit 1. The Fleet view counts it.",
+    });
+    expect(timelineNotices([failed])).toEqual([]);
   });
 
   test("cadence in words when it has no schedule", () => {

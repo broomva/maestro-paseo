@@ -24,13 +24,12 @@ function job(label: string, extra: Partial<LaunchdJob> = {}): LaunchdJob {
       path: null,
       state: "not running",
       pid: null,
-      runs: 1,
       lastExit: 0,
       stdout: null,
-      stderr: null,
       intervalSeconds: null,
     },
     plist: { StartInterval: 900 },
+    installedAt: NOW - 30 * 24 * H,
     runningSince: null,
     running: false,
     logPath: null,
@@ -90,6 +89,8 @@ const fleetView = (detailFor: string | undefined): FleetView => ({
 });
 
 async function setup(options: { launchdMs?: number } = {}) {
+  let slowMs = options.launchdMs ?? 0;
+  let fails = false;
   const root = await mkdtemp(join(tmpdir(), "maestro-timeline-"));
   roots.push(root);
   const schedules = join(root, "schedules");
@@ -97,20 +98,31 @@ async function setup(options: { launchdMs?: number } = {}) {
   let now = NOW;
   let launchdReads = 0;
   let exits: LaunchdRead["exits"] = [
-    { label: "com.broomva.moltbook-loop", pid: 1, endedAt: NOW - 10 * M, exit: 0, signal: null, ranMs: 20 },
+    {
+      label: "com.broomva.moltbook-loop",
+      pid: 1,
+      endedAt: NOW - 10 * M,
+      exit: 0,
+      signal: null,
+      byLaunchd: false,
+      ranMs: 20,
+    },
   ];
   const launchd = {
     read: async (): Promise<LaunchdRead> => {
       launchdReads += 1;
-      if (options.launchdMs) await new Promise((resolve) => setTimeout(resolve, options.launchdMs));
+      const readAt = now;
+      if (slowMs) await new Promise((resolve) => setTimeout(resolve, slowMs));
+      if (fails) throw new Error("launchctl is unhappy");
       return {
-        readAt: now,
+        readAt,
         jobs: [
           job("com.broomva.moltbook-loop"),
           job("com.broomva.fleet-reconcile.broomva", { plist: { StartInterval: 3600 } }),
         ],
         exits,
         coverage: NOW - 20 * H,
+        exitsUntil: readAt,
         awakeSince: null,
         warnings: [],
       };
@@ -138,6 +150,8 @@ async function setup(options: { launchdMs?: number } = {}) {
     fleetCalls,
     reads: () => launchdReads,
     setNow: (at: number) => (now = at),
+    setSlow: (ms: number) => (slowMs = ms),
+    failReads: () => (fails = true),
     setExits: (next: LaunchdRead["exits"]) => (exits = next),
   };
 }
@@ -228,19 +242,86 @@ describe("the timeline", () => {
         ],
       }),
     );
-    setExits([{ label: "com.broomva.moltbook-loop", pid: 2, endedAt: NOW - 5 * M, exit: 1, signal: null, ranMs: 20 }]);
+    setExits([
+      {
+        label: "com.broomva.moltbook-loop",
+        pid: 2,
+        endedAt: NOW - 5 * M,
+        exit: 1,
+        signal: null,
+        byLaunchd: false,
+        ranMs: 20,
+      },
+    ]);
     expect((await timeline.notices()).map((notice) => [notice.id, notice.status, notice.reason])).toEqual([
       ["launchd:com.broomva.moltbook-loop", "failed", "Its last run failed: exit 1."],
       ["schedule:aa", "failed", "Its last run failed: boom."],
     ]);
   });
 
-  test("the header count never waits on a slow launchd longer than its wait", async () => {
+  test("the header count never waits on a slow launchd longer than its wait; it answers with the last read", async () => {
+    const { timeline, setExits, setNow, setSlow } = await setup();
+    setExits([
+      {
+        label: "com.broomva.moltbook-loop",
+        pid: 2,
+        endedAt: NOW - 5 * M,
+        exit: 1,
+        signal: null,
+        byLaunchd: false,
+        ranMs: 20,
+      },
+    ]);
+    expect((await timeline.notices()).map((notice) => notice.id)).toEqual(["launchd:com.broomva.moltbook-loop"]);
+    // Five minutes on, launchd is due again and now too slow: the last read's notices answer, on time.
+    setNow(NOW + LAUNCHD_NOTICE_MS + 1);
+    setSlow(NOTICE_WAIT_MS + 1500);
+    const started = Date.now();
+    expect((await timeline.notices()).map((notice) => notice.id)).toEqual(["launchd:com.broomva.moltbook-loop"]);
+    expect(Date.now() - started).toBeLessThan(NOTICE_WAIT_MS + 1000);
+  }, 10_000);
+
+  test("with no read yet and a slow launchd, the header count says nothing rather than wait", async () => {
     const { timeline } = await setup({ launchdMs: NOTICE_WAIT_MS + 1500 });
     const started = Date.now();
     expect(await timeline.notices()).toEqual([]);
     expect(Date.now() - started).toBeLessThan(NOTICE_WAIT_MS + 1000);
   }, 10_000);
+
+  test("a read that fails after a good one is said, and pages no one for the hour it has not seen", async () => {
+    const { timeline, setNow, failReads } = await setup();
+    expect(await timeline.notices()).toEqual([]);
+    failReads();
+    setNow(NOW + H);
+    // moltbook last ran ten minutes before the good read; an hour on, on no new evidence, it is not missed.
+    expect(await timeline.notices()).toEqual([]);
+    const view = await timeline.get();
+    expect(view.sources.find((source) => source.id === "launchd:com.broomva.moltbook-loop")?.status).toBe("ok");
+    expect(view.warnings).toEqual([
+      "launchd could not be read: launchctl is unhappy",
+      "launchd has not been read for a while; its rows show the last read, and nothing since is called missed.",
+    ]);
+  });
+
+  test("a view never takes a header-count read: launchd a minute old for the view though a slower read is in flight", async () => {
+    const { timeline, reads, setNow, setSlow } = await setup();
+    await timeline.get();
+    expect(reads()).toBe(1);
+    setNow(NOW + 2 * M);
+    setSlow(200);
+    // The header count accepts a read two minutes old and computes on it; the view does not, and reads again.
+    const [notices, view] = await Promise.all([timeline.notices(), timeline.get()]);
+    expect(notices).toEqual([]);
+    expect(reads()).toBe(2);
+    expect(view.now).toBe(iso(NOW + 2 * M));
+  });
+
+  test("a launchd job's log end, only when asked for", async () => {
+    const { timeline } = await setup();
+    await timeline.get();
+    expect(await timeline.logOf("launchd:com.broomva.moltbook-loop")).toEqual({ path: null, tail: null });
+    expect(await timeline.logOf("schedule:nope")).toEqual({ path: null, tail: null });
+  });
 
   test("a launchd that will not read costs its rows, not the view", async () => {
     const root = await mkdtemp(join(tmpdir(), "maestro-timeline-"));

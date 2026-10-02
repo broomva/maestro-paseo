@@ -501,7 +501,7 @@ const timelineView = (): TimelineView => {
     runs: [],
     last: null,
     where: null,
-    tail: null,
+    hasLog: false,
     link: null,
     ...extra,
   });
@@ -537,7 +537,7 @@ const timelineView = (): TimelineView => {
         runs: [failed],
         last: failed,
         where: "/tmp/broomva-kg-lint.log",
-        tail: "[2026-10-02T07:30:00Z] lint: 3 pages fail the schema",
+        hasLog: true,
       }),
       row("loop", {
         kind: "loop",
@@ -566,6 +566,12 @@ const invoke = async (method: string, input: unknown) => {
   if (method === "work.history") return { events: history(), capped: false };
   if (method === "work.attention") return { waiting: [], sessions: [], fleet: fleetNotices, timeline: timelineNotices };
   if (method === "timeline.get") return timelineView();
+  if (method === "timeline.log") {
+    const { id } = input as { id: string };
+    return id === "launchd:com.broomva.kg-lint"
+      ? { path: "/tmp/broomva-kg-lint.log", tail: "[2026-10-02T07:30:00Z] lint: 3 pages fail the schema" }
+      : { path: null, tail: null };
+  }
   if (method === "fleet.get") {
     if (fleetHeld) await fleetHeld;
     return fleetView((input as { scope?: string }).scope);
@@ -1701,11 +1707,16 @@ describe("the Timeline", () => {
     ]);
   });
 
-  test("a row opens its runs, its log's end and where it keeps it", async () => {
+  test("a row opens its runs, its log's end and where it keeps it; the log is read only then", async () => {
     const view = await mount(surface(false));
     await view.press(tab(view));
     expect(view.text()).not.toContain("Runs in the last 24 h");
+    expect(calls.filter((call) => call.method === "timeline.log")).toEqual([]);
     await view.press(view.all('[aria-label^="kg-lint, launchd"]')[0]);
+    await settle(50);
+    expect(calls.filter((call) => call.method === "timeline.log").map((call) => call.input)).toEqual([
+      { id: "launchd:com.broomva.kg-lint" },
+    ]);
     const text = view.text();
     expect(text).toContain("Runs in the last 24 h");
     expect(text).toContain("failed · 5 s · exit 1");
@@ -1717,6 +1728,8 @@ describe("the Timeline", () => {
     const view = await mount(surface(false));
     await view.press(tab(view));
     await view.press(view.all('[aria-label^="fleet-reconcile broomva, Fleet"]')[0]);
+    // A source with no log of its own asks for none.
+    expect(calls.filter((call) => call.method === "timeline.log")).toEqual([]);
     await view.press(view.byLabel("Open Fleet"));
     expect(tab(view, "Fleet")?.getAttribute("aria-selected")).toBe("true");
     await view.press(tab(view));
@@ -1738,7 +1751,8 @@ describe("the Timeline", () => {
     ];
     const view = await mount(surface(true));
     await settle(50);
-    expect(view.text()).toContain("kg-lint: failed run. Its last run failed: exit 1.");
+    expect(view.text()).toContain("kg-lint: failed run");
+    expect(view.text()).toContain("Its last run failed: exit 1.");
     await view.press(view.byLabel("Open Timeline, kg-lint"));
     expect(tab(view)?.getAttribute("aria-selected")).toBe("true");
     expect(view.text()).not.toContain("kg-lint: failed run.");

@@ -20,7 +20,7 @@ import {
   type TimelineSource,
 } from "../shared/timeline";
 import { calendarCadence, calendarSpecs, dueTimes, everyWords, knownZone, parseCron } from "./cron";
-import { span } from "./fleet-model";
+import { plistName } from "./fleet";
 import type { LaunchdJob } from "./launchd";
 import {
   type LaunchdExit,
@@ -50,6 +50,13 @@ const ms = (at: string | null | undefined) => {
   const parsed = Date.parse(at);
   return Number.isNaN(parsed) ? null : parsed;
 };
+/** A time read from someone else's file, as the wire carries it (shared/timeline.ts InstantSchema); null when it is not one. */
+const instant = (at: string | null | undefined) => {
+  const parsed = ms(at);
+  return parsed === null ? null : iso(parsed);
+};
+/** A run starting this close to its due time is the run that was due. */
+const DUE_SLACK_MS = 2 * 60_000;
 
 /** The runs a window shows, newest first: begun before its end, ended (or still going) after its start. */
 export function inWindow(runs: readonly TimelineRun[], window: Window): TimelineRun[] {
@@ -140,7 +147,12 @@ export function scheduleName(schedule: Pick<StoredSchedule, "id" | "name" | "pro
 
 export function scheduleCadence(cadence: StoredSchedule["cadence"]): string {
   if (cadence.type === "every") return everyWords(cadence.everyMs);
-  return `cron ${cadence.expression}${cadence.timezone ? ` (${cadence.timezone})` : ""}`;
+  const zone = cadence.timezone;
+  if (!zone) return `cron ${cadence.expression}`;
+  // Its runs to come are then not drawn: they would be guessed in the wrong zone.
+  return knownZone(zone)
+    ? `cron ${cadence.expression} (${zone})`
+    : `cron ${cadence.expression} (${zone}, a time zone this host does not know)`;
 }
 
 /** The runs still to come: its next run, then what its cadence makes of the rest, short of its run limit and expiry. */
@@ -155,64 +167,80 @@ function scheduleUpcoming(schedule: StoredSchedule, next: number | null, window:
     const after = Math.max(next, window.now);
     if (cadence.type === "every") return series(next + cadence.everyMs, cadence.everyMs, after, until, limit);
     const spec = parseCron(cadence.expression);
-    const zone = cadence.timezone && knownZone(cadence.timezone) ? cadence.timezone : undefined;
-    return spec ? dueTimes([spec], zone, after, until, limit) : [];
+    if (!spec || (cadence.timezone && !knownZone(cadence.timezone))) return [];
+    return dueTimes([spec], cadence.timezone, after, until, limit);
   })();
   return [...(next > window.now && next <= until ? [next] : []), ...rest].slice(0, limit);
 }
 
 /**
  * One schedule as a source, or null for a finished one with nothing in the
- * window (a one-shot that ran last week). Paused, completed and expired are
- * off. A run going is running; a newest run that failed is failed; an
- * active schedule whose next run is SCHEDULE_GRACE_MS overdue with none
- * started is missed.
+ * window (a one-shot that ran last week). A run going is running. Paused,
+ * completed and expired are off, whatever their last run did: they will not
+ * run again on their own, so a failure there is history, never a page. An
+ * active one whose newest run failed is failed. It is missed when its next
+ * run is SCHEDULE_GRACE_MS overdue, counted from the Mac's wake if it slept
+ * through, and no run started at or after it was due (a file the daemon has
+ * not yet moved on is not a miss).
  */
-export function scheduleSource(schedule: StoredSchedule, window: Window, file: string | null): TimelineSource | null {
+export function scheduleSource(
+  schedule: StoredSchedule,
+  window: Window,
+  file: string | null,
+  awakeSince: number | null,
+): TimelineSource | null {
   const { now } = window;
   const kind = schedule.target.type === "agent" ? "heartbeat" : "schedule";
-  const all: TimelineRun[] = schedule.runs.map((run) => ({
-    at: run.startedAt,
-    endedAt: run.endedAt,
-    status: PASEO_STATUS[run.status],
-    exit: null,
-    detail: run.status === "failed" ? run.error?.trim() || "failed" : null,
-  }));
+  const all: TimelineRun[] = schedule.runs.flatMap((run) => {
+    const at = instant(run.startedAt);
+    if (!at) return [];
+    const detail = run.status === "failed" ? run.error?.trim() || "failed" : null;
+    return [{ at, endedAt: instant(run.endedAt), status: PASEO_STATUS[run.status], exit: null, detail }];
+  });
   const expired = (ms(schedule.expiresAt) ?? Number.POSITIVE_INFINITY) < now;
   const active = schedule.status === "active" && !expired;
   const nextAt = active ? ms(schedule.nextRunAt) : null;
   const newest = lastRun(all);
+  const newestAt = newest ? ms(newest.at) : null;
+  const failure = newest?.status === "failed" ? `Its last run failed: ${newest.detail}.`.replace(/\.\.$/, ".") : null;
   let status: SourceStatus;
   let reason: string;
   let since: string | null = null;
   const missed: TimelineRun[] = [];
-  if (all.some((run) => run.status === "running")) {
+  const going = all.find((run) => run.status === "running");
+  if (going) {
     status = "running";
     reason = "Running now.";
-    since = all.find((run) => run.status === "running")?.at ?? null;
-  } else if (newest?.status === "failed") {
-    status = "failed";
-    reason = `Its last run failed: ${newest.detail}.`.replace(/\.\.$/, ".");
-    since = newest.at;
-  } else if (nextAt !== null && now > nextAt + SCHEDULE_GRACE_MS) {
-    status = "missed";
-    reason = `Its run came due ${span(now - nextAt)} ago and has not started.`;
-    since = iso(nextAt);
-    missed.push({ at: iso(nextAt), endedAt: null, status: "missed", exit: null, detail: "due, and it did not start" });
-  } else if (schedule.status === "paused") {
-    status = "off";
-    reason = "Paused.";
+    since = going.at;
   } else if (!active) {
     status = "off";
-    reason = expired && schedule.status === "active" ? "Expired." : "Completed: it has no runs left.";
+    const why =
+      schedule.status === "paused"
+        ? "Paused."
+        : expired && schedule.status === "active"
+          ? "Expired."
+          : "Completed: it has no runs left.";
+    reason = failure ? `${why} ${failure}` : why;
+  } else if (failure && newest) {
+    status = "failed";
+    reason = failure;
+    since = newest.at;
+  } else if (
+    nextAt !== null &&
+    now > Math.max(nextAt, awakeSince ?? 0) + SCHEDULE_GRACE_MS &&
+    !(newestAt !== null && newestAt >= nextAt - DUE_SLACK_MS)
+  ) {
+    status = "missed";
+    reason = "Its run came due and has not started.";
+    since = iso(nextAt);
+    missed.push({ at: iso(nextAt), endedAt: null, status: "missed", exit: null, detail: "due, and it did not start" });
   } else {
     status = "ok";
     reason = newest ? "On schedule; its last run succeeded." : "On schedule; no run yet.";
     since = newest?.at ?? null;
   }
   const runs = inWindow([...missed, ...all], window);
-  const upcoming = scheduleUpcoming(schedule, nextAt, window);
-  if (!active && runs.length === 0 && status === "off" && schedule.status !== "paused") return null;
+  if (!active && !going && runs.length === 0 && schedule.status !== "paused") return null;
   const agentId =
     schedule.target.type === "agent"
       ? schedule.target.agentId
@@ -227,11 +255,11 @@ export function scheduleSource(schedule: StoredSchedule, window: Window, file: s
     since,
     needsYou: needs(status),
     next: nextAt !== null ? iso(nextAt) : null,
-    upcoming: upcoming.map(iso),
+    upcoming: scheduleUpcoming(schedule, nextAt, window).map(iso),
     runs,
     last: newest,
-    where: schedule.target.type === "new-agent" ? (schedule.target.config.cwd ?? file) : file,
-    tail: null,
+    where: file,
+    hasLog: false,
     link: agentId ? { kind: "agent", agentId } : null,
   };
 }
@@ -259,9 +287,11 @@ export function wakeSummary(entry: WakeEntry): string {
 
 /**
  * The loop as a source. Off when it has no period (its past wakes, Wake now
- * included, still show). Waking is running. A wake due LOOP_GRACE_MS ago,
- * counted from the Mac's wake if it slept through it, that has not run is
- * missed: the loop's timer should have fired.
+ * included, still show). Waking is running. A wake due LOOP_GRACE_MS ago that
+ * has not run is missed: the loop's timer should have fired. A timer does
+ * not count time the Mac sleeps, so after a wake it can take up to a whole
+ * period to fire: the grace runs from the later of the due time and a
+ * period after the wake.
  */
 export function loopSource(
   loop: LoopNow,
@@ -271,13 +301,11 @@ export function loopSource(
   wakeLog: string | null,
 ): TimelineSource {
   const { now } = window;
-  const all: TimelineRun[] = wakes.map((entry) => ({
-    at: entry.wokeAt,
-    endedAt: null,
-    status: entry.skipped ? "skipped" : "ok",
-    exit: null,
-    detail: wakeSummary(entry),
-  }));
+  const all: TimelineRun[] = wakes.flatMap((entry) => {
+    const at = instant(entry.wokeAt);
+    if (!at) return [];
+    return [{ at, endedAt: null, status: entry.skipped ? "skipped" : "ok", exit: null, detail: wakeSummary(entry) }];
+  });
   const nextAt = loop.minutes === null ? null : ms(loop.nextAt);
   const periodMs = loop.minutes === null ? null : loop.minutes * 60_000;
   let status: SourceStatus;
@@ -293,9 +321,9 @@ export function loopSource(
   } else if (nextAt === null) {
     status = "unknown";
     reason = "On, with no wake armed yet.";
-  } else if (now > Math.max(nextAt, awakeSince ?? 0) + LOOP_GRACE_MS) {
+  } else if (now > Math.max(nextAt, awakeSince === null ? 0 : awakeSince + (periodMs ?? 0)) + LOOP_GRACE_MS) {
     status = "missed";
-    reason = `A wake came due ${span(now - nextAt)} ago and has not run.`;
+    reason = "A wake came due and has not run.";
     since = iso(nextAt);
     missed.push({ at: iso(nextAt), endedAt: null, status: "missed", exit: null, detail: "due, and it did not wake" });
   } else {
@@ -322,7 +350,7 @@ export function loopSource(
     runs: inWindow([...missed, ...all], window),
     last: lastRun(all),
     where: wakeLog,
-    tail: null,
+    hasLog: false,
     link: { kind: "loop" },
   };
 }
@@ -337,8 +365,10 @@ const TICK_STATUS: Record<TickStatus, RunStatus> = {
   unknown: "unknown",
 };
 
-/** The launchd label of a fleet scope's tick (install.sh's LaunchAgent): the fleet source shows those runs. */
-export const fleetLabel = (scope: string) => `com.broomva.fleet-reconcile.${scope}`;
+/** The launchd label of a fleet scope's tick, from the Fleet view's own plist name: the fleet source shows those runs. */
+export const fleetLabel = (scope: string) => plistName(scope).replace(/\.plist$/, "");
+/** Every fleet scope's tick job starts with this. The Fleet view counts what it does, never the Timeline. */
+export const FLEET_LABEL_PREFIX = fleetLabel("");
 
 /**
  * A fleet scope as a source, from the Fleet view's read: its ticks are its
@@ -349,7 +379,8 @@ export function fleetSource(scope: FleetScope, detail: FleetDetail | null, windo
   const { now } = window;
   const { health } = scope;
   const all: TimelineRun[] = (detail?.ticks ?? []).flatMap((tick) => {
-    if (!tick.at) return [];
+    const at = instant(tick.at);
+    if (!at) return [];
     const words = [
       `tick ${tick.tick}`,
       ...(tick.status === "died" ? ["started and never finished"] : []),
@@ -358,8 +389,8 @@ export function fleetSource(scope: FleetScope, detail: FleetDetail | null, windo
     ];
     return [
       {
-        at: tick.at,
-        endedAt: tick.finishedAt,
+        at,
+        endedAt: instant(tick.finishedAt),
         status: TICK_STATUS[tick.status],
         exit: tick.exit,
         detail: words.join(", "),
@@ -401,7 +432,7 @@ export function fleetSource(scope: FleetScope, detail: FleetDetail | null, windo
     cadence: !scheduled ? "by hand only" : intervalMs !== null ? everyWords(intervalMs) : "on its schedule",
     status,
     reason: health.reason,
-    since: health.since,
+    since: instant(health.since),
     needsYou: health.needsYou || Boolean(health.item?.needsYou),
     next: due !== null ? iso(due) : null,
     upcoming: upcoming
@@ -411,7 +442,7 @@ export function fleetSource(scope: FleetScope, detail: FleetDetail | null, windo
     runs: inWindow([...missed, ...all], window),
     last: lastRun(all),
     where: detail?.stateDir ?? null,
-    tail: null,
+    hasLog: false,
     link: { kind: "fleet", scope: scope.id },
   };
 }
@@ -453,11 +484,21 @@ export interface LaunchdContext {
   /** This job's run ends from the unified log. */
   exits: readonly LaunchdExit[];
   coverage: number | null;
+  /**
+   * How far the evidence reaches (server/launchd.ts LaunchdRead.exitsUntil,
+   * else when it was read): whether a run was missed is judged at this
+   * instant, never later, so an old or failed read cannot page.
+   */
+  judgedAt: number;
   awakeSince: number | null;
   prefix: string;
 }
 
-/** One launchd job as a source. */
+/**
+ * One launchd job as a source. A fleet scope's tick job that is shown here
+ * (the Fleet view could not be read) never needs you from the Timeline: the
+ * Fleet view's own notice counts it.
+ */
 export function launchdSource(job: LaunchdJob, context: LaunchdContext, window: Window): TimelineSource {
   const { now } = window;
   const schedule = launchdSchedule(job);
@@ -473,10 +514,12 @@ export function launchdSource(job: LaunchdJob, context: LaunchdContext, window: 
     loaded: job.loaded,
     schedule,
     runs: all,
-    now,
+    now: Math.min(now, context.judgedAt),
+    installedAt: job.installedAt,
     awakeSince: context.awakeSince,
     coverage: context.coverage,
   });
+  const fleets = job.label.startsWith(FLEET_LABEL_PREFIX);
   const newest = all[0] ? ms(all[0].at) : null;
   const { next, upcoming } = job.loaded
     ? launchdUpcoming(schedule, judged.status === "missed" ? null : newest, now, window.to, TIMELINE_UPCOMING)
@@ -488,15 +531,15 @@ export function launchdSource(job: LaunchdJob, context: LaunchdContext, window: 
     name: name || job.label,
     cadence: launchdCadence(job),
     status: judged.status,
-    reason: judged.reason,
+    reason: fleets ? `${judged.reason} The Fleet view counts it.` : judged.reason,
     since: judged.since,
-    needsYou: needs(judged.status),
+    needsYou: needs(judged.status) && !fleets,
     next: next !== null ? iso(next) : null,
     upcoming: upcoming.map(iso),
     runs: inWindow([...judged.missed, ...all], window),
     last: lastRun(all),
     where: job.logPath,
-    tail: tailOf(job.logText),
+    hasLog: job.logPath !== null && job.logText !== null,
     link: null,
   };
 }

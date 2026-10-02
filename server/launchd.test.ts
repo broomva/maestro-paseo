@@ -90,10 +90,15 @@ async function setup() {
     '{"count":2,"finished":1}',
   ].join("\n");
   let listFails = false;
+  let listExit = 0;
+  let showExit = 0;
+  let printFails = false;
+  const brokenPlists = new Set<string>();
   const run: Runner = async (command, args, options) => {
     calls.push([command, ...args, ...(options.firstLine ? ["(first line)"] : [])]);
     if (command === LAUNCHCTL && args[0] === "list") {
       if (listFails) throw new Error("launchctl is unhappy");
+      if (listExit !== 0) return { stdout: "", code: listExit };
       return {
         stdout:
           "PID\tStatus\tLabel\n-\t0\tcom.broomva.kg-compile\n4321\t0\tcom.broomva.moltbook-loop\n-\t0\tcom.apple.x\n",
@@ -101,6 +106,7 @@ async function setup() {
       };
     }
     if (command === LAUNCHCTL && args[0] === "print") {
+      if (printFails) return { stdout: "", code: 113 };
       const label = String(args[1]).split("/").pop() ?? "";
       const running = label === "com.broomva.moltbook-loop";
       return {
@@ -114,13 +120,15 @@ async function setup() {
           .split("/")
           .pop()
           ?.replace(/\.plist$/, "") ?? "";
+      // plutil on a missing or broken plist: nothing on stdout, its error on stderr, exit 1.
+      if (brokenPlists.has(label)) return { stdout: "", code: 1 };
       return { stdout: JSON.stringify(plists[label] ?? {}), code: 0 };
     }
     if (command === PS) return { stdout: "  02:00\n", code: 0 };
     if (command === LOG && options.firstLine) {
       return { stdout: JSON.stringify({ timestamp: "2026-10-01 22:01:16.787692-0500" }), code: 0 };
     }
-    if (command === LOG) return { stdout: shown, code: 0 };
+    if (command === LOG) return { stdout: showExit === 0 ? shown : "", code: showExit };
     throw new Error(`unexpected ${command}`);
   };
   let now = NOW;
@@ -138,6 +146,10 @@ async function setup() {
     setShown: (text: string) => (shown = text),
     setNow: (at: number) => (now = at),
     failList: () => (listFails = true),
+    exitList: (code: number) => (listExit = code),
+    exitShow: (code: number) => (showExit = code),
+    failPrint: () => (printFails = true),
+    breakPlist: (label: string) => brokenPlists.add(label),
   };
 }
 
@@ -227,5 +239,61 @@ describe("reading the jobs", () => {
     const [a, b] = await Promise.all([launchd.read(), launchd.read()]);
     expect(a).toBe(b);
     expect(calls.filter((call) => call[0] === LAUNCHCTL && call[1] === "list")).toHaveLength(1);
+  });
+});
+
+describe("a read that fails is said, and never reads as healthy", () => {
+  test("a plist that will not convert costs that job its schedule, never the other jobs", async () => {
+    const { launchd, breakPlist } = await setup();
+    breakPlist("com.broomva.kg-compile");
+    const read = await launchd.read();
+    expect(read.jobs.map((job) => [job.label, job.plist === null])).toEqual([
+      ["com.broomva.kg-compile", true],
+      ["com.broomva.moltbook-loop", false],
+      ["com.broomva.old-job", false],
+    ]);
+    expect(read.warnings).toEqual([expect.stringContaining("The plist of com.broomva.kg-compile could not be read")]);
+  });
+
+  test("a log show that exits non-zero is a failed read: said, and how far the evidence reaches stays put", async () => {
+    const { launchd, exitShow, setNow } = await setup();
+    const first = await launchd.read();
+    expect(first.exitsUntil).toBe(NOW);
+    exitShow(1);
+    setNow(NOW + 60 * 60_000);
+    const second = await launchd.read();
+    expect(second.warnings).toEqual([expect.stringContaining("The unified log could not be read")]);
+    expect(second.exitsUntil).toBe(NOW);
+    expect(second.exits).toHaveLength(2);
+  });
+
+  test("a launchctl list that exits non-zero shows no job rather than every job unloaded", async () => {
+    const { launchd, exitList } = await setup();
+    exitList(5);
+    const read = await launchd.read();
+    expect(read.jobs).toEqual([]);
+    expect(read.warnings).toEqual([
+      expect.stringContaining("launchctl list could not be read: launchctl list exited 5"),
+    ]);
+  });
+
+  test("a print that fails still knows a run is going, from the list's pid", async () => {
+    const { launchd, failPrint } = await setup();
+    failPrint();
+    const read = await launchd.read();
+    const molt = read.jobs.find((job) => job.label === "com.broomva.moltbook-loop");
+    expect(molt).toMatchObject({ printed: null, running: true, runningSince: NOW - 120_000 });
+    expect(read.warnings).toHaveLength(2);
+  });
+
+  test("each job carries when its plist was written", async () => {
+    const { launchd } = await setup();
+    const read = await launchd.read();
+    expect(read.jobs.every((job) => typeof job.installedAt === "number")).toBe(true);
+  });
+
+  test("a prefix that is not a label prefix is refused before anything runs", () => {
+    expect(() => new Launchd({ prefix: 'com.broomva." OR process == "x' })).toThrow("Not a launchd label prefix");
+    expect(() => new Launchd({ prefix: "" })).toThrow("Not a launchd label prefix");
   });
 });

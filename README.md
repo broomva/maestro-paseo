@@ -370,23 +370,33 @@ now and the next 24 to its right. It reads four kinds of source:
   mark for a run that was missed, grey when no exit was recorded, and hollow rings for the runs
   still to come. Last and next run are in words below the track.
 - **Opening a row.** Press a row for its runs in the window, why it has its status, where it keeps
-  its log, the end of that log, and a way on: a fleet scope opens the Fleet view, the loop opens
-  its panel, a Paseo schedule opens the session of its last run.
+  its record, and a way on: a fleet scope opens the Fleet view, the loop opens its panel, a Paseo
+  schedule opens the session of its last run. A launchd job's row also shows the end of its log,
+  read (`timeline.log`) only while the row is open, never sent with the view every client polls.
 - **What needs you comes first.** A source is *failed* when its newest run failed: a non-zero exit,
   a signal, or Paseo's `failed`. A later run that passes puts it back on time; the red mark stays
-  on the track.
+  on the track. A run whose exit nobody recorded is *not known*, never on time, and a SIGTERM
+  launchd sent itself (at logout, or an unload) stops a run without failing it.
 - **When a run counts as missed.** It counts against time the Mac was awake (the kernel's wake or
   boot), since launchd fires nothing while it sleeps and runs a missed calendar job once at wake:
-  - A launchd job on an interval: no run for two intervals and 5 minutes.
-  - A launchd job on a calendar: a due time after its newest run, 30 minutes past due (or past the
-    wake, if the Mac slept through it).
-  - A Paseo schedule: its next run 10 minutes overdue with none started.
-  - The loop: a wake 5 minutes overdue.
+  - A launchd job on an interval: no run for two intervals and 5 minutes after its newest run ended.
+  - A launchd job on a calendar: a due time after its newest run ended, 30 minutes past due (or past
+    the wake, if the Mac slept through it). Never one due before its plist was written.
+  - A Paseo schedule: its next run 10 minutes overdue (or past the wake) with no run started at or
+    after it was due. A paused, completed or expired schedule never needs you, whatever its last
+    run did: it will not run again on its own.
+  - The loop: a wake 5 minutes overdue, and at least a period and 5 minutes after the Mac woke (its
+    timer does not count the sleep).
   - A fleet scope: the Fleet view's own rule.
+- **A read that fails is said, never read as healthy.** A command that exits non-zero, or a plist
+  that will not convert, is a warning in the view and costs only what it would have said. A launchd
+  job is judged only as far as the last good read of the unified log reaches, so an old or failed
+  read never calls a run missed that came due after it.
 - **In Needs you.** A failed or missed source shows above every other view, with *Open Timeline*,
   and counts in the header count, so it reaches the phone. Fleet scopes are counted once, by the
   Fleet view's notice or the fleet's own alert work, and never again by the Timeline. The launchd
-  job that runs a fleet scope's ticks is shown as that scope.
+  job that runs a fleet scope's ticks is shown as that scope; if the Fleet view cannot be read it
+  is shown as a launchd job, and still never counted by the Timeline.
 - **On the phone.** The Timeline is one of the views a compact window offers. Its axis labels every
   12 hours there, and every 6 on a wide window.
 
@@ -406,7 +416,8 @@ For a second daemon or a test:
 
 - `MAESTRO_PASEO_SCHEDULES` overrides the Paseo schedule folder (else `$PASEO_HOME/schedules`, else
   `~/.paseo/schedules`).
-- `MAESTRO_PASEO_LAUNCHD` names another label prefix, or `off` to read no launchd job.
+- `MAESTRO_PASEO_LAUNCHD` names another label prefix (letters, digits, `.`, `_`, `-`), or `off` to
+  read no launchd job. Anything else reads none.
 
 ## The agent's instructions
 

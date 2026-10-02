@@ -65,5 +65,7 @@ export function launchdPrefix(
 ): string | null {
   const chosen = env.MAESTRO_PASEO_LAUNCHD?.trim();
   if (chosen === "off" || platform !== "darwin") return null;
+  // A label prefix only: anything else could reach the log predicate, so it reads none rather than a guess.
+  if (chosen && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(chosen)) return null;
   return chosen || "com.broomva.";
 }

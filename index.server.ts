@@ -35,7 +35,7 @@ import {
 } from "./shared/contracts";
 import { getFleet, reviewProposal } from "./shared/fleet";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
-import { getTimeline } from "./shared/timeline";
+import { getTimeline, getTimelineLog } from "./shared/timeline";
 
 const log = (message: string) => console.log(`[maestro] ${message}`);
 
@@ -113,6 +113,8 @@ export default function contribute(host: PluginServerContext) {
     return attentionOf(items, Date.now(), notices, scheduled);
   });
   server.handle(getTimeline, () => timeline.get());
+  // A launchd job's log end, only when you open its row: never in the polled view.
+  server.handle(getTimelineLog, ({ id }) => timeline.logOf(id));
   server.handle(historyWork, ({ days }) => records.history(days));
   server.handle(workFiles, ({ id }) => records.files(id));
   server.handle(readWorkFile, ({ id, name }) => records.file(id, name));
