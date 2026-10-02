@@ -3,6 +3,7 @@
 
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { FleetNoticeSchema } from "./fleet";
 import { GATE_MODES, GROUP_ORDER, KINDS, ORCH_STATES, VERDICTS } from "./states";
 
 /** Bounds on what a work may pass to a provider as feature values. */
@@ -351,7 +352,9 @@ export const setConfig = defineRpc({
  * alone: it never reconciles against sessions, so polling it costs no agent
  * round trips. `waiting` is the work that needs you: at your gate or stuck
  * first, then work the loop flagged (`flag`, null for the others); `sessions`
- * are the workers of work that is live or changed in the last day.
+ * are the workers of work that is live or changed in the last day; `fleet`
+ * are fleet scopes whose tick is missed or failing and needs you on its own
+ * (shared/fleet.ts FleetHealth.needsYou). The header count counts both.
  */
 export const attentionWork = defineRpc({
   name: "work.attention",
@@ -367,6 +370,8 @@ export const attentionWork = defineRpc({
         workspaceId: z.string().nullable(),
       }),
     ),
+    /** Absent from a daemon older than the fleet notices. */
+    fleet: z.array(FleetNoticeSchema).optional(),
   }),
 });
 export type Attention = z.infer<typeof attentionWork.output>;

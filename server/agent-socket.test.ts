@@ -189,6 +189,14 @@ describe("what a session is offered", () => {
     expect(fake.created).toEqual([]);
   });
 
+  test("a verdict on the fleet's proposals is refused: the review is yours", async () => {
+    const { ask } = await setup();
+    const response = await ask("fleet.review", { scope: "broomva", key: "session:x:4:deadbeef", verdict: "accept" });
+    expect(response.ok).toBe(false);
+    expect(!response.ok && response.error).toContain("fleet.review is yours alone");
+    expect(!response.ok && response.error).toContain("your verdicts on the fleet's proposals");
+  });
+
   test("leaving a quiet run running is refused: the flag is yours to clear", async () => {
     const { repo, ok, ask, engine, config } = await setup();
     const { item } = await ok("work.create", { title: "Long one", repo, dispatch: true });

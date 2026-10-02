@@ -31,6 +31,7 @@ import type { PluginClientStateSource } from "@getpaseo/plugin/client/host";
 import { Window } from "happy-dom";
 import type { ReactNode } from "react";
 import type { MaestroConfig, Scoreboard, WakeEntry, WorkItem } from "../shared/contracts";
+import type { FleetNotice, FleetProposal, FleetView } from "../shared/fleet";
 import type { HistoryEvent } from "../shared/records";
 import { groupOf, type OrchState } from "../shared/states";
 
@@ -318,6 +319,149 @@ let settings = settingsFixture();
 let stopRefusal: string | null = null;
 /** While set, work.stop answers only once it resolves: a Stop still in flight. */
 let stopHeld: Promise<void> | null = null;
+/** The fleet as fleet.get answers: broomva missed its tick, sri runs only by hand. */
+const fleetProposals = (): FleetProposal[] => [
+  {
+    key: "session:de2dd335:4:aaaa1111",
+    source: "report",
+    tick: 35,
+    at: new Date(Date.now() - 5 * 60_000).toISOString(),
+    action: "report",
+    session: {
+      id: "de2dd335-x",
+      short: "de2dd335",
+      name: "sri-sti-2761-rce",
+      kind: "background",
+      status: "failed",
+      cwd: "~",
+    },
+    classId: "4",
+    className: "error",
+    evidence: "listing: state failed",
+    verb: null,
+    review: null,
+  },
+  {
+    key: "session:5dd4ed18:10:bbbb2222",
+    source: "report",
+    tick: 35,
+    at: new Date(Date.now() - 5 * 60_000).toISOString(),
+    action: "report only",
+    session: {
+      id: "5dd4ed18-x",
+      short: "5dd4ed18",
+      name: "worried-walrus",
+      kind: "interactive",
+      status: "idle",
+      cwd: "~",
+    },
+    classId: "10",
+    className: "unmanaged",
+    evidence: "no fleet key, not adopted (Paseo agent)",
+    verb: null,
+    review: { verdict: "accept", note: null, at: new Date(Date.now() - 60 * 60_000).toISOString(), tick: 34 },
+  },
+];
+const FLEET_REPORT =
+  "# fleet-reconcile · broomva · tick 35\n\nReport only (phase 1).\n\n## Classes\n\n| # | class | sessions |\n|---|---|---|\n| 1 | out of scope | 53 |\n| 4 | error | 1 |\n";
+let fleetNotices: FleetNotice[] = [];
+let proposalsNow = fleetProposals();
+const fleetView = (scope: string | undefined): FleetView => {
+  const missed = {
+    status: "missed" as const,
+    reason: "No tick for 3h: the last was tick 35. It runs every hour.",
+    since: new Date(Date.now() - 3 * H).toISOString(),
+    item: null,
+    needsYou: true,
+  };
+  const scopes = [
+    {
+      id: "broomva",
+      mode: "report",
+      dryRun: true,
+      health: missed,
+      lastTick: { tick: 35, at: new Date(Date.now() - 3 * H).toISOString(), status: "ok" as const },
+      unreviewed: proposalsNow.filter((entry) => entry.review === null).length,
+      openAsks: 1,
+    },
+    {
+      id: "sri",
+      mode: "report",
+      dryRun: true,
+      health: {
+        status: "unscheduled" as const,
+        reason: "Not scheduled: no LaunchAgent runs it.",
+        since: null,
+        item: null,
+        needsYou: false,
+      },
+      lastTick: { tick: 6, at: new Date(Date.now() - 40 * H).toISOString(), status: "ok" as const },
+      unreviewed: 0,
+      openAsks: 0,
+    },
+  ];
+  const id = scope ?? "broomva";
+  return {
+    scopes,
+    error: null,
+    detail: {
+      id,
+      stateDir: `/state/${id}`,
+      schedule: { scheduled: id === "broomva", intervalMinutes: id === "broomva" ? 60 : null },
+      ticks: [
+        {
+          tick: id === "broomva" ? 35 : 6,
+          at: new Date(Date.now() - 3 * H).toISOString(),
+          finishedAt: null,
+          status: "ok",
+          exit: 0,
+          steps: "recover=0 observe=0",
+          failedStep: null,
+          dryRun: true,
+          mode: "report",
+          classCounts: [
+            { id: "1", name: "out of scope", count: 53 },
+            { id: "4", name: "error", count: 1 },
+          ],
+          openAsks: 1,
+          proposals: 2,
+        },
+        {
+          tick: 34,
+          at: new Date(Date.now() - 4 * H).toISOString(),
+          finishedAt: null,
+          status: "failed",
+          exit: 1,
+          steps: "recover=0 observe=1",
+          failedStep: "observe",
+          dryRun: true,
+          mode: "report",
+          classCounts: null,
+          openAsks: null,
+          proposals: null,
+        },
+      ],
+      report: id === "broomva" ? { tick: 35, markdown: FLEET_REPORT, truncated: false } : null,
+      proposals: id === "broomva" ? proposalsNow : [],
+      asks:
+        id === "broomva"
+          ? [
+              {
+                id: "a1",
+                key: "records-without-process",
+                question: "13 Paseo records are not archived and have no live process.",
+                class: "count",
+                firstTick: 2,
+                batch: "2-1",
+                item: { id: "a", title: "Work a", state: "review", group: "review", needsYou: true },
+              },
+            ]
+          : [],
+      alerts: [],
+      warnings: [],
+    },
+  };
+};
 const calls: { method: string; input: unknown }[] = [];
 const invoke = async (method: string, input: unknown) => {
   calls.push({ method, input });
@@ -331,6 +475,14 @@ const invoke = async (method: string, input: unknown) => {
   if (method === "config.set") return input;
   if (method === "work.list") return { root: "/work", items, warnings: [], scoreboard: board() };
   if (method === "work.history") return { events: history(), capped: false };
+  if (method === "work.attention") return { waiting: [], sessions: [], fleet: fleetNotices };
+  if (method === "fleet.get") return fleetView((input as { scope?: string }).scope);
+  if (method === "fleet.review") {
+    const { key, verdict, note } = input as { key: string; verdict: "accept" | "reject"; note: string };
+    const review = { verdict, note: note || null, at: new Date().toISOString(), tick: 35 };
+    proposalsNow = proposalsNow.map((entry) => (entry.key === key ? { ...entry, review } : entry));
+    return { proposal: proposalsNow.find((entry) => entry.key === key) };
+  }
   if (method === "work.files") return { files };
   if (method === "work.file") {
     const { name } = input as { name: string };
@@ -436,6 +588,16 @@ async function mount(node: ReactNode, options: { state?: PluginClientStateSource
       await step(owner, () => (target as unknown as { click(): void }).click());
       await step(owner, () => new Promise<void>((resolve) => setTimeout(resolve, 20)));
     },
+    type: async (target: Element | null | undefined, value: string) => {
+      if (!target) throw new Error("nothing to type in");
+      const field = target as unknown as { tagName: string; dispatchEvent(event: unknown): boolean };
+      const proto = field.tagName === "TEXTAREA" ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
+      await step(owner, () => {
+        Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(field, value);
+        field.dispatchEvent(new win.Event("input", { bubbles: true }));
+      });
+      await step(owner, () => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    },
     rerender: async (next: ReactNode) => {
       await step(owner, () => root.render(wrap(next)));
       await step(owner, () => new Promise<void>((resolve) => setTimeout(resolve, 20)));
@@ -477,6 +639,8 @@ afterEach(async () => {
   settings = settingsFixture();
   stopRefusal = null;
   stopHeld = null;
+  fleetNotices = [];
+  proposalsNow = fleetProposals();
   calls.length = 0;
   setReduced(true);
   // The message and its first argument: React's act warning names the component there ("An update to %s").
@@ -932,9 +1096,9 @@ describe("views and filters", () => {
     expect(view.byLabel("Work f, Done, genesis, updated 12 minutes ago")).not.toBeNull();
   });
 
-  test("compact switches only between the feed and History", async () => {
+  test("compact switches only between the feed, History and the Fleet", async () => {
     const view = await mount(surface(true));
-    expect(view.tabs().map((tab) => tab.getAttribute("aria-label"))).toEqual(["Feed", "History"]);
+    expect(view.tabs().map((tab) => tab.getAttribute("aria-label"))).toEqual(["Feed", "History", "Fleet"]);
     expect(view.text()).toContain("claude · own worktree");
     await view.press(view.tabs()[1]);
     await settle(50);
@@ -1240,5 +1404,105 @@ describe("Settings", () => {
     expect(calls.filter((call) => call.method === "config.set").map((call) => call.input)).toEqual([
       { ...settingsFixture(), loopMinutes: null },
     ]);
+  });
+});
+
+describe("the Fleet view", () => {
+  const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
+  const fleetTab = (view: Awaited<ReturnType<typeof mount>>) =>
+    view.tabs().find((tab) => tab.getAttribute("aria-label") === "Fleet");
+
+  test("shows the scope's health, its asks as the work raised for them, its proposals, ticks and report", async () => {
+    const view = await mount(surface(false));
+    await view.press(fleetTab(view));
+    expect(sent("fleet.get")).toEqual([{ ticks: 24 }]);
+    const text = view.text();
+    expect(text).toContain("Missed");
+    expect(text).toContain("No tick for 3h: the last was tick 35. It runs every hour.");
+    expect(text).toContain("report mode, dry run");
+    expect(text).toContain("13 Paseo records are not archived and have no live process.");
+    expect(text).toContain("count · since tick 2");
+    expect(text).toContain("Would report");
+    expect(text).toContain("2 · 1 to review");
+    expect(text).toContain("You accepted this 1h ago");
+    expect(text).toContain("53 out of scope · 1 error");
+    expect(text).toContain("Failed at observe");
+    // Wide windows open the report.
+    expect(text).toContain("fleet-reconcile · broomva · tick 35");
+    expect(text).toContain("out of scope");
+    // The ask is answered in the work the fleet raised: opened, not copied.
+    await view.press(view.byLabel("Open the fleet's work for ask a1: Work a"));
+    expect(view.text()).toContain("Approve the branch");
+  });
+
+  test("Accept records your verdict; Reject asks why first, and sends the note", async () => {
+    const view = await mount(surface(false));
+    await view.press(fleetTab(view));
+    await view.press(view.byLabel("Accept: report, de2dd335 sri-sti-2761-rce"));
+    expect(sent("fleet.review")).toEqual([
+      { scope: "broomva", key: "session:de2dd335:4:aaaa1111", verdict: "accept", note: "" },
+    ]);
+    await view.refetch();
+    expect(view.text()).toContain("You accepted this just now");
+    expect(view.text()).toContain("2 · all reviewed");
+
+    await view.press(view.byLabel("Reject: report only, 5dd4ed18 worried-walrus"));
+    expect(sent("fleet.review")).toHaveLength(1);
+    await view.type(view.byLabel("Why reject: report only, 5dd4ed18 worried-walrus"), "Unmanaged sessions are mine");
+    await view.press(view.byLabel("Confirm reject: report only, 5dd4ed18 worried-walrus"));
+    expect(sent("fleet.review").at(-1)).toEqual({
+      scope: "broomva",
+      key: "session:5dd4ed18:10:bbbb2222",
+      verdict: "reject",
+      note: "Unmanaged sessions are mine",
+    });
+    await view.refetch();
+    expect(view.text()).toContain("You rejected this just now: Unmanaged sessions are mine");
+  });
+
+  test("a scope chip reads that scope", async () => {
+    const view = await mount(surface(false));
+    await view.press(fleetTab(view));
+    await view.press(view.byLabel("sri, Not scheduled"));
+    expect(sent("fleet.get").at(-1)).toEqual({ scope: "sri", ticks: 24 });
+    expect(view.text()).toContain("Not scheduled: no LaunchAgent runs it.");
+    expect(view.text()).toContain("The latest report proposes nothing.");
+  });
+
+  test("a missed tick shows above the work, and opens the Fleet view at its scope", async () => {
+    fleetNotices = [
+      {
+        scope: "broomva",
+        status: "missed",
+        reason: "No tick for 3h: the last was tick 35. It runs every hour.",
+        since: null,
+      },
+    ];
+    const view = await mount(surface(false));
+    expect(view.text()).toContain("Fleet broomva: missed tick. No tick for 3h");
+    await view.press(view.byLabel("Open Fleet, broomva"));
+    expect(fleetTab(view)?.getAttribute("aria-selected")).toBe("true");
+    expect(sent("fleet.get").at(-1)).toEqual({ scope: "broomva", ticks: 24 });
+    // In the Fleet view the health card says it; the notice is not shown twice.
+    expect(view.text()).not.toContain("Fleet broomva: missed tick.");
+  });
+
+  test("an intent from the header count opens the Fleet view", async () => {
+    const view = await mount(surface(true));
+    await step(generation, () => requestIntent({ kind: "fleet", scope: "sri" }));
+    await settle(30);
+    expect(fleetTab(view)?.getAttribute("aria-selected")).toBe("true");
+    expect(sent("fleet.get").at(-1)).toEqual({ scope: "sri", ticks: 24 });
+  });
+
+  test("on a phone the report waits behind a button, and its table rows are cards", async () => {
+    const view = await mount(surface(true));
+    await view.press(fleetTab(view));
+    expect(view.text()).not.toContain("Report only (phase 1).");
+    await view.press(view.byLabel("Show the report"));
+    expect(view.text()).toContain("Report only (phase 1).");
+    // Each row stands alone, its cells under their column names.
+    expect(view.text()).toContain("classout of scope");
+    expect(view.text()).toContain("sessions53");
   });
 });

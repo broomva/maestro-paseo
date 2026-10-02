@@ -212,6 +212,50 @@ describe("the header count", () => {
   });
 });
 
+describe("the header count and the fleet", () => {
+  const notice = (scope: string) => ({
+    scope,
+    status: "missed" as const,
+    reason: "No tick for 3h: the last was tick 35. It runs every hour.",
+    since: "2026-10-02T17:40:00Z",
+  });
+
+  test("a fleet tick that needs you is counted beside the work; a daemon that sends none counts none", async () => {
+    const fake = fakeClient();
+    fake.state.workspaces = ["ws1"];
+    fake.state.attention = { waiting: [waiting("r")], sessions: [], fleet: [notice("broomva")] };
+    const { clock } = start(fake);
+    await settle();
+    expect(face(fake.headers[0] as Registered)).toMatchObject({ label: "2 need you", visible: true });
+    fake.state.attention = { waiting: [], sessions: [], fleet: [notice("broomva")] };
+    await clock.advance(REFRESH.everyMs);
+    expect(face(fake.headers[0] as Registered)).toMatchObject({ label: "1 needs you", visible: true });
+    // An older daemon answers without the fleet: the count is the work's, as before.
+    fake.state.attention = { waiting: [], sessions: [] };
+    await clock.advance(REFRESH.everyMs);
+    expect(face(fake.headers[0] as Registered)).toMatchObject({ visible: false });
+  });
+
+  test("pressing it with only the fleet waiting opens the Fleet view at that scope; with work too, Needs you", async () => {
+    const fake = fakeClient();
+    fake.state.attention = { waiting: [], sessions: [], fleet: [notice("sri"), notice("broomva")] };
+    const { clock } = start(fake);
+    await settle();
+    const press = () => {
+      const behavior = face(fake.headers[0] as Registered).behavior;
+      if (behavior.kind !== "action") throw new Error("the header count is an action");
+      void behavior.onPress();
+    };
+    press();
+    expect(takeIntent()).toEqual({ kind: "fleet", scope: "sri" });
+    // One item and a fleet notice: not that one item, since the count is two.
+    fake.state.attention = { waiting: [waiting("r")], sessions: [], fleet: [notice("sri")] };
+    await clock.advance(REFRESH.everyMs);
+    press();
+    expect(takeIntent()).toEqual({ kind: "filter", group: "review" });
+  });
+});
+
 describe("the composer pill", () => {
   test("each listed session gets one in plain voice with the state dot", async () => {
     const fake = fakeClient();

@@ -32,6 +32,8 @@ those, and nothing Paseo already does.
   the unsupervised-hours scoreboard, and a detail pane with the verb each item needs. The chips
   follow the sections: each counts exactly what it shows, Stuck narrows Needs you to its stuck
   work, and Needs you, Running, Queued and Done add up to All.
+- **Fleet**, a view beside History: fleet-reconcile's hourly runs per scope, with your verdict on
+  what its dry run would do (see [The Fleet](#the-fleet)).
 - **Work** panel beside any agent: the work it is running, or a button to track it.
 - **Command Center**: *Open Maestro*, and *Track this session in Maestro* on an agent.
 - **`/maestro [title]`** in the composer: track the current session as work.
@@ -228,6 +230,63 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
 | The loop's panel | Needs you, with the loop's flags |
 |---|---|
 | ![The loop's panel](docs/loop-panel.png) | ![Needs you with flagged work](docs/loop-needs-you-feed.png) |
+
+## The Fleet
+
+fleet-reconcile (`skills/orchestration/fleet-reconcile` in broomva/skills) ticks hourly per scope
+and writes everything to files. Its asks and alerts already reach Maestro as work at Needs you.
+The **Fleet** view shows the rest, per scope, read from those files:
+
+- **Health.** On time, failing (the newest tick exited 1, or started and never finished), missed,
+  off (the fleet's kill switch), or not scheduled (no LaunchAgent runs it).
+  - A scope is missed when it is scheduled and no tick has started for over 2 hours, or two of its
+    intervals if that is longer.
+  - The clock counts from the later of the last tick and the Mac's last wake. launchd skips ticks
+    while the Mac sleeps, so a morning does not read as missed.
+- **Asks and alerts.** Each open ask in the newest report links to the work the fleet raised for
+  its batch, and the scope's open alerts link to theirs. You answer them there, at the gate; they
+  are never copied.
+- **Would do.** These are proposals: each in-scope session whose "would do" in the newest report is
+  something other than nothing, plus any verb the coordinator logged under dry run. Accept or
+  reject each one, with an optional note on a reject. A proposal keeps its key from tick to tick
+  while its session, class and words stay the same, so one verdict holds until the fleet proposes
+  something else.
+- **Ticks.** The last 24, each with its time, its exit and which step failed, and its class counts.
+- **Report.** The newest `report.md`, drawn natively. On a phone, its tables become one card per
+  row.
+
+A missed or failing tick also shows above every other view and in the header count, so it reaches
+the phone. When the fleet raised its own alert for it (`tick-<step>` for a failed step, or `lock`,
+`config` or `statedir` for ticks that never start) and that alert is in Needs you, it is counted
+there, once.
+
+**Your verdicts go to the fleet, and change nothing it does.** The fleet has no verb that records
+a review, so Maestro appends each verdict to `proposal-reviews.jsonl` in the scope's state dir:
+one JSON line per verdict, mode 0600, fsynced, with the latest line for a key winning. The fleet
+does not read the file yet: BRO-2766 adds that, so its report shows each verdict.
+
+```json
+{"v":1,"kind":"proposal_review","id":"review-1791000000000","scope":"broomva",
+ "key":"session:de2dd335-…:4:1a2b3c4d","verdict":"reject","note":"…","tick":35,
+ "proposal":{"source":"report","action":"report","session_id":"…","class":"4",…},
+ "by":"owner","via":"maestro","ts":"2026-10-02T21:00:00.000Z"}
+```
+
+Nothing else in the fleet's files is written:
+
+- not its ledger;
+- not its config, mode, dry run or kill switch.
+
+Verdicts are yours alone, so the agent socket refuses `fleet.review`.
+
+The fleet's files are found where it keeps them:
+
+- the config: `FLEET_CONFIG`, else `~/.config/ctx/fleet.json`;
+- the state dirs that config names;
+- the LaunchAgents in `~/Library/LaunchAgents`.
+
+`MAESTRO_PASEO_FLEET_CONFIG`, `MAESTRO_PASEO_FLEET_STATE` and `MAESTRO_PASEO_FLEET_AGENTS` override
+each for a second daemon or a test.
 
 ## The agent's instructions
 

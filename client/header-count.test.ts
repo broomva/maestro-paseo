@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fakeWork } from "./fake-work";
-import { headerFace, headerSpecs, needsYou, needsYouLabel, needsYouTarget } from "./header-count";
+import { headerFace, headerSpecs, needsYou, needsYouCount, needsYouLabel, needsYouTarget } from "./header-count";
 import { applyFilter } from "./plane-model";
 
 describe("the header count", () => {
@@ -98,5 +98,23 @@ describe("the header count", () => {
       ["ws1", { count: 4 }],
       ["ws2", { count: 4 }],
     ]);
+  });
+});
+
+describe("the fleet in the header count", () => {
+  test("each fleet notice counts once beside the work", () => {
+    const items = [fakeWork("r", "review"), fakeWork("run", "running")];
+    expect(needsYouCount(items)).toBe(1);
+    expect(needsYouCount(items, [{ scope: "broomva" }, { scope: "sri" }])).toBe(3);
+  });
+
+  test("only stuck work and a fleet notice open Needs you, not Stuck, which would hide the notice's view", () => {
+    const stuck = [fakeWork("b", "blocked"), fakeWork("c", "blocked")];
+    expect(needsYouTarget(stuck)).toEqual({ kind: "filter", group: "blocked" });
+    expect(needsYouTarget(stuck, [{ scope: "broomva" }])).toEqual({
+      kind: "filter",
+      group: "review",
+    });
+    expect(needsYouTarget([], [{ scope: "broomva" }])).toEqual({ kind: "fleet", scope: "broomva" });
   });
 });

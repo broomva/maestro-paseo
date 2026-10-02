@@ -3,6 +3,7 @@
 // open client can poll it without costing an agent round trip per item. Pure.
 
 import type { Attention, WorkItem } from "../shared/contracts";
+import type { FleetNotice } from "../shared/fleet";
 import { needsYouOf } from "../shared/needs-you";
 import { isTerminal } from "../shared/states";
 
@@ -13,9 +14,10 @@ export const RECENT_MS = 24 * 60 * 60 * 1000;
  * `waiting`: what needs you (shared/needs-you.ts), at your gate, then stuck,
  * then flagged by the loop, each in the list's order. Sessions keep the list's
  * order (attention first), which the pills rely on when two items name one
- * session.
+ * session. `fleet`: each fleet scope whose tick is missed or failing and is
+ * not already in Needs you as the fleet's own alert item (server/fleet.ts).
  */
-export function attentionOf(items: readonly WorkItem[], now: number): Attention {
+export function attentionOf(items: readonly WorkItem[], now: number, fleet: readonly FleetNotice[] = []): Attention {
   const waiting = needsYouOf(items).map(({ id, group, flag }) => ({ id, group, flag }));
   const sessions: Attention["sessions"] = [];
   for (const item of items) {
@@ -30,5 +32,5 @@ export function attentionOf(items: readonly WorkItem[], now: number): Attention 
       workspaceId: worker.workspaceId,
     });
   }
-  return { waiting, sessions };
+  return { waiting, sessions, fleet: [...fleet] };
 }

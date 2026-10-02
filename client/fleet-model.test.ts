@@ -1,0 +1,139 @@
+import { describe, expect, test } from "bun:test";
+import type { FleetAsk, FleetProposal, FleetScope, FleetTick } from "../shared/fleet";
+import {
+  askWhere,
+  classText,
+  lastTickText,
+  modeText,
+  proposalClass,
+  proposalSubject,
+  proposalsHeading,
+  reviewText,
+  scopeChipLabel,
+  sortProposals,
+  tickLabel,
+  tickWhen,
+} from "./fleet-model";
+
+const NOW = new Date(2026, 9, 2, 15, 40).getTime();
+const minutesAgo = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
+
+function proposal(key: string, extra: Partial<FleetProposal> = {}): FleetProposal {
+  return {
+    key,
+    source: "report",
+    tick: 35,
+    at: minutesAgo(5),
+    action: "report",
+    session: { id: `${key}-id`, short: key, name: "worried-walrus", kind: "interactive", status: "idle", cwd: "~" },
+    classId: "10",
+    className: "unmanaged",
+    evidence: "no fleet key, not adopted",
+    verb: null,
+    review: null,
+    ...extra,
+  };
+}
+
+const scope = (extra: Partial<FleetScope> = {}): FleetScope => ({
+  id: "broomva",
+  mode: "report",
+  dryRun: true,
+  health: { status: "ok", reason: "", since: null, item: null, needsYou: false },
+  lastTick: { tick: 35, at: minutesAgo(12), status: "ok" },
+  unreviewed: 0,
+  openAsks: 0,
+  ...extra,
+});
+
+describe("the Fleet view's words", () => {
+  test("a scope's mode and its dry run, as its config says", () => {
+    expect(modeText({ mode: "report", dryRun: true })).toBe("report mode, dry run");
+    expect(modeText({ mode: "act", dryRun: false })).toBe("act mode, live");
+    expect(modeText({ mode: null, dryRun: null })).toBe("mode unknown");
+  });
+
+  test("class counts read in a line; a tick with no report says so", () => {
+    expect(
+      classText([
+        { id: "1", name: "out of scope", count: 53 },
+        { id: "4", name: "error", count: 1 },
+      ]),
+    ).toBe("53 out of scope · 1 error");
+    expect(classText(null)).toBe("No report");
+    expect(classText([])).toBe("No sessions");
+  });
+
+  test("a tick's time is the clock today, with its day before that", () => {
+    expect(tickWhen(new Date(2026, 9, 2, 9, 5).toISOString(), NOW)).toBe("09:05");
+    expect(tickWhen(new Date(2026, 9, 1, 23, 5).toISOString(), NOW)).toBe("Yesterday 23:05");
+    expect(tickWhen(new Date(2026, 8, 29, 7, 0).toISOString(), NOW)).toBe("Tue 07:00");
+    expect(tickWhen(null, NOW)).toBe("time unknown");
+  });
+
+  test("a tick's label says its status, its failed step and how long ago", () => {
+    const tick = { tick: 36, at: minutesAgo(12), status: "failed", failedStep: "observe" } as FleetTick;
+    expect(tickLabel(tick, NOW)).toBe("Tick 36, failed at observe, 12m ago");
+    expect(tickLabel({ ...tick, status: "died", failedStep: null }, NOW)).toBe("Tick 36, never finished, 12m ago");
+    expect(tickLabel({ ...tick, status: "ok", failedStep: null, at: minutesAgo(0) }, NOW)).toBe(
+      "Tick 36, passed, just now",
+    );
+  });
+
+  test("proposals without your verdict come first, each group in the fleet's order", () => {
+    const reviewed = { verdict: "accept" as const, note: null, at: minutesAgo(1), tick: 35 };
+    const sorted = sortProposals([
+      proposal("a", { review: reviewed }),
+      proposal("b"),
+      proposal("c"),
+      proposal("d", { review: reviewed }),
+    ]);
+    expect(sorted.map((entry) => entry.key)).toEqual(["b", "c", "a", "d"]);
+    expect(proposalsHeading(sorted)).toBe("4 · 2 to review");
+    expect(proposalsHeading([proposal("a", { review: reviewed })])).toBe("1 · all reviewed");
+  });
+
+  test("your verdict reads with when, and the note when there is one", () => {
+    expect(reviewText(null, NOW)).toBe("Not reviewed");
+    expect(reviewText({ verdict: "accept", note: null, at: minutesAgo(3), tick: 35 }, NOW)).toBe(
+      "You accepted this 3m ago",
+    );
+    expect(reviewText({ verdict: "reject", note: "Mine", at: minutesAgo(0), tick: 35 }, NOW)).toBe(
+      "You rejected this just now: Mine",
+    );
+  });
+
+  test("a proposal names its session and class, or the coordinator's verb", () => {
+    expect(proposalSubject(proposal("5dd4ed18"))).toBe("5dd4ed18 worried-walrus");
+    expect(proposalClass(proposal("x"))).toBe("Class 10, unmanaged");
+    const act = proposal("act:spawn:k", { session: null, classId: null, className: null, verb: "spawn" });
+    expect(proposalSubject(act)).toBe("Coordinator spawn");
+    expect(proposalClass(act)).toBeNull();
+  });
+
+  test("an ask says where it is in Maestro, or why it is not there yet", () => {
+    const ask: FleetAsk = { id: "a1", key: "k", question: "q", class: "count", firstTick: 2, batch: "2-1", item: null };
+    expect(askWhere(ask)).toBe("Its batch has no Maestro work yet: the fleet raises it at a later tick.");
+    expect(askWhere({ ...ask, batch: null })).toBe("Not raised yet: the fleet raises an ask once it lasts.");
+    const item = { id: "w", title: "t", state: "review" as const, group: "review" as const, needsYou: true };
+    expect(askWhere({ ...ask, item })).toBe("In Needs you");
+    expect(askWhere({ ...ask, item: { ...item, state: "done", group: "done", needsYou: false } })).toBe(
+      "In Maestro, Done",
+    );
+  });
+
+  test("a scope chip says its health and what waits on you, to a screen reader too", () => {
+    expect(scopeChipLabel(scope())).toBe("broomva, On time");
+    expect(
+      scopeChipLabel(
+        scope({
+          unreviewed: 4,
+          openAsks: 1,
+          health: { status: "missed", reason: "", since: null, item: null, needsYou: true },
+        }),
+      ),
+    ).toBe("broomva, Missed, 4 proposals to review, 1 open ask");
+    expect(lastTickText(scope(), NOW)).toBe("Tick 35, 12m ago");
+    expect(lastTickText(scope({ lastTick: null }), NOW)).toBe("No tick yet");
+  });
+});
