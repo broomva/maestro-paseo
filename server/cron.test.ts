@@ -1,14 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  calendarCadence,
-  calendarSpecs,
-  calendarWords,
-  dueTimes,
-  everyWords,
-  knownZone,
-  lastDue,
-  parseCron,
-} from "./cron";
+import { calendarCadence, calendarSpecs, calendarWords, dueTimes, everyWords, knownZone, parseCron } from "./cron";
 
 const H = 3_600_000;
 const iso = (at: number) => new Date(at).toISOString();
@@ -65,15 +56,6 @@ describe("cron expressions", () => {
     // October 2026: the 1st is a Thursday, the 5th a Monday.
     const due = dueTimes([spec], "UTC", Date.parse("2026-09-30T00:00:00Z"), Date.parse("2026-10-06T00:00:00Z"), 10);
     expect(due.map(iso)).toEqual(["2026-10-01T12:00:00.000Z", "2026-10-05T12:00:00.000Z"]);
-  });
-
-  test("the newest due time at or before an instant", () => {
-    const spec = parseCron("30 * * * *");
-    if (!spec) throw new Error("did not read");
-    expect(iso(lastDue([spec], "UTC", Date.parse("2026-10-02T21:10:00Z"), 2 * H) ?? 0)).toBe(
-      "2026-10-02T20:30:00.000Z",
-    );
-    expect(lastDue([spec], "UTC", Date.parse("2026-10-02T21:10:00Z"), 10 * 60_000)).toBeNull();
   });
 
   test("an unknown time zone is told apart", () => {

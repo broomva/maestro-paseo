@@ -3,7 +3,7 @@ import { agentMethods, keepServing } from "./server/agent-socket";
 import { attentionOf } from "./server/attention";
 import { loadConfig, saveConfig } from "./server/config";
 import { Engine } from "./server/engine";
-import { Fleet } from "./server/fleet";
+import { Fleet, kernelAwakeSince } from "./server/fleet";
 import { inspectFolder as inspect } from "./server/folders";
 import { GateCards } from "./server/gate-card";
 import { Launchd } from "./server/launchd";
@@ -86,6 +86,10 @@ export default function contribute(host: PluginServerContext) {
   // Every scheduled thing on one axis (server/timeline.ts): Paseo's schedules, launchd, the loop, the fleet. Read-only.
   const wakes = new WakeLog(wakeLogPath(), log);
   const prefix = launchdPrefix();
+  const chosen = process.env.MAESTRO_PASEO_LAUNCHD?.trim();
+  if (!prefix && chosen && chosen !== "off") {
+    log(`MAESTRO_PASEO_LAUNCHD=${JSON.stringify(chosen)} is not a label prefix, so the Timeline reads no launchd job`);
+  }
   const timeline = new Timeline({
     launchd: prefix ? new Launchd({ prefix }) : null,
     launchdPrefix: prefix ?? undefined,
@@ -94,6 +98,7 @@ export default function contribute(host: PluginServerContext) {
     wakes: () => wakes.recent(WAKE_LOG_MAX),
     wakeLogPath: wakes.path,
     fleet,
+    awakeSince: () => kernelAwakeSince(),
     log,
   });
   // No client handed to list: the header count and pills poll this, and must not reconcile sessions.

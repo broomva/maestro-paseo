@@ -30,7 +30,7 @@ import {
   parseList,
   parsePrint,
 } from "./launchd-model";
-import { expandHome } from "./paths";
+import { expandHome, LABEL_PREFIX } from "./paths";
 
 export interface RunResult {
   stdout: string;
@@ -123,6 +123,12 @@ export interface LaunchdJob {
   plist: Record<string, unknown> | null;
   /** When its plist was last written: it cannot have missed a run due before that. */
   installedAt: number | null;
+  /**
+   * launchd's last exit code since the job was loaded: print's, else (print
+   * failed) a non-zero status from the list. The list says 0 also for a job
+   * that never exited, so its 0 is not taken as a pass.
+   */
+  lastExit: number | null;
   /** When the run going now started, if one is. */
   runningSince: number | null;
   running: boolean;
@@ -172,9 +178,6 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** A label prefix that cannot reach a predicate or a launchctl target as anything but a name. */
-export const PREFIX = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
 export class Launchd {
   private readonly run: Runner;
   private readonly uid: number;
@@ -193,7 +196,7 @@ export class Launchd {
     this.run = readOnly(options.run ?? execRunner);
     this.uid = options.uid ?? process.getuid?.() ?? 501;
     this.prefix = options.prefix ?? "com.broomva.";
-    if (!PREFIX.test(this.prefix)) throw new Error(`Not a launchd label prefix: ${JSON.stringify(this.prefix)}`);
+    if (!LABEL_PREFIX.test(this.prefix)) throw new Error(`Not a launchd label prefix: ${JSON.stringify(this.prefix)}`);
     this.agentsDir = options.agentsDir ?? expandHome("~/Library/LaunchAgents");
     this.now = options.now ?? Date.now;
     this.awakeSince = options.awakeSince ?? (() => kernelAwakeSince());
@@ -260,7 +263,7 @@ export class Launchd {
    */
   private async job(
     label: string,
-    listed: { pid: number | null } | false | null,
+    listed: { pid: number | null; status: number | null } | false | null,
     warnings: string[],
   ): Promise<LaunchdJob | null> {
     if (listed === null) return null;
@@ -302,6 +305,7 @@ export class Launchd {
       printed,
       plist,
       installedAt,
+      lastExit: printed ? printed.lastExit : listed && listed.status !== 0 ? listed.status : null,
       running,
       runningSince,
       logPath: outPath,
@@ -320,7 +324,11 @@ export class Launchd {
   /** New run ends since the last read (a day of them the first time), and how far back the log reaches. */
   private async readExits(readAt: number, warnings: string[]): Promise<void> {
     const predicate = `process == "launchd" AND subsystem BEGINSWITH "gui/${this.uid}/${this.prefix}" AND eventMessage BEGINSWITH "exited"`;
-    const range = this.readTo === null ? ["--last", "24h"] : ["--start", logStartArg(this.readTo - OVERLAP_MS)];
+    // After a long gap, read no further back than what is kept.
+    const range =
+      this.readTo === null
+        ? ["--last", "24h"]
+        : ["--start", logStartArg(Math.max(this.readTo - OVERLAP_MS, readAt - KEEP_MS))];
     const first = this.reach === null;
     const [shown, probe] = await Promise.allSettled([
       this.stdout(LOG, ["show", ...range, "--style", "ndjson", "--predicate", predicate], LOG_MS),

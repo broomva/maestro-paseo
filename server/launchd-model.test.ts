@@ -335,7 +335,7 @@ const run = (at: number, status: "ok" | "failed" | "unknown" | "running" = "ok")
   detail: null,
 });
 const interval = { intervalMs: 15 * M, calendar: null };
-const base = { loaded: true, now: NOW, awakeSince: null, coverage: NOW - 20 * H, installedAt: null };
+const base = { loaded: true, seen: { from: NOW - 20 * H, to: NOW }, awakeSince: null, installedAt: null };
 
 describe("a job's status", () => {
   test("not loaded is off; a run going is running; a newest run that failed is failed", () => {
@@ -376,11 +376,35 @@ describe("a job's status", () => {
 
   test("with no run seen: missed only from where the log reaches, and unknown when it reaches nowhere", () => {
     expect(launchdStatus({ ...base, schedule: interval, runs: [] }).status).toBe("missed");
-    expect(launchdStatus({ ...base, coverage: NOW - 20 * M, schedule: interval, runs: [] }).status).toBe("unknown");
-    expect(launchdStatus({ ...base, coverage: null, schedule: interval, runs: [] })).toMatchObject({
+    expect(launchdStatus({ ...base, seen: { from: NOW - 20 * M, to: NOW }, schedule: interval, runs: [] }).status).toBe(
+      "unknown",
+    );
+    expect(launchdStatus({ ...base, seen: null, schedule: interval, runs: [] })).toMatchObject({
       status: "unknown",
       reason: "No run seen yet.",
     });
+  });
+
+  test("with the unified log never read, nothing is called missed, and the row says it cannot tell", () => {
+    // Its last run was hours ago on a 15-minute interval: missed if the log had been read, not known if not.
+    expect(launchdStatus({ ...base, schedule: interval, runs: [run(NOW - 3 * H)] }).status).toBe("missed");
+    expect(launchdStatus({ ...base, seen: null, schedule: interval, runs: [run(NOW - 3 * H)] })).toMatchObject({
+      status: "ok",
+      reason: "Its last run passed; whether one was missed since cannot be told until the unified log reads.",
+    });
+  });
+
+  test("a run the job's own log shows from before the unified log's reach does not open the gap to it", () => {
+    // Sundays at 02:30; it last wrote its log twelve days ago; the unified log reaches 20 h back.
+    const weekly = { intervalMs: null, calendar: calendarSpecs({ Weekday: 0, Hour: 2, Minute: 30 }) };
+    const old = run(NOW - 12 * 24 * H, "unknown");
+    expect(launchdStatus({ ...base, schedule: weekly, runs: [old] }).status).toBe("unknown");
+    // On an interval, the gap is counted from where the log begins, not from the old run.
+    const twoHourly = { intervalMs: 2 * H, calendar: null };
+    const stale = launchdStatus({ ...base, seen: { from: NOW - 5 * H, to: NOW }, schedule: twoHourly, runs: [old] });
+    expect(stale).toMatchObject({ status: "missed", reason: "No run seen in the unified log; it runs every 2h." });
+    // Due an interval after the log begins; with two intervals and the grace gone, missed.
+    expect(stale.since).toBe(iso(NOW - 3 * H));
   });
 
   test("on a calendar: a due time after the newest run, past its grace, is missed", () => {
@@ -410,8 +434,12 @@ describe("a job's status", () => {
 
   test("on a calendar: a due time before the log reaches is not judged", () => {
     const calendar = { intervalMs: null, calendar: calendarSpecs({ Minute: 0 }) };
-    expect(launchdStatus({ ...base, coverage: NOW - 10 * M, schedule: calendar, runs: [] }).status).toBe("unknown");
-    expect(launchdStatus({ ...base, coverage: NOW - 3 * H, schedule: calendar, runs: [] }).status).toBe("missed");
+    expect(launchdStatus({ ...base, seen: { from: NOW - 10 * M, to: NOW }, schedule: calendar, runs: [] }).status).toBe(
+      "unknown",
+    );
+    expect(launchdStatus({ ...base, seen: { from: NOW - 3 * H, to: NOW }, schedule: calendar, runs: [] }).status).toBe(
+      "missed",
+    );
   });
 
   test("a newest run whose exit was not recorded is not known, never on time", () => {
@@ -440,9 +468,17 @@ describe("a job's status", () => {
   test("a job cannot miss a run due before its plist was written", () => {
     const calendar = { intervalMs: null, calendar: calendarSpecs({ Minute: 0 }) };
     // No run yet, the log reaches 3 h back, and 20:00 passed its grace: missed, unless the job is newer than that.
-    expect(launchdStatus({ ...base, coverage: NOW - 3 * H, schedule: calendar, runs: [] }).status).toBe("missed");
+    expect(launchdStatus({ ...base, seen: { from: NOW - 3 * H, to: NOW }, schedule: calendar, runs: [] }).status).toBe(
+      "missed",
+    );
     expect(
-      launchdStatus({ ...base, coverage: NOW - 3 * H, installedAt: NOW - 40 * M, schedule: calendar, runs: [] }).status,
+      launchdStatus({
+        ...base,
+        seen: { from: NOW - 3 * H, to: NOW },
+        installedAt: NOW - 40 * M,
+        schedule: calendar,
+        runs: [],
+      }).status,
     ).toBe("unknown");
   });
 
@@ -450,7 +486,10 @@ describe("a job's status", () => {
     const last = NOW - 3 * H;
     expect(launchdStatus({ ...base, schedule: interval, runs: [run(last)] }).status).toBe("missed");
     // The evidence reaches 10 minutes past that run: nothing was due yet then.
-    expect(launchdStatus({ ...base, now: last + 10 * M, schedule: interval, runs: [run(last)] }).status).toBe("ok");
+    expect(
+      launchdStatus({ ...base, seen: { from: NOW - 20 * H, to: last + 10 * M }, schedule: interval, runs: [run(last)] })
+        .status,
+    ).toBe("ok");
   });
 
   test("launchd stopping a run (SIGTERM, at logout or unload) is not a failure", () => {

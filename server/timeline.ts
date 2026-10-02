@@ -25,6 +25,7 @@ import {
   loopSource,
   StoredScheduleSchema,
   scheduleSource,
+  seenOf,
   tailOf,
   timelineNotices,
   type Window,
@@ -53,6 +54,8 @@ export interface TimelineOptions {
   wakeLogPath?: string | null;
   /** The Fleet view's read; null when there is none. */
   fleet: { get(scope?: string, ticks?: number): Promise<FleetView> } | null;
+  /** When the Mac last woke or booted, when launchd's read does not say (server/fleet.ts kernelAwakeSince). */
+  awakeSince?: () => Promise<number | null>;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -63,7 +66,8 @@ export class Timeline {
   private readonly now: () => number;
   private readonly log: (message: string) => void;
   private launchd: { at: number; read: LaunchdRead } | null = null;
-  private computed: { at: number; view: TimelineView } | null = null;
+  /** The last view, when it was computed, and when the launchd read it was built on was taken (null: none). */
+  private computed: { at: number; view: TimelineView; launchdAt: number | null } | null = null;
   /** The compute in flight, and the launchd age it accepts: a caller wanting fresher waits for its own. */
   private computing: { maxAgeMs: number; view: Promise<TimelineView> } | null = null;
   /** The warning last logged, so a poll does not repeat it. */
@@ -104,9 +108,10 @@ export class Timeline {
 
   private view(launchdMaxAgeMs: number): Promise<TimelineView> {
     const now = this.now();
-    const fresh = this.computed && now - this.computed.at < VIEW_MS;
-    const launchdFresh = !this.options.launchd || (this.launchd && now - this.launchd.at < launchdMaxAgeMs);
-    if (fresh && launchdFresh && this.computed) return Promise.resolve(this.computed.view);
+    const last = this.computed;
+    // Fresh enough means the read this view was built on, not a newer one taken since.
+    const launchdFresh = !this.options.launchd || (last?.launchdAt != null && now - last.launchdAt < launchdMaxAgeMs);
+    if (last && now - last.at < VIEW_MS && launchdFresh) return Promise.resolve(last.view);
     const running = this.computing;
     // One in flight that accepts launchd at least as fresh as this caller wants answers it too.
     if (running && running.maxAgeMs <= launchdMaxAgeMs) return running.view;
@@ -137,9 +142,10 @@ export class Timeline {
   private async compute(launchdMaxAgeMs: number): Promise<TimelineView> {
     const warnings: string[] = [];
     const launchd = await this.readLaunchd(launchdMaxAgeMs, warnings);
+    const launchdAt = this.launchd?.at ?? null;
     const now = this.now();
     const window: Window = { now, from: now - TIMELINE_WINDOW_MS, to: now + TIMELINE_WINDOW_MS };
-    const awakeSince = launchd?.awakeSince ?? null;
+    const awakeSince = launchd?.awakeSince ?? (await this.options.awakeSince?.().catch(() => null)) ?? null;
     const [schedules, loop, fleet] = await Promise.all([
       this.schedules(window, awakeSince, warnings),
       this.loop(window, awakeSince, warnings),
@@ -147,8 +153,8 @@ export class Timeline {
     ]);
     const fleetScopes = new Set(fleet.map((source) => source.id.slice("fleet:".length)));
     const prefix = this.options.launchdPrefix ?? "com.broomva.";
-    // A miss is judged only as far as the read's evidence reaches: an old read, or one whose log read failed, cannot page.
-    const judgedAt = launchd ? (launchd.exitsUntil ?? launchd.readAt) : now;
+    // A miss is judged only inside what the unified log saw: an old read, or one whose log read failed, cannot page.
+    const seen = launchd ? seenOf(launchd, now) : null;
     if (launchd && now - launchd.readAt > 2 * LAUNCHD_NOTICE_MS) {
       warnings.push(
         "launchd has not been read for a while; its rows show the last read, and nothing since is called missed.",
@@ -162,8 +168,7 @@ export class Timeline {
           job,
           {
             exits: (launchd?.exits ?? []).filter((exit) => exit.label === job.label),
-            coverage: launchd?.coverage ?? null,
-            judgedAt,
+            seen,
             awakeSince,
             prefix,
           },
@@ -184,7 +189,7 @@ export class Timeline {
       sources,
       warnings,
     };
-    this.computed = { at: this.now(), view };
+    this.computed = { at: this.now(), view, launchdAt };
     return view;
   }
 

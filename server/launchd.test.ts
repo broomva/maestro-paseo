@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LAUNCHCTL, Launchd, LOG, NotARead, PLUTIL, PS, type Runner, readOnly } from "./launchd";
+import { logStartArg } from "./launchd-model";
 
 const roots: string[] = [];
 afterAll(async () => {
@@ -91,6 +92,7 @@ async function setup() {
   ].join("\n");
   let listFails = false;
   let listExit = 0;
+  let compileStatus = 0;
   let showExit = 0;
   let printFails = false;
   const brokenPlists = new Set<string>();
@@ -100,8 +102,7 @@ async function setup() {
       if (listFails) throw new Error("launchctl is unhappy");
       if (listExit !== 0) return { stdout: "", code: listExit };
       return {
-        stdout:
-          "PID\tStatus\tLabel\n-\t0\tcom.broomva.kg-compile\n4321\t0\tcom.broomva.moltbook-loop\n-\t0\tcom.apple.x\n",
+        stdout: `PID\tStatus\tLabel\n-\t${compileStatus}\tcom.broomva.kg-compile\n4321\t0\tcom.broomva.moltbook-loop\n-\t0\tcom.apple.x\n`,
         code: 0,
       };
     }
@@ -149,6 +150,7 @@ async function setup() {
     exitList: (code: number) => (listExit = code),
     exitShow: (code: number) => (showExit = code),
     failPrint: () => (printFails = true),
+    listStatus: (code: number) => (compileStatus = code),
     breakPlist: (label: string) => brokenPlists.add(label),
   };
 }
@@ -217,13 +219,16 @@ describe("reading the jobs", () => {
   });
 
   test("run ends older than a day and an hour are let go", async () => {
-    const { launchd, setNow, setShown } = await setup();
+    const { launchd, setNow, setShown, calls } = await setup();
     await launchd.read();
     setNow(NOW + 26 * 3_600_000);
     setShown("");
     const read = await launchd.read();
     expect(read.exits).toEqual([]);
     expect(read.coverage).toBe(NOW + 26 * 3_600_000 - 25 * 3_600_000);
+    // After the gap it reads back no further than it keeps, not to where it last stopped.
+    const last = calls.filter((call) => call[0] === LOG).at(-1) ?? [];
+    expect(last.slice(1, 4)).toEqual(["show", "--start", logStartArg(NOW + 26 * 3_600_000 - 25 * 3_600_000)]);
   });
 
   test("a launchctl that cannot list is said, and no job is guessed at", async () => {
@@ -284,6 +289,17 @@ describe("a read that fails is said, and never reads as healthy", () => {
     const molt = read.jobs.find((job) => job.label === "com.broomva.moltbook-loop");
     expect(molt).toMatchObject({ printed: null, running: true, runningSince: NOW - 120_000 });
     expect(read.warnings).toHaveLength(2);
+  });
+
+  test("print failing, the list's non-zero exit is the last exit; its 0 is not", async () => {
+    const { launchd, failPrint, listStatus } = await setup();
+    failPrint();
+    listStatus(1);
+    const failing = await launchd.read();
+    expect(failing.jobs.find((job) => job.label === "com.broomva.kg-compile")?.lastExit).toBe(1);
+    listStatus(0);
+    const quiet = await launchd.read();
+    expect(quiet.jobs.find((job) => job.label === "com.broomva.kg-compile")?.lastExit).toBeNull();
   });
 
   test("each job carries when its plist was written", async () => {

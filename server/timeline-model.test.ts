@@ -12,6 +12,7 @@ import {
   type StoredSchedule,
   StoredScheduleSchema,
   scheduleSource,
+  seenOf,
   tailOf,
   timelineNotices,
   wakeSummary,
@@ -221,13 +222,19 @@ describe("a Paseo schedule", () => {
   test("a time in the file that does not read is left out, never sent as one", () => {
     const source = scheduleSource(
       schedule({
-        runs: [paseoRun(NOW - H, "succeeded"), { ...paseoRun(NOW - 2 * H, "failed"), startedAt: "yesterday" }],
+        runs: [
+          paseoRun(NOW - H, "succeeded"),
+          { ...paseoRun(NOW - 2 * H, "failed"), startedAt: "yesterday" },
+          // Date takes a year past 9999; the wire does not.
+          { ...paseoRun(NOW - 3 * H, "failed"), startedAt: "+010000-01-01T00:00:00.000Z" },
+        ],
       } as never),
       window,
       null,
       null,
     );
     expect(source?.runs.map((run) => run.status)).toEqual(["ok"]);
+    expect(source).toMatchObject({ status: "ok", last: { at: iso(NOW - H) } });
   });
 
   test("a heartbeat prompts its own session: kind, link and a name from its prompt when it has none", () => {
@@ -490,6 +497,7 @@ function job(extra: Partial<LaunchdJob> = {}): LaunchdJob {
       stdout: "/tmp/kg-lint.log",
       intervalSeconds: null,
     },
+    lastExit: 0,
     plist: { StartCalendarInterval: { Weekday: 0, Hour: 2, Minute: 30 } },
     installedAt: Date.parse("2026-09-20T00:00:00Z"),
     runningSince: null,
@@ -503,7 +511,7 @@ function job(extra: Partial<LaunchdJob> = {}): LaunchdJob {
 }
 
 describe("a launchd job", () => {
-  const context = { exits: [], coverage: NOW - 20 * H, judgedAt: NOW, awakeSince: null, prefix: "com.broomva." };
+  const context = { exits: [], seen: { from: NOW - 20 * H, to: NOW }, awakeSince: null, prefix: "com.broomva." };
 
   test("its name, cadence, its newest run from its own log with launchd's exit, and its log's end", () => {
     const source = launchdSource(job(), context, window);
@@ -579,33 +587,40 @@ describe("a launchd job", () => {
     ];
     expect(launchdSource(molt, { ...context, exits: ran }, window).status).toBe("missed");
     // The last good read of the unified log ended 50 minutes ago: ten minutes after that run, nothing was due.
-    const stale = launchdSource(molt, { ...context, exits: ran, judgedAt: NOW - 50 * M }, window);
+    const stale = launchdSource(
+      molt,
+      { ...context, exits: ran, seen: { from: NOW - 20 * H, to: NOW - 50 * M } },
+      window,
+    );
     expect(stale).toMatchObject({ status: "ok", needsYou: false });
   });
 
-  test("a fleet scope's tick job shown here is never counted by the Timeline", () => {
+  test("a list's non-zero exit stands in when print failed; its 0 is not taken as a pass", () => {
+    const stamped = job({ printed: null, lastExit: 1, plist: { StartInterval: 900 } });
+    // Its own log stamped a run five minutes ago; launchd's list said 1.
+    const logText = `[${new Date(NOW - 5 * M).toISOString().replace(/\.\d{3}Z$/, "Z")}] tick`;
+    expect(launchdSource({ ...stamped, logText }, context, window)).toMatchObject({ status: "failed", needsYou: true });
+    expect(launchdSource({ ...stamped, logText, lastExit: null }, context, window).status).toBe("unknown");
+  });
+
+  test("a fleet scope's tick job shown as a launchd job (the Fleet view unreadable) needs you like any job", () => {
     const tick = job({
       label: "com.broomva.fleet-reconcile.broomva",
       plist: { StartInterval: 3600 },
       logText: null,
       logWrittenAt: null,
     });
-    const failed = launchdSource(
-      tick,
-      {
-        ...context,
-        exits: [
-          { label: tick.label, pid: 1, endedAt: NOW - 5 * M, exit: 1, signal: null, byLaunchd: false, ranMs: 10_000 },
-        ],
-      },
-      window,
-    );
-    expect(failed).toMatchObject({
-      status: "failed",
-      needsYou: false,
-      reason: "Its last run failed: exit 1. The Fleet view counts it.",
-    });
-    expect(timelineNotices([failed])).toEqual([]);
+    const exits = [
+      { label: tick.label, pid: 1, endedAt: NOW - 5 * M, exit: 1, signal: null, byLaunchd: false, ranMs: 10_000 },
+    ];
+    expect(launchdSource(tick, { ...context, exits }, window)).toMatchObject({ status: "failed", needsYou: true });
+  });
+
+  test("what the unified log saw, from a read: its reach to where its last good read ended, never past now", () => {
+    expect(seenOf({ coverage: NOW - 20 * H, exitsUntil: NOW - M }, NOW)).toEqual({ from: NOW - 20 * H, to: NOW - M });
+    expect(seenOf({ coverage: NOW - 20 * H, exitsUntil: NOW + M }, NOW)).toEqual({ from: NOW - 20 * H, to: NOW });
+    expect(seenOf({ coverage: null, exitsUntil: NOW }, NOW)).toBeNull();
+    expect(seenOf({ coverage: NOW - H, exitsUntil: null }, NOW)).toBeNull();
   });
 
   test("cadence in words when it has no schedule", () => {

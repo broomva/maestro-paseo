@@ -300,24 +300,31 @@ export interface LaunchdSchedule {
   calendar: readonly CronSpec[] | null;
 }
 
+/**
+ * The stretch of time the unified log was read over: from as far back as it
+ * reaches to where the last good read of it ended. Inside it, no run end is
+ * evidence that no run ended; outside it, it is nothing.
+ */
+export interface Seen {
+  from: number;
+  to: number;
+}
+
 export interface LaunchdStatusInput {
   loaded: boolean;
   schedule: LaunchdSchedule;
   /** Every known run, newest first (launchdRuns). */
   runs: readonly TimelineRun[];
   /**
-   * The instant the evidence reaches: the end of the last good read of the
-   * unified log (else the read itself). A run that came due after it has not
-   * been looked for, so it is never called missed, however long ago the
-   * read was.
+   * What the unified log saw, or null when it has not been read: a run is
+   * called missed only if it came due inside this stretch, so a read that
+   * failed (first or later) or is old never pages.
    */
-  now: number;
+  seen: Seen | null;
   /** When the job's plist was written: it cannot have missed a run due before it existed. */
   installedAt: number | null;
   /** When the Mac last woke (or booted): launchd fires nothing while it sleeps. */
   awakeSince: number | null;
-  /** How far back the unified log reaches: a run due before it cannot be judged missed. */
-  coverage: number | null;
 }
 
 export interface Judged {
@@ -340,17 +347,16 @@ const MISSED_SHOWN = 24;
 
 /**
  * A job now. Not loaded is off. A run going is running. A newest run that
- * failed is failed. Otherwise it is missed when a run came due and did not
- * start: on an interval, no run for two intervals and a grace of awake time
- * after the newest run ended; on a calendar, a due time after the newest run
- * ended (and after the log's reach and the plist's writing) that passed its
- * grace, counted from the Mac's wake if it slept through. launchd folds runs
- * a sleep or a long run skipped into one, so only due times after the
- * newest run's end are ever missed. A newest run whose exit nobody recorded
- * is unknown, never on time.
+ * failed is failed. Otherwise it is missed when a run came due inside what
+ * the unified log saw (`seen`) and did not start: on an interval, no run for
+ * two intervals and a grace of awake time; on a calendar, a due time that
+ * passed its grace, counted from the Mac's wake if it slept through. Only
+ * the part of `seen` after the newest run's end and after the plist was
+ * written counts: launchd folds runs a sleep or a long run skipped into one.
+ * A newest run whose exit nobody recorded is unknown, never on time.
  */
 export function launchdStatus(input: LaunchdStatusInput): Judged {
-  const { runs, now, schedule } = input;
+  const { runs, schedule, seen } = input;
   if (!input.loaded) return { status: "off", reason: "Not loaded: launchd will not run it.", since: null, missed: [] };
   const going = runs.find((run) => run.status === "running");
   if (going) return { status: "running", reason: "Running now.", since: going.at, missed: [] };
@@ -364,39 +370,42 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
       missed: [],
     };
   }
-  // A due time more than a week before now is not looked for: the window is a day either side.
-  const reach = newestEnd ?? input.coverage;
-  const from = reach === null ? null : Math.max(reach, input.installedAt ?? reach, now - 8 * 86_400_000);
-  if (schedule.calendar && from !== null) {
-    const due = dueTimes(schedule.calendar, undefined, from + MATCH_SLACK_MS, now, 1440 * 2).filter((at) => {
-      const woke = input.awakeSince !== null && input.awakeSince > at ? input.awakeSince : at;
-      return now > woke + CALENDAR_GRACE_MS;
-    });
-    const [first] = due;
-    if (first !== undefined) {
-      return {
-        status: "missed",
-        reason:
-          due.length === 1
-            ? "A run came due and it has not run."
-            : `${due.length} runs came due since ${newest ? "its last run" : "the log begins"} and none ran.`,
-        since: iso(first),
-        missed: due.slice(-MISSED_SHOWN).reverse().map(missedRun),
-      };
+  if (seen) {
+    const { to } = seen;
+    // Inside what the log saw, after the newest run ended and the plist was written, and at most a week back.
+    const from = Math.max(seen.from, newestEnd ?? seen.from, input.installedAt ?? seen.from, to - 8 * 86_400_000);
+    const sinceLast = newestEnd !== null && newestEnd >= seen.from;
+    if (schedule.calendar) {
+      const due = dueTimes(schedule.calendar, undefined, from + MATCH_SLACK_MS, to, 1440 * 2).filter((at) => {
+        const woke = input.awakeSince !== null && input.awakeSince > at ? input.awakeSince : at;
+        return to > woke + CALENDAR_GRACE_MS;
+      });
+      const [first] = due;
+      if (first !== undefined) {
+        return {
+          status: "missed",
+          reason:
+            due.length === 1
+              ? "A run came due and it has not run."
+              : `${due.length} runs came due since ${sinceLast ? "its last run" : "the unified log begins"} and none ran.`,
+          since: iso(first),
+          missed: due.slice(-MISSED_SHOWN).reverse().map(missedRun),
+        };
+      }
     }
-  }
-  if (schedule.intervalMs !== null && from !== null) {
-    const base = Math.max(from, input.awakeSince ?? from);
-    if (now - base > 2 * schedule.intervalMs + INTERVAL_GRACE_MS) {
-      const dueAt = base + schedule.intervalMs;
-      return {
-        status: "missed",
-        reason: newest
-          ? `No run since its last; it runs every ${span(schedule.intervalMs)}.`
-          : `No run seen since the log begins; it runs every ${span(schedule.intervalMs)}.`,
-        since: iso(dueAt),
-        missed: [missedRun(dueAt)],
-      };
+    if (schedule.intervalMs !== null) {
+      const base = Math.max(from, input.awakeSince ?? from);
+      if (to - base > 2 * schedule.intervalMs + INTERVAL_GRACE_MS) {
+        const dueAt = base + schedule.intervalMs;
+        return {
+          status: "missed",
+          reason: sinceLast
+            ? `No run since its last; it runs every ${span(schedule.intervalMs)}.`
+            : `No run seen in the unified log; it runs every ${span(schedule.intervalMs)}.`,
+          since: iso(dueAt),
+          missed: [missedRun(dueAt)],
+        };
+      }
     }
   }
   if (!newest) return { status: "unknown", reason: "No run seen yet.", since: null, missed: [] };
@@ -410,7 +419,14 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
       missed: [],
     };
   }
-  return { status: "ok", reason: "On schedule; its last run passed.", since: newest.at, missed: [] };
+  return {
+    status: "ok",
+    reason: seen
+      ? "On schedule; its last run passed."
+      : "Its last run passed; whether one was missed since cannot be told until the unified log reads.",
+    since: newest.at,
+    missed: [],
+  };
 }
 
 /** The runs still to come within `to`, soonest first: from the calendar, or an interval after the newest run. */

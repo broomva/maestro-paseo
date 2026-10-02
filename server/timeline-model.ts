@@ -10,6 +10,7 @@ import { z } from "zod";
 import type { WakeEntry } from "../shared/contracts";
 import type { FleetDetail, FleetScope, TickStatus } from "../shared/fleet";
 import {
+  InstantSchema,
   type RunStatus,
   type SourceStatus,
   TIMELINE_RUNS,
@@ -29,6 +30,7 @@ import {
   launchdStatus,
   launchdUpcoming,
   logStamps,
+  type Seen,
   stampRuns,
 } from "./launchd-model";
 
@@ -53,7 +55,10 @@ const ms = (at: string | null | undefined) => {
 /** A time read from someone else's file, as the wire carries it (shared/timeline.ts InstantSchema); null when it is not one. */
 const instant = (at: string | null | undefined) => {
   const parsed = ms(at);
-  return parsed === null ? null : iso(parsed);
+  if (parsed === null) return null;
+  // A year Date takes but the wire does not (past 9999) is left out, not sent to fail the whole view.
+  const text = iso(parsed);
+  return InstantSchema.safeParse(text).success ? text : null;
 };
 /** A run starting this close to its due time is the run that was due. */
 const DUE_SLACK_MS = 2 * 60_000;
@@ -367,8 +372,6 @@ const TICK_STATUS: Record<TickStatus, RunStatus> = {
 
 /** The launchd label of a fleet scope's tick, from the Fleet view's own plist name: the fleet source shows those runs. */
 export const fleetLabel = (scope: string) => plistName(scope).replace(/\.plist$/, "");
-/** Every fleet scope's tick job starts with this. The Fleet view counts what it does, never the Timeline. */
-export const FLEET_LABEL_PREFIX = fleetLabel("");
 
 /**
  * A fleet scope as a source, from the Fleet view's read: its ticks are its
@@ -483,22 +486,24 @@ export function tailOf(text: string | null): string | null {
 export interface LaunchdContext {
   /** This job's run ends from the unified log. */
   exits: readonly LaunchdExit[];
-  coverage: number | null;
-  /**
-   * How far the evidence reaches (server/launchd.ts LaunchdRead.exitsUntil,
-   * else when it was read): whether a run was missed is judged at this
-   * instant, never later, so an old or failed read cannot page.
-   */
-  judgedAt: number;
+  /** What the unified log saw (launchd-model.ts Seen), or null when it has not been read: no miss is judged without it. */
+  seen: Seen | null;
   awakeSince: number | null;
   prefix: string;
 }
 
 /**
- * One launchd job as a source. A fleet scope's tick job that is shown here
- * (the Fleet view could not be read) never needs you from the Timeline: the
- * Fleet view's own notice counts it.
+ * The stretch the unified log saw, from a launchd read: as far back as it
+ * reaches, to the earlier of now and where its last good read ended. Null
+ * when either end is not known.
  */
+export function seenOf(read: { coverage: number | null; exitsUntil: number | null }, now: number): Seen | null {
+  if (read.coverage === null || read.exitsUntil === null) return null;
+  const to = Math.min(now, read.exitsUntil);
+  return to > read.coverage ? { from: read.coverage, to } : null;
+}
+
+/** One launchd job as a source. */
 export function launchdSource(job: LaunchdJob, context: LaunchdContext, window: Window): TimelineSource {
   const { now } = window;
   const schedule = launchdSchedule(job);
@@ -506,7 +511,7 @@ export function launchdSource(job: LaunchdJob, context: LaunchdContext, window: 
     exits: context.exits,
     logged: stampRuns(logStamps(job.logText ?? "")),
     logWrittenAt: job.logWrittenAt,
-    lastExit: job.printed?.lastExit ?? null,
+    lastExit: job.lastExit,
     running: job.running ? { since: job.runningSince } : null,
     now,
   });
@@ -514,12 +519,10 @@ export function launchdSource(job: LaunchdJob, context: LaunchdContext, window: 
     loaded: job.loaded,
     schedule,
     runs: all,
-    now: Math.min(now, context.judgedAt),
+    seen: context.seen,
     installedAt: job.installedAt,
     awakeSince: context.awakeSince,
-    coverage: context.coverage,
   });
-  const fleets = job.label.startsWith(FLEET_LABEL_PREFIX);
   const newest = all[0] ? ms(all[0].at) : null;
   const { next, upcoming } = job.loaded
     ? launchdUpcoming(schedule, judged.status === "missed" ? null : newest, now, window.to, TIMELINE_UPCOMING)
@@ -531,9 +534,9 @@ export function launchdSource(job: LaunchdJob, context: LaunchdContext, window: 
     name: name || job.label,
     cadence: launchdCadence(job),
     status: judged.status,
-    reason: fleets ? `${judged.reason} The Fleet view counts it.` : judged.reason,
+    reason: judged.reason,
     since: judged.since,
-    needsYou: needs(judged.status) && !fleets,
+    needsYou: needs(judged.status),
     next: next !== null ? iso(next) : null,
     upcoming: upcoming.map(iso),
     runs: inWindow([...judged.missed, ...all], window),

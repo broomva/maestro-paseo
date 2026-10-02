@@ -54,6 +54,9 @@ export function paseoSchedulesDir(env: NodeJS.ProcessEnv = process.env): string 
   );
 }
 
+/** A launchd label prefix: it can reach a log predicate or a launchctl target only as a name. */
+export const LABEL_PREFIX = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 /**
  * The launchd jobs the Timeline view reads: those whose label starts with
  * this, `com.broomva.` unless MAESTRO_PASEO_LAUNCHD names another prefix;
@@ -66,6 +69,6 @@ export function launchdPrefix(
   const chosen = env.MAESTRO_PASEO_LAUNCHD?.trim();
   if (chosen === "off" || platform !== "darwin") return null;
   // A label prefix only: anything else could reach the log predicate, so it reads none rather than a guess.
-  if (chosen && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(chosen)) return null;
+  if (chosen && !LABEL_PREFIX.test(chosen)) return null;
   return chosen || "com.broomva.";
 }

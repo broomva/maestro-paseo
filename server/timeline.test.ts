@@ -28,6 +28,7 @@ function job(label: string, extra: Partial<LaunchdJob> = {}): LaunchdJob {
       stdout: null,
       intervalSeconds: null,
     },
+    lastExit: 0,
     plist: { StartInterval: 900 },
     installedAt: NOW - 30 * 24 * H,
     runningSince: null,
@@ -90,7 +91,9 @@ const fleetView = (detailFor: string | undefined): FleetView => ({
 
 async function setup(options: { launchdMs?: number } = {}) {
   let slowMs = options.launchdMs ?? 0;
+  let fleetMs = 0;
   let fails = false;
+  let logRead = true;
   const root = await mkdtemp(join(tmpdir(), "maestro-timeline-"));
   roots.push(root);
   const schedules = join(root, "schedules");
@@ -121,10 +124,10 @@ async function setup(options: { launchdMs?: number } = {}) {
           job("com.broomva.fleet-reconcile.broomva", { plist: { StartInterval: 3600 } }),
         ],
         exits,
-        coverage: NOW - 20 * H,
-        exitsUntil: readAt,
+        coverage: logRead ? NOW - 20 * H : null,
+        exitsUntil: logRead ? readAt : null,
+        warnings: logRead ? [] : ["The unified log could not be read, so launchd runs are not all shown: timed out"],
         awakeSince: null,
-        warnings: [],
       };
     },
   };
@@ -138,6 +141,7 @@ async function setup(options: { launchdMs?: number } = {}) {
     fleet: {
       get: async (scope) => {
         fleetCalls.push(scope);
+        if (fleetMs) await new Promise((resolve) => setTimeout(resolve, fleetMs));
         return fleetView(scope);
       },
     },
@@ -152,6 +156,8 @@ async function setup(options: { launchdMs?: number } = {}) {
     setNow: (at: number) => (now = at),
     setSlow: (ms: number) => (slowMs = ms),
     failReads: () => (fails = true),
+    failLogRead: () => (logRead = false),
+    setFleetSlow: (ms: number) => (fleetMs = ms),
     setExits: (next: LaunchdRead["exits"]) => (exits = next),
   };
 }
@@ -314,6 +320,82 @@ describe("the timeline", () => {
     expect(notices).toEqual([]);
     expect(reads()).toBe(2);
     expect(view.now).toBe(iso(NOW + 2 * M));
+  });
+
+  test("the first unified-log read failing pages no one: nothing is called missed it did not see", async () => {
+    const { timeline, failLogRead, setExits } = await setup();
+    failLogRead();
+    // moltbook's only run end known is three hours old, on a 15-minute interval.
+    setExits([
+      {
+        label: "com.broomva.moltbook-loop",
+        pid: 2,
+        endedAt: NOW - 3 * H,
+        exit: 0,
+        signal: null,
+        byLaunchd: false,
+        ranMs: 20,
+      },
+    ]);
+    expect(await timeline.notices()).toEqual([]);
+    const view = await timeline.get();
+    expect(view.sources.find((source) => source.id === "launchd:com.broomva.moltbook-loop")?.status).toBe("ok");
+    expect(view.warnings).toEqual([expect.stringContaining("The unified log could not be read")]);
+  });
+
+  test("a view asked for while a fresher read is being built on is that build's, not the older cached view", async () => {
+    const { timeline, reads, setNow, setFleetSlow } = await setup();
+    await timeline.notices();
+    // Four minutes on, the header count builds a view on that same read, four minutes old.
+    setNow(NOW + 4 * M);
+    await timeline.notices();
+    expect(reads()).toBe(1);
+    // A second later the view wants launchd within a minute: it reads again, and builds slowly.
+    setNow(NOW + 4 * M + 1000);
+    setFleetSlow(300);
+    const first = timeline.get();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(reads()).toBe(2);
+    // Asked for now, the cached view is a second old but built on the four-minute read: not fresh enough.
+    const second = await timeline.get();
+    expect(second.now).toBe(iso(NOW + 4 * M + 1000));
+    expect(await first).toBe(second);
+  });
+
+  test("a cached view counts as fresh by the read it was built on, not one taken since", async () => {
+    const { timeline, reads, setNow } = await setup();
+    await timeline.get();
+    // The header count reads launchd again at five minutes and builds its view on it...
+    setNow(NOW + LAUNCHD_NOTICE_MS + 1);
+    await timeline.notices();
+    expect(reads()).toBe(2);
+    // ...a view asked for 1 s later is served that cached view, built on a read 1 s old: no third read.
+    setNow(NOW + LAUNCHD_NOTICE_MS + 1001);
+    await timeline.get();
+    expect(reads()).toBe(2);
+  });
+
+  test("with launchd off, the loop and the schedules still get the Mac's wake time", async () => {
+    const root = await mkdtemp(join(tmpdir(), "maestro-timeline-"));
+    roots.push(root);
+    const asked: string[] = [];
+    const timeline = new Timeline({
+      launchd: null,
+      schedulesDir: join(root, "missing"),
+      // Due three hours ago; the Mac woke 3 min ago: within a period and the grace of the wake.
+      loop: async () => ({ minutes: 15, nextAt: iso(NOW - 3 * H), ticking: false }),
+      wakes: async () => [],
+      fleet: null,
+      awakeSince: async () => {
+        asked.push("wake");
+        return NOW - 3 * M;
+      },
+      now: () => NOW,
+      log: () => undefined,
+    });
+    const view = await timeline.get();
+    expect(asked).toEqual(["wake"]);
+    expect(view.sources.find((source) => source.id === "loop")?.status).toBe("ok");
   });
 
   test("a launchd job's log end, only when asked for", async () => {

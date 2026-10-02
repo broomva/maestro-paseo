@@ -210,15 +210,6 @@ export function dueTimes(
   return out;
 }
 
-/** The newest time due at or before `at`, looking back at most `lookbackMs`; null when there is none. */
-export function lastDue(specs: readonly CronSpec[], zone: string | undefined, at: number, lookbackMs: number) {
-  const top = Math.floor(at / MINUTE) * MINUTE;
-  for (let when = top; when >= at - lookbackMs; when -= MINUTE) {
-    if (specs.some((spec) => matches(spec, partsOf(when, zone)))) return when;
-  }
-  return null;
-}
-
 // ── In words ─────────────────────────────────────────────────────────────────
 
 /** "every 15 minutes", "every hour", "every 2 hours", "every 30 seconds". */

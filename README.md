@@ -390,13 +390,15 @@ now and the next 24 to its right. It reads four kinds of source:
   - A fleet scope: the Fleet view's own rule.
 - **A read that fails is said, never read as healthy.** A command that exits non-zero, or a plist
   that will not convert, is a warning in the view and costs only what it would have said. A launchd
-  job is judged only as far as the last good read of the unified log reaches, so an old or failed
-  read never calls a run missed that came due after it.
+  run is called missed only if it came due inside what the unified log saw: from as far back as it
+  reaches to where its last good read ended. So a log that has never read, an old read, or a run due
+  before the log's reach is never a miss; the row says when it cannot tell.
 - **In Needs you.** A failed or missed source shows above every other view, with *Open Timeline*,
   and counts in the header count, so it reaches the phone. Fleet scopes are counted once, by the
   Fleet view's notice or the fleet's own alert work, and never again by the Timeline. The launchd
-  job that runs a fleet scope's ticks is shown as that scope; if the Fleet view cannot be read it
-  is shown as a launchd job, and still never counted by the Timeline.
+  job that runs a fleet scope's ticks is shown as that scope. If the Fleet view cannot be read (or
+  does not know that scope), it is shown as a plain launchd job and counted like one, so a failure
+  is never hidden for want of the Fleet view.
 - **On the phone.** The Timeline is one of the views a compact window offers. Its axis labels every
   12 hours there, and every 6 on a wide window.
 
@@ -487,3 +489,6 @@ It is pinned to 0.8.0 so one build serves 0.8 and 0.9 hosts.
     An older run is known only if the job stamps its own log, and a run before the log's reach is
     never called missed.
   - A job whose log carries no timestamps shows its last run at the time the log was last written.
+  - On the night the clocks go back, a calendar job in the repeated hour is due twice by the wall
+    clock; if launchd runs it once, the second can read as missed. Bogotá, with no daylight saving,
+    is not affected.
