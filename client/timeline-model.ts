@@ -169,7 +169,7 @@ export function marksOf(source: Pick<TimelineSource, "runs" | "upcoming" | "next
   return marks;
 }
 
-/** The axis's labels: every `hours` on the local clock, with "now" at its place. */
+/** The axis's labels: every `hours` on the local clock (a day's name at midnight), with "now" at its place. */
 export function axisTicks(axis: Axis, hours = 6): { key: string; left: number; label: string }[] {
   const ticks: { key: string; left: number; label: string }[] = [];
   const start = new Date(axis.from);
@@ -179,7 +179,12 @@ export function axisTicks(axis: Axis, hours = 6): { key: string; left: number; l
     if (at < axis.from || date.getHours() % hours !== 0) continue;
     // Within half a step of now its label would overlap now's (a phone draws 12 h in about 75 px).
     if (Math.abs(at - axis.now) < (hours / 2) * 3_600_000) continue;
-    ticks.push({ key: String(at), left: place(axis, at), label: clock(at) });
+    // Midnight says which day it begins, so two midnights on one axis are told apart.
+    ticks.push({
+      key: String(at),
+      left: place(axis, at),
+      label: date.getHours() === 0 ? (DAYS[date.getDay()] ?? clock(at)) : clock(at),
+    });
   }
   return ticks;
 }

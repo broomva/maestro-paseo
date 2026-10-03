@@ -468,10 +468,10 @@ export function launchdCadence(job: Pick<LaunchdJob, "plist" | "printed">): stri
   const plist = job.plist ?? {};
   if (plist.StartCalendarInterval !== undefined) {
     const words = calendarCadence(plist.StartCalendarInterval);
-    // A value launchd's own format allows no reading of: no run of it is drawn or judged, and the row says so.
+    // A value launchd's own format allows no reading of: none of its runs to come is drawn, no miss is judged, and the row says so.
     return calendarSpecs(plist.StartCalendarInterval)
       ? words
-      : `${words} (a calendar this cannot read, so its runs are not judged)`;
+      : `${words} (a calendar this cannot read, so no missed run is judged)`;
   }
   const { intervalMs } = launchdSchedule(job);
   if (intervalMs !== null) return everyWords(intervalMs);

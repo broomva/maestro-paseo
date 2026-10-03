@@ -142,12 +142,12 @@ describe("the axis", () => {
 
   test("hour labels on the local clock, none crowding now", () => {
     const ticks = axisTicks(axis, 6);
-    expect(ticks.every((tick) => /^\d{2}:00$/.test(tick.label))).toBe(true);
     // 18:00 today is under three hours (half a step) from now (16:20): its label would sit on now's.
-    expect(ticks.map((tick) => tick.label)).toEqual(["18:00", "00:00", "06:00", "12:00", "00:00", "06:00", "12:00"]);
+    // Midnight is the day it begins: Friday 2 and Saturday 3 October 2026.
+    expect(ticks.map((tick) => tick.label)).toEqual(["18:00", "Fri", "06:00", "12:00", "Sat", "06:00", "12:00"]);
     expect(ticks.every((tick) => Math.abs(tick.left - 0.5) >= 3 / 48)).toBe(true);
     // A phone's 12-hour labels keep six hours clear of now: 12:00 is 4h20m before 16:20.
-    expect(axisTicks(axis, 12).map((tick) => tick.label)).toEqual(["00:00", "00:00", "12:00"]);
+    expect(axisTicks(axis, 12).map((tick) => tick.label)).toEqual(["Fri", "Sat", "12:00"]);
   });
 });
 

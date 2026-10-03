@@ -4,7 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { calendarSpecs, dueTimes } from "./cron";
 import { sleptThrough } from "./fake-awake";
-import { LAUNCHCTL, Launchd, LOG, NotARead, PLUTIL, PS, type Runner, readOnly } from "./launchd";
+import {
+  EVIDENCE_MS,
+  execRunner,
+  LAUNCHCTL,
+  Launchd,
+  LOG,
+  NotARead,
+  PLUTIL,
+  PS,
+  type Runner,
+  readOnly,
+} from "./launchd";
 import { logStartArg } from "./launchd-model";
 import { launchdSource } from "./timeline-model";
 
@@ -178,6 +189,7 @@ async function setup() {
     setShown: (text: string) => (shown = text),
     setNow: (at: number) => (now = at),
     failList: () => (listFails = true),
+    unfailList: () => (listFails = false),
     exitList: (code: number) => (listExit = code),
     exitShow: (code: number) => (showExit = code),
     failPrint: () => (printFails = true),
@@ -264,13 +276,96 @@ describe("reading the jobs", () => {
     setNow(NOW + 26 * H);
     setShown("");
     const read = await launchd.read();
-    // Run ends older than a day and an hour are let go.
-    expect(read.exits).toEqual([]);
+    // Run ends are kept as long as the evidence they prove: eight days, so these two stay.
+    expect(read.exits).toHaveLength(2);
     // It asked from where it last stopped; the log begins 19 h back now, so the stretch begins there, not before.
     const last = calls.filter((call) => call[0] === LOG).at(-1) ?? [];
     expect(last.slice(1, 3)).toEqual(["show", "--start"]);
     expect(last[3]).toBe(logStartArg(Math.floor((NOW - 2 * M) / 1000) * 1000));
     expect(read.seen).toEqual({ from: heldFrom(NOW + 26 * H - 19 * H, NOW + 26 * H, 19 * H), to: NOW + 26 * H });
+  });
+
+  test("the stretch keeps no further back than its run ends are kept, however long the reads go on", async () => {
+    const { launchd, setNow, setShown } = await setup();
+    setShown("");
+    await launchd.read();
+    // A read every hour for nine days: the stretch would reach back nine days, but run ends are kept eight.
+    for (let hour = 1; hour <= 9 * 24; hour += 1) {
+      setNow(NOW + hour * H);
+      await launchd.read();
+    }
+    const read = await launchd.read();
+    expect(read.seen?.from).toBe(NOW + 9 * 24 * H - EVIDENCE_MS);
+  });
+
+  test("a weekly job's run that ended days ago, read every hour since, is not called missed", async () => {
+    const { launchd, setNow, setShown } = await setup();
+    // The job: Sundays at 09:00, no log of its own; it ran on Sunday 4 October, 09:00:05 local.
+    const ran = new Date(2026, 9, 4, 9, 0, 5).getTime();
+    setNow(ran - 23 * H);
+    setShown("");
+    await launchd.read();
+    let read = await launchd.read();
+    for (let at = ran - 22 * H; at <= ran + 3 * 24 * H; at += H) {
+      setNow(at);
+      setShown(
+        at >= ran && at - H < ran
+          ? exitLine("com.broomva.moltbook-loop", 7, localStamp(ran), "exited due to exit(0), ran for 5000ms")
+          : "",
+      );
+      read = await launchd.read();
+      const job = read.jobs.find((one) => one.label === "com.broomva.moltbook-loop");
+      if (!job) throw new Error("no job");
+      const weekly = {
+        ...job,
+        plist: { StartCalendarInterval: { Weekday: 0, Hour: 9, Minute: 0 } },
+        logText: null,
+        logWrittenAt: null,
+        running: false,
+        runningSince: null,
+      };
+      const source = launchdSource(
+        weekly,
+        {
+          exits: read.exits.filter((exit) => exit.label === job.label),
+          seen: read.seen,
+          awake: sleptThrough(at),
+          prefix: "com.broomva.",
+        },
+        { now: at, from: at - 24 * H, to: at + 24 * H },
+      );
+      expect({ at: new Date(at).toISOString(), status: source.status }).not.toMatchObject({ status: "missed" });
+    }
+  });
+
+  test("a list that fails holds what the log said about loading until a list reads", async () => {
+    const { launchd, setNow, failList, unfailList } = await setup();
+    await launchd.read();
+    // A gap the log no longer holds, on a read whose list fails: the restart waits for the next list.
+    setNow(NOW + 26 * H);
+    failList();
+    await launchd.read();
+    unfailList();
+    setNow(NOW + 26 * H + 5 * M);
+    const read = await launchd.read();
+    expect(read.jobs.find((job) => job.label === "com.broomva.kg-compile")?.loadedSince).toBe(NOW + 26 * H + 5 * M);
+  });
+
+  test("a LaunchAgents folder that cannot be read is said", async () => {
+    const root = await mkdtemp(join(tmpdir(), "maestro-launchd-"));
+    roots.push(root);
+    const file = join(root, "not-a-folder");
+    await writeFile(file, "");
+    const launchd = new Launchd({
+      run: async () => ({ stdout: "PID\tStatus\tLabel\n", code: 0 }),
+      uid: 501,
+      agentsDir: file,
+      now: () => NOW,
+    });
+    const read = await launchd.read();
+    expect(
+      read.warnings.some((warning) => warning.includes("could not be read, so jobs not loaded are not shown")),
+    ).toBe(true);
   });
 
   test("a probe that fails proves nothing: no stretch, said; the next good one starts it again", async () => {
@@ -428,8 +523,15 @@ function mulberry32(seed: number): () => number {
 describe("what was seen is what the log held", () => {
   test("over many reads, gaps longer than the log keeps, and a job unloaded and reloaded, no run it did not see is called missed", async () => {
     const label = "com.broomva.job";
-    // Hourly, every six hours, or daily: a long period is what lets a gap swallow the only run since the last.
-    const cadences = [{ Minute: 0 }, [0, 6, 12, 18].map((Hour) => ({ Hour, Minute: 0 })), { Hour: 4, Minute: 0 }];
+    // Hourly, six-hourly, daily, weekdays and weekly: a long period is what lets a gap, or a run let go, swallow
+    // the only run since the last.
+    const cadences = [
+      { Minute: 0 },
+      [0, 6, 12, 18].map((Hour) => ({ Hour, Minute: 0 })),
+      { Hour: 4, Minute: 0 },
+      [1, 2, 3, 4, 5].map((Weekday) => ({ Weekday, Hour: 9, Minute: 0 })),
+      { Weekday: 0, Hour: 9, Minute: 0 },
+    ];
     let found = 0;
     for (let seed = 1; seed <= 90; seed += 1) {
       const random = mulberry32(seed);
@@ -437,23 +539,28 @@ describe("what was seen is what the log held", () => {
       const specs = calendarSpecs(calendar);
       if (!specs) throw new Error("did not read");
       const t0 = Date.parse("2026-10-01T00:00:00Z");
-      const end = t0 + 5 * 24 * H;
+      const end = t0 + 10 * 24 * H;
+      // Half the seeds read as a daemon with a client open does, every few minutes for days; half sparsely.
+      const dense = random() < 0.5;
       const retain = (12 + random() * 12) * H;
       // The truth: due every hour; unloaded over one stretch; a few due times skipped while loaded. No log file.
       // Unloaded once: half the time for hours; half the time for minutes around one of its own due times,
       // which reads mostly fall either side of, so only the log's "removing service" line shows it.
-      const own = dueTimes(specs, undefined, t0 + 24 * H, t0 + 4 * 24 * H, 1000);
+      const own = dueTimes(specs, undefined, t0 + 24 * H, t0 + 9 * 24 * H, 1000);
       const around = own[Math.floor(random() * own.length)] ?? t0 + 2 * 24 * H;
       const short = random() < 0.5;
-      const unloadAt = short ? around - (1 + random() * 20) * M : t0 + random() * 4 * 24 * H;
+      const unloadAt = short ? around - (1 + random() * 20) * M : t0 + random() * 9 * 24 * H;
       const unloadUntil = short ? around + (5 + random() * 25) * M : unloadAt + random() * 10 * H;
       const loadedAt = (at: number) => !(at >= unloadAt && at < unloadAt + (unloadUntil - unloadAt));
       const due = dueTimes(specs, undefined, t0 - 25 * H, end, 100_000);
       const skipped = new Set(due.filter(() => random() < 0.1));
       const ends = due.filter((at) => loadedAt(at) && !skipped.has(at)).map((at) => at + 5000);
       let now = t0;
+      let listFails = false;
       const run: Runner = async (command, args, options) => {
         if (command === LAUNCHCTL && args[0] === "list") {
+          // Now and then the list itself fails.
+          if (listFails) throw new Error("launchctl is unhappy");
           return { stdout: `PID\tStatus\tLabel\n${loadedAt(now) ? `-\t0\t${label}\n` : ""}`, code: 0 };
         }
         if (command === LAUNCHCTL) return { stdout: "x = {\n\tstate = not running\n\tlast exit code = 0\n}", code: 0 };
@@ -480,8 +587,11 @@ describe("what was seen is what the log held", () => {
       };
       const launchd = new Launchd({ run, uid: 501, agentsDir: "/nonexistent/LaunchAgents", now: () => now });
       while (now < end) {
-        // The next read: mostly minutes to two hours on, sometimes past what the log keeps.
-        now = Math.min(end, now + (random() < 0.15 ? (retain / H + 1 + random() * 8) * H : (1 + random() * 120) * M));
+        // The next read: dense, every 2 to 20 minutes with a rare gap past what the log keeps; or sparse.
+        const gap = random() < (dense ? 0.01 : 0.15);
+        const step = gap ? (retain / H + random() * 8) * H : dense ? (2 + random() * 18) * M : (1 + random() * 120) * M;
+        now = Math.min(end, now + step);
+        listFails = random() < 0.05;
         const read = await launchd.read();
         const job = read.jobs.find((one) => one.label === label);
         if (!job) continue;
@@ -491,18 +601,51 @@ describe("what was seen is what the log held", () => {
           { now, from: now - 24 * H, to: now + 24 * H },
         );
         if (source.status !== "missed") continue;
-        const at = Date.parse(source.since ?? "");
-        // Every miss called is a true one: a run was due then, the job was loaded, and it did not run.
-        expect({ seed, at: new Date(at).toISOString(), loaded: loadedAt(at), ran: ends.includes(at + 5000) }).toEqual({
-          seed,
-          at: new Date(at).toISOString(),
-          loaded: true,
-          ran: false,
-        });
+        // Every miss called, and every missed run drawn, is a true one: due then, loaded, and it did not run.
+        const drawn = source.runs.filter((one) => one.status === "missed").map((one) => Date.parse(one.at));
+        for (const at of [Date.parse(source.since ?? ""), ...drawn]) {
+          expect({ seed, at: new Date(at).toISOString(), loaded: loadedAt(at), ran: ends.includes(at + 5000) }).toEqual(
+            {
+              seed,
+              at: new Date(at).toISOString(),
+              loaded: true,
+              ran: false,
+            },
+          );
+        }
         found += 1;
       }
     }
     // Not vacuous: real misses were called.
     expect(found).toBeGreaterThan(10);
-  }, 60_000);
+  }, 180_000);
+});
+
+describe("the real runner", () => {
+  test("answers a command's output and exit code, with no shell", async () => {
+    expect(await execRunner("/bin/echo", ["a b", "$HOME"], { timeoutMs: 5000 })).toEqual({
+      stdout: "a b $HOME\n",
+      code: 0,
+    });
+    expect((await execRunner("/usr/bin/false", [], { timeoutMs: 5000 })).code).toBe(1);
+  });
+
+  test("kills a command at its timeout and says so", async () => {
+    const started = Date.now();
+    await expect(execRunner("/bin/sleep", ["5"], { timeoutMs: 200 })).rejects.toThrow("took longer than 0 s");
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  test("answers with the first line and stops the command, when that is all it wants", async () => {
+    // `yes` writes forever: only the first line is read, and it is stopped.
+    expect(await execRunner("/usr/bin/yes", ["first"], { timeoutMs: 5000, firstLine: true })).toEqual({
+      stdout: "first",
+      code: 0,
+    });
+  });
+
+  test("refuses output past 32 MB, and a command that cannot start", async () => {
+    await expect(execRunner("/usr/bin/yes", [], { timeoutMs: 20_000 })).rejects.toThrow("wrote more than 32 MB");
+    await expect(execRunner("/nonexistent/binary", [], { timeoutMs: 5000 })).rejects.toThrow();
+  }, 30_000);
 });

@@ -11,13 +11,15 @@
 // load, unload, bootstrap, kickstart or kill a job.
 //
 // The unified log costs seconds to search a day of, so it is read once in
-// full and then only from where the last read ended, its run ends kept in
-// memory for a day and an hour.
+// full and then only from where the last read ended. Its run ends are kept in
+// memory as long as the stretch they prove (EVIDENCE_MS, eight days): the two
+// are one record, so the stretch can never claim a time whose run ends were
+// let go.
 //
 // What the log saw is observed, never inferred (LaunchdRead.seen): each read
 // asks the log for the first launchd event at or after where it starts, and
-// only when that event sits at the start (the log still held it) does the
-// read extend the stretch the last one proved. A gap the log no longer holds,
+// only when that event is no later than where the last read ended (the log
+// still held it) does the read extend the stretch the last one proved. A gap the log no longer holds,
 // a probe that fails, or a first read starts the stretch again at what the
 // log proves it holds now. A job's loaded-since is the first read that saw it
 // loaded, never a file's date, and it starts again at a read that finds an
@@ -27,7 +29,6 @@
 import { spawn } from "node:child_process";
 import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { TIMELINE_WINDOW_MS } from "../shared/timeline";
 import {
   elapsedMs,
   exitKey,
@@ -161,24 +162,22 @@ export interface LaunchdRead {
   exits: LaunchdExit[];
   /**
    * The stretch the unified log is proven to have held, unbroken, through
-   * the reads so far; null when nothing is proven (no good read yet, or the
-   * last probe failed). Inside it, no run end is evidence that no run ended.
+   * the reads so far, and whose run ends `exits` still holds all of; null when
+   * nothing is proven (no good read yet, or the last probe failed). Inside it,
+   * a run that ended would be in `exits`.
    */
   seen: Seen | null;
   warnings: string[];
 }
 
 export const LOG_TAIL_BYTES = 64 * 1024;
-/** Run ends are kept this long. */
-const KEEP_MS = TIMELINE_WINDOW_MS + 60 * 60_000;
+/**
+ * Run ends, unloads and the stretch they prove are kept this long, together:
+ * a week and a day, the furthest back a miss is ever looked for.
+ */
+export const EVIDENCE_MS = 8 * 24 * 60 * 60_000;
 /** An incremental read starts this far before the last one ended, so a run end on the edge is not lost. */
 const OVERLAP_MS = 2 * 60_000;
-/**
- * The first launchd event at or after a read's start this close to it means
- * the log still held the start. launchd writes every few seconds; a quiet
- * stretch longer than this reads as a gap, which only costs judging.
- */
-export const HELD_SLACK_MS = 10 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
 const SHORT_MS = 10_000;
 const LOG_MS = 90_000;
@@ -211,6 +210,12 @@ export class Launchd {
   private readonly loadedSince = new Map<string, number>();
   /** Unloads already seen, by label and time, so the overlap of two reads counts one once. */
   private readonly unloads = new Map<string, number>();
+  /**
+   * What the log said about loading that no list has yet been read to apply:
+   * the stretch started again, and the jobs it showed unloaded. Kept until a
+   * list reads, so a list that fails loses neither.
+   */
+  private pending = { restarted: false, unloaded: new Set<string>() };
   private inFlight: Promise<LaunchdRead> | null = null;
 
   constructor(options: LaunchdOptions = {}) {
@@ -252,20 +257,29 @@ export class Launchd {
       ),
       readdir(this.agentsDir).then(
         (names) => names.filter((name) => name.startsWith(this.prefix) && name.endsWith(".plist")),
-        () => [] as string[],
+        (error) => {
+          // No LaunchAgents folder is no unloaded plists; one that cannot be read is said.
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            warnings.push(`${this.agentsDir} could not be read, so jobs not loaded are not shown: ${errorText(error)}`);
+          }
+          return [] as string[];
+        },
       ),
       this.readExits(readAt, warnings),
     ]);
     const loaded = new Map((listed ?? []).map((job) => [job.label, job]));
-    // A list that read says which jobs are loaded now; one that did not says nothing, so nothing changes.
+    // What the log said waits for a list to read: one that failed says nothing, and loses nothing.
+    if (logged.restarted) this.pending.restarted = true;
+    for (const label of logged.unloaded) this.pending.unloaded.add(label);
     if (listed) {
       for (const label of [...this.loadedSince.keys()]) if (!loaded.has(label)) this.loadedSince.delete(label);
       for (const label of loaded.keys()) {
-        // Proven loaded from here: first seen, unloaded and back since the last read, or nothing proves it stayed.
-        if (!this.loadedSince.has(label) || logged.restarted || logged.unloaded.has(label)) {
+        // Proven loaded from here: first seen, unloaded and back since, or nothing proves it stayed.
+        if (!this.loadedSince.has(label) || this.pending.restarted || this.pending.unloaded.has(label)) {
           this.loadedSince.set(label, readAt);
         }
       }
+      this.pending = { restarted: false, unloaded: new Set() };
     }
     const labels = new Set([...loaded.keys(), ...plists.map((name) => name.slice(0, -".plist".length))]);
     const jobs = await Promise.all(
@@ -346,10 +360,12 @@ export class Launchd {
 
   /**
    * New run ends since the last read (a day of them the first time), and
-   * what the log is proven to hold. Both queries start at the same second:
-   * the run ends, and the first launchd event of any kind, which says where
-   * the log really begins now. The stretch extends only when that event sits
-   * at the start.
+   * what the log is proven to hold. Both queries start at the same second, a
+   * little before the last read ended: the run ends, and the first launchd
+   * event of any kind, which says where the log really begins now. The
+   * stretch extends only when that event is no later than where the last
+   * read ended; launchd writes every few seconds, so a quiet log only starts
+   * the stretch again, which costs judging, never a page.
    */
   private async readExits(
     readAt: number,
@@ -373,7 +389,8 @@ export class Launchd {
       return { restarted: false, unloaded: new Set() };
     }
     for (const exit of parseExits(shown.value)) this.exits.set(exitKey(exit), exit);
-    for (const [key, exit] of this.exits) if (exit.endedAt < readAt - KEEP_MS) this.exits.delete(key);
+    const keepFrom = readAt - EVIDENCE_MS;
+    for (const [key, exit] of this.exits) if (exit.endedAt < keepFrom) this.exits.delete(key);
     // An unload is new once: the read overlaps the last, which may have seen it already.
     const unloaded = new Set<string>();
     for (const unload of parseUnloads(shown.value)) {
@@ -382,14 +399,16 @@ export class Launchd {
       this.unloads.set(key, unload.at);
       unloaded.add(unload.label);
     }
-    for (const [key, at] of this.unloads) if (at < readAt - KEEP_MS) this.unloads.delete(key);
+    for (const [key, at] of this.unloads) if (at < keepFrom) this.unloads.delete(key);
     const held = probe.status === "fulfilled" ? probeTime(probe.value.stdout) : null;
     let restarted = true;
     if (held === null) {
       this.stretch = null;
       warnings.push("How far back the unified log reaches could not be read, so no launchd run is called missed.");
-    } else if (this.stretch && this.stretch.to >= start && Math.abs(held - start) <= HELD_SLACK_MS) {
-      this.stretch = { from: this.stretch.from, to: readAt };
+    } else if (this.stretch && this.readTo !== null && this.stretch.to >= this.readTo && held <= this.readTo) {
+      // The log still holds an event from before the last read ended: nothing between is unseen.
+      // The stretch keeps no further back than its run ends are kept.
+      this.stretch = { from: Math.max(this.stretch.from, keepFrom), to: readAt };
       restarted = false;
     } else {
       // The first read, or a gap the log no longer holds: only what it holds now is proven.

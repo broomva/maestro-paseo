@@ -646,7 +646,7 @@ describe("a launchd job", () => {
 
   test("a calendar launchd's plist gives that this cannot read is said in its cadence, never read as no schedule", () => {
     const odd = launchdSource(job({ plist: { StartCalendarInterval: { Hour: 25, Minute: 0 } } }), context, window);
-    expect(odd.cadence).toBe("daily at 25:00 (a calendar this cannot read, so its runs are not judged)");
+    expect(odd.cadence).toBe("daily at 25:00 (a calendar this cannot read, so no missed run is judged)");
     expect(odd.upcoming).toEqual([]);
   });
 

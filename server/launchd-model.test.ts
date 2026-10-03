@@ -148,7 +148,7 @@ describe("the unified log", () => {
         "exited with exit reason (namespace: 1 code: 0x2) - OS_REASON_JETSAM, ran for 41ms",
       ),
     );
-    expect(jetsam).toMatchObject({ exit: null, signal: null, reason: "JETSAM" });
+    expect(jetsam).toMatchObject({ exit: null, signal: null, reason: "OS_REASON_JETSAM" });
     const [killed] = launchdRuns({
       exits: jetsam ? [jetsam] : [],
       logged: [],
@@ -157,7 +157,27 @@ describe("the unified log", () => {
       running: null,
       now: NOW,
     });
-    expect(killed).toMatchObject({ status: "failed", detail: "killed by the system under memory pressure (jetsam)" });
+    expect(killed).toMatchObject({ status: "failed", detail: "killed by the system for memory (OS_REASON_JETSAM)" });
+    // Its memory limit and RunningBoard are failures too; an idle exit is the system letting an idle job go.
+    const reasons = [
+      "exited with exit reason (namespace: 1 code: 0x6) - JETSAM_REASON_MEMORY_PERPROCESSLIMIT, ran for 900ms",
+      "exited with exit reason (namespace: 15 code: 0x0) - OS_REASON_RUNNINGBOARD | <RBSTerminateContext|>, ran for 5ms",
+      "exited with exit reason (namespace: 1 code: 0x9) - JETSAM_REASON_MEMORY_IDLE_EXIT, ran for 8095100ms",
+    ].map((message) => parseExitLine(line("com.broomva.x", 3, "2026-10-02 03:00:00.000000-0500", message)));
+    const statuses = launchdRuns({
+      exits: reasons.flatMap((one, index) => (one ? [{ ...one, endedAt: one.endedAt + index * 60_000 }] : [])),
+      logged: [],
+      logWrittenAt: null,
+      lastExit: null,
+      running: null,
+      now: NOW,
+    }).map((one) => [one.status, one.detail]);
+    // Newest first by when each started: the idle one ran for over two hours.
+    expect(statuses).toEqual([
+      ["failed", "ended by the system (OS_REASON_RUNNINGBOARD)"],
+      ["failed", "killed by the system for memory (JETSAM_REASON_MEMORY_PERPROCESSLIMIT)"],
+      ["unknown", "ended by the system when idle"],
+    ]);
   });
 
   test("a stream: run ends oldest first, the closing summary and any noise skipped", () => {
@@ -420,6 +440,13 @@ describe("a job's status", () => {
     expect(launchdStatus({ ...base, seen: null, schedule: interval, runs: [] })).toMatchObject({
       status: "unknown",
       reason: "No run seen yet.",
+    });
+  });
+
+  test("seen loaded only since now (a reload, a gap), its row says misses are told from the next due time on", () => {
+    expect(launchdStatus({ ...base, loadedSince: NOW, schedule: interval, runs: [run(NOW - 3 * H)] })).toMatchObject({
+      status: "ok",
+      reason: "Its last run passed; whether one is missed is told from the next due time on.",
     });
   });
 

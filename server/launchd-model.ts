@@ -115,7 +115,12 @@ export interface LaunchdExit {
   signal: string | null;
   /** launchd itself sent the signal: a job stopped at logout or unload, not one that failed. */
   byLaunchd: boolean;
-  /** The system's reason, when it ended the run itself (`OS_REASON_JETSAM`: memory pressure). */
+  /**
+   * The system's reason, when it ended the run itself: `OS_REASON_JETSAM` and
+   * `JETSAM_REASON_MEMORY_*` (memory), `OS_REASON_RUNNINGBOARD` (terminated),
+   * or `JETSAM_REASON_MEMORY_IDLE_EXIT`, the one that is no failure: an idle
+   * job let go.
+   */
   reason: string | null;
   ranMs: number | null;
 }
@@ -165,7 +170,7 @@ export function parseExitLine(line: string): LaunchdExit | null {
     exit: exit?.[1] !== undefined ? Number(exit[1]) : null,
     signal: exit ? null : (signal?.[1] ?? null),
     byLaunchd: !exit && /sent by launchd\[/.test(message),
-    reason: exit ? null : (/OS_REASON_([A-Z_]+)/.exec(message)?.[1] ?? null),
+    reason: exit ? null : (/\b((?:OS|JETSAM)_REASON_[A-Z_]+)/.exec(message)?.[1] ?? null),
     ranMs: ran?.[1] ? Number(ran[1]) : null,
   };
 }
@@ -246,6 +251,9 @@ const iso = (at: number) => new Date(at).toISOString();
 /** SIGTERM from launchd stops a job (logout, unload): it is not the job failing, and not a pass either. */
 const stoppedByLaunchd = (signal: string | null, byLaunchd: boolean) => byLaunchd && signal === "SIGTERM";
 
+/** The one way the system ends a run that is not a failure: it let an idle job go. */
+const IDLE_EXIT = "JETSAM_REASON_MEMORY_IDLE_EXIT";
+
 function exitStatus(
   exit: number | null,
   signal: string | null,
@@ -253,7 +261,7 @@ function exitStatus(
   reason: string | null = null,
 ): RunStatus {
   if (exit === 0) return "ok";
-  if (stoppedByLaunchd(signal, byLaunchd)) return "unknown";
+  if (stoppedByLaunchd(signal, byLaunchd) || reason === IDLE_EXIT) return "unknown";
   if (exit !== null || signal !== null || reason !== null) return "failed";
   return "unknown";
 }
@@ -266,8 +274,11 @@ export function exitDetail(
 ): string | null {
   if (stoppedByLaunchd(signal, byLaunchd)) return "stopped by launchd (SIGTERM)";
   if (signal) return `killed by ${signal}`;
-  if (reason === "JETSAM") return "killed by the system under memory pressure (jetsam)";
-  if (reason) return `ended by the system (${reason.toLowerCase()})`;
+  if (reason === IDLE_EXIT) return "ended by the system when idle";
+  if (reason === "OS_REASON_JETSAM" || reason?.startsWith("JETSAM_REASON_MEMORY")) {
+    return `killed by the system for memory (${reason})`;
+  }
+  if (reason) return `ended by the system (${reason})`;
   if (exit !== null) return `exit ${exit}`;
   return null;
 }
@@ -359,9 +370,10 @@ export interface LaunchdSchedule {
 }
 
 /**
- * The stretch of time the unified log was read over: from as far back as it
- * reaches to where the last good read of it ended. Inside it, no run end is
- * evidence that no run ended; outside it, it is nothing.
+ * The stretch of time the unified log is proven to have held, unbroken,
+ * whose run ends the reader still keeps (server/launchd.ts LaunchdRead.seen):
+ * inside it, a run that ended would be among them; outside it, nothing is
+ * known.
  */
 export interface Seen {
   from: number;
@@ -444,7 +456,7 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
           reason:
             due.length === 1
               ? "A run came due and it has not run."
-              : `${due.length} runs came due since ${sinceLast ? "its last run" : "the unified log begins"} and none ran.`,
+              : `Runs came due since ${sinceLast ? "its last run" : "the unified log begins"} and none ran.`,
           since: iso(first),
           missed: due.slice(-MISSED_SHOWN).reverse().map(missedRun),
         };
@@ -471,16 +483,20 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
       status: "unknown",
       reason: newest.detail?.startsWith("stopped by launchd")
         ? "launchd stopped its last run (SIGTERM)."
-        : "Its last run's exit was not recorded.",
+        : newest.detail === "ended by the system when idle"
+          ? "The system let its last run go when idle."
+          : "Its last run's exit was not recorded.",
       since: newest.at,
       missed: [],
     };
   }
   return {
     status: "ok",
-    reason: seen
-      ? "On schedule; its last run passed."
-      : "Its last run passed; whether one was missed since cannot be told until the unified log reads.",
+    reason: !seen
+      ? "Its last run passed; whether one was missed since cannot be told until the unified log reads."
+      : (input.loadedSince ?? seen.to) >= seen.to
+        ? "Its last run passed; whether one is missed is told from the next due time on."
+        : "On schedule; its last run passed.",
     since: newest.at,
     missed: [],
   };

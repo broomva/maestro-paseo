@@ -383,7 +383,7 @@ now and the next 24 to its right. It reads four kinds of source:
   - A launchd job on an interval: two intervals and 5 minutes of awake time with no run, after its
     newest run ended.
   - A launchd job on a calendar: a due time after its newest run ended, with 30 minutes of awake time
-    gone since. Never one due before its plist was written.
+    gone since.
   - A Paseo schedule: its next run 10 minutes of awake time overdue, with no run started at or after
     it was due. A paused, completed or expired schedule never needs you, whatever its last run did:
     it will not run again on its own.
@@ -498,6 +498,8 @@ It is pinned to 0.8.0 so one build serves 0.8 and 0.9 hosts.
   - A job whose log carries no timestamps shows its last run at the time the log was last written.
   - A calendar a plist gives that this cannot read (a value out of range) is said in its cadence, and
     its runs are neither drawn nor judged.
+  - A launchd calendar is read in the daemon process's time zone, which is the Mac's own unless the
+    daemon was started with `TZ` set; launchd itself always uses the Mac's.
   - On the night the clocks go back, a calendar job in the repeated hour is due twice by the wall
     clock; if launchd runs it once, the second can read as missed. Bogotá, with no daylight saving,
     is not affected.
