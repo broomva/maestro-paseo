@@ -262,10 +262,14 @@ export async function lockKey(ledgerPath: string): Promise<string> {
  * lock write the same grammar; a file without a start is judged by its pid alone.
  */
 let ownStart: number | null = null;
-/** Read from ps once, as other writers will read it: Node's uptime stops while the Mac sleeps, ps's does not. */
+/**
+ * Read from ps, as other writers will read it: Node's uptime stops while the
+ * Mac sleeps, ps's does not. Kept once ps answers; until then each take asks it
+ * again, and uptime stands in.
+ */
 async function started(): Promise<number> {
-  ownStart ??= (await startOf(process.pid)) ?? Math.round(Date.now() / 1000 - process.uptime());
-  return ownStart;
+  ownStart ??= await startOf(process.pid);
+  return ownStart ?? Math.round(Date.now() / 1000 - process.uptime());
 }
 
 /** `ps -o etime=`'s `[[dd-]hh:]mm:ss` in seconds: elapsed time, which no time zone shifts (lstart's local time does). */
@@ -418,6 +422,9 @@ export async function acquireLock(
  * Drops every lock in the root that this process left behind: its own pid and
  * start, not held now. Run at each scan (§5.5), so another writer is never kept
  * waiting on a lock of Maestro's that only Maestro's next answer would clear.
+ * The caller runs it when no answer of this process is in flight (Fleet queues
+ * it behind its answers): a lock released and taken again meanwhile would
+ * otherwise read as left behind.
  */
 export async function dropLeftovers(lockRoot: string): Promise<void> {
   const names = await readdir(lockRoot).catch(() => [] as string[]);

@@ -687,6 +687,7 @@ export class Fleet {
 
   /** Every scope's summary, and one scope in full: `scope`, else the first. */
   async get(scope?: string, ticks: number = FLEET_TICKS.default): Promise<FleetView> {
+    this.sweepLocks();
     const [{ scopes, error }, items] = await Promise.all([this.scopes(), this.options.items()]);
     const awake = await this.clock.read();
     const now = this.now();
@@ -720,8 +721,6 @@ export class Fleet {
       const numbers = [...new Set([...read.fold.ticks.keys(), ...read.tickDirs])].sort((a, b) => b - a).slice(0, ticks);
       const askRoot = join(stateDir, ASK_ROOT);
       const decisions = await readDecisions(askRoot);
-      // Each scan clears a ledger lock Maestro left behind (§5.5), so no other writer waits on it.
-      await dropLeftovers(this.options.askLocks ?? controlAskPaths().locks).catch(() => undefined);
       warnings.push(...decisions.warnings);
       const reports = new Map<number, ReportSummary>();
       for (const tick of numbers) {
@@ -801,6 +800,16 @@ export class Fleet {
   }
 
   // ── Your answer to a decision ask ──────────────────────────────────────────
+
+  /**
+   * Clears ledger locks this process left behind (§5.5: at each scan), so no
+   * other writer waits on one. Queued on the answers' own chain, so it never
+   * runs while an answer here holds or is taking a lock; not waited on.
+   */
+  private sweepLocks(): void {
+    const locks = this.options.askLocks ?? controlAskPaths().locks;
+    this.writes = this.writes.catch(() => undefined).then(() => dropLeftovers(locks).catch(() => undefined));
+  }
 
   /**
    * Writes your answer into a ledger in the scope's ask root, under the

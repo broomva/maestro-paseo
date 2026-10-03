@@ -1,10 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkItem } from "../shared/contracts";
 import { groupOf, type OrchState } from "../shared/states";
+import { acquireLock, releaseLock } from "./control-asks";
 import { askBatch, H, report, session, writeFleet } from "./fake-fleet";
 import { AwakeClock, DISABLED_NOTICE, Fleet, REVIEWS_FILE, uptimeRaw, wallClock } from "./fleet";
 
@@ -1094,5 +1095,23 @@ describe("drilling in", () => {
       "is not a folder of the fleet's own",
     );
     expect(await readFile(join(elsewhere, "asks", "fleet-alpha.yaml"), "utf8")).toBe(ledger);
+  });
+});
+
+describe("ledger locks Maestro left behind", () => {
+  test("are cleared by a Fleet read, with no scope at all, queued behind any answer", async () => {
+    const { root, fleet } = await setup();
+    const ledger = join(root, "asks", "l.yaml");
+    await mkdir(join(root, "asks"), { recursive: true });
+    await writeFile(ledger, "asks: []\n");
+    const locks = join(root, "locks");
+    // A release whose token could not be read leaves the lock, our pid on it.
+    const lock = await acquireLock(ledger, locks);
+    await writeFile(join(lock.dir, "token"), "garbled\n");
+    await releaseLock(lock);
+    expect(await readdir(locks)).toHaveLength(1);
+    expect((await fleet.get()).scopes).toEqual([]);
+    for (let tries = 0; tries < 50 && (await readdir(locks)).length > 0; tries++) await Bun.sleep(20);
+    expect(await readdir(locks)).toEqual([]);
   });
 });
