@@ -1,12 +1,14 @@
 // The client bundle must parse under Hermes. Paseo's iOS app evaluates a
 // plugin's client bundle from source with globalThis.eval, and Hermes (React
-// Native 0.81) rejects syntax it does not enable by default, ES6 classes
-// among them. A bundle that throws there is dropped with a console warning
-// only, so Maestro vanishes from the phone while the desktop, on V8, shows it
-// (BRO-2786). This builds the bundle the way Paseo's daemon does
-// (packages/server/src/server/plugins/compiler.ts: esbuild, es2020, async
-// lowered, the host runtime external, wrapped as a CommonJS factory) and
-// compiles it with the hermesc that ships with react-native.
+// Native 0.81) leaves syntax such as ES6 classes off by default. In a bundle
+// this size a class compiles lazily to undefined and activation throws, so
+// the app drops Maestro with a console warning while the desktop, on V8,
+// shows it (BRO-2786). This builds the bundle with the daemon's esbuild
+// options and CommonJS factory wrapper (packages/server/src/server/plugins/
+// compiler.ts; not its interop rewrite or import-boundary plugin, which do
+// not change syntax) and compiles it with the hermesc from this repo's own
+// react-native devDependency. That is a parse check: it does not catch code
+// Hermes parses but runs differently from V8.
 
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -16,8 +18,9 @@ import path from "node:path";
 import { build } from "esbuild";
 
 const root = path.join(import.meta.dir, "..");
-const hermescDir = { darwin: "osx-bin", linux: "linux64-bin" }[process.platform as string];
-const hermesc = hermescDir && path.join(root, "node_modules/react-native/sdks/hermesc", hermescDir, "hermesc");
+const hermescDir = { darwin: "osx-bin", linux: "linux64-bin", win32: "win64-bin" }[process.platform as string];
+const hermescName = process.platform === "win32" ? "hermesc.exe" : "hermesc";
+const hermesc = hermescDir && path.join(root, "node_modules/react-native/sdks/hermesc", hermescDir, hermescName);
 
 async function clientBundle(): Promise<string> {
   const result = await build({
@@ -55,7 +58,7 @@ function compile(source: string): { status: number | null; output: string } {
   return { status: run.status, output: `${run.stdout}${run.stderr}` };
 }
 
-// Skipped only where react-native ships no hermesc; a missing binary on macOS or Linux fails.
+// Skipped only where react-native ships no hermesc; a missing binary on macOS, Linux or Windows fails.
 describe.skipIf(!hermesc)("client bundle under Hermes", () => {
   test("react-native ships hermesc for this platform", () => {
     expect(existsSync(hermesc as string)).toBe(true);
