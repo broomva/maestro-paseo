@@ -15,7 +15,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { attentionWork } from "../shared/contracts";
-import { getTimeline, getTimelineLog, TIMELINE_RUNS, type TimelineSource } from "../shared/timeline";
+import { getTimeline, getTimelineLog, TIMELINE_RUNS, type TimelineRun, type TimelineSource } from "../shared/timeline";
 import { errorText } from "./format";
 import { keyedLines } from "./loop-model";
 import {
@@ -241,6 +241,7 @@ function SourceRow({
   compact,
   canOpenAgent,
   onLink,
+  onRun,
 }: {
   theme: PluginTheme;
   source: TimelineSource;
@@ -250,6 +251,7 @@ function SourceRow({
   compact: boolean;
   canOpenAgent: boolean;
   onLink: (source: TimelineSource) => void;
+  onRun: (source: TimelineSource, run: TimelineRun) => void;
 }) {
   const text = useText(theme);
   const now = axis.now;
@@ -293,6 +295,7 @@ function SourceRow({
           compact={compact}
           canOpenAgent={canOpenAgent}
           onLink={onLink}
+          onRun={onRun}
         />
       ) : null}
     </View>
@@ -313,6 +316,68 @@ function linkLabel(source: TimelineSource, canOpenAgent: boolean): string | null
   }
 }
 
+/** What tapping a run opens, in words for its button: its session, or its tick in the Fleet view; null: nothing. */
+export function runTarget(source: TimelineSource, run: TimelineRun, canOpenAgent: boolean): string | null {
+  if (run.agentId && canOpenAgent) return "Open its session";
+  if (run.tick !== undefined && source.link?.kind === "fleet") return `Open tick ${run.tick}`;
+  return null;
+}
+
+function RunRow({
+  theme,
+  source,
+  run,
+  now,
+  canOpenAgent,
+  onRun,
+}: {
+  theme: PluginTheme;
+  source: TimelineSource;
+  run: TimelineRun;
+  now: number;
+  canOpenAgent: boolean;
+  onRun: (source: TimelineSource, run: TimelineRun) => void;
+}) {
+  const text = useText(theme);
+  const target = runTarget(source, run, canOpenAgent);
+  const line = runLine(run, now);
+  const body = (
+    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[2] }}>
+      <View
+        style={{
+          width: 8,
+          height: 8,
+          marginTop: 4,
+          borderRadius: 8,
+          backgroundColor: run.status === "missed" ? "transparent" : ink(theme, toneOf(run.status)),
+          borderWidth: run.status === "missed" ? 1.5 : 0,
+          borderColor: ink(theme, toneOf(run.status)),
+        }}
+      />
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text style={[text.small, text.tabular, { color: theme.colors.foreground }]}>{line}</Text>
+        {run.output ? (
+          <Text style={text.small} numberOfLines={3}>
+            {run.output}
+          </Text>
+        ) : null}
+      </View>
+      {target ? <Text style={[text.small, { color: theme.colors.accent }]}>{target}</Text> : null}
+    </View>
+  );
+  if (!target) return body;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${target}: ${line}`}
+      onPress={() => onRun(source, run)}
+      style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+    >
+      {body}
+    </Pressable>
+  );
+}
+
 function SourceDetail({
   theme,
   source,
@@ -320,6 +385,7 @@ function SourceDetail({
   compact,
   canOpenAgent,
   onLink,
+  onRun,
 }: {
   theme: PluginTheme;
   source: TimelineSource;
@@ -327,6 +393,7 @@ function SourceDetail({
   compact: boolean;
   canOpenAgent: boolean;
   onLink: (source: TimelineSource) => void;
+  onRun: (source: TimelineSource, run: TimelineRun) => void;
 }) {
   const text = useText(theme);
   const { shown, more } = runsShown(source.runs);
@@ -343,25 +410,15 @@ function SourceDetail({
           <Text style={text.small}>None in the window.</Text>
         ) : (
           shown.map((run) => (
-            <View
+            <RunRow
               key={`${run.at}:${run.status}`}
-              style={{ flexDirection: "row", alignItems: "flex-start", gap: space[2] }}
-            >
-              <View
-                style={{
-                  width: 8,
-                  height: 8,
-                  marginTop: 4,
-                  borderRadius: 8,
-                  backgroundColor: run.status === "missed" ? "transparent" : ink(theme, toneOf(run.status)),
-                  borderWidth: run.status === "missed" ? 1.5 : 0,
-                  borderColor: ink(theme, toneOf(run.status)),
-                }}
-              />
-              <Text style={[text.small, text.tabular, { flex: 1, color: theme.colors.foreground }]}>
-                {runLine(run, now)}
-              </Text>
-            </View>
+              theme={theme}
+              source={source}
+              run={run}
+              now={now}
+              canOpenAgent={canOpenAgent}
+              onRun={onRun}
+            />
           ))
         )}
         {more > 0 ? <Text style={text.small}>{`And ${more} more in the window.`}</Text> : null}
@@ -410,7 +467,7 @@ export function TimelineView({
   theme: PluginTheme;
   compact: boolean;
   navigation: PluginSurfaceProps["navigation"];
-  onOpenFleet: (scope: string) => void;
+  onOpenFleet: (scope: string, tick?: number | null) => void;
   onOpenLoop: () => void;
 }) {
   const text = useText(theme);
@@ -421,6 +478,11 @@ export function TimelineView({
     if (link?.kind === "fleet") onOpenFleet(link.scope);
     else if (link?.kind === "loop") onOpenLoop();
     else if (link?.kind === "agent") navigation?.openAgent({ agentId: link.agentId });
+  };
+  // A run opens the session it started or prompted; a fleet run opens its tick in the Fleet view.
+  const onRun = (source: TimelineSource, run: TimelineRun) => {
+    if (run.agentId && navigation) navigation.openAgent({ agentId: run.agentId });
+    else if (run.tick !== undefined && source.link?.kind === "fleet") onOpenFleet(source.link.scope, run.tick);
   };
   if (timeline.isPending) return <ActivityIndicator color={theme.colors.foregroundMuted} />;
   if (timeline.isError) {
@@ -479,6 +541,7 @@ export function TimelineView({
               open={open === source.id}
               onToggle={() => setOpen((current) => (current === source.id ? null : source.id))}
               onLink={onLink}
+              onRun={onRun}
             />
           ))}
         </View>

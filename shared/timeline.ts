@@ -56,6 +56,14 @@ export const TimelineRunSchema = z.object({
   exit: z.number().nullable(),
   /** One line on how it ended or what it did: "exit 1", "killed by SIGKILL", Paseo's error, the wake's summary. */
   detail: z.string().nullable(),
+  /** The Paseo session the run started or prompted (schedule and heartbeat runs): what tapping the run opens. */
+  agentId: z.string().optional(),
+  /** The workspace Paseo ran it in, when it recorded one. */
+  workspaceId: z.string().optional(),
+  /** The start of the run's last message, as Paseo kept it (up to RUN_OUTPUT_CHARS). */
+  output: z.string().optional(),
+  /** A fleet run's tick: what tapping it opens in the Fleet view. */
+  tick: z.number().int().optional(),
 });
 export type TimelineRun = z.infer<typeof TimelineRunSchema>;
 
@@ -107,6 +115,8 @@ export type TimelineSource = z.infer<typeof TimelineSourceSchema>;
 export const TIMELINE_RUNS = 300;
 export const TIMELINE_UPCOMING = 300;
 export const TIMELINE_TAIL_BYTES = 2048;
+/** A run's output is sent up to this many characters: every open client polls the timeline. */
+export const RUN_OUTPUT_CHARS = 280;
 
 export const getTimeline = defineRpc({
   name: "timeline.get",

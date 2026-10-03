@@ -31,10 +31,17 @@ import type { PluginClientStateSource } from "@getpaseo/plugin/client/host";
 import { Window } from "happy-dom";
 import type { ReactNode } from "react";
 import type { MaestroConfig, Scoreboard, WakeEntry, WorkItem } from "../shared/contracts";
-import { type FleetNotice, type FleetProposal, type FleetView, groupProposals } from "../shared/fleet";
+import {
+  type AskSession,
+  type DecisionAsk,
+  type FleetNotice,
+  type FleetProposal,
+  type FleetView,
+  groupProposals,
+} from "../shared/fleet";
 import type { HistoryEvent } from "../shared/records";
 import { groupOf, type OrchState } from "../shared/states";
-import type { TimelineNotice, TimelineSource, TimelineView } from "../shared/timeline";
+import type { TimelineNotice, TimelineRun, TimelineSource, TimelineView } from "../shared/timeline";
 
 // A cold first mount alone can pass bun's 5 s default under load; that is not a failure of the surface.
 setDefaultTimeout(60_000);
@@ -335,6 +342,8 @@ const fleetProposals = (): FleetProposal[] => [
       kind: "background",
       status: "failed",
       cwd: "~",
+      branch: null,
+      agentId: null,
     },
     classId: "4",
     className: "error",
@@ -355,6 +364,8 @@ const fleetProposals = (): FleetProposal[] => [
       kind: "interactive",
       status: "idle",
       cwd: "~",
+      branch: null,
+      agentId: null,
     },
     classId: "10",
     className: "unmanaged",
@@ -377,7 +388,16 @@ const sriFixture = (): FleetProposal[] =>
     tick: 6,
     at: null,
     action: "report only",
-    session: { id: `${short}-x`, short, name: `sri-${short}`, kind: "background", status: "done", cwd: "~" },
+    session: {
+      id: `${short}-x`,
+      short,
+      name: `sri-${short}`,
+      kind: "background",
+      status: "done",
+      cwd: "~",
+      branch: null,
+      agentId: null,
+    },
     classId: "10",
     className: "unmanaged",
     evidence: "no fleet key, not adopted",
@@ -385,6 +405,50 @@ const sriFixture = (): FleetProposal[] =>
     review: null,
   }));
 let proposalsNow = fleetProposals();
+/** A decision ask in broomva's ask root, shaped like maestro-paseo-gaps.yaml's A10. */
+const decisionFixture = (): DecisionAsk => ({
+  ledger: "maestro-paseo-gaps.yaml",
+  uid: null,
+  id: "A10",
+  arc: "maestro-paseo-gaps",
+  headline: "Four small review follow-ups from #7 and #8: ticket them, or drop them?",
+  question: "Four review follow-ups are open and unscheduled: file or drop?",
+  stakes: "None blocks a lane; untracked, a test gap stays invisible.",
+  whyYou: "Scheduling is yours.",
+  options: [
+    {
+      id: "ticket-all",
+      label: "File all four",
+      consequence: "Each becomes a Linear issue.",
+      reversible: true,
+      recommended: true,
+    },
+    {
+      id: "drop",
+      label: "Drop all four",
+      consequence: "They stay in this ledger.",
+      reversible: false,
+      recommended: false,
+    },
+  ],
+  fallback: "file all four once Linear is signed in",
+  blocking: false,
+  askedAt: new Date(Date.now() - 2 * H).toISOString(),
+  answeredAt: null,
+  answer: null,
+  answerOption: null,
+  state: "open",
+  origin: { agentId: "agent-asker", cwd: "~/broomva" },
+  refusal: null,
+});
+/** The fleet's decision asks now: none unless a test puts one there. */
+let decisionsNow: DecisionAsk[] = [];
+/** The session broomva's ask a1 is about: none unless a test says. */
+let askSessionNow: AskSession | null = null;
+/** Paseo sessions the surface asked the host to open. */
+let opened: string[] = [];
+/** Whether the timeline carries runs that open something: a schedule's, and the fleet's ticks. */
+let timelineRuns = false;
 const fleetView = (scope: string | undefined): FleetView => {
   const missed = {
     status: "missed" as const,
@@ -472,17 +536,31 @@ const fleetView = (scope: string | undefined): FleetView => {
                 key: "records-without-process",
                 question: "13 Paseo records are not archived and have no live process.",
                 class: "count",
+                className: null,
                 firstTick: 2,
+                session: askSessionNow,
                 batch: "2-1",
                 item: { id: "a", title: "Work a", state: "review", group: "review", needsYou: true },
               },
             ]
           : [],
+      decisions: id === "broomva" ? decisionsNow : [],
+      askRoot: `/state/${id}/.control/asks`,
       alerts: [],
       warnings: [],
     },
   };
 };
+const scheduleRun = (at: string): TimelineRun => ({
+  at,
+  endedAt: at,
+  status: "failed",
+  exit: null,
+  detail: "Scheduled agent b8c26013 was canceled",
+  agentId: "b8c26013-30f3-4ebc-bd29-bbfdf08383ee",
+  workspaceId: "wks_25a7dc0476779681",
+  output: "Waiting on four background jobs.",
+});
 /** The timeline as timeline.get answers: kg-lint failed, moltbook on time, the fleet scope and the loop. */
 const timelineView = (): TimelineView => {
   const now = Date.now();
@@ -520,7 +598,22 @@ const timelineView = (): TimelineView => {
         reason: "Ticks every hour. The last, tick 35, passed.",
         next: at(25 * 60_000),
         link: { kind: "fleet", scope: "broomva" },
+        runs: timelineRuns
+          ? [{ at: at(-3 * H), endedAt: at(-3 * H + 9000), status: "ok", exit: 0, detail: "tick 35", tick: 35 }]
+          : [],
       }),
+      ...(timelineRuns
+        ? [
+            row("schedule:c171bfb9", {
+              kind: "schedule",
+              name: "Morning sweep",
+              cadence: "cron 0 9 * * *",
+              runs: [scheduleRun(at(-2 * H))],
+              last: scheduleRun(at(-2 * H)),
+              link: { kind: "agent", agentId: "b8c26013-30f3-4ebc-bd29-bbfdf08383ee" },
+            }),
+          ]
+        : []),
       row("launchd:com.broomva.moltbook-loop", {
         name: "moltbook-loop",
         next: at(10 * 60_000),
@@ -577,6 +670,33 @@ const invoke = async (method: string, input: unknown) => {
     if (fleetHeld) await fleetHeld;
     return fleetView((input as { scope?: string }).scope);
   }
+  if (method === "fleet.tick") {
+    const { tick } = input as { tick: number };
+    return {
+      tick,
+      report: { markdown: `# fleet-reconcile · broomva · tick ${tick}\n\nReport of tick ${tick}.\n`, truncated: false },
+      log: {
+        path: "/state/broomva/tick.log",
+        text: `[2026-10-03T16:15:39Z] tick ${tick} scope broomva\n[2026-10-03T16:15:48Z] step observe rc=1\n[2026-10-03T16:15:48Z] tick ${tick} done: recover=0 observe=1`,
+        truncated: false,
+      },
+    };
+  }
+  if (method === "ask.answer") {
+    const { id, option, note } = input as { id: string; option: string | null; note: string };
+    const ask = decisionsNow.find((entry) => entry.id === id);
+    if (!ask) throw new Error("no such ask");
+    const chosen = ask.options.find((entry) => entry.id === option);
+    const answered: DecisionAsk = {
+      ...ask,
+      state: "answered",
+      answerOption: option,
+      answer: [chosen ? `${chosen.label}: ${chosen.consequence}` : "", note].filter(Boolean).join("\n"),
+      answeredAt: new Date().toISOString(),
+    };
+    decisionsNow = decisionsNow.map((entry) => (entry.id === id ? answered : entry));
+    return { ask: answered };
+  }
   if (method === "fleet.review") {
     const { keys, verdict, note } = input as { keys: string[]; verdict: "accept" | "reject"; note: string };
     const review = { verdict, note: note || null, at: new Date().toISOString(), tick: 35 };
@@ -621,7 +741,12 @@ const surface = (compact: boolean) => (
     theme={theme}
     host={{ id: "h", label: "h" }}
     layout={{ compact, platform: "web" }}
-    navigation={{ openAgent() {}, openWorkspace() {} }}
+    navigation={{
+      openAgent({ agentId }: { agentId: string }) {
+        opened.push(agentId);
+      },
+      openWorkspace() {},
+    }}
   />
 );
 
@@ -747,6 +872,10 @@ afterEach(async () => {
   timelineNotices = [];
   proposalsNow = fleetProposals();
   sriProposals = sriFixture();
+  decisionsNow = [];
+  askSessionNow = null;
+  opened = [];
+  timelineRuns = false;
   calls.length = 0;
   setReduced(true);
   // The message and its first argument: React's act warning names the component there ("An update to %s").
@@ -1625,7 +1754,7 @@ describe("the Fleet view", () => {
     const text = view.text();
     expect(text.indexOf("Accept all 4")).toBeGreaterThan(-1);
     expect(text.indexOf("Accept all 4")).toBeLessThan(text.indexOf("aaaa1111 sri-aaaa1111"));
-    expect(text).toContain("aaaa1111 sri-aaaa1111no fleet key, not adopted");
+    expect(text).toContain("aaaa1111 sri-aaaa1111done · ~Not a Paseo sessionno fleet key, not adopted");
   });
 
   test("Reject's note closes on the host's answer, while the refetch after is still on its way", async () => {
@@ -1758,5 +1887,129 @@ describe("the Timeline", () => {
     expect(tab(view)?.getAttribute("aria-selected")).toBe("true");
     expect(view.text()).not.toContain("kg-lint: failed run.");
     expect(view.text()).toContain("1 needs you.");
+  });
+});
+
+describe("drilling in", () => {
+  const tab = (view: Awaited<ReturnType<typeof mount>>, label: string) =>
+    view.tabs().find((one) => one.getAttribute("aria-label") === label);
+  const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
+
+  test("a decision ask shows its stakes and options, and is answered in place: chosen, then Answer", async () => {
+    decisionsNow = [decisionFixture()];
+    const view = await mount(surface(false));
+    await view.press(tab(view, "Fleet"));
+    const text = view.text();
+    expect(text).toContain("Four small review follow-ups from #7 and #8: ticket them, or drop them?");
+    expect(text).toContain("What waiting costs: None blocks a lane; untracked, a test gap stays invisible.");
+    expect(text).toContain("Why you: Scheduling is yours.");
+    expect(text).toContain("File all fourRecommendedEach becomes a Linear issue.");
+    expect(text).toContain("Drop all fourCannot be undoneThey stay in this ledger.");
+    expect(text).toContain("If you say nothing: file all four once Linear is signed in");
+    // Nothing chosen and no words: Answer waits.
+    expect(view.byLabel("Answer A10")?.getAttribute("aria-disabled")).toBe("true");
+    await view.press(view.byLabel("File all four, recommended"));
+    expect(view.byLabel("File all four, recommended")?.getAttribute("aria-checked")).toBe("true");
+    await view.type(view.byLabel("Your words for A10"), "Under BRO-2800.");
+    await view.press(view.byLabel("Answer A10: File all four"));
+    expect(sent("ask.answer")).toEqual([
+      {
+        scope: "broomva",
+        ledger: "maestro-paseo-gaps.yaml",
+        uid: null,
+        id: "A10",
+        option: "ticket-all",
+        note: "Under BRO-2800.",
+      },
+    ]);
+    expect(view.text()).toContain("Answered just now: “File all four”");
+    expect(view.text()).toContain("File all four: Each becomes a Linear issue.\nUnder BRO-2800.");
+    expect(view.byLabel("Answer A10: File all four")).toBeNull();
+    await view.press(view.byLabel("Open the session that asked A10"));
+    expect(opened).toEqual(["agent-asker"]);
+  });
+
+  test("an ask with an id collision says so and takes no answer", async () => {
+    decisionsNow = [{ ...decisionFixture(), refusal: "Two asks in maestro-paseo-gaps.yaml are named A10." }];
+    const view = await mount(surface(false));
+    await view.press(tab(view, "Fleet"));
+    expect(view.text()).toContain("Two asks in maestro-paseo-gaps.yaml are named A10.");
+    expect(view.byLabel("Answer A10")).toBeNull();
+  });
+
+  test("a fleet ask opens the session it is about, and its details show the tick that raised it", async () => {
+    askSessionNow = { id: "d4b991f0-1133-4c26", short: "d4b991f0", name: "broomva-88", agentId: "agent-88" };
+    const view = await mount(surface(false));
+    await view.press(tab(view, "Fleet"));
+    await view.press(view.byLabel("Open the session ask a1 is about: broomva-88"));
+    expect(opened).toEqual(["agent-88"]);
+    expect(sent("fleet.tick")).toEqual([]);
+    await view.press(view.byLabel("Show the details of ask a1"));
+    await settle(50);
+    expect(sent("fleet.tick")).toEqual([{ scope: "broomva", tick: 2 }]);
+    const text = view.text();
+    expect(text).toContain("key records-without-process · batch 2-1 · session d4b991f0-1133-4c26");
+    expect(text).toContain("Raised at tick 2");
+    expect(text).toContain("tick 2 done: recover=0 observe=1");
+    expect(text).toContain("Report of tick 2.");
+    await view.press(view.byLabel("Hide the details of ask a1"));
+    expect(view.text()).not.toContain("Raised at tick 2");
+  });
+
+  test("a proposal's session shows its status, folder and branch, and opens in Paseo when it is a Paseo agent", async () => {
+    proposalsNow = fleetProposals().map((proposal) =>
+      proposal.session?.short === "5dd4ed18"
+        ? { ...proposal, session: { ...proposal.session, agentId: "agent-walrus", branch: "feat/walrus" } }
+        : proposal,
+    );
+    const view = await mount(surface(false));
+    await view.press(tab(view, "Fleet"));
+    const text = view.text();
+    expect(text).toContain("5dd4ed18 worried-walrusidle · ~ · on feat/walrus");
+    expect(text).toContain("de2dd335 sri-sti-2761-rcefailed · ~Not a Paseo session");
+    expect(view.byLabel("Open session de2dd335 sri-sti-2761-rce in Paseo")).toBeNull();
+    await view.press(view.byLabel("Open session 5dd4ed18 worried-walrus in Paseo"));
+    expect(opened).toEqual(["agent-walrus"]);
+  });
+
+  test("a tick row opens its runner's words, its log lines and its report, read only then", async () => {
+    const view = await mount(surface(false));
+    await view.press(tab(view, "Fleet"));
+    const row = () => view.all('[aria-label^="Tick 34, failed at observe"]')[0];
+    expect(row()?.getAttribute("aria-expanded")).toBe("false");
+    expect(sent("fleet.tick")).toEqual([]);
+    await view.press(row());
+    await settle(50);
+    expect(row()?.getAttribute("aria-expanded")).toBe("true");
+    expect(sent("fleet.tick")).toEqual([{ scope: "broomva", tick: 34 }]);
+    const text = view.text();
+    expect(text).toContain("exit 1 · failed at observe · recover=0 observe=1");
+    expect(text).toContain("What tick 34 logged");
+    expect(text).toContain("[2026-10-03T16:15:48Z] step observe rc=1");
+    expect(text).toContain("Tick 34's report");
+    await view.press(row());
+    expect(view.text()).not.toContain("What tick 34 logged");
+  });
+
+  test("a schedule's run opens the session it started, and shows the start of what it said", async () => {
+    timelineRuns = true;
+    const view = await mount(surface(false));
+    await view.press(tab(view, "Timeline"));
+    await view.press(view.all('[aria-label^="Morning sweep, "]')[0]);
+    expect(view.text()).toContain("Waiting on four background jobs.");
+    await view.press(view.all('[aria-label^="Open its session: "]')[0]);
+    expect(opened).toEqual(["b8c26013-30f3-4ebc-bd29-bbfdf08383ee"]);
+  });
+
+  test("a fleet run opens its tick in the Fleet view, opened", async () => {
+    timelineRuns = true;
+    const view = await mount(surface(false));
+    await view.press(tab(view, "Timeline"));
+    await view.press(view.all('[aria-label^="fleet-reconcile broomva, Fleet"]')[0]);
+    await view.press(view.all('[aria-label^="Open tick 35: "]')[0]);
+    await settle(50);
+    expect(tab(view, "Fleet")?.getAttribute("aria-selected")).toBe("true");
+    expect(sent("fleet.tick")).toEqual([{ scope: "broomva", tick: 35 }]);
+    expect(view.text()).toContain("What tick 35 logged");
   });
 });

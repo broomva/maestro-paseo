@@ -197,6 +197,20 @@ describe("what a session is offered", () => {
     expect(!response.ok && response.error).toContain("your verdicts on the fleet's proposals");
   });
 
+  test("an answer to the fleet's ask is refused: the answer is yours", async () => {
+    const { ask } = await setup();
+    const response = await ask("ask.answer", {
+      scope: "broomva",
+      ledger: "fleet-broomva.yaml",
+      uid: null,
+      id: "A1",
+      option: "merge",
+    });
+    expect(response.ok).toBe(false);
+    expect(!response.ok && response.error).toContain("ask.answer is yours alone");
+    expect(!response.ok && response.error).toContain("your answers to its asks");
+  });
+
   test("leaving a quiet run running is refused: the flag is yours to clear", async () => {
     const { repo, ok, ask, engine, config } = await setup();
     const { item } = await ok("work.create", { title: "Long one", repo, dispatch: true });

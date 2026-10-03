@@ -11,6 +11,7 @@ import type { WakeEntry } from "../shared/contracts";
 import type { FleetDetail, FleetScope, TickStatus } from "../shared/fleet";
 import {
   InstantSchema,
+  RUN_OUTPUT_CHARS,
   type RunStatus,
   type SourceStatus,
   TIMELINE_RUNS,
@@ -115,6 +116,15 @@ function series(first: number, every: number, now: number, to: number, limit: nu
 
 // ── Paseo schedules and heartbeats ───────────────────────────────────────────
 
+/** Text cut to `max` characters, at a word when one is near, with an ellipsis. */
+function clip(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ");
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${space > max * 0.6 ? cut.slice(0, space) : cut}…`;
+}
+
 /** A schedule as the Paseo daemon stores it (`<paseo home>/schedules/<id>.json`), read for what the timeline needs. */
 export const StoredScheduleSchema = z.object({
   id: z.string().min(1),
@@ -140,6 +150,8 @@ export const StoredScheduleSchema = z.object({
         endedAt: z.string().nullable(),
         status: z.enum(["running", "succeeded", "failed"]),
         agentId: z.string().nullable().optional(),
+        workspaceId: z.string().nullable().optional(),
+        output: z.string().nullable().optional(),
         error: z.string().nullable().optional(),
       }),
     )
@@ -215,7 +227,21 @@ export function scheduleSource(
     const at = instant(run.startedAt);
     if (!at) return [];
     const detail = run.status === "failed" ? run.error?.trim() || "failed" : null;
-    return [{ at, endedAt: instant(run.endedAt), status: PASEO_STATUS[run.status], exit: null, detail }];
+    // A heartbeat prompts its target: a run that recorded no agent ran there.
+    const agentId = run.agentId || (schedule.target.type === "agent" ? schedule.target.agentId : null);
+    const output = run.output?.trim();
+    return [
+      {
+        at,
+        endedAt: instant(run.endedAt),
+        status: PASEO_STATUS[run.status],
+        exit: null,
+        detail,
+        ...(agentId ? { agentId } : {}),
+        ...(run.workspaceId ? { workspaceId: run.workspaceId } : {}),
+        ...(output ? { output: clip(output, RUN_OUTPUT_CHARS) } : {}),
+      },
+    ];
   });
   const expired = (ms(schedule.expiresAt) ?? Number.POSITIVE_INFINITY) < now;
   const active = schedule.status === "active" && !expired;
@@ -419,6 +445,7 @@ export function fleetSource(scope: FleetScope, detail: FleetDetail | null, windo
         status: TICK_STATUS[tick.status],
         exit: tick.exit,
         detail: words.join(", "),
+        tick: tick.tick,
       },
     ];
   });

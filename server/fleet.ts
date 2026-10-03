@@ -24,6 +24,7 @@ import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import type { WorkItem } from "../shared/contracts";
 import {
+  type DecisionAsk,
   FLEET_REPORT_BYTES,
   FLEET_TICKS,
   type FleetDetail,
@@ -32,10 +33,13 @@ import {
   type FleetProposal,
   type FleetScope,
   type FleetTick,
+  type FleetTickDetail,
   type FleetView,
   groupProposals,
   type ReviewVerdict,
+  TICK_LOG_BYTES,
 } from "../shared/fleet";
+import { answerDecision, readDecisions } from "./control-asks";
 import { UserError } from "./engine";
 import {
   type AwakeFor,
@@ -54,14 +58,19 @@ import {
   reviewRecord,
   SCOPE_ID,
   summarizeReport,
+  tickLogSection,
   tickRows,
   withReviews,
 } from "./fleet-model";
-import { expandHome, fleetPaths } from "./paths";
+import { controlAskPaths, expandHome, fleetPaths } from "./paths";
 
 export const REVIEWS_FILE = "proposal-reviews.jsonl";
 /** tick.sh leaves this in the state dir while the kill switch is off. */
 export const DISABLED_NOTICE = ".disabled-notice";
+/** The fleet's registered ask root in its state dir (the control interface spec §5.6). */
+export const ASK_ROOT = join(".control", "asks");
+/** tick.log is searched for a tick's lines within this much of its end. */
+const TICK_LOG_SEARCH = 2 * 1024 * 1024;
 /** install.sh's LaunchAgent for a scope. */
 export const plistName = (scope: string) => `com.broomva.fleet-reconcile.${scope}.plist`;
 
@@ -256,6 +265,9 @@ export interface FleetOptions {
   every?: (beat: () => void, ms: number) => () => void;
   now?: () => number;
   log?: (message: string) => void;
+  /** Where ledger locks and answer receipts go: server/paths.ts controlAskPaths when not given. */
+  askLocks?: string;
+  askReceipts?: string;
 }
 
 interface ScopeConfig {
@@ -323,6 +335,18 @@ function readRegular(path: string, limit = READ_LIMIT, own = false) {
     undefined,
     own,
   );
+}
+
+/** A regular file's last `limit` bytes as text, from the next whole line when cut. */
+function readEnd(path: string, limit: number): Promise<string> {
+  return withRegular(path, constants.O_RDONLY, async (handle) => {
+    const info = await handle.stat();
+    const length = Math.min(info.size, limit);
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, info.size - length);
+    const read = buffer.toString("utf8", 0, bytesRead);
+    return info.size > limit ? read.slice(read.indexOf("\n") + 1) : read;
+  });
 }
 
 /** Your config and LaunchAgent are small: past this they are refused, not read. */
@@ -680,7 +704,7 @@ export class Fleet {
         [...(newest?.proposals ?? []), ...actProposals(read.fold.dryActs, (latest?.tick ?? 0) - ACT_TICKS)],
         reviews,
       );
-      const asks = asksOf(id, newest?.asksOpen ?? [], read.fold, items);
+      const asks = asksOf(id, newest?.asksOpen ?? [], read.fold, items, newest?.sessions);
       summaries.push({
         id,
         mode: read.config.mode ?? newest?.mode ?? null,
@@ -693,6 +717,9 @@ export class Fleet {
       });
       if (read !== chosen) continue;
       const numbers = [...new Set([...read.fold.ticks.keys(), ...read.tickDirs])].sort((a, b) => b - a).slice(0, ticks);
+      const askRoot = join(stateDir, ASK_ROOT);
+      const decisions = await readDecisions(askRoot);
+      warnings.push(...decisions.warnings);
       const reports = new Map<number, ReportSummary>();
       for (const tick of numbers) {
         const summary = await this.report(id, stateDir, tick, warnings);
@@ -709,6 +736,8 @@ export class Fleet {
         report: newest ? await this.markdown(stateDir, newest.tick, warnings) : null,
         proposals,
         asks,
+        decisions: decisions.asks,
+        askRoot,
         alerts: openAlerts(id, items).map(fleetItem),
         // One file read twice (the newest report, then the tick rows) is said once.
         warnings: [...new Set(warnings)],
@@ -727,6 +756,79 @@ export class Fleet {
       }
       return null;
     }
+  }
+
+  // ── One tick, opened ───────────────────────────────────────────────────────
+
+  /** A tick's own report.md and its lines in tick.log, asked for when you open its row. */
+  async tick(scope: string, tick: number): Promise<FleetTickDetail> {
+    const config = await this.scopeNamed(scope);
+    const warnings: string[] = [];
+    const report = await this.markdown(config.stateDir, tick, warnings);
+    if (warnings.length > 0) throw new UserError(warnings[0] ?? "");
+    const path = join(config.stateDir, "tick.log");
+    let log: FleetTickDetail["log"] = null;
+    try {
+      const section = tickLogSection(await readEnd(path, TICK_LOG_SEARCH), tick);
+      if (section !== null) {
+        const bytes = Buffer.from(section);
+        const truncated = bytes.length > TICK_LOG_BYTES;
+        const kept = truncated ? bytes.subarray(bytes.length - TICK_LOG_BYTES).toString("utf8") : section;
+        // A cut lands mid-line: start at the next whole one.
+        log = { path, text: truncated ? kept.slice(kept.indexOf("\n") + 1) : kept, truncated };
+      }
+    } catch (error) {
+      if (code(error) !== "ENOENT") throw new UserError(`tick.log could not be read: ${(error as Error).message}`);
+    }
+    return { tick, report: report ? { markdown: report.markdown, truncated: report.truncated } : null, log };
+  }
+
+  private async scopeNamed(scope: string): Promise<ScopeConfig> {
+    const { scopes } = await this.scopes();
+    const config = scopes.find((entry) => entry.id === scope);
+    if (!config) throw new UserError(`The fleet has no scope named ${scope}.`);
+    return config;
+  }
+
+  // ── Your answer to a decision ask ──────────────────────────────────────────
+
+  /**
+   * Writes your answer into a ledger in the scope's ask root, under the
+   * ledger lock every writer shares (server/control-asks.ts). Writes run one
+   * at a time here as well.
+   */
+  answer(input: {
+    scope: string;
+    ledger: string;
+    uid: string | null;
+    id: string;
+    option: string | null;
+    note: string;
+  }): Promise<{ ask: DecisionAsk }> {
+    const next = this.writes
+      .catch(() => undefined)
+      .then(async () => {
+        const config = await this.scopeNamed(input.scope);
+        if (!/^[^./][^/]*\.ya?ml$/.test(input.ledger)) throw new UserError(`${input.ledger} is not a ledger name.`);
+        const path = join(config.stateDir, ASK_ROOT, input.ledger);
+        const paths = controlAskPaths();
+        const ask = await answerDecision(
+          path,
+          { uid: input.uid, id: input.id, option: input.option, note: input.note },
+          {
+            lockRoot: this.options.askLocks ?? paths.locks,
+            receipts: this.options.askReceipts ?? paths.receipts,
+            now: this.now,
+            log: this.log,
+          },
+        );
+        this.log(
+          `fleet ${config.id}: you answered ${input.ledger} ${input.id}${input.option ? ` (${input.option})` : ""}`,
+        );
+        return { ask };
+      });
+    this.writes = next;
+    return next;
   }
 
   // ── Your verdict ───────────────────────────────────────────────────────────

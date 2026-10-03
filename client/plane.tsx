@@ -53,8 +53,10 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const [chosenScope, setScope] = useState<string | null>(null);
   const [loopOpen, setLoopOpen] = useState(false);
   const [fleetScope, setFleetScope] = useState<string | null>(null);
-  const openFleet = (scope: string | null) => {
+  const [fleetTick, setFleetTick] = useState<number | null>(null);
+  const openFleet = (scope: string | null, tick: number | null = null) => {
     setFleetScope(scope);
+    setFleetTick(tick);
     setView("fleet");
   };
   useIntent((intent) => {
@@ -149,7 +151,15 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
       <ViewSwitch theme={theme} view={view} onView={chooseView} views={viewsFor(compact)} />
 
       {view === "fleet" ? (
-        <FleetView theme={theme} compact={compact} scope={fleetScope} onScope={setFleetScope} onSelect={setSelected} />
+        <FleetView
+          theme={theme}
+          compact={compact}
+          scope={fleetScope}
+          tick={fleetTick}
+          navigation={navigation}
+          onScope={(scope) => openFleet(scope)}
+          onSelect={setSelected}
+        />
       ) : view === "timeline" ? (
         <TimelineView
           theme={theme}

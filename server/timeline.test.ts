@@ -84,6 +84,8 @@ const fleetView = (detailFor: string | undefined): FleetView => ({
     report: null,
     proposals: [],
     asks: [],
+    decisions: [],
+    askRoot: "/state/.control/asks",
     alerts: [],
     warnings: [],
   },

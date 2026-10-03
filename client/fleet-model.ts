@@ -4,6 +4,7 @@
 
 import type {
   ClassCount,
+  DecisionAsk,
   FleetAsk,
   FleetHealthStatus,
   FleetNotice,
@@ -119,8 +120,41 @@ export function askWhere(ask: FleetAsk): string {
 }
 
 export function askMeta(ask: FleetAsk): string {
-  const parts = [ask.class, ask.firstTick !== null ? `since tick ${ask.firstTick}` : null].filter(Boolean);
+  const klass = ask.class && ask.className ? `class ${ask.class}, ${ask.className}` : ask.class;
+  const parts = [klass, ask.firstTick !== null ? `since tick ${ask.firstTick}` : null].filter(Boolean);
   return parts.join(" · ");
+}
+
+/** A session's facts a person checks before opening it: how it is, where it runs, on what branch. */
+export function sessionFacts(session: { status: string | null; cwd: string | null; branch: string | null }): string {
+  return [session.status, session.cwd, session.branch ? `on ${session.branch}` : null].filter(Boolean).join(" · ");
+}
+
+/** A tick's runner words, opened: its exit, the step that failed, each step's code. */
+export function tickFacts(tick: FleetTick): string {
+  return [
+    tick.exit !== null ? `exit ${tick.exit}` : TICK_LABEL[tick.status].toLowerCase(),
+    tick.failedStep ? `failed at ${tick.failedStep}` : null,
+    tick.steps,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** Where a decision ask comes from and how long it has waited. */
+export function decisionMeta(ask: DecisionAsk, now: number = Date.now()): string {
+  const asked = ask.askedAt ? agoText(ask.askedAt, now) : null;
+  return [ask.arc ?? ask.ledger, ask.id, asked ? `asked ${asked}` : null, ask.blocking ? "blocking" : null]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** An answered decision ask in words: the option chosen and when. */
+export function decisionAnswered(ask: DecisionAsk, now: number = Date.now()): string {
+  const option = ask.options.find((entry) => entry.id === ask.answerOption);
+  const when = ask.answeredAt ? agoText(ask.answeredAt, now) : null;
+  const what = option ? `“${option.label}”` : "an answer";
+  return `Answered${when ? ` ${when}` : ""}: ${what}`;
 }
 
 /** The scope chip's words for a screen reader: its name, its health and what waits on you. */

@@ -50,6 +50,7 @@ export const GATE_METHODS: ReadonlySet<string> = new Set([
   "loop.get",
   "loop.wake",
   "fleet.review",
+  "ask.answer",
 ]);
 
 function method<S extends z.ZodType>(
@@ -165,7 +166,7 @@ export async function answer(
   const run = methods.get(name);
   if (!run) {
     const error = GATE_METHODS.has(name)
-      ? `${name} is yours alone: the gate, undo, stopping a run or leaving it running, unblocking, canceling, settings, the loop and your verdicts on the fleet's proposals happen in Maestro, not from a session.`
+      ? `${name} is yours alone: the gate, undo, stopping a run or leaving it running, unblocking, canceling, settings, the loop, your verdicts on the fleet's proposals and your answers to its asks happen in Maestro, not from a session.`
       : `Unknown method ${name}. Offered: ${[...methods.keys()].join(", ")}.`;
     return { id, ok: false, error };
   }

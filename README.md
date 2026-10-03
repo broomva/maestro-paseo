@@ -270,6 +270,15 @@ The **Fleet** view shows the rest, per scope, read from those files:
   - Each links to the work the fleet recorded for its batch. The scope's open alerts link to
     theirs.
   - You answer them there, at the gate; they are never copied.
+  - An ask about a session (a `prompt:<session>:…` key) names it, and *Open session* opens it in
+    Paseo when it is a Paseo agent. *Details* shows the ask's key and batch, and the tick that raised
+    it, opened as a tick row opens.
+- **Decisions.** Decision asks in the fleet's own ask ledger, `<state dir>/.control/asks/*.yaml`
+  (the fleet's registered root in the control interface spec, workspace#861 §5.6), shown only when
+  that folder holds one. Each card shows the headline and question, what waiting costs, why it is
+  yours, every option with its consequence (recommended, or cannot be undone), and what happens if
+  you say nothing. Choose an option, add words if you like, and *Answer*. See
+  [Answering a decision ask](#answering-a-decision-ask).
 - **Would do.** These are proposals: each in-scope session whose "would do" in the newest report is
   something other than nothing, plus any verb the coordinator logged under dry run.
   - Proposals that read the same and stand the same with you are one card, and one verdict covers
@@ -278,7 +287,8 @@ The **Fleet** view shows the rest, per scope, read from those files:
     - A session you judged differently stands in its own card, so a verdict on a card never
       overwrites one you gave a single session.
     - A coordinator verb is always its own card, its text shown.
-    - Each card's verbs sit above its sessions, each session with its evidence.
+    - Each card's verbs sit above its sessions, each session with its evidence, its status, folder
+      and branch, and *Open in Paseo* when it is a Paseo agent (the report's `paseo_agent`).
   - Accept or reject each one; a reject asks for an optional note first.
   - A proposal's key binds its session, its class and its words. For a coordinator verb, the key
     binds the label and whether it adds or removes it, or the mail's template and text. So one
@@ -286,6 +296,9 @@ The **Fleet** view shows the rest, per scope, read from those files:
     is refused rather than recorded against different words. Each line names the tick whose words
     you judged.
 - **Ticks.** The last 24, each with its time, its exit and which step failed, and its class counts.
+  Press a tick to open it: its exit and each step's code, its own lines in `tick.log` (from its
+  start line to its done line, the last 4 KB), and its own `report.md`. These are read
+  (`fleet.tick`) only when you open it.
 - **Report.** The newest `report.md`, drawn natively, up to 128 KB. On a phone, its tables become
   one card per row.
 
@@ -327,6 +340,40 @@ Nothing else in the fleet's files is written:
 - not its config, mode, dry run or kill switch.
 
 Verdicts are yours alone, so the agent socket refuses `fleet.review`.
+
+### Answering a decision ask
+
+An answer is the one thing Maestro writes into an ask ledger, under the control interface spec's
+contract (workspace#861, `docs/specs/2026-10-01-maestro-control-interface.html`):
+
+- **Which copy.** Only the fleet's registered root is read and written. A root's home is that root's
+  file, so no git checkout is chosen. Asks in the control repo's checkouts need the spec's full home
+  rule, and stay with the Asks plugin.
+- **Which ask.** An ask is its `uid`. An ask without one goes by its `id`, but only while no other
+  uid-less ask in the file shares it. Two that do are an id collision: the card says so and takes no
+  answer.
+- **The lock.** Every ledger writer takes `~/.local/state/control-asks/locks/<k>.d` first, where
+  `<k>` is the first 16 hex characters of the SHA-256 of the ledger's real folder, `/`, and its name.
+  Maestro takes it with `mkdir`, then writes its pid and start time and a token. Under the lock it
+  re-reads the ledger and writes the edited ledger to a temp file beside it, with the same mode. It
+  checks the token again, then renames the temp file over the ledger.
+  - A live holder is waited on for 5 seconds and never reclaimed. Your answer is then refused and
+    nothing is written.
+  - A dead holder's lock is reclaimed once it is 120 seconds old.
+- **The answer.** The edit touches only the ask's own entry. It writes these keys, each on one line:
+  - `answer`: the option's label and consequence, then your words;
+  - `answer_option`: the option's id, when you chose one;
+  - `answered_at`;
+  - `answered_by: owner:maestro`;
+  - `status: resolved`.
+
+  An answer that would not read back as this ask, answered, is not written. A receipt line goes to
+  `~/.local/state/maestro-paseo/asks.jsonl`.
+- **Not routed.** Maestro does not send the answer to the session that asked. The fleet reads it from
+  its own file at its next tick (the spec's *Record only*).
+
+Answers are yours alone, so the agent socket refuses `ask.answer`. `MAESTRO_PASEO_ASK_LOCKS` and
+`MAESTRO_PASEO_ASK_RECEIPTS` move the lock folder and the receipts, for a second daemon or a test.
 
 A state dir can be written by the fleet's sessions, so any file there is read only if it is a
 regular file: never through a symlink as its last name, never with another hard link, and never a
@@ -371,7 +418,9 @@ now and the next 24 to its right. It reads four kinds of source:
   still to come. Last and next run are in words below the track.
 - **Opening a row.** Press a row for its runs in the window, why it has its status, where it keeps
   its record, and a way on: a fleet scope opens the Fleet view, the loop opens its panel, a Paseo
-  schedule opens the session of its last run. A launchd job's row also shows the end of its log,
+  schedule opens the session of its last run. Each run of a Paseo schedule or heartbeat opens the
+  session it started or prompted, and shows the start of its last message. A fleet tick's run opens
+  that tick in the Fleet view, already open. A launchd job's row also shows the end of its log,
   read (`timeline.log`) only while the row is open, never sent with the view every client polls.
 - **What needs you comes first.** A source is *failed* when its newest run failed: a non-zero exit,
   a signal, or Paseo's `failed`. A later run that passes puts it back on time; the red mark stays
