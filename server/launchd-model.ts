@@ -37,6 +37,15 @@ export function awakeAtMost(awake: AwakeFor, from: number, to: number): number {
   return awake(from).whole ? awakeBetween(awake, from, to) : to - from;
 }
 
+/**
+ * Every grace is judged on both bounds of awake time: missed only when the
+ * least there can have been (awakeBetween) is past it, on time only when the
+ * most (awakeAtMost) is within it. Between the two, a clock that began later
+ * or cannot read the kernel now cannot tell, and the row says so.
+ */
+export const AWAKE_NOT_KNOWN =
+  "A run came due, and the Mac's awake time since is not known in full: whether it is late is not known yet.";
+
 /** What was seen ends more than this before now: the log has stopped being read, and nothing since is on time. */
 export const STALE_MS = 15 * 60_000;
 
@@ -479,21 +488,22 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
     const from = Math.max(seen.from, newestEnd ?? seen.from, input.loadedSince ?? to, back);
     const sinceLast = newestEnd !== null && newestEnd >= seen.from;
     if (schedule.calendar) {
-      const due = dueTimes(schedule.calendar, undefined, from + MATCH_SLACK_MS, to, 1440 * 2).filter(
-        (at) => awakeBetween(input.awake, at, to) > CALENDAR_GRACE_MS,
-      );
-      const [first] = due;
+      const due = dueTimes(schedule.calendar, undefined, from + MATCH_SLACK_MS, to, 1440 * 2);
+      const late = due.filter((at) => awakeBetween(input.awake, at, to) > CALENDAR_GRACE_MS);
+      const [first] = late;
       if (first !== undefined) {
         return {
           status: "missed",
           reason:
-            due.length === 1
+            late.length === 1
               ? "A run came due and it has not run."
               : `Runs came due since ${sinceLast ? "its last run" : "the unified log begins"} and none ran.`,
           since: iso(first),
-          missed: due.slice(-MISSED_SHOWN).reverse().map(missedRun),
+          missed: late.slice(-MISSED_SHOWN).reverse().map(missedRun),
         };
       }
+      const maybe = due.find((at) => awakeAtMost(input.awake, at, to) > CALENDAR_GRACE_MS);
+      if (maybe !== undefined) return { status: "unknown", reason: AWAKE_NOT_KNOWN, since: iso(maybe), missed: [] };
     }
     if (schedule.intervalMs !== null) {
       if (awakeBetween(input.awake, from, to) > 2 * schedule.intervalMs + INTERVAL_GRACE_MS) {
@@ -507,6 +517,9 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
           since: iso(dueAt),
           missed: [missedRun(dueAt)],
         };
+      }
+      if (awakeAtMost(input.awake, from, to) > 2 * schedule.intervalMs + INTERVAL_GRACE_MS) {
+        return { status: "unknown", reason: AWAKE_NOT_KNOWN, since: iso(from + schedule.intervalMs), missed: [] };
       }
     }
     // Not judged is not on time: a run came due after the newest one ended, before judging could start

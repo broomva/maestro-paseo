@@ -25,6 +25,8 @@ import { plistName } from "./fleet";
 import type { AwakeFor } from "./fleet-model";
 import type { LaunchdJob } from "./launchd";
 import {
+  AWAKE_NOT_KNOWN,
+  awakeAtMost,
   awakeBetween,
   type LaunchdExit,
   type LaunchdSchedule,
@@ -222,6 +224,8 @@ export function scheduleSource(
   let since: string | null = null;
   const missed: TimelineRun[] = [];
   const going = all.find((run) => run.status === "running");
+  // Its next run's due time, when no run has started at or after it: a file the daemon has not moved on is not one.
+  const overdue = nextAt !== null && !(newestAt !== null && newestAt >= nextAt - DUE_SLACK_MS) ? nextAt : null;
   if (going) {
     status = "running";
     reason = "Running now.";
@@ -239,15 +243,15 @@ export function scheduleSource(
     status = "failed";
     reason = failure;
     since = newest.at;
-  } else if (
-    nextAt !== null &&
-    awakeBetween(awake, nextAt, now) > SCHEDULE_GRACE_MS &&
-    !(newestAt !== null && newestAt >= nextAt - DUE_SLACK_MS)
-  ) {
+  } else if (overdue && awakeBetween(awake, overdue, now) > SCHEDULE_GRACE_MS) {
     status = "missed";
     reason = "Its run came due and has not started.";
-    since = iso(nextAt);
-    missed.push({ at: iso(nextAt), endedAt: null, status: "missed", exit: null, detail: "due, and it did not start" });
+    since = iso(overdue);
+    missed.push({ at: iso(overdue), endedAt: null, status: "missed", exit: null, detail: "due, and it did not start" });
+  } else if (overdue && awakeAtMost(awake, overdue, now) > SCHEDULE_GRACE_MS) {
+    status = "unknown";
+    reason = AWAKE_NOT_KNOWN;
+    since = iso(overdue);
   } else {
     status = "ok";
     reason = newest ? "On schedule; its last run succeeded." : "On schedule; no run yet.";
@@ -340,6 +344,11 @@ export function loopSource(
     reason = "A wake came due and has not run.";
     since = iso(nextAt);
     missed.push({ at: iso(nextAt), endedAt: null, status: "missed", exit: null, detail: "due, and it did not wake" });
+  } else if (awakeAtMost(awake, nextAt, now) > LOOP_GRACE_MS) {
+    status = "unknown";
+    reason =
+      "A wake came due, and the Mac's awake time since is not known in full: whether it is late is not known yet.";
+    since = iso(nextAt);
   } else {
     status = "ok";
     reason = "On schedule.";

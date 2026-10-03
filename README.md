@@ -389,6 +389,11 @@ now and the next 24 to its right. It reads four kinds of source:
     it will not run again on its own.
   - The loop: a wake 5 minutes of awake time overdue.
   - A fleet scope: the Fleet view's own rule.
+
+  Each grace is judged on both bounds of awake time. A run is missed only when the least awake
+  time there can have been is past its grace, and on time only when the most is within it. In
+  between, the row says *not known*. That happens after a reload, for a due time before the clock's
+  first record, and while the clock cannot read the kernel.
 - **A read that fails is said, never read as healthy.** A command that exits non-zero, or a plist
   that will not convert, is a warning in the view and costs only what it would have said.
 - **A miss is judged only on what was seen.** The launchd reader keeps one stretch the unified log is

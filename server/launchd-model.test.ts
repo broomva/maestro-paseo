@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { calendarSpecs } from "./cron";
 import { sleptThrough } from "./fake-awake";
 import {
+  AWAKE_NOT_KNOWN,
   CALENDAR_GRACE_MS,
   elapsedMs,
   exitKey,
@@ -501,6 +502,31 @@ describe("a job's status", () => {
       runs: [run(NOW - 3 * H)],
     });
     expect(status.status).toBe("unknown");
+  });
+
+  test("a grace judged on both bounds: late on the most awake time there can have been, not on the least, is not known", () => {
+    // A clock that began five minutes ago (a reload): before then it knows only a lower bound.
+    const began = NOW - 5 * M;
+    const fresh = (from: number) =>
+      from < began ? { ms: NOW - began, whole: false } : { ms: Math.max(0, NOW - from), whole: true };
+    // On an interval: three hours since its last run, five minutes of them known awake.
+    expect(launchdStatus({ ...base, awake: fresh, schedule: interval, runs: [run(NOW - 3 * H)] })).toMatchObject({
+      status: "unknown",
+      reason: AWAKE_NOT_KNOWN,
+      since: iso(NOW - 3 * H + 1000 + 15 * M),
+    });
+    // On a calendar: the 20:00 run due after its 19:00 one, read at 21:20.
+    const calendar = { intervalMs: null, calendar: calendarSpecs({ Minute: 0 }) };
+    expect(
+      launchdStatus({ ...base, awake: fresh, schedule: calendar, runs: [run(Date.parse("2026-10-02T19:00:05Z"))] }),
+    ).toMatchObject({ status: "unknown", reason: AWAKE_NOT_KNOWN, since: "2026-10-02T20:00:00.000Z" });
+    // The same with the whole count known and the Mac asleep through it: on time, it runs at wake.
+    const asleep = sleptThrough(NOW, [[NOW - 3 * H, NOW - 5 * M]]);
+    expect(launchdStatus({ ...base, awake: asleep, schedule: interval, runs: [run(NOW - 3 * H)] }).status).toBe("ok");
+    expect(
+      launchdStatus({ ...base, awake: asleep, schedule: calendar, runs: [run(Date.parse("2026-10-02T19:00:05Z"))] })
+        .status,
+    ).toBe("ok");
   });
 
   test("a stretch that stopped being read is not on time: the row says nothing since is known", () => {

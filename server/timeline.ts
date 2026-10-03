@@ -149,9 +149,13 @@ export class Timeline {
     const launchdAt = this.launchd?.at ?? null;
     const now = this.now();
     const window: Window = { now, from: now - TIMELINE_WINDOW_MS, to: now + TIMELINE_WINDOW_MS };
-    const awake = await this.options.clock.read();
-    // In the Timeline's words: the clock's own error speaks of the Fleet's ticks.
-    if (this.options.clock.error) {
+    const counted = await this.options.clock.read();
+    // A clock that cannot read the kernel now has stopped counting: what it says is the least awake time there
+    // can have been, never the most (server/launchd-model.ts AWAKE_NOT_KNOWN). In the Timeline's words: the
+    // clock's own error speaks of the Fleet's ticks.
+    const stalled = this.options.clock.error !== null;
+    const awake: AwakeFor = stalled ? (from) => ({ ...counted(from), whole: false }) : counted;
+    if (stalled) {
       warnings.push("The Mac's awake time could not be read, so a missed run is judged late or not at all.");
     }
     const [schedules, loop, fleet] = await Promise.all([

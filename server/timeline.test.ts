@@ -407,6 +407,27 @@ describe("the timeline", () => {
     expect(view.sources.find((source) => source.id === "loop")?.status).toBe("ok");
   });
 
+  test("a clock that cannot read the kernel now counts only the least awake time: an overdue wake is not known", async () => {
+    const root = await mkdtemp(join(tmpdir(), "maestro-timeline-"));
+    roots.push(root);
+    const make = (error: string | null) =>
+      new Timeline({
+        launchd: null,
+        schedulesDir: join(root, "missing"),
+        loop: async () => ({ minutes: 30, nextAt: iso(NOW - H), ticking: false }),
+        wakes: async () => [],
+        fleet: null,
+        // Its records say the Mac slept through the hour: on a clock that still reads the kernel, the wake runs at wake.
+        clock: { read: async () => sleptThrough(NOW, [[NOW - H, NOW - 2 * M]]), error },
+        now: () => NOW,
+        log: () => undefined,
+      });
+    const loopOf = async (timeline: Timeline) =>
+      (await timeline.get()).sources.find((source) => source.kind === "loop")?.status;
+    expect(await loopOf(make(null))).toBe("ok");
+    expect(await loopOf(make("The Mac's awake time could not be read (CLOCK_UPTIME_RAW)."))).toBe("unknown");
+  });
+
   test("a clock that cannot read the Mac's awake time is said in the view", async () => {
     const root = await mkdtemp(join(tmpdir(), "maestro-timeline-"));
     roots.push(root);

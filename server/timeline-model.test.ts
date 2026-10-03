@@ -3,6 +3,7 @@ import type { WakeEntry } from "../shared/contracts";
 import type { FleetDetail, FleetScope } from "../shared/fleet";
 import { sleptThrough } from "./fake-awake";
 import type { LaunchdJob } from "./launchd";
+import { AWAKE_NOT_KNOWN } from "./launchd-model";
 import {
   fleetSource,
   inWindow,
@@ -287,6 +288,33 @@ const wake = (at: number, extra: Partial<WakeEntry> = {}): WakeEntry => ({
   cleared: [],
   narrative: [],
   ...extra,
+});
+
+describe("a grace on both bounds of awake time", () => {
+  // A clock that began two minutes ago (a reload): before then it knows only a lower bound.
+  const began = NOW - 2 * M;
+  const fresh = (from: number) =>
+    from < began ? { ms: NOW - began, whole: false } : { ms: Math.max(0, NOW - from), whole: true };
+
+  test("a schedule an hour overdue on wall time, two minutes on the awake time known: not known, never on time", () => {
+    const overdue = schedule({ nextRunAt: iso(NOW - H), runs: [] });
+    expect(scheduleSource(overdue, window, null, fresh)).toMatchObject({
+      status: "unknown",
+      reason: AWAKE_NOT_KNOWN,
+      since: iso(NOW - H),
+      needsYou: false,
+    });
+    // The whole count known, the Mac asleep through it: on time (it runs at wake).
+    expect(scheduleSource(overdue, window, null, sleptThrough(NOW, [[NOW - H, NOW - 2 * M]]))?.status).toBe("ok");
+    // Past its grace on the least there can have been: missed.
+    expect(scheduleSource(overdue, window, null, sleptThrough(NOW))?.status).toBe("missed");
+  });
+
+  test("a loop wake the same", () => {
+    const loop = { minutes: 30, nextAt: iso(NOW - H), ticking: false };
+    expect(loopSource(loop, [], window, fresh, null)).toMatchObject({ status: "unknown", since: iso(NOW - H) });
+    expect(loopSource(loop, [], window, sleptThrough(NOW, [[NOW - H, NOW - 2 * M]]), null).status).toBe("ok");
+  });
 });
 
 describe("Maestro's loop", () => {
