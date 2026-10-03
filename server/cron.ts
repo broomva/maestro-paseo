@@ -140,7 +140,7 @@ interface Parts {
 const formatters = new Map<string, Intl.DateTimeFormat>();
 /** Minutes already read, per zone: the same days are walked on every read. Cleared, not grown, past its size. */
 const seenParts = new Map<string, Parts>();
-/** About two zones of the eight days walked back and the day ahead; a third clears it. */
+/** About two zones of the eight days walked back and the eight ahead, an hour a step where no matcher allows it. */
 const SEEN_PARTS_MAX = 30_000;
 
 /** The wall-clock fields of an instant in a time zone (the Mac's own when none is given). */
@@ -191,7 +191,12 @@ export function knownZone(zone: string): boolean {
 }
 
 function matches(spec: CronSpec, parts: Parts): boolean {
-  if (!spec.minute.has(parts.minute) || !spec.hour.has(parts.hour) || !spec.month.has(parts.month)) return false;
+  return spec.minute.has(parts.minute) && inHour(spec, parts);
+}
+
+/** Whether the matcher allows some minute of this hour: all but the minute match. */
+function inHour(spec: CronSpec, parts: Parts): boolean {
+  if (!spec.hour.has(parts.hour) || !spec.month.has(parts.month)) return false;
   const day = spec.day.has(parts.day);
   const weekday = spec.weekday.has(parts.weekday);
   if (spec.anyDay && spec.anyWeekday) return true;
@@ -206,7 +211,9 @@ const MINUTE = 60_000;
  * The times any of the matchers falls due after `from` and up to `to`, each
  * on a whole minute, soonest first, at most `limit` of them. The minutes are
  * walked in real time, so a daylight-saving change is handled as the wall
- * clock moves.
+ * clock moves. An hour no matcher allows any minute of is stepped over to the
+ * next whole hour: a clock change inside the step only shortens or repeats
+ * minutes of that same hour, so no due time is stepped over.
  */
 export function dueTimes(
   specs: readonly CronSpec[],
@@ -217,9 +224,10 @@ export function dueTimes(
 ) {
   const out: number[] = [];
   if (specs.length === 0 || limit <= 0) return out;
-  for (let at = Math.floor(from / MINUTE) * MINUTE + MINUTE; at <= to && out.length < limit; at += MINUTE) {
+  for (let at = Math.floor(from / MINUTE) * MINUTE + MINUTE; at <= to && out.length < limit; ) {
     const parts = partsOf(at, zone);
     if (specs.some((spec) => matches(spec, parts))) out.push(at);
+    at += specs.some((spec) => inHour(spec, parts)) ? MINUTE : (60 - parts.minute) * MINUTE;
   }
   return out;
 }

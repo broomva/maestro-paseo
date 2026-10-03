@@ -28,6 +28,7 @@ import {
   AWAKE_NOT_KNOWN,
   awakeAtMost,
   awakeBetween,
+  awakeNotKnown,
   type LaunchdExit,
   type LaunchdSchedule,
   launchdRuns,
@@ -83,8 +84,12 @@ export function inWindow(runs: readonly TimelineRun[], window: Window): { runs: 
   return { runs: shown.slice(0, TIMELINE_RUNS), runsCut: shown.length > TIMELINE_RUNS };
 }
 
+/** The furthest a Date reaches, either way: past it toISOString throws. */
+const DATE_MAX_MS = 8.64e15;
+
 /** An instant the wire takes (InstantSchema), else null: a year past 9999 from an absurd interval fails no view. */
-const wire = (at: number | null) => (at === null ? null : instant(iso(at)));
+const wire = (at: number | null) =>
+  at === null || !Number.isFinite(at) || Math.abs(at) > DATE_MAX_MS ? null : instant(iso(at));
 
 /** The newest run that ran (missed ones did not). */
 function lastRun(runs: readonly TimelineRun[]): TimelineRun | null {
@@ -346,8 +351,7 @@ export function loopSource(
     missed.push({ at: iso(nextAt), endedAt: null, status: "missed", exit: null, detail: "due, and it did not wake" });
   } else if (awakeAtMost(awake, nextAt, now) > LOOP_GRACE_MS) {
     status = "unknown";
-    reason =
-      "A wake came due, and the Mac's awake time since is not known in full: whether it is late is not known yet.";
+    reason = awakeNotKnown("wake");
     since = iso(nextAt);
   } else {
     status = "ok";

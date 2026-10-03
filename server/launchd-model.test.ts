@@ -475,7 +475,7 @@ describe("a job's status", () => {
 
   test("a due time just after loaded-since (within the walk's two minutes) is not known, never on time", () => {
     const calendar = { intervalMs: null, calendar: calendarSpecs({ Minute: 0 }) };
-    // Loaded-since 20:58:30, the 21:00 run missed, read at 21:20 past its grace? No: the grace is 30 min; read 21:45.
+    // Loaded-since 20:58:30; the 21:00 run did not run; read at 21:45, past its 30-minute grace.
     const at = Date.parse("2026-10-02T21:45:00Z");
     const status = launchdStatus({
       ...base,
@@ -552,12 +552,38 @@ describe("a job's status", () => {
     ).toBe("ok");
   });
 
-  test("a last run older than the eight days kept is not on time", () => {
+  test("a last run older than the eight days kept is not on time only when a run could have come due unseen", () => {
     const monthly = { intervalMs: null, calendar: calendarSpecs({ Day: 15, Hour: 3, Minute: 0 }) };
-    expect(launchdStatus({ ...base, schedule: monthly, runs: [run(NOW - 48 * 24 * H)] })).toMatchObject({
+    // Due on Sep 15 and Aug 15 since its Aug 15 run 48 days ago: the Sep 15 one fell before the horizon.
+    expect(
+      launchdStatus({ ...base, schedule: monthly, runs: [run(Date.parse("2026-08-15T03:00:05Z"))] }),
+    ).toMatchObject({
       status: "unknown",
       reason: "Its last run is older than the eight days this keeps; whether one was missed since is not known.",
     });
+    // Its Sep 15 run, 17 days ago: the next is Oct 15. On time.
+    expect(
+      launchdStatus({ ...base, schedule: monthly, runs: [run(Date.parse("2026-09-15T03:00:05Z"))] }),
+    ).toMatchObject({ status: "ok", reason: "On schedule; its last run passed." });
+    // A yearly job's run of last January: walked in hours, on time; one of two Januaries ago: not known.
+    const yearly = { intervalMs: null, calendar: calendarSpecs({ Month: 1, Day: 1, Hour: 0, Minute: 0 }) };
+    expect(launchdStatus({ ...base, schedule: yearly, runs: [run(Date.parse("2026-01-01T00:00:05Z"))] }).status).toBe(
+      "ok",
+    );
+    expect(launchdStatus({ ...base, schedule: yearly, runs: [run(Date.parse("2025-01-01T00:00:05Z"))] }).status).toBe(
+      "unknown",
+    );
+    // On a 14-day interval, its run 10 days ago is within two intervals: on time; 30 days ago: missed.
+    const fortnight = { intervalMs: 14 * 24 * H, calendar: null };
+    expect(launchdStatus({ ...base, schedule: fortnight, runs: [run(NOW - 10 * 24 * H)] }).status).toBe("ok");
+    expect(launchdStatus({ ...base, schedule: fortnight, runs: [run(NOW - 30 * 24 * H)] }).status).toBe("unknown");
+  });
+
+  test("a job with a calendar and an interval: a miss on its interval is never hidden by its calendar's not known", () => {
+    // The clock cannot read the kernel (not whole): the calendar's 21:00 is late on wall time only.
+    const stalled = (from: number) => ({ ...sleptThrough(NOW)(from), whole: false });
+    const both = { intervalMs: 5 * M, calendar: calendarSpecs({ Minute: 0 }) };
+    expect(launchdStatus({ ...base, awake: stalled, schedule: both, runs: [run(NOW - 50 * M)] }).status).toBe("missed");
   });
 
   test("a zero interval never loops: it is no interval", () => {
@@ -594,9 +620,13 @@ describe("a job's status", () => {
     // Its last run was hours ago on a 15-minute interval: missed if the log had been read, not known if not.
     expect(launchdStatus({ ...base, schedule: interval, runs: [run(NOW - 3 * H)] }).status).toBe("missed");
     expect(launchdStatus({ ...base, seen: null, schedule: interval, runs: [run(NOW - 3 * H)] })).toMatchObject({
-      status: "ok",
+      status: "unknown",
       reason: "Its last run passed; whether one was missed since cannot be told until the unified log reads.",
     });
+    // A job with no schedule has nothing to miss.
+    expect(
+      launchdStatus({ ...base, seen: null, schedule: { intervalMs: null, calendar: null }, runs: [run(NOW - 3 * H)] }),
+    ).toMatchObject({ status: "ok", reason: "Its last run passed." });
   });
 
   test("a run the job's own log shows from before the unified log's reach does not open the gap to it", () => {

@@ -344,7 +344,8 @@ describe("the timeline", () => {
     ]);
     expect(await timeline.notices()).toEqual([]);
     const view = await timeline.get();
-    expect(view.sources.find((source) => source.id === "launchd:com.broomva.moltbook-loop")?.status).toBe("ok");
+    // Not on time either: a log never read judged nothing.
+    expect(view.sources.find((source) => source.id === "launchd:com.broomva.moltbook-loop")?.status).toBe("unknown");
     expect(view.warnings).toEqual([expect.stringContaining("The unified log could not be read")]);
   });
 

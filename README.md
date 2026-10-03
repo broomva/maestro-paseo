@@ -510,6 +510,9 @@ It is pinned to 0.8.0 so one build serves 0.8 and 0.9 hosts.
     its runs are neither drawn nor judged.
   - A launchd calendar is read in the daemon process's time zone, which is the Mac's own unless the
     daemon was started with `TZ` set; launchd itself always uses the Mac's.
+  - With the Mac's awake time unreadable from the start (no record at all), nothing overdue is called
+    missed: the rows say *not known* and the view says why. Needs you hears of it from the Fleet
+    view's notice, which needs a scheduled fleet scope; the Timeline raises none of its own.
   - On the night the clocks go back, a calendar job in the repeated hour is due twice by the wall
     clock; if launchd runs it once, the second can read as missed. Bogotá, with no daylight saving,
     is not affected.

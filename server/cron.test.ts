@@ -114,3 +114,28 @@ describe("launchd's calendar", () => {
     expect(everyWords(30_000)).toBe("every 30 seconds");
   });
 });
+
+describe("an hour no matcher allows is stepped over", () => {
+  test("the same due times as a minute walk, across the clock changes of New York, Bogotá and Lord Howe", () => {
+    const specs = [parseCron("30 2 * * *"), parseCron("*/10 1-2 * * *"), parseCron("0 0 * 3,11 0")].flatMap((spec) =>
+      spec ? [spec] : [],
+    );
+    // New York forward Mar 8 and back Nov 1; Lord Howe back half an hour Apr 5 and forward Oct 4 (2026).
+    const spans = [
+      ["2026-03-06", "2026-03-10"],
+      ["2026-10-31", "2026-11-03"],
+      ["2026-04-03", "2026-04-07"],
+      ["2026-10-02", "2026-10-06"],
+    ].map(([a, b]) => [Date.parse(`${a}T00:00:00Z`), Date.parse(`${b}T00:00:00Z`)] as const);
+    for (const zone of ["America/New_York", "America/Bogota", "Australia/Lord_Howe"]) {
+      for (const [a, b] of spans) {
+        // One minute a call: nothing to step over.
+        const walked: number[] = [];
+        for (let at = a + 60_000; at <= b; at += 60_000) {
+          if (dueTimes(specs, zone, at - 60_000, at, 1).length > 0) walked.push(at);
+        }
+        expect({ zone, a, due: dueTimes(specs, zone, a, b, 10_000) }).toEqual({ zone, a, due: walked });
+      }
+    }
+  });
+});

@@ -43,8 +43,9 @@ export function awakeAtMost(awake: AwakeFor, from: number, to: number): number {
  * most (awakeAtMost) is within it. Between the two, a clock that began later
  * or cannot read the kernel now cannot tell, and the row says so.
  */
-export const AWAKE_NOT_KNOWN =
-  "A run came due, and the Mac's awake time since is not known in full: whether it is late is not known yet.";
+export const awakeNotKnown = (what: "run" | "wake") =>
+  `A ${what} came due, and the Mac's awake time since is not known in full: whether it is late is not known yet.`;
+export const AWAKE_NOT_KNOWN = awakeNotKnown("run");
 
 /** What was seen ends more than this before now: the log has stopped being read, and nothing since is on time. */
 export const STALE_MS = 15 * 60_000;
@@ -487,8 +488,8 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
     const back = to - EVIDENCE_MS;
     const from = Math.max(seen.from, newestEnd ?? seen.from, input.loadedSince ?? to, back);
     const sinceLast = newestEnd !== null && newestEnd >= seen.from;
+    const due = schedule.calendar ? dueTimes(schedule.calendar, undefined, from + MATCH_SLACK_MS, to, 1440 * 2) : [];
     if (schedule.calendar) {
-      const due = dueTimes(schedule.calendar, undefined, from + MATCH_SLACK_MS, to, 1440 * 2);
       const late = due.filter((at) => awakeBetween(input.awake, at, to) > CALENDAR_GRACE_MS);
       const [first] = late;
       if (first !== undefined) {
@@ -502,8 +503,6 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
           missed: late.slice(-MISSED_SHOWN).reverse().map(missedRun),
         };
       }
-      const maybe = due.find((at) => awakeAtMost(input.awake, at, to) > CALENDAR_GRACE_MS);
-      if (maybe !== undefined) return { status: "unknown", reason: AWAKE_NOT_KNOWN, since: iso(maybe), missed: [] };
     }
     if (schedule.intervalMs !== null) {
       if (awakeBetween(input.awake, from, to) > 2 * schedule.intervalMs + INTERVAL_GRACE_MS) {
@@ -518,9 +517,15 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
           missed: [missedRun(dueAt)],
         };
       }
-      if (awakeAtMost(input.awake, from, to) > 2 * schedule.intervalMs + INTERVAL_GRACE_MS) {
-        return { status: "unknown", reason: AWAKE_NOT_KNOWN, since: iso(from + schedule.intervalMs), missed: [] };
-      }
+    }
+    // Missed on either key comes first: a job with both is never hidden by the other's not known.
+    const maybe = due.find((at) => awakeAtMost(input.awake, at, to) > CALENDAR_GRACE_MS);
+    if (maybe !== undefined) return { status: "unknown", reason: AWAKE_NOT_KNOWN, since: iso(maybe), missed: [] };
+    if (
+      schedule.intervalMs !== null &&
+      awakeAtMost(input.awake, from, to) > 2 * schedule.intervalMs + INTERVAL_GRACE_MS
+    ) {
+      return { status: "unknown", reason: AWAKE_NOT_KNOWN, since: iso(from + schedule.intervalMs), missed: [] };
     }
     // Not judged is not on time: a run came due after the newest one ended, before judging could start
     // (up to where the judged walk begins, so no due time falls between the two), or, on an interval, so long
@@ -561,8 +566,9 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
       missed: [],
     };
   }
-  // A last run older than what is kept: a run due between it and the horizon was never looked for.
-  if (scheduled && seen && newestEnd !== null && newestEnd < seen.to - EVIDENCE_MS) {
+  // A last run older than what is kept: a run that could have come due between it and the horizon was never
+  // looked for. A monthly job's next one may well lie past it, and then it is on time.
+  if (scheduled && seen && newestEnd !== null && dueUnseen(schedule, input.awake, newestEnd, seen.to)) {
     return {
       status: "unknown",
       reason: "Its last run is older than the eight days this keeps; whether one was missed since is not known.",
@@ -583,16 +589,48 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
       missed: [],
     };
   }
+  // A log never read judged nothing: not on time either.
+  if (scheduled && !seen) {
+    return {
+      status: "unknown",
+      reason: "Its last run passed; whether one was missed since cannot be told until the unified log reads.",
+      since: newest.at,
+      missed: [],
+    };
+  }
   return {
     status: "ok",
     reason: !seen
-      ? "Its last run passed; whether one was missed since cannot be told until the unified log reads."
+      ? "Its last run passed."
       : (input.loadedSince ?? seen.to) >= seen.to
         ? "Its last run passed; whether one is missed is told from the next due time on."
         : "On schedule; its last run passed.",
     since: newest.at,
     missed: [],
   };
+}
+
+/** A newest run older than this before the horizon: a run came due between, whatever the calendar (a year and a day). */
+const UNSEEN_WALK_MS = 366 * 86_400_000;
+
+/**
+ * Whether a run could have come due between the newest run's end and the
+ * horizon (`to` less EVIDENCE_MS), where no walk looks: a calendar time in
+ * that span, or an interval's limit passed on the most awake time there can
+ * have been since it.
+ */
+function dueUnseen(schedule: LaunchdSchedule, awake: AwakeFor, newestEnd: number, to: number): boolean {
+  const back = to - EVIDENCE_MS;
+  if (newestEnd >= back) return false;
+  if (schedule.calendar) {
+    if (newestEnd < back - UNSEEN_WALK_MS) return true;
+    if (dueTimes(schedule.calendar, undefined, newestEnd + MATCH_SLACK_MS, back + MATCH_SLACK_MS, 1).length > 0) {
+      return true;
+    }
+  }
+  return (
+    schedule.intervalMs !== null && awakeAtMost(awake, newestEnd, to) > 2 * schedule.intervalMs + INTERVAL_GRACE_MS
+  );
 }
 
 /** The runs still to come within `to`, soonest first: from the calendar, or an interval after the newest run. */

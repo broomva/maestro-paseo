@@ -706,6 +706,27 @@ describe("a launchd job", () => {
       window,
     );
     expect(absurd.next).toBeNull();
+    // Past where a Date reaches: toISOString would throw, and fail the whole view.
+    const beyond = launchdSource(
+      job({ plist: { StartInterval: 1e13 } }),
+      {
+        ...context,
+        exits: [
+          {
+            label: "com.broomva.kg-lint",
+            pid: 1,
+            endedAt: NOW - M,
+            exit: 0,
+            signal: null,
+            byLaunchd: false,
+            reason: null,
+            ranMs: 10,
+          },
+        ],
+      },
+      window,
+    );
+    expect(beyond.next).toBeNull();
     // A print that says 0 seconds is no interval.
     expect(
       launchdSource(

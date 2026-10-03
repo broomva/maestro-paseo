@@ -208,6 +208,8 @@ export class Launchd {
   private stretch: Seen | null = null;
   /** The jobs the last list that read saw: shown, as last read, while a list fails. */
   private lastJobs: LaunchdJob[] = [];
+  /** When the last good list read them: a run going then ends at a log exit after it. */
+  private lastListAt = 0;
   /** Each loaded job's loaded-since (LaunchdJob.loadedSince). */
   private readonly loadedSince = new Map<string, number>();
   /** Unloads already seen, by label and time, so the overlap of two reads counts one once. */
@@ -291,19 +293,31 @@ export class Launchd {
     );
     // A list that fails keeps the jobs as the last one read them: a failed job's notice does not vanish with it.
     const read = jobs.filter((job): job is LaunchdJob => job !== null);
-    if (listed) this.lastJobs = read;
-    else if (this.lastJobs.length > 0) warnings.push("launchd's jobs are shown as the last list read them.");
+    if (listed) {
+      this.lastJobs = read;
+      this.lastListAt = readAt;
+    } else if (this.lastJobs.length > 0) warnings.push("launchd's jobs are shown as the last list read them.");
     return {
       readAt,
-      // Kept rows prove nothing about now: no loaded-since (no miss is judged) and no run going (the log's run ends
-      // say how it ended), so a failure still shows.
-      jobs: listed
-        ? read
-        : this.lastJobs.map((job) => ({ ...job, loadedSince: null, running: false, runningSince: null })),
+      jobs: listed ? read : this.lastJobs.map((job) => this.kept(job)),
       exits: [...this.exits.values()].sort((a, b) => a.endedAt - b.endedAt),
       seen: this.stretch ? { ...this.stretch } : null,
       warnings,
     };
+  }
+
+  /**
+   * A row the last good list read, kept while the list fails. It proves no
+   * loaded-since, so no miss is judged on it. A run going then is going still
+   * unless the unified log has recorded an end of it since: then that end says
+   * how it ended, so a failure still shows, and launchd's last exit (the run
+   * before) never stands in for a run still going.
+   */
+  private kept(job: LaunchdJob): LaunchdJob {
+    const ended =
+      job.running &&
+      [...this.exits.values()].some((exit) => exit.label === job.label && exit.endedAt >= this.lastListAt);
+    return { ...job, loadedSince: null, ...(ended ? { running: false, runningSince: null } : {}) };
   }
 
   /**

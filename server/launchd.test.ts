@@ -404,6 +404,20 @@ describe("reading the jobs", () => {
     expect(read.exits.some((exit) => exit.label === "com.broomva.moltbook-loop" && exit.exit === 1)).toBe(true);
   });
 
+  test("a run going at the last list is going still through a failed list, until the log records its end", async () => {
+    const { launchd, setNow, setShown, failList } = await setup();
+    await launchd.read();
+    setNow(NOW + 5 * M);
+    failList();
+    setShown("");
+    const read = await launchd.read();
+    // No end of it in the log: still going, so launchd's last exit (the run before) never stands in for it.
+    expect(read.jobs.find((job) => job.label === "com.broomva.moltbook-loop")).toMatchObject({
+      running: true,
+      loadedSince: null,
+    });
+  });
+
   test("an unload the log shows on a read whose list fails still starts loaded-since again", async () => {
     const { launchd, setNow, setShown, failList, unfailList } = await setup();
     await launchd.read();
