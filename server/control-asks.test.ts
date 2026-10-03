@@ -10,6 +10,7 @@ import {
   acquireLock,
   answerDecision,
   decisionsOf,
+  dropLeftovers,
   entryHash,
   LOCK_STALE_MS,
   lockKey,
@@ -252,6 +253,22 @@ describe("writing an answer", () => {
     expect(() => answered("asks:\n  - {id: a, ask: q}\n", { id: "a", note: "yes" })).toThrow("flow style");
   });
 
+  test("a key to write that holds a list or a map is the writer's: refused, never replaced by a line", () => {
+    expect(() => answered("asks:\n  - id: a\n    status:\n      phase: waiting\n", { id: "a", note: "y" })).toThrow(
+      "status holds a list or a map",
+    );
+    expect(() => answered("asks:\n  - id: a\n    answer: [one, two]\n", { id: "a", note: "y" })).toThrow(
+      "answer holds a list or a map",
+    );
+  });
+
+  test("an answer in words alone clears an option a writer left there, so it never says you chose one", () => {
+    const source = "asks:\n  - id: a\n    ask: q\n    options:\n      - id: o1\n    answer_option: o1\n";
+    const out = answered(source, { id: "a", note: "Neither." });
+    expect(out).toContain("    answer_option: null\n");
+    expect(decisionsOf(out, "l.yaml")[0]?.answerOption).toBeNull();
+  });
+
   test("an edit that would change anything but the answer's keys is refused, and nothing is written", () => {
     // A keep-chomped block scalar owns the blank lines after it: an append there would change its value.
     const keep = "asks:\n  - id: a\n    ask: |+\n      q\n\n\n  - id: b\n";
@@ -405,6 +422,20 @@ describe("the ledger lock", () => {
     expect((await readFile(join(lock.dir, "pid"), "utf8")).split(" ")[0]).toBe(String(process.pid));
     await releaseLock(lock);
     expect(await readdir(locks)).toEqual([]);
+  });
+
+  test("each scan drops the locks this process left behind, never one it holds or another writer's", async () => {
+    const { path, locks } = await ledgerIn();
+    const lock = await acquireLock(path, locks);
+    await mkdir(join(locks, "0000000000000000.d"));
+    await writeFile(join(locks, "0000000000000000.d", "pid"), "999999 1\n");
+    await dropLeftovers(locks);
+    expect((await readdir(locks)).sort()).toEqual(["0000000000000000.d", `${await lockKey(path)}.d`]);
+    // Released while its token could not be read: left behind, and the next scan clears it.
+    await writeFile(join(lock.dir, "token"), "garbled\n");
+    await releaseLock(lock);
+    await dropLeftovers(locks);
+    expect(await readdir(locks)).toEqual(["0000000000000000.d"]);
   });
 
   test("a lock of this process's own that it no longer holds is dropped at once; one it holds is waited on", async () => {

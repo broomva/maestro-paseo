@@ -261,7 +261,12 @@ export async function lockKey(ledgerPath: string): Promise<string> {
  * reused pid with another start is not the holder. Other writers taking this
  * lock write the same grammar; a file without a start is judged by its pid alone.
  */
-const started = () => Math.round(Date.now() / 1000 - process.uptime());
+let ownStart: number | null = null;
+/** Read from ps once, as other writers will read it: Node's uptime stops while the Mac sleeps, ps's does not. */
+async function started(): Promise<number> {
+  ownStart ??= (await startOf(process.pid)) ?? Math.round(Date.now() / 1000 - process.uptime());
+  return ownStart;
+}
 
 /** `ps -o etime=`'s `[[dd-]hh:]mm:ss` in seconds: elapsed time, which no time zone shifts (lstart's local time does). */
 export function etimeSeconds(etime: string): number | null {
@@ -333,7 +338,7 @@ async function staleness(dir: string, now: number): Promise<{ stale: boolean; ho
   const pidFile = await readFile(join(dir, "pid"), "utf8").catch(() => null);
   const holder = pidFile ? pidOf(pidFile) : null;
   const words = holder ? `pid ${holder.pid}` : "a writer starting up";
-  if (holder?.pid === process.pid && holder.start !== null && Math.abs(holder.start - started()) <= 2) {
+  if (holder?.pid === process.pid && holder.start !== null && Math.abs(holder.start - (await started())) <= 2) {
     return { stale: !held.has(dir), holder: words };
   }
   const alive = pidFile === null ? age < LOCK_STALE_MS : await holderAlive(pidFile);
@@ -382,14 +387,16 @@ export async function acquireLock(
     try {
       await mkdir(dir);
       made = true;
-      const token = randomBytes(16).toString("hex");
-      await writeFile(join(dir, "pid"), `${process.pid} ${started()}\n`);
-      await writeFile(join(dir, "token"), `${token}\n`);
+      // Held from the moment it is made: a pid of ours on a lock not yet marked held would read as left behind.
       held.add(dir);
+      const token = randomBytes(16).toString("hex");
+      await writeFile(join(dir, "pid"), `${process.pid} ${await started()}\n`);
+      await writeFile(join(dir, "token"), `${token}\n`);
       return { dir, token };
     } catch (error) {
       // Made but not finished: taken back, so no half-written lock is left to wedge the ledger.
       if (made) {
+        held.delete(dir);
         await rm(dir, { recursive: true, force: true });
         throw error;
       }
@@ -404,6 +411,23 @@ export async function acquireLock(
       );
     }
     await sleep(50 + Math.floor(Math.random() * 50));
+  }
+}
+
+/**
+ * Drops every lock in the root that this process left behind: its own pid and
+ * start, not held now. Run at each scan (§5.5), so another writer is never kept
+ * waiting on a lock of Maestro's that only Maestro's next answer would clear.
+ */
+export async function dropLeftovers(lockRoot: string): Promise<void> {
+  const names = await readdir(lockRoot).catch(() => [] as string[]);
+  for (const name of names.filter((entry) => entry.endsWith(".d") && !entry.endsWith(".reclaim.d"))) {
+    const dir = join(lockRoot, name);
+    if (held.has(dir)) continue;
+    const holder = pidOf((await readFile(join(dir, "pid"), "utf8").catch(() => "")) ?? "");
+    if (holder?.pid === process.pid && holder.start !== null && Math.abs(holder.start - (await started())) <= 2) {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 }
 
@@ -434,8 +458,8 @@ function indentOf(source: string, offset: number): string {
  * ones, so a multi-line answer stays one line and the diff within the spec's
  * bound (§5.5: added lines <= keys + answer lines - 1; a block literal adds one).
  */
-function renderScalar(value: string): string {
-  return JSON.stringify(value);
+function renderScalar(value: string | null): string {
+  return value === null ? "null" : JSON.stringify(value);
 }
 
 interface Edit {
@@ -458,7 +482,7 @@ function upsertKey(
   source: string,
   map: YAMLMap,
   key: string,
-  value: string,
+  value: string | null,
   indent: string,
   seq: number,
   newline: string,
@@ -567,13 +591,26 @@ export function withAnswer(
   const newline = source.includes("\r\n") ? "\r\n" : "\n";
   const answerKey = ANSWER_KEYS.find((name) => target.has(name)) ?? "answer";
   const stamp = at.toISOString().replace(/\.\d{3}Z$/, "Z");
-  const writes: [string, string][] = [
+  // No option chosen clears one a writer left there, so the ledger never says you chose what you did not.
+  const chosen: [string, string | null][] = option
+    ? [["answer_option", option.id]]
+    : target.has("answer_option")
+      ? [["answer_option", null]]
+      : [];
+  const writes: [string, string | null][] = [
     [answerKey, answer],
-    ...(option ? ([["answer_option", option.id]] as [string, string][]) : []),
+    ...chosen,
     ["answered_at", stamp],
     ["answered_by", "owner:maestro"],
     ["status", "resolved"],
   ];
+  // A key to write that holds a list or a map is the writer's data, not a placeholder: never replaced by a line.
+  for (const [name] of writes) {
+    const existing = row[name];
+    if (existing !== null && typeof existing === "object" && !(existing instanceof Date)) {
+      throw new UserError(`The ask ${input.id}'s ${name} holds a list or a map; ${unwritable}`);
+    }
+  }
   const edits = writes.map(([name, value], seq) => upsertKey(source, target, name, value, indent, seq, newline));
   // Back to front so earlier offsets hold; inserts at one offset go highest-seq first, which leaves them in order.
   let out = source;
@@ -589,7 +626,14 @@ export function withAnswer(
   }
   const back = rowsOf(after)[index];
   const ask = back ? decisionOf(back, after, ledger, ambiguity(rowsOf(after))) : null;
-  if (ask?.state !== "answered" || ask.answeredAt !== stamp || ask.answer !== answer) throw new UserError(unwritable);
+  if (
+    ask?.state !== "answered" ||
+    ask.answeredAt !== stamp ||
+    ask.answer !== answer ||
+    ask.answerOption !== (option?.id ?? null)
+  ) {
+    throw new UserError(unwritable);
+  }
   if (untouched(after, index, answerKey) !== untouched(data, index, answerKey)) throw new UserError(unwritable);
   return { out, ask, hash };
 }

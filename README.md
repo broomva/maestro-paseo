@@ -367,8 +367,9 @@ contract (workspace#861, `docs/specs/2026-10-01-maestro-control-interface.html`)
     nothing is written.
   - A dead holder's lock is reclaimed once it is 120 seconds old, under a `<k>.reclaim.d` mutex,
     and judged again once the mutex is held, so a fresh lock another writer took meanwhile stays.
-  - A lock left by Maestro's own process that it no longer holds is dropped at once, so a release
-    that failed never wedges the ledger until the daemon restarts.
+  - A lock left by Maestro's own process that it no longer holds is dropped at each Fleet read and
+    before Maestro's next take, so a release that failed never keeps another writer waiting. Its
+    start time is read from `ps` once, as other writers read it.
 - **The answer.** The edit touches only the ask's own entry. It writes these keys, each on one line:
   - `answer`: the option's label and consequence, then your words;
   - `answer_option`: the option's id, when you chose one;
@@ -376,7 +377,9 @@ contract (workspace#861, `docs/specs/2026-10-01-maestro-control-interface.html`)
   - `answered_by: owner:maestro`;
   - `status: resolved`.
 
-  An existing key is rewritten in place, whatever its shape (`null`, empty, a block scalar). An
+  An existing key is rewritten in place, whatever its shape (`null`, empty, a block scalar); one that
+  holds a list or a map is the writer's data, and the answer is refused. An answer in words alone
+  sets an `answer_option` a writer left there to `null`. An
   edit that would not read back as this ask, answered, with every other entry and key as it was, is
   not written, and the card says why. A receipt line goes to
   `~/.local/state/maestro-paseo/asks.jsonl`, with the ask's uid or id, its `asked_at`, the asking

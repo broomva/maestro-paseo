@@ -39,7 +39,7 @@ import {
   type ReviewVerdict,
   TICK_LOG_BYTES,
 } from "../shared/fleet";
-import { answerDecision, readDecisions } from "./control-asks";
+import { answerDecision, dropLeftovers, readDecisions } from "./control-asks";
 import { UserError } from "./engine";
 import {
   type AwakeFor,
@@ -720,6 +720,8 @@ export class Fleet {
       const numbers = [...new Set([...read.fold.ticks.keys(), ...read.tickDirs])].sort((a, b) => b - a).slice(0, ticks);
       const askRoot = join(stateDir, ASK_ROOT);
       const decisions = await readDecisions(askRoot);
+      // Each scan clears a ledger lock Maestro left behind (§5.5), so no other writer waits on it.
+      await dropLeftovers(this.options.askLocks ?? controlAskPaths().locks).catch(() => undefined);
       warnings.push(...decisions.warnings);
       const reports = new Map<number, ReportSummary>();
       for (const tick of numbers) {
