@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { Registrations, sameSpec } from "./registrations";
+import { createRegistrations, sameSpec } from "./registrations";
 
 type Spec = { count: number };
 
 function recorder(refuse: Set<string> = new Set()) {
   const calls: string[] = [];
-  const registrations = new Registrations<Spec, { key: string; remove(): void }>(
+  const registrations = createRegistrations<Spec, { key: string; remove(): void }>(
     {
       add: (key, spec) => {
         if (refuse.has(`add ${key}`)) throw new Error(`host refused ${key}`);

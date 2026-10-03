@@ -8,7 +8,16 @@
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useWorkspace } from "@getpaseo/plugin/client";
-import { Component, createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
+import {
+  Component,
+  type ComponentClass,
+  createContext,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Text } from "react-native";
 import { changeLabel, changeText, type DiffStat } from "./plane-model";
 import { size } from "./ui";
@@ -17,16 +26,27 @@ import { size } from "./ui";
 // panel), where each read tries on its own.
 const ReachContext = createContext<boolean | null>(null);
 
-/** Renders `fallback` once a child throws. */
-class Quiet extends Component<{ children: ReactNode; fallback: ReactNode }, { failed: boolean }> {
-  state = { failed: false };
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-  render() {
-    return this.state.failed ? this.props.fallback : this.props.children;
-  }
+type QuietProps = { children: ReactNode; fallback: ReactNode };
+type QuietState = { failed: boolean };
+
+/**
+ * Renders `fallback` once a child throws. An error boundary has to be a class
+ * component, but Paseo evaluates the client bundle with Hermes on iOS, which
+ * rejects class syntax and would drop the whole plugin there. So this is the
+ * ES5 form React also accepts: a constructor whose prototype is Component's.
+ */
+function QuietBoundary(this: Component<QuietProps, QuietState>, props: QuietProps) {
+  (Component as unknown as (this: unknown, props: QuietProps) => void).call(this, props);
+  this.state = { failed: false };
 }
+QuietBoundary.prototype = Object.create(Component.prototype);
+QuietBoundary.prototype.constructor = QuietBoundary;
+QuietBoundary.prototype.render = function render(this: Component<QuietProps, QuietState>) {
+  return this.state.failed ? this.props.fallback : this.props.children;
+};
+const Quiet = Object.assign(QuietBoundary, {
+  getDerivedStateFromError: (): QuietState => ({ failed: true }),
+}) as unknown as ComponentClass<QuietProps, QuietState>;
 
 function Probe({ onReach }: { onReach: () => void }) {
   useWorkspace("", () => null);
