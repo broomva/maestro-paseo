@@ -138,7 +138,7 @@ async function setup(options: { launchdMs?: number } = {}) {
     loop: async () => ({ minutes: 15, nextAt: iso(now + 5 * M), ticking: false }),
     wakes: async () => [],
     wakeLogPath: "/wake-log.jsonl",
-    clock: { read: () => sleptThrough(now) },
+    clock: { read: async () => sleptThrough(now), error: null },
     fleet: {
       get: async (scope) => {
         fleetCalls.push(scope);
@@ -392,10 +392,11 @@ describe("the timeline", () => {
       fleet: null,
       // The Mac slept from just after the wake was due until three minutes ago.
       clock: {
-        read: () => {
+        read: async () => {
           asked.push("awake");
           return sleptThrough(NOW, [[NOW - 3 * H, NOW - 3 * M]]);
         },
+        error: null,
       },
       now: () => NOW,
       log: () => undefined,
@@ -403,6 +404,25 @@ describe("the timeline", () => {
     const view = await timeline.get();
     expect(asked).toEqual(["awake"]);
     expect(view.sources.find((source) => source.id === "loop")?.status).toBe("ok");
+  });
+
+  test("a clock that cannot read the Mac's awake time is said in the view", async () => {
+    const root = await mkdtemp(join(tmpdir(), "maestro-timeline-"));
+    roots.push(root);
+    const timeline = new Timeline({
+      launchd: null,
+      schedulesDir: join(root, "missing"),
+      loop: async () => ({ minutes: null, nextAt: null, ticking: false }),
+      wakes: async () => [],
+      fleet: null,
+      clock: {
+        read: async () => sleptThrough(NOW),
+        error: "The Mac's awake time could not be read (CLOCK_UPTIME_RAW).",
+      },
+      now: () => NOW,
+      log: () => undefined,
+    });
+    expect((await timeline.get()).warnings).toEqual(["The Mac's awake time could not be read (CLOCK_UPTIME_RAW)."]);
   });
 
   test("a launchd job's log end, only when asked for", async () => {
@@ -421,7 +441,7 @@ describe("the timeline", () => {
       loop: async () => ({ minutes: null, nextAt: null, ticking: false }),
       wakes: async () => [],
       fleet: null,
-      clock: { read: () => sleptThrough(NOW) },
+      clock: { read: async () => sleptThrough(NOW), error: null },
       now: () => NOW,
       log: () => undefined,
     });

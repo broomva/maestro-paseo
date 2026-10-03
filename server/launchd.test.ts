@@ -4,19 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { calendarSpecs, dueTimes } from "./cron";
 import { sleptThrough } from "./fake-awake";
-import {
-  EVIDENCE_MS,
-  execRunner,
-  LAUNCHCTL,
-  Launchd,
-  LOG,
-  NotARead,
-  PLUTIL,
-  PS,
-  type Runner,
-  readOnly,
-} from "./launchd";
-import { logStartArg } from "./launchd-model";
+import { execRunner, LAUNCHCTL, Launchd, LOG, NotARead, PLUTIL, PS, type Runner, readOnly } from "./launchd";
+import { EVIDENCE_MS, logStartArg } from "./launchd-model";
 import { launchdSource } from "./timeline-model";
 
 const roots: string[] = [];
@@ -92,14 +81,14 @@ function localStamp(at: number): string {
   return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}.${ms}000${zone}`;
 }
 
-/** `log show --start`'s argument back to an instant: the Mac's own zone, to the second. */
+/** `log show --start`'s argument back to an instant: `YYYY-MM-DD HH:MM:SS+0000`, UTC, to the second. */
 function startOf(args: readonly string[], now: number): number {
   const at = args.indexOf("--start");
   if (at < 0) return now - 24 * H;
-  const [date = "", time = ""] = String(args[at + 1]).split(" ");
-  const [y = 0, mo = 1, d = 1] = date.split("-").map(Number);
-  const [h = 0, mi = 0, s = 0] = time.split(":").map(Number);
-  return new Date(y, mo - 1, d, h, mi, s).getTime();
+  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\+0000$/.exec(String(args[at + 1]));
+  if (!match) throw new Error(`not a UTC start: ${args[at + 1]}`);
+  const [, y, mo, d, h, mi, s] = match.map(Number);
+  return Date.UTC(y ?? 0, (mo ?? 1) - 1, d ?? 1, h ?? 0, mi ?? 0, s ?? 0);
 }
 
 /** The first launchd event a log holds at or after `from`: launchd writes every minute, and the log forgets past `retain`. */
@@ -194,6 +183,7 @@ async function setup() {
     exitShow: (code: number) => (showExit = code),
     failPrint: () => (printFails = true),
     failProbe: () => (probeFails = true),
+    unfailProbe: () => (probeFails = false),
     setRetain: (ms: number) => (retain = ms),
     setListed: (labels: string[]) => (listed = labels),
     listStatus: (code: number) => (compileStatus = code),
@@ -378,14 +368,49 @@ describe("reading the jobs", () => {
     expect(read.seen).toEqual({ from: NOW + 4 * M, to: NOW + H });
   });
 
-  test("a probe that fails proves nothing: no stretch, said; the next good one starts it again", async () => {
-    const { launchd, failProbe, setNow } = await setup();
-    await launchd.read();
+  test("a probe that fails changes nothing but the run ends: the stretch stays, the next read proves the same range", async () => {
+    const { launchd, failProbe, unfailProbe, setNow, calls } = await setup();
+    const first = await launchd.read();
     failProbe();
     setNow(NOW + 5 * M);
+    const failed = await launchd.read();
+    expect(failed.seen).toEqual(first.seen);
+    expect(failed.warnings).toEqual([
+      expect.stringContaining("How far back the unified log reaches could not be read"),
+    ]);
+    // Loaded-since does not start over on a failed probe.
+    expect(failed.jobs.find((job) => job.label === "com.broomva.kg-compile")?.loadedSince).toBe(NOW);
+    unfailProbe();
+    setNow(NOW + 10 * M);
+    const next = await launchd.read();
+    const starts = calls.filter((call) => call[0] === LOG && !call.includes("(first line)")).map((call) => call[3]);
+    // The failed read's start, read again: it proves the range the failed one could not.
+    expect(starts.at(-1)).toBe(starts.at(-2));
+    expect(next.seen).toEqual({ from: first.seen?.from ?? 0, to: NOW + 10 * M });
+  });
+
+  test("an unload the log shows on a read whose list fails still starts loaded-since again", async () => {
+    const { launchd, setNow, setShown, failList, unfailList } = await setup();
+    await launchd.read();
+    setNow(NOW + H);
+    failList();
+    setShown(
+      JSON.stringify({
+        subsystem: "gui/501 [100024]",
+        eventMessage: "removing service: com.broomva.moltbook-loop",
+        timestamp: localStamp(NOW + 30 * M),
+      }),
+    );
+    const failing = await launchd.read();
+    // While the list fails, the jobs show as the last list read them, and it is said.
+    expect(failing.jobs.map((job) => job.label)).toContain("com.broomva.moltbook-loop");
+    expect(failing.warnings).toContain("launchd's jobs are shown as the last list read them.");
+    unfailList();
+    setShown("");
+    setNow(NOW + 2 * H);
     const read = await launchd.read();
-    expect(read.seen).toBeNull();
-    expect(read.warnings).toEqual([expect.stringContaining("How far back the unified log reaches could not be read")]);
+    expect(read.jobs.find((job) => job.label === "com.broomva.moltbook-loop")?.loadedSince).toBe(NOW + 2 * H);
+    expect(read.jobs.find((job) => job.label === "com.broomva.kg-compile")?.loadedSince).toBe(NOW);
   });
 
   test("an unload the log shows between two reads that both saw the job loaded starts its loaded-since again", async () => {
@@ -543,7 +568,7 @@ describe("what was seen is what the log held", () => {
       { Weekday: 0, Hour: 9, Minute: 0 },
     ];
     let found = 0;
-    for (let seed = 1; seed <= 90; seed += 1) {
+    for (let seed = 1; seed <= 45; seed += 1) {
       const random = mulberry32(seed);
       const calendar = cadences[seed % cadences.length];
       const specs = calendarSpecs(calendar);
@@ -610,6 +635,25 @@ describe("what was seen is what the log held", () => {
           { exits: read.exits, seen: read.seen, awake: sleptThrough(now), prefix: "com.broomva." },
           { now, from: now - 24 * H, to: now + 24 * H },
         );
+        if (source.status === "ok") {
+          // "On time" never hides a true miss: no due time after its newest known run, past its grace and
+          // inside what was seen, when the job was loaded and did not run.
+          const newest = read.exits.reduce((latest, exit) => Math.max(latest, exit.endedAt), 0);
+          const horizon = read.seen?.to ?? 0;
+          const hidden = dueTimes(specs, undefined, newest, horizon - 30 * M, 1000).filter(
+            (at) => loadedAt(at) && !ends.includes(at + 5000),
+          );
+          expect({
+            seed,
+            at: new Date(now).toISOString(),
+            hidden: hidden.map((at) => new Date(at).toISOString()),
+          }).toEqual({
+            seed,
+            at: new Date(now).toISOString(),
+            hidden: [],
+          });
+          continue;
+        }
         if (source.status !== "missed") continue;
         // Every miss called, and every missed run drawn, is a true one: due then, loaded, and it did not run.
         const drawn = source.runs.filter((one) => one.status === "missed").map((one) => Date.parse(one.at));

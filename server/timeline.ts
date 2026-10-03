@@ -59,7 +59,7 @@ export interface TimelineOptions {
    * (server/fleet.ts AwakeClock). Required: wall time would count every
    * night's sleep as time the jobs could have run.
    */
-  clock: { read(): AwakeFor };
+  clock: { read(): Promise<AwakeFor>; error: string | null };
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -149,7 +149,8 @@ export class Timeline {
     const launchdAt = this.launchd?.at ?? null;
     const now = this.now();
     const window: Window = { now, from: now - TIMELINE_WINDOW_MS, to: now + TIMELINE_WINDOW_MS };
-    const awake = this.options.clock.read();
+    const awake = await this.options.clock.read();
+    if (this.options.clock.error) warnings.push(this.options.clock.error);
     const [schedules, loop, fleet] = await Promise.all([
       this.schedules(window, awake, warnings),
       this.loop(window, awake, warnings),

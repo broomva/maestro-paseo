@@ -378,7 +378,7 @@ now and the next 24 to its right. It reads four kinds of source:
   on the track. A run whose exit nobody recorded is *not known*, never on time, and a SIGTERM
   launchd sent itself (at logout, or an unload) stops a run without failing it.
 - **When a run counts as missed.** Every grace is awake time, from the plugin's one awake clock,
-  which the Fleet view counts in too (a heartbeat, since no clock the plugin can read stops in sleep).
+  which the Fleet view counts in too (the kernel's `CLOCK_UPTIME_RAW`, which stops while the Mac sleeps).
   launchd fires nothing while the Mac sleeps, and runs a calendar job it slept through once at wake:
   - A launchd job on an interval: two intervals and 5 minutes of awake time with no run, after its
     newest run ended.
@@ -393,13 +393,16 @@ now and the next 24 to its right. It reads four kinds of source:
   that will not convert, is a warning in the view and costs only what it would have said.
 - **A miss is judged only on what was seen.** The launchd reader keeps one stretch the unified log is
   proven to have held. Each read asks the log for the first launchd event at or after where the read
-  starts. Only when that event sits at the start (the log still held it) does the read extend the
-  stretch; a gap the log no longer holds, or a probe that fails, starts it again at what the log
-  holds now. A job is proven loaded from the first read that saw it loaded, again after a read finds
+  starts. Only when that event is no later than where the last read ended (the log still held it)
+  does the read extend the stretch; a gap the log no longer holds starts it again at what the log
+  holds now, and a probe that fails changes nothing until the next read proves the same range. Run
+  ends and the stretch are kept to one horizon, eight days, so the stretch never reaches back past
+  them. A job is proven loaded from the first read that saw it loaded, again after a read finds
   its unload in the log (`removing service: <label>`), and again whenever the stretch starts over. A
   run is called missed only if it came due inside the stretch, after the newest run ended and since
-  the job was proven loaded. So nothing due before the plugin's first read is ever called missed, and
-  the row says when it cannot tell.
+  the job was proven loaded. A due time after the newest run that falls before judging could start
+  (the plugin's first read, a reload, a gap) is never called missed and never read as on time: the
+  row says it is not known until the next one.
 - **In Needs you.** A failed or missed source shows above every other view, with *Open Timeline*,
   and counts in the header count, so it reaches the phone. Fleet scopes are counted once, by the
   Fleet view's notice or the fleet's own alert work, and never again by the Timeline. The launchd
@@ -493,9 +496,11 @@ It is pinned to 0.8.0 so one build serves 0.8 and 0.9 hosts.
   - A cron a Claude session made for itself lives only in that session, so it is not shown. The
     coordinator's :13/:43 tick is one.
   - launchd keeps no run history of its own, and the unified log holds about a day of run ends.
-    An older run is known only if the job stamps its own log, and a run before the log's reach is
-    never called missed.
+    Run ends read are kept for eight days; a run older than that, or one before the log's reach, is
+    known only if the job stamps its own log.
   - A job whose log carries no timestamps shows its last run at the time the log was last written.
+  - A launchd job's calendar is read from its plist on disk: one edited but not yet reloaded is
+    judged on its new times.
   - A calendar a plist gives that this cannot read (a value out of range) is said in its cadence, and
     its runs are neither drawn nor judged.
   - A launchd calendar is read in the daemon process's time zone, which is the Mac's own unless the

@@ -138,10 +138,23 @@ interface Parts {
 }
 
 const formatters = new Map<string, Intl.DateTimeFormat>();
+/** Minutes already read, per zone: the same days are walked on every read. Cleared, not grown, past its size. */
+const seenParts = new Map<string, Parts>();
+const SEEN_PARTS_MAX = 200_000;
 
 /** The wall-clock fields of an instant in a time zone (the Mac's own when none is given). */
 function partsOf(at: number, zone: string | undefined): Parts {
   const key = zone ?? "";
+  const memo = `${key}|${at}`;
+  const known = seenParts.get(memo);
+  if (known) return known;
+  if (seenParts.size >= SEEN_PARTS_MAX) seenParts.clear();
+  const parts = readParts(at, key, zone);
+  seenParts.set(memo, parts);
+  return parts;
+}
+
+function readParts(at: number, key: string, zone: string | undefined): Parts {
   let format = formatters.get(key);
   if (!format) {
     format = new Intl.DateTimeFormat("en-US", {

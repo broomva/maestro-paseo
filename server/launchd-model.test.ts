@@ -11,6 +11,7 @@ import {
   launchdStatus,
   launchdUpcoming,
   logStamps,
+  logStartArg,
   logTime,
   parseExitLine,
   parseExits,
@@ -97,6 +98,10 @@ describe("launchctl", () => {
 });
 
 describe("the unified log", () => {
+  test("a start for log show is UTC with its offset written", () => {
+    expect(logStartArg(Date.parse("2026-10-03T00:38:14.900Z"))).toBe("2026-10-03 00:38:14+0000");
+  });
+
   test("a timestamp with its zone, to the millisecond", () => {
     expect(iso(logTime("2026-10-01 21:55:17.002063-0500") ?? 0)).toBe("2026-10-02T02:55:17.002Z");
     expect(logTime("yesterday")).toBeNull();
@@ -443,11 +448,49 @@ describe("a job's status", () => {
     });
   });
 
-  test("seen loaded only since now (a reload, a gap), its row says misses are told from the next due time on", () => {
+  test("seen loaded only since now (a reload, a gap): a due time it could not judge is not known, never on time", () => {
+    // Its last run was three hours ago on a 15-minute interval: runs came due before judging could start.
     expect(launchdStatus({ ...base, loadedSince: NOW, schedule: interval, runs: [run(NOW - 3 * H)] })).toMatchObject({
+      status: "unknown",
+      reason: "A run came due before this could see whether it ran: not known until its next one.",
+    });
+    // A calendar job the same: due at 20:00 after its 19:00 run, before a read first saw it loaded at 21:10.
+    const calendar = { intervalMs: null, calendar: calendarSpecs({ Minute: 0 }) };
+    expect(
+      launchdStatus({
+        ...base,
+        loadedSince: Date.parse("2026-10-02T21:10:00Z"),
+        schedule: calendar,
+        runs: [run(Date.parse("2026-10-02T19:00:05Z"))],
+      }),
+    ).toMatchObject({ status: "unknown", since: "2026-10-02T20:00:00.000Z" });
+    // Nothing came due in between: told from the next due time on.
+    expect(launchdStatus({ ...base, loadedSince: NOW, schedule: interval, runs: [run(NOW - 5 * M)] })).toMatchObject({
       status: "ok",
       reason: "Its last run passed; whether one is missed is told from the next due time on.",
     });
+  });
+
+  test("launchd's last exit fills only a run whose end nobody recorded, never one the log said ended on purpose", () => {
+    // The list says -9 (print failed) for a job the system let go when idle: it stays not known, not failed.
+    const [idle] = launchdRuns({
+      exits: [{ ...exit(NOW - H, null, 10), reason: "JETSAM_REASON_MEMORY_IDLE_EXIT" }],
+      logged: [],
+      logWrittenAt: null,
+      lastExit: -9,
+      running: null,
+      now: NOW,
+    });
+    expect(idle).toMatchObject({ status: "unknown", exit: null, detail: "ended by the system when idle" });
+    const [stamped] = launchdRuns({
+      exits: [],
+      logged: [{ start: NOW - H, end: NOW - H }],
+      logWrittenAt: null,
+      lastExit: 1,
+      running: null,
+      now: NOW,
+    });
+    expect(stamped).toMatchObject({ status: "failed", exit: 1 });
   });
 
   test("with the unified log never read, nothing is called missed, and the row says it cannot tell", () => {

@@ -15,7 +15,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { attentionWork } from "../shared/contracts";
-import { getTimeline, getTimelineLog, type TimelineSource } from "../shared/timeline";
+import { getTimeline, getTimelineLog, TIMELINE_RUNS, type TimelineSource } from "../shared/timeline";
 import { errorText } from "./format";
 import { keyedLines } from "./loop-model";
 import {
@@ -365,6 +365,11 @@ function SourceDetail({
           ))
         )}
         {more > 0 ? <Text style={text.small}>{`And ${more} more in the window.`}</Text> : null}
+        {source.runs.length >= TIMELINE_RUNS ? (
+          <Text
+            style={text.small}
+          >{`The track draws its newest ${TIMELINE_RUNS} runs; earlier ones are not drawn.`}</Text>
+        ) : null}
       </View>
       {source.where ? (
         <Text style={[text.small, { color: theme.colors.foregroundMuted }]} selectable numberOfLines={2}>

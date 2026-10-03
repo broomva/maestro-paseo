@@ -26,6 +26,12 @@ export function awakeBetween(awake: AwakeFor, from: number, to: number): number 
   return Math.max(0, awake(from).ms - awake(to).ms);
 }
 
+/**
+ * Run ends, unloads and the stretch they prove are kept this long, together
+ * (server/launchd.ts): a week and a day, the furthest back a miss is looked for.
+ */
+export const EVIDENCE_MS = 8 * 24 * 60 * 60_000;
+
 /** A run counts as missed this long after its interval would have fired twice. */
 export const INTERVAL_GRACE_MS = 5 * 60_000;
 /** A calendar run counts as missed this long, in awake time, after it was due (launchd runs one the Mac slept through at wake). */
@@ -134,11 +140,14 @@ export function logTime(text: string): number | null {
   return Number.isNaN(at) ? null : at;
 }
 
-/** A local wall-clock time for `log show --start`, which reads its argument in the Mac's own zone. */
+/**
+ * An instant for `log show --start`, in UTC with its offset written: no time
+ * zone of the daemon's, and no hour the clocks going back makes twice.
+ */
 export function logStartArg(at: number): string {
   const d = new Date(at);
   const two = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
+  return `${d.getUTCFullYear()}-${two(d.getUTCMonth() + 1)}-${two(d.getUTCDate())} ${two(d.getUTCHours())}:${two(d.getUTCMinutes())}:${two(d.getUTCSeconds())}+0000`;
 }
 
 /**
@@ -253,6 +262,8 @@ const stoppedByLaunchd = (signal: string | null, byLaunchd: boolean) => byLaunch
 
 /** The one way the system ends a run that is not a failure: it let an idle job go. */
 const IDLE_EXIT = "JETSAM_REASON_MEMORY_IDLE_EXIT";
+const IDLE_DETAIL = "ended by the system when idle";
+const STOPPED_DETAIL = "stopped by launchd (SIGTERM)";
 
 function exitStatus(
   exit: number | null,
@@ -272,9 +283,9 @@ export function exitDetail(
   byLaunchd = false,
   reason: string | null = null,
 ): string | null {
-  if (stoppedByLaunchd(signal, byLaunchd)) return "stopped by launchd (SIGTERM)";
+  if (stoppedByLaunchd(signal, byLaunchd)) return STOPPED_DETAIL;
   if (signal) return `killed by ${signal}`;
-  if (reason === IDLE_EXIT) return "ended by the system when idle";
+  if (reason === IDLE_EXIT) return IDLE_DETAIL;
   if (reason === "OS_REASON_JETSAM" || reason?.startsWith("JETSAM_REASON_MEMORY")) {
     return `killed by the system for memory (${reason})`;
   }
@@ -304,7 +315,8 @@ export interface LaunchdEvidence {
  * counted as a run.
  */
 export function launchdRuns(evidence: LaunchdEvidence): TimelineRun[] {
-  const runs: (TimelineRun & { start: number; end: number })[] = evidence.exits.map((exit) => {
+  // `recorded`: launchd logged how it ended (an exit, a signal, a reason), so its status is never second-guessed.
+  const runs: (TimelineRun & { start: number; end: number; recorded: boolean })[] = evidence.exits.map((exit) => {
     const start = exit.endedAt - (exit.ranMs ?? 0);
     return {
       at: iso(start),
@@ -314,6 +326,7 @@ export function launchdRuns(evidence: LaunchdEvidence): TimelineRun[] {
       detail: exitDetail(exit.exit, exit.signal, exit.byLaunchd, exit.reason),
       start,
       end: exit.endedAt,
+      recorded: true,
     };
   });
   const seen = (start: number, end: number) =>
@@ -331,9 +344,11 @@ export function launchdRuns(evidence: LaunchdEvidence): TimelineRun[] {
       detail: "from its log",
       start: stamped.start,
       end: stamped.end,
+      recorded: false,
     });
   }
-  const newestEnd = Math.max(-Infinity, ...runs.map((run) => run.end));
+  // A fold, not a spread: eight days of a job that runs every few seconds is more arguments than a call takes.
+  const newestEnd = runs.reduce((latest, run) => Math.max(latest, run.end), Number.NEGATIVE_INFINITY);
   const written = evidence.logWrittenAt;
   if (written !== null && written > newestEnd + MATCH_SLACK_MS && !thisRun(written) && written <= evidence.now) {
     runs.push({
@@ -344,17 +359,18 @@ export function launchdRuns(evidence: LaunchdEvidence): TimelineRun[] {
       detail: "its log was last written then",
       start: written,
       end: written,
+      recorded: false,
     });
   }
   runs.sort((a, b) => b.start - a.start);
   // launchd's last exit code is the newest run's: it fills that run's exit when no other record did.
   const [newest] = runs;
-  if (newest && newest.exit === null && newest.status === "unknown" && evidence.lastExit !== null) {
+  if (newest && !newest.recorded && newest.exit === null && newest.status === "unknown" && evidence.lastExit !== null) {
     newest.exit = evidence.lastExit;
     newest.status = exitStatus(evidence.lastExit, null);
     newest.detail = `exit ${evidence.lastExit}${newest.detail ? `, ${newest.detail}` : ""}`;
   }
-  const out: TimelineRun[] = runs.map(({ start: _start, end: _end, ...run }) => run);
+  const out: TimelineRun[] = runs.map(({ start: _start, end: _end, recorded: _recorded, ...run }) => run);
   if (evidence.running) {
     const since = evidence.running.since ?? evidence.now;
     out.unshift({ at: iso(since), endedAt: null, status: "running", exit: null, detail: null });
@@ -442,8 +458,9 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
   }
   if (seen) {
     const { to } = seen;
-    // Inside what the log saw, after the newest run ended and since a read saw it loaded, at most a week back.
-    const from = Math.max(seen.from, newestEnd ?? seen.from, input.loadedSince ?? to, to - 8 * 86_400_000);
+    // Judged only inside what the log saw, after the newest run ended and since a read saw it loaded.
+    const back = to - EVIDENCE_MS;
+    const from = Math.max(seen.from, newestEnd ?? seen.from, input.loadedSince ?? to, back);
     const sinceLast = newestEnd !== null && newestEnd >= seen.from;
     if (schedule.calendar) {
       const due = dueTimes(schedule.calendar, undefined, from + MATCH_SLACK_MS, to, 1440 * 2).filter(
@@ -476,16 +493,35 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
         };
       }
     }
+    // Not judged is not on time: a run came due after the newest one ended, before judging could start.
+    const blindFrom = Math.max(newestEnd ?? seen.from, back);
+    if (from > blindFrom) {
+      const blind = schedule.calendar
+        ? (dueTimes(schedule.calendar, undefined, blindFrom + MATCH_SLACK_MS, Math.min(from, to), 1)[0] ?? null)
+        : schedule.intervalMs !== null &&
+            awakeBetween(input.awake, blindFrom, to) > 2 * schedule.intervalMs + INTERVAL_GRACE_MS
+          ? blindFrom + schedule.intervalMs
+          : null;
+      if (blind !== null) {
+        return {
+          status: "unknown",
+          reason: "A run came due before this could see whether it ran: not known until its next one.",
+          since: iso(blind),
+          missed: [],
+        };
+      }
+    }
   }
   if (!newest) return { status: "unknown", reason: "No run seen yet.", since: null, missed: [] };
   if (newest.status === "unknown") {
     return {
       status: "unknown",
-      reason: newest.detail?.startsWith("stopped by launchd")
-        ? "launchd stopped its last run (SIGTERM)."
-        : newest.detail === "ended by the system when idle"
-          ? "The system let its last run go when idle."
-          : "Its last run's exit was not recorded.",
+      reason:
+        newest.detail === STOPPED_DETAIL
+          ? "launchd stopped its last run (SIGTERM)."
+          : newest.detail === IDLE_DETAIL
+            ? "The system let its last run go when idle."
+            : "Its last run's exit was not recorded.",
       since: newest.at,
       missed: [],
     };
