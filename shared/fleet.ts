@@ -293,7 +293,8 @@ export function groupProposals(proposals: readonly FleetProposal[]): ProposalGro
  */
 export const FleetNoticeSchema = z.object({
   scope: z.string(),
-  status: z.enum(["missed", "failing"]),
+  /** `blind`: missed ticks cannot be judged, the Mac's awake time unreadable (server/fleet.ts AwakeClock). */
+  status: z.enum(["missed", "failing", "blind"]),
   reason: z.string(),
   since: z.string().nullable(),
 });

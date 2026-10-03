@@ -119,6 +119,9 @@ describe("the Fleet view's words", () => {
     expect(noticeText({ scope: "broomva", status: "missed", reason, since: minutesAgo(190) }, NOW)).toBe(
       "Fleet broomva: missed tick for 3h. No tick since tick 35. It runs every hour.",
     );
+    expect(
+      noticeText({ scope: "alpha", status: "blind", reason: "Missed ticks cannot be judged.", since: null }, NOW),
+    ).toBe("Fleet alpha: missed ticks unjudged. Missed ticks cannot be judged.");
     expect(noticeText({ scope: "sri", status: "failing", reason: "Tick 6 failed at observe.", since: null }, NOW)).toBe(
       "Fleet sri: failing tick. Tick 6 failed at observe.",
     );

@@ -164,7 +164,8 @@ export function keysFor(group: ProposalGroup, verdict: FleetReview["verdict"]): 
 
 /** A fleet notice as the header area says it: the scope, what is wrong, for how long, and why. */
 export function noticeText(notice: FleetNotice, now: number = Date.now()): string {
-  const what = notice.status === "missed" ? "missed tick" : "failing tick";
+  const what =
+    notice.status === "missed" ? "missed tick" : notice.status === "failing" ? "failing tick" : "missed ticks unjudged";
   const since = notice.since ? ago(notice.since, now) : "";
   const span = since && since !== "now" ? ` for ${since}` : "";
   return `Fleet ${notice.scope}: ${what}${span}. ${notice.reason}`;

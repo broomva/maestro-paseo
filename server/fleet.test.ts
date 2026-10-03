@@ -384,6 +384,49 @@ describe("reading the fleet", () => {
     expect(view.scopes).toEqual([]);
   });
 
+  test("a clock that cannot read the kernel never raises a false missed, and after 5 minutes says so in Needs you", async () => {
+    const { root } = await setup();
+    const paths = { config: join(root, "f3.json"), state: join(root, "s3"), agents: join(root, "a3") };
+    await writeFleet(paths, {
+      alpha: {
+        ticks: [
+          { tick: 35, at: ago(3), exit: 0 },
+          { tick: 36, at: ago(2) },
+        ],
+      },
+      beta: { ticks: [{ tick: 6, at: ago(40), exit: 0 }], scheduled: false },
+    });
+    let now = NOW;
+    const logs: string[] = [];
+    const clock = new AwakeClock(
+      () => now,
+      async () => null,
+      (message) => logs.push(message),
+    );
+    const fleet = new Fleet({
+      configPath: paths.config,
+      stateRoot: paths.state,
+      agentsDir: paths.agents,
+      items: async () => [],
+      clock,
+      now: () => now,
+    });
+    // Blind from the start: tick 36 (2 h old, no exit) is not called dead on a guess, and nothing is missed.
+    expect(await fleet.notices([])).toEqual([]);
+    expect((await fleet.get()).scopes[0]?.lastTick?.status).toBe("unknown");
+    expect(logs).toEqual(["fleet: the Mac's awake time (CLOCK_UPTIME_RAW) could not be read; missed ticks wait"]);
+    now += 5 * 60_000;
+    // Five minutes blind: the alarm itself is down, and that needs you, for each scheduled scope.
+    expect(await fleet.notices([])).toEqual([
+      {
+        scope: "alpha",
+        status: "blind",
+        reason: expect.stringContaining("Missed ticks cannot be judged"),
+        since: null,
+      },
+    ]);
+  });
+
   test("an awake clock that cannot read the kernel is said in the view", async () => {
     const { root } = await setup();
     const paths = { config: join(root, "f2.json"), state: join(root, "s2"), agents: join(root, "a2") };
@@ -399,7 +442,12 @@ describe("reading the fleet", () => {
       ),
       now: () => NOW,
     });
-    expect((await fleet.get()).detail?.warnings.join(" ")).toContain("awake time could not be read");
+    // A torn ledger line is a warning too: the clock's comes first, since the view shows only the first few.
+    const ledger = join(paths.state, "alpha", "ledger.jsonl");
+    await writeFile(ledger, `${await readFile(ledger, "utf8")}{"kind":"tick_f`);
+    const warnings = (await fleet.get()).detail?.warnings ?? [];
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain("awake time could not be read");
   });
 
   test("a ledger that cannot be read is said, not taken for no ledger", async () => {
@@ -626,8 +674,8 @@ describe("the awake clock", () => {
     expect(since(0)).toEqual({ ms: 0, whole: false });
   });
 
-  test("its timer takes a record on each beat, from the start, until stopped", async () => {
-    const { clock, reads } = clocks();
+  test("its timer asks the kernel on each beat, from the start, until stopped", async () => {
+    const { clock, reads, held } = clocks();
     let beat: (() => void) | null = null;
     let stopped = false;
     clock.start((run, ms) => {
@@ -637,14 +685,53 @@ describe("the awake clock", () => {
         stopped = true;
       };
     });
-    await clock.read();
+    // Started: one read of the kernel at once (awaited here, so the next beat is not sharing it).
+    expect(reads()).toBe(1);
+    await clock.beat();
+    held(60_000);
     const before = reads();
     (beat as unknown as () => void)();
-    await clock.read();
-    // The timer's beat asked the kernel once, the read once more.
-    expect(reads() - before).toBe(2);
+    // The timer's beat asks the kernel itself (synchronously, as the read starts).
+    expect(reads() - before).toBe(1);
     clock.stop();
     expect(stopped).toBe(true);
+  });
+
+  test("reads never stack: one in flight is shared, and one under 5 s old is reused", async () => {
+    let wall = 0;
+    let calls = 0;
+    let open = 0;
+    let most = 0;
+    let release: (() => void) | null = null;
+    const clock = new AwakeClock(
+      () => wall,
+      () => {
+        calls += 1;
+        open += 1;
+        most = Math.max(most, open);
+        return new Promise<number>((resolve) => {
+          release = () => {
+            open -= 1;
+            resolve(1_000_000 + wall);
+          };
+        });
+      },
+    );
+    const first = clock.read();
+    const second = clock.read();
+    const third = clock.beat();
+    expect(calls).toBe(1);
+    (release as unknown as () => void)();
+    await Promise.all([first, second, third]);
+    expect(most).toBe(1);
+    wall += 3_000;
+    await clock.read();
+    expect(calls).toBe(1);
+    wall += 3_000;
+    const fourth = clock.read();
+    expect(calls).toBe(2);
+    (release as unknown as () => void)();
+    await fourth;
   });
 
   test("the Fleet's own clock takes records from the start, and stops with it", async () => {
@@ -667,16 +754,24 @@ describe("the awake clock", () => {
     expect(stopped).toBe(1);
   });
 
-  test("the kernel's clock on this machine stops in sleep, where it can be read (macOS)", async () => {
-    const value = await uptimeRaw();
+  test("on macOS it reads CLOCK_UPTIME_RAW, in ms: the kernel's own wake counters predict it to the second", async () => {
     if (process.platform !== "darwin") {
-      expect(value === null || value > 0).toBe(true);
+      expect((await uptimeRaw()) === null || ((await uptimeRaw()) as number) > 0).toBe(true);
       return;
     }
-    // CLOCK_UPTIME_RAW never runs ahead of wall time since boot, and is no later than a moment ago.
+    const sysctl = (name: string) => execFileSync("/usr/sbin/sysctl", ["-n", name], { encoding: "utf8" }).trim();
+    const seconds = (value: string) =>
+      Number(/sec = (\d+), usec = (\d+)/.exec(value)?.[1] ?? 0) * 1000 +
+      Number(/usec = (\d+)/.exec(value)?.[1] ?? 0) / 1000;
+    const wakeAt = seconds(sysctl("kern.waketime"));
+    // The uptime clock at the last wake (mach ticks over the timebase), then awake since; never slept: since boot.
+    const predicted =
+      wakeAt > 0
+        ? (Number(sysctl("kern.wake_abs_time")) / Number(sysctl("hw.tbfrequency"))) * 1000 + (Date.now() - wakeAt)
+        : Date.now() - seconds(sysctl("kern.boottime"));
+    const value = await uptimeRaw();
     expect(value).not.toBeNull();
-    expect(value as number).toBeGreaterThan(0);
-    expect(value as number).toBeLessThanOrEqual(performance.timeOrigin + performance.now());
+    expect(Math.abs((value as number) - predicted)).toBeLessThan(2_000);
   });
 
   test("the wall clock is awake time with no sleep accounted, for a test of the plugin", async () => {

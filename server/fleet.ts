@@ -76,6 +76,10 @@ const ACT_TICKS = 24;
 
 /** The clock takes a record this often, and keeps records for this long. */
 const BEAT_MS = 60_000;
+/** A read this fresh is reused rather than asked of the kernel again: client polls cannot pile up reads. */
+const FRESH_MS = 5_000;
+/** The kernel's clock unreadable for this long blinds the missed-tick alarm, which is then said in Needs you. */
+const BLIND_MS = 5 * 60_000;
 const SAMPLES_KEPT_MS = 8 * 24 * 60 * 60 * 1000;
 
 const run = promisify(execFile);
@@ -105,9 +109,10 @@ export async function uptimeRaw(): Promise<number | null> {
 
 /**
  * Time the Mac was awake between two wall-clock times, as launchd counts its
- * interval: CLOCK_UPTIME_RAW (uptimeRaw), which does not advance in sleep. A
- * held event loop, a late timer or a DarkWake cannot skew it either way, since
- * the count is the kernel's, not a guess from when a beat came.
+ * interval: CLOCK_UPTIME_RAW (uptimeRaw), which does not advance in sleep and
+ * counts only the CPU's seconds of a DarkWake, as launchd's own timer does. A
+ * held event loop or a late timer cannot skew it either way, since the count
+ * is the kernel's, not a guess from when a beat came.
  *
  * Records (wall, awake) once a minute on an unref'd timer, and at each read.
  * The awake time since a wall time is read off the records around it. A gap
@@ -120,21 +125,36 @@ export async function uptimeRaw(): Promise<number | null> {
  * A wall clock set back starts the records over: the wall times before the
  * step no longer map onto the kernel's count. A read the kernel cannot answer
  * adds no record and says why (`error`). The awake count then stops growing,
- * which can only delay a missed tick, never invent one.
+ * which can only delay a missed tick, never invent one; with no record at all
+ * the count is `blind`, and an unfinished tick is not judged dead on a guess.
+ * Unreadable for BLIND_MS, the clock says so (`blind()`), for Needs you: a
+ * missed-tick alarm that cannot fire must not fail in silence.
  */
 export class AwakeClock {
   private readonly samples: { wall: number; awake: number }[] = [];
   /** The newest read of both clocks, which a read counts to. */
   private latest: { wall: number; awake: number } | null = null;
   private clear: (() => void) | null = null;
-  private pending: Promise<void> = Promise.resolve();
+  private inflight: Promise<void> | null = null;
+  /** When the kernel's clock last answered, or when the clock started; the blind span counts from it. */
+  private answered: number;
   /** Why the last read of the kernel's clock failed, or null. */
   error: string | null = null;
 
   constructor(
     private readonly wall: () => number = Date.now,
     private readonly uptime: () => Promise<number | null> = uptimeRaw,
-  ) {}
+    private readonly log: (message: string) => void = () => undefined,
+  ) {
+    this.answered = wall();
+  }
+
+  /** Why missed ticks cannot be judged now (the kernel's clock unreadable for BLIND_MS), or null. */
+  blind(): string | null {
+    return this.error && this.wall() - this.answered >= BLIND_MS
+      ? "Missed ticks cannot be judged: the Mac's awake time (CLOCK_UPTIME_RAW, read through /usr/bin/perl) has not been readable for 5 minutes."
+      : null;
+  }
 
   /** Takes a record every minute until stop(), on a timer that does not keep the process alive. */
   start(every: (beat: () => void, ms: number) => () => void = defaultEvery): void {
@@ -148,10 +168,20 @@ export class AwakeClock {
     this.clear = null;
   }
 
-  /** Takes one record now; records are taken one at a time, in order. */
+  /**
+   * Takes one record now, one at a time: a read while one is in flight waits
+   * for that one, and a read under FRESH_MS old is reused, so polls never
+   * stack reads of the kernel, a slow one included.
+   */
   beat(): Promise<void> {
-    const next = this.pending.then(() => this.record());
-    this.pending = next.catch(() => undefined);
+    if (this.inflight) return this.inflight;
+    // Fresh only forward in time: a wall clock set back must take a new record (and restart them), not reuse one.
+    const age = this.latest ? this.wall() - this.latest.wall : -1;
+    if (age >= 0 && age < FRESH_MS && !this.error) return Promise.resolve();
+    const next = this.record().finally(() => {
+      this.inflight = null;
+    });
+    this.inflight = next;
     return next;
   }
 
@@ -159,14 +189,17 @@ export class AwakeClock {
     const awake = await this.uptime();
     const wall = this.wall();
     if (awake === null) {
+      if (!this.error) this.log("fleet: the Mac's awake time (CLOCK_UPTIME_RAW) could not be read; missed ticks wait");
       this.error =
         "The Mac's awake time could not be read (CLOCK_UPTIME_RAW), so missed ticks are judged late or not at all.";
       return;
     }
+    if (this.error) this.log("fleet: the Mac's awake time can be read again");
     this.error = null;
+    this.answered = wall;
     const last = this.samples.at(-1);
-    // The kernel's count went back (a reboot under a live process cannot happen; a stale read can), or the
-    // wall clock was set back: either way the old records no longer map wall times onto awake time.
+    // The wall clock was set back (or the kernel's count went back, which reads one at a time rule out but a
+    // replaced clock source could): either way the old records no longer map wall times onto awake time.
     if (last && (wall < last.wall || awake < last.awake)) this.samples.length = 0;
     const kept = this.samples.at(-1);
     if (!kept || wall - kept.wall >= BEAT_MS) this.samples.push({ wall, awake });
@@ -181,7 +214,7 @@ export class AwakeClock {
     const samples = [...this.samples];
     return (from) => {
       const [first] = samples;
-      if (!now || !first) return { ms: 0, whole: false };
+      if (!now || !first) return { ms: 0, whole: false, blind: true };
       if (from < first.wall) return { ms: Math.max(0, now.awake - first.awake), whole: false };
       let at = first;
       let next: { wall: number; awake: number } = now;
@@ -207,6 +240,7 @@ function defaultEvery(beat: () => void, ms: number): () => void {
 export const wallClock = (now: () => number = Date.now) => ({
   read: async (): Promise<AwakeFor> => awakeAsWall(now()),
   error: null as string | null,
+  blind: (): string | null => null,
 });
 
 export interface FleetOptions {
@@ -217,7 +251,7 @@ export interface FleetOptions {
   /** Maestro's work, from the files alone (no session reconcile): the fleet's asks and alerts are items in it. */
   items: () => Promise<readonly WorkItem[]>;
   /** Awake time (AwakeClock by default; wallClock when MAESTRO_PASEO_FLEET_AWAKE_CLOCK=wall). */
-  clock?: { read(): Promise<AwakeFor>; error: string | null };
+  clock?: { read(): Promise<AwakeFor>; error: string | null; blind(): string | null };
   /** How the default clock takes its records: an unref'd setInterval, unless given. */
   every?: (beat: () => void, ms: number) => () => void;
   now?: () => number;
@@ -310,7 +344,7 @@ export class Fleet {
   private readonly agentsDir: string;
   private readonly now: () => number;
   private readonly log: (message: string) => void;
-  private readonly clock: { read(): Promise<AwakeFor>; error: string | null };
+  private readonly clock: { read(): Promise<AwakeFor>; error: string | null; blind(): string | null };
   /** Distinguishes review records made in one millisecond. */
   private seq = 0;
   private stopClock: () => void = () => undefined;
@@ -334,7 +368,7 @@ export class Fleet {
       this.clock = wallClock(this.now);
     } else {
       // Beating from the start: awake time is known from when the plugin started, whoever reads it or not.
-      const clock = new AwakeClock(this.now);
+      const clock = new AwakeClock(this.now, uptimeRaw, this.log);
       clock.start(options.every);
       this.clock = clock;
       this.stopClock = () => clock.stop();
@@ -612,7 +646,13 @@ export class Fleet {
     const now = this.now();
     const reads = await Promise.all(scopes.map((scope) => this.readScope(scope)));
     const out: FleetNotice[] = [];
+    const blind = this.clock.blind();
     for (const read of reads) {
+      // A scheduled scope whose missed ticks cannot be judged needs you: the alarm itself is down.
+      if (blind && read.schedule.scheduled && !read.disabled) {
+        out.push({ scope: read.config.id, status: "blind", reason: blind, since: null });
+        continue;
+      }
       const { health } = await this.healthOf(read, items, now, awake);
       if (!health.needsYou || (health.status !== "missed" && health.status !== "failing")) continue;
       out.push({ scope: read.config.id, status: health.status, reason: health.notice, since: health.since });
@@ -631,7 +671,8 @@ export class Fleet {
     const chosen = reads.find((read) => read.config.id === scope) ?? reads[0];
     for (const read of reads) {
       const { id, stateDir } = read.config;
-      const warnings = [...read.warnings, ...(this.clock.error ? [this.clock.error] : [])];
+      // The clock's own failure first: the view shows only the first few warnings.
+      const warnings = [...(this.clock.error ? [this.clock.error] : []), ...read.warnings];
       const { health, latest } = await this.healthOf(read, items, now, awake);
       const newest = await this.newestReport(read, warnings);
       const reviews = await this.reviews(stateDir, id, warnings);

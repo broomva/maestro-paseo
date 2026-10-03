@@ -174,7 +174,7 @@ export function failedStepOf(detail: string | null): string | null {
  * AwakeClock). `whole` is false when the count could start only later than
  * asked (before the plugin's first record): then it is a lower bound.
  */
-export type AwakeFor = (fromWallMs: number) => { ms: number; whole: boolean };
+export type AwakeFor = (fromWallMs: number) => { ms: number; whole: boolean; blind?: boolean };
 
 /** Wall time as awake time: no sleep accounted. */
 export const awakeAsWall =
@@ -185,7 +185,9 @@ export const awakeAsWall =
  * A tick with no exit is running while the time awake since it started is
  * inside its budget, and died past it. When its start is before what the
  * awake clock knows (the plugin started later), wall time decides: an
- * unfinished tick from before a reload is not given a fresh budget.
+ * unfinished tick from before a reload is not given a fresh budget. With no
+ * awake time at all (`blind`), one past its budget in wall time is unknown,
+ * not died: a tick the Mac slept through is not called dead on a guess.
  */
 export function tickStatusOf(
   entry: TickEntry | undefined,
@@ -198,6 +200,7 @@ export function tickStatusOf(
   const started = ms(entry.fireAt);
   if (started === null) return "unknown";
   const awake = awakeFor(started);
+  if (awake.blind) return now - started <= budgetMs ? "running" : "unknown";
   return (awake.whole ? awake.ms : now - started) <= budgetMs ? "running" : "died";
 }
 

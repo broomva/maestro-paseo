@@ -249,13 +249,17 @@ The **Fleet** view shows the rest, per scope, read from those files:
     - Node offers no such clock (its monotonic clock counts sleep on macOS), so the plugin reads it
       through the system perl once a minute, from the moment it starts, whether a client is looking
       or not.
-    - A night of Power Nap wakes is not mistaken for being awake, and a busy moment is not mistaken
-      for sleep.
+    - A night of Power Nap wakes counts only those wakes' CPU seconds, as launchd's own timer does,
+      and a busy moment is not mistaken for sleep.
+    - Reads are shared while one is in flight, and one under 5 seconds old is reused, so client polls
+      never stack reads.
     - Before the plugin's first record (a reload, a cold boot) the count starts at that record, and
       the view says "at least". A stall is then flagged 2 hours awake after the reload, never sooner.
     - A wall clock set back starts the records over.
-    - If the kernel's clock cannot be read, the view says so, and missed ticks are judged late or
-      not at all, never early.
+    - If the kernel's clock cannot be read, missed ticks are judged late or not at all, never early,
+      and an unfinished tick is not called dead on a guess. The view says so at once. After 5
+      minutes, Needs you says so for every scheduled scope ("missed ticks unjudged"), because the
+      alarm itself is down. The plugin log records when the read fails and when it recovers.
   - A tick's time budget runs on awake time too, so a tick the Mac slept through mid-run is still
     running after the wake. A tick that died days ago stays dead.
 - **Asks and alerts.**

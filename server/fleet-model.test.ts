@@ -295,7 +295,10 @@ describe("ticks", () => {
     expect(tickStatusOf(started(240), NOW, budget, () => ({ ms: 15 * 60_000, whole: true }))).toBe("running");
     // ...one that died days ago stays dead after a wake: its awake time since is long past the budget...
     expect(tickStatusOf(started(3 * 24 * 60), NOW, budget, () => ({ ms: 30 * H, whole: true }))).toBe("died");
-    // ...and one from before the plugin started is judged by wall time, not given a fresh budget at a reload.
+    // ...one from before the plugin started is judged by wall time, not given a fresh budget at a reload...
+    // ...and with no awake time at all, past its budget it is unknown, never called dead on a guess.
+    expect(tickStatusOf(started(240), NOW, budget, () => ({ ms: 0, whole: false, blind: true }))).toBe("unknown");
+    expect(tickStatusOf(started(5), NOW, budget, () => ({ ms: 0, whole: false, blind: true }))).toBe("running");
     expect(tickStatusOf(started(3 * 24 * 60), NOW, budget, () => ({ ms: 5 * 60_000, whole: false }))).toBe("died");
   });
 
