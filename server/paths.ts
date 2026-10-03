@@ -24,3 +24,20 @@ export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
 export function wakeLogPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.MAESTRO_PASEO_WAKE_LOG ?? join(dirname(configPath(env)), "wake-log.jsonl");
 }
+
+/**
+ * fleet-reconcile's files, which the Fleet view reads (server/fleet.ts): its
+ * config (the fleet's own FLEET_CONFIG, else ~/.config/ctx/fleet.json), where
+ * its state dirs live, and the LaunchAgents that run its ticks.
+ */
+export function fleetPaths(env: NodeJS.ProcessEnv = process.env): {
+  config: string;
+  stateRoot: string;
+  agents: string;
+} {
+  return {
+    config: env.MAESTRO_PASEO_FLEET_CONFIG ?? env.FLEET_CONFIG ?? join(homedir(), ".config", "ctx", "fleet.json"),
+    stateRoot: env.MAESTRO_PASEO_FLEET_STATE ?? join(homedir(), ".local", "state", "fleet-reconcile"),
+    agents: env.MAESTRO_PASEO_FLEET_AGENTS ?? join(homedir(), "Library", "LaunchAgents"),
+  };
+}

@@ -54,6 +54,10 @@ test("the plugin's handlers and hooks hand the agent socket its daemon client", 
   );
   const path = join(root, "m.sock");
   const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
+  // No fleet here: the plugin's Fleet view reads this test's empty folder, never the machine's fleet.
+  const fleet = ["MAESTRO_PASEO_FLEET_CONFIG", "MAESTRO_PASEO_FLEET_STATE", "MAESTRO_PASEO_FLEET_AGENTS"] as const;
+  const savedFleet = fleet.map((key) => [key, process.env[key]] as const);
+  for (const key of fleet) process.env[key] = join(root, "no-fleet", key);
   process.env.MAESTRO_PASEO_CONFIG = config;
   process.env.MAESTRO_PASEO_SOCKET = path;
   const { host, handlers, hooks } = fakeHost();
@@ -94,6 +98,10 @@ test("the plugin's handlers and hooks hand the agent socket its daemon client", 
     process.env.MAESTRO_PASEO_SOCKET = saved.socket;
     if (saved.config === undefined) delete process.env.MAESTRO_PASEO_CONFIG;
     if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
+    for (const [key, value] of savedFleet) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
   await expect(stat(path)).rejects.toThrow();
 });
@@ -116,6 +124,10 @@ test("undo, stop and the default gate are wired through the plugin's handlers", 
     }),
   );
   const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
+  // No fleet here: the plugin's Fleet view reads this test's empty folder, never the machine's fleet.
+  const fleet = ["MAESTRO_PASEO_FLEET_CONFIG", "MAESTRO_PASEO_FLEET_STATE", "MAESTRO_PASEO_FLEET_AGENTS"] as const;
+  const savedFleet = fleet.map((key) => [key, process.env[key]] as const);
+  for (const key of fleet) process.env[key] = join(root, "no-fleet", key);
   process.env.MAESTRO_PASEO_CONFIG = config;
   process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
   const { host, handlers, hooks } = fakeHost();
@@ -176,6 +188,10 @@ test("undo, stop and the default gate are wired through the plugin's handlers", 
     process.env.MAESTRO_PASEO_SOCKET = saved.socket;
     if (saved.config === undefined) delete process.env.MAESTRO_PASEO_CONFIG;
     if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
+    for (const [key, value] of savedFleet) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 
@@ -219,6 +235,10 @@ test("decisions left from before a restart apply on load, or once a client arriv
   expect(past + UNDO_MS).toBeLessThan(Date.now());
 
   const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
+  // No fleet here: the plugin's Fleet view reads this test's empty folder, never the machine's fleet.
+  const fleet = ["MAESTRO_PASEO_FLEET_CONFIG", "MAESTRO_PASEO_FLEET_STATE", "MAESTRO_PASEO_FLEET_AGENTS"] as const;
+  const savedFleet = fleet.map((key) => [key, process.env[key]] as const);
+  for (const key of fleet) process.env[key] = join(root, "no-fleet", key);
   process.env.MAESTRO_PASEO_CONFIG = config;
   process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
   const { host, handlers, hooks } = fakeHost();
@@ -251,6 +271,10 @@ test("decisions left from before a restart apply on load, or once a client arriv
     process.env.MAESTRO_PASEO_SOCKET = saved.socket;
     if (saved.config === undefined) delete process.env.MAESTRO_PASEO_CONFIG;
     if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
+    for (const [key, value] of savedFleet) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 

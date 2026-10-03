@@ -1,9 +1,11 @@
 // The Maestro surface: all work, attention first, as a feed, a board or a
 // list, or what happened as History, scoped to one initiative or to
-// everything. Wide windows keep the feed and the selected item side by side;
-// the board, the list and History take the width and open the item beside
-// them. Compact windows show the feed or History and push the item over it,
-// with a way back.
+// everything; or the Fleet, fleet-reconcile's hourly runs. Wide windows keep
+// the feed and the selected item side by side; the board, the list, History
+// and the Fleet take the width and open the item beside them. Compact windows
+// show the feed, History or the Fleet and push the item over it, with a way
+// back. A fleet tick that is missed or failing shows above every view but the
+// Fleet, as the header count counts it.
 
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
@@ -11,6 +13,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { ChangeScope } from "./changed";
 import { WorkDetail } from "./detail";
+import { FleetNotices, FleetView } from "./fleet";
 import { errorText, plural } from "./format";
 import { HistoryView } from "./history";
 import { useLoop, useWorkList } from "./hooks";
@@ -47,15 +50,21 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const [filter, setFilter] = useState<Filter>("all");
   const [chosenScope, setScope] = useState<string | null>(null);
   const [loopOpen, setLoopOpen] = useState(false);
+  const [fleetScope, setFleetScope] = useState<string | null>(null);
+  const openFleet = (scope: string | null) => {
+    setFleetScope(scope);
+    setView("fleet");
+  };
   useIntent((intent) => {
     if (intent.kind === "select") setSelected(intent.id);
     else if (intent.kind === "new") setCreating(true);
+    else if (intent.kind === "fleet") openFleet(intent.scope);
     else {
       // A filter opened from elsewhere means that group across all work, where its chips show.
       setFilter(intent.group);
       setScope(null);
-      // The Board splits by state and History lists receipts: neither applies the chips.
-      setView((view) => (view === "board" || view === "history" ? "feed" : view));
+      // The Board splits by state, History lists receipts and the Fleet is not work: none applies the chips.
+      setView((view) => (view === "board" || view === "history" || view === "fleet" ? "feed" : view));
     }
   });
   const compact = layout.compact;
@@ -97,7 +106,12 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   }
 
   const listPane = (
-    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: pad, gap: space[5] }}>
+    // A tap on a button below a note field acts on the first tap, not only closes the keyboard.
+    <ScrollView
+      style={{ flex: 1 }}
+      contentContainerStyle={{ padding: pad, gap: space[5] }}
+      keyboardShouldPersistTaps="handled"
+    >
       <View style={{ gap: space[2] }}>
         <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[3] }}>
           <View style={{ flex: 1, gap: space[1] }}>
@@ -122,9 +136,13 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
 
       {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
 
+      {view === "fleet" ? null : <FleetNotices theme={theme} compact={compact} onOpen={openFleet} />}
+
       <ViewSwitch theme={theme} view={view} onView={chooseView} views={viewsFor(compact)} />
 
-      {list.isPending ? (
+      {view === "fleet" ? (
+        <FleetView theme={theme} compact={compact} scope={fleetScope} onScope={setFleetScope} onSelect={setSelected} />
+      ) : list.isPending ? (
         <ActivityIndicator color={theme.colors.foregroundMuted} />
       ) : list.isError ? (
         <View style={{ gap: space[3] }}>
@@ -205,7 +223,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     );
   }
 
-  // The board, the list and History want the width: the item opens beside them only when one is picked.
+  // The board, the list, History and the Fleet want the width: the item opens beside them only when one is picked.
   const wide = view !== "feed";
   return (
     <ChangeScope>

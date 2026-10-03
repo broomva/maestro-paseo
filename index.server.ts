@@ -3,6 +3,7 @@ import { agentMethods, keepServing } from "./server/agent-socket";
 import { attentionOf } from "./server/attention";
 import { loadConfig, saveConfig } from "./server/config";
 import { Engine } from "./server/engine";
+import { Fleet } from "./server/fleet";
 import { inspectFolder as inspect } from "./server/folders";
 import { GateCards } from "./server/gate-card";
 import { Loop } from "./server/loop";
@@ -29,6 +30,7 @@ import {
   wakeLoop,
   workForAgent,
 } from "./shared/contracts";
+import { getFleet, reviewProposal } from "./shared/fleet";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
 
 const log = (message: string) => console.log(`[maestro] ${message}`);
@@ -75,8 +77,18 @@ export default function contribute(host: PluginServerContext) {
   const records = new Records(() => engine.settings());
   server.handle(listWork, (_input, { paseo }) => engine.list(paseo).then((list) => records.withChanged(paseo, list)));
   server.handle(getWork, ({ id }, { paseo }) => engine.get(id).then((got) => records.withChangedItem(paseo, got)));
+  // fleet-reconcile's runs (server/fleet.ts): read from the fleet's files, with the work it raised read from ours.
+  const fleet = new Fleet({ items: () => engine.list().then(({ items }) => items), log });
   // No client handed to list: the header count and pills poll this, and must not reconcile sessions.
-  server.handle(attentionWork, () => engine.list().then(({ items }) => attentionOf(items, Date.now())));
+  // A fleet that cannot be read costs the count its fleet notices, never the work's.
+  server.handle(attentionWork, async () => {
+    const { items } = await engine.list();
+    const notices = await fleet.notices(items).catch((error) => {
+      log(`reading the fleet for the header count: ${(error as Error).message}`);
+      return [];
+    });
+    return attentionOf(items, Date.now(), notices);
+  });
   server.handle(historyWork, ({ days }) => records.history(days));
   server.handle(workFiles, ({ id }) => records.files(id));
   server.handle(readWorkFile, ({ id, name }) => records.file(id, name));
@@ -101,6 +113,9 @@ export default function contribute(host: PluginServerContext) {
   );
   server.handle(workForAgent, ({ agentId }) => engine.forAgent(agentId).then((item) => ({ item })));
   server.handle(inspectFolder, ({ path }) => inspect(path));
+  // The Fleet view, and your verdict on a proposal: yours alone, never on the agent socket.
+  server.handle(getFleet, ({ scope, ticks }) => fleet.get(scope, ticks));
+  server.handle(reviewProposal, ({ scope, keys, verdict, note }) => fleet.review({ scope, keys, verdict, note }));
   server.handle(getConfig, () => loadConfig());
   // Saved Settings may turn the loop on or off, or change its period: arm it again from them.
   server.handle(setConfig, async (input) => {
@@ -133,6 +148,7 @@ export default function contribute(host: PluginServerContext) {
 
   return async () => {
     loop.stop();
+    fleet.stop();
     engine.stop();
     await stopSocket();
   };

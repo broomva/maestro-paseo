@@ -15,7 +15,7 @@ import type { PluginButtonContentProps, PluginButtonIcon, PluginClientContext } 
 import type { ComponentType } from "react";
 import { type Attention, attentionWork } from "../shared/contracts";
 import type { OrchState } from "../shared/states";
-import { type HeaderSpec, headerFace, headerSpecs, needsYou, needsYouTarget } from "./header-count";
+import { type HeaderSpec, headerFace, headerSpecs, needsYouCount, needsYouTarget } from "./header-count";
 import { type MaestroIntent, requestIntent } from "./intent";
 import { type PillSpec, pillFace, pillSpecs } from "./pills";
 import { Registrations } from "./registrations";
@@ -95,6 +95,7 @@ export function startIntegrations(
   const later = options.later ?? timeout;
   const open = opener(client);
   let waiting: Attention["waiting"] = [];
+  let fleet: Attention["fleet"] = [];
   let workspaces: string[] = [];
   /** What the last good read showed, and for how many reads in a row it has held. */
   let shown: string | null = null;
@@ -116,7 +117,7 @@ export function startIntegrations(
           // Read at press time, so the target always matches the count on the button.
           button: {
             ...headerFace(spec.count),
-            behavior: { kind: "action", onPress: () => open(needsYouTarget(waiting)) },
+            behavior: { kind: "action", onPress: () => open(needsYouTarget(waiting, fleet)) },
           },
         }),
       update: (handle, spec) => handle.update(headerFace(spec.count)),
@@ -170,13 +171,15 @@ export function startIntegrations(
       if (spaces.status === "fulfilled") workspaces = spaces.value;
       if (read.status === "fulfilled") {
         waiting = read.value.waiting;
+        // A daemon from before the fleet notices answers without them.
+        fleet = read.value.fleet ?? [];
         const next = JSON.stringify(read.value);
         calm = next === shown ? calm + 1 : 0;
         shown = next;
         pills.sync(pillSpecs(read.value.sessions));
       }
       report(read.status === "rejected" ? read.reason : spaces.status === "rejected" ? spaces.reason : null);
-      headers.sync(headerSpecs(workspaces, needsYou(waiting).length));
+      headers.sync(headerSpecs(workspaces, needsYouCount(waiting, fleet)));
     } finally {
       busy = false;
       if (!stopped) schedule();

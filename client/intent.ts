@@ -10,7 +10,11 @@
 import { useEffect, useRef } from "react";
 import type { Group } from "../shared/states";
 
-export type MaestroIntent = { kind: "select"; id: string } | { kind: "new" } | { kind: "filter"; group: Group };
+export type MaestroIntent =
+  | { kind: "select"; id: string }
+  | { kind: "new" }
+  | { kind: "filter"; group: Group }
+  | { kind: "fleet"; scope: string | null };
 
 export const INTENT_TTL_MS = 30_000;
 
