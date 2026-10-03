@@ -1099,7 +1099,7 @@ describe("drilling in", () => {
 });
 
 describe("ledger locks Maestro left behind", () => {
-  test("are cleared by a Fleet read, with no scope at all, queued behind any answer", async () => {
+  test("are cleared by a sweep a Fleet read queues, with no scope at all", async () => {
     const { root, fleet } = await setup();
     const ledger = join(root, "asks", "l.yaml");
     await mkdir(join(root, "asks"), { recursive: true });
