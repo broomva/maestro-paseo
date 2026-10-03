@@ -1,14 +1,16 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  type AnswerInput,
   acquireLock,
   answerDecision,
   decisionsOf,
+  entryHash,
   LOCK_STALE_MS,
   lockKey,
   readDecisions,
@@ -93,13 +95,27 @@ async function ledgerIn(source = LEDGER, mode = 0o640) {
   return { dir, asks, path, locks: join(dir, "locks"), receipts: join(dir, "state", "asks.jsonl") };
 }
 
+const AT = new Date("2026-10-03T17:00:00.000Z");
+/** An answer as the Fleet view sends it, the entry's hash left unchecked unless a test gives one. */
+const input = (extra: Partial<AnswerInput>): AnswerInput => ({
+  uid: null,
+  id: "A10",
+  hash: null,
+  option: null,
+  note: "",
+  ...extra,
+});
+const answered = (source: string, extra: Partial<AnswerInput>) =>
+  withAnswer(source, "test-arc.yaml", input(extra), AT).out;
+
 describe("reading decision asks", () => {
   test("each ask's decision layer: stakes, why you, the options with consequences, recommended and the default", () => {
-    const [open, answered] = decisionsOf(LEDGER, "test-arc.yaml");
+    const [open, answer] = decisionsOf(LEDGER, "test-arc.yaml");
     expect(open).toEqual({
       ledger: "test-arc.yaml",
       uid: null,
       id: "A10",
+      hash: expect.stringMatching(/^[0-9a-f]{16}$/),
       arc: "test-arc",
       headline: "Four small review follow-ups: ticket them, or drop them?",
       question: "Four review follow-ups are open and unscheduled: file or drop?",
@@ -131,26 +147,32 @@ describe("reading decision asks", () => {
       origin: null,
       refusal: null,
     });
-    expect([answered?.uid, answered?.state, answered?.answer]).toEqual([
+    expect([answer?.uid, answer?.state, answer?.answer]).toEqual([
       "7d1e0c2a-5b8f-4e1a-9c4d-2f6b8a0e3c91",
       "answered",
       "Merge it.",
     ]);
   });
 
-  test("two uid-less asks sharing an id are an id collision: shown, and refused", () => {
-    const twice = LEDGER.replace(
-      "  - id: A11\n    uid: 7d1e0c2a-5b8f-4e1a-9c4d-2f6b8a0e3c91\n",
-      "  - id: A10\n",
-    ).replace('    answer: "Merge it."\n    answered_at: 2026-10-02T10:00:00Z\n', "");
-    const asks = decisionsOf(twice, "test-arc.yaml");
-    expect(asks.map((ask) => ask.refusal?.slice(0, 51))).toEqual([
-      "Two asks in test-arc.yaml are named A10 and neither",
-      "Two asks in test-arc.yaml are named A10 and neither",
+  test("handles that name more than one ask are shown refused, and never answered", () => {
+    const ids = "asks:\n  - id: A1\n    ask: one\n  - id: A1\n    ask: two\n";
+    expect(decisionsOf(ids, "l.yaml").map((ask) => ask.refusal?.slice(0, 39))).toEqual([
+      "Two asks in l.yaml are named A1 and nei",
+      "Two asks in l.yaml are named A1 and nei",
     ]);
-    expect(() =>
-      withAnswer(twice, "test-arc.yaml", { uid: null, id: "A10", option: "drop", note: "" }, new Date()),
-    ).toThrow("neither has a uid");
+    expect(() => answered(ids, { id: "A1", note: "x" })).toThrow("neither has a uid");
+    // A uid used twice: the second entry must never take an answer meant for the first, or the other way round.
+    const uids = "asks:\n  - id: a\n    uid: u1\n    ask: one\n  - id: b\n    uid: u1\n    ask: two\n";
+    expect(decisionsOf(uids, "l.yaml")[1]?.refusal).toContain("share the uid u1");
+    expect(() => answered(uids, { uid: "u1", id: "b", note: "x" })).toThrow("share the uid u1");
+    // A uid-less ask sharing its handle with an ask that has a uid is the only one that goes by it: answered, itself.
+    const mixed = "asks:\n  - id: a\n    uid: u1\n    ask: one\n  - id: a\n    ask: two\n";
+    expect(decisionsOf(mixed, "l.yaml").map((ask) => ask.refusal)).toEqual([null, null]);
+    const out = answered(mixed, { id: "a", note: "yes" });
+    expect(decisionsOf(out, "l.yaml").map((ask) => [ask.uid, ask.state])).toEqual([
+      ["u1", "open"],
+      [null, "answered"],
+    ]);
   });
 
   test("a root lists open asks, then the latest answered; an unreadable ledger is a warning, a missing root none", async () => {
@@ -169,14 +191,11 @@ describe("reading decision asks", () => {
 });
 
 describe("writing an answer", () => {
-  const AT = new Date("2026-10-03T17:00:00.000Z");
-
   test("only the entry changes: answer, answer_option, answered_at, answered_by, status, within the spec's bound", () => {
-    const out = withAnswer(LEDGER, "test-arc.yaml", { uid: null, id: "A10", option: "drop", note: "" }, AT);
+    const out = answered(LEDGER, { option: "drop" });
     const before = LEDGER.split("\n");
     const after = out.split("\n");
-    const added = after.filter((line) => !before.includes(line));
-    expect(added).toEqual([
+    expect(after.filter((line) => !before.includes(line))).toEqual([
       '    answer: "Drop all four: They stay in this ledger, with no ticket."',
       '    answer_option: "drop"',
       '    answered_at: "2026-10-03T17:00:00Z"',
@@ -185,73 +204,90 @@ describe("writing an answer", () => {
     ]);
     // k = 5 keys, m = 1 line, r = 0 keys there before: added <= k + (m - 1), removed <= r.
     expect(before.filter((line) => !after.includes(line))).toEqual([]);
-    // Every added line sits inside A10's map: right after its last key, before A11.
     expect(out.indexOf('status: "resolved"')).toBeLessThan(out.indexOf("  - id: A11"));
     expect(out.indexOf('answer: "Drop')).toBeGreaterThan(out.indexOf("asked_at:      2026-10-01T03:27Z"));
-    const [answered] = decisionsOf(out, "test-arc.yaml");
-    expect([answered?.state, answered?.answerOption, answered?.answeredAt]).toEqual([
-      "answered",
-      "drop",
-      "2026-10-03T17:00:00Z",
-    ]);
+    const [ask] = decisionsOf(out, "test-arc.yaml");
+    expect([ask?.state, ask?.answerOption, ask?.answeredAt]).toEqual(["answered", "drop", "2026-10-03T17:00:00Z"]);
   });
 
   test("your words beside an option, or alone; a multi-line answer stays one line, within the bound", () => {
-    const both = withAnswer(
-      LEDGER,
-      "test-arc.yaml",
-      { uid: null, id: "A10", option: "ticket-all", note: "Under BRO-2800.\nNot this week." },
-      AT,
-    );
+    const both = answered(LEDGER, { option: "ticket-all", note: "Under BRO-2800.\nNot this week." });
     expect(decisionsOf(both, "test-arc.yaml")[0]?.answer).toBe(
       "File all four: Each becomes a Linear issue.\nUnder BRO-2800.\nNot this week.",
     );
     // k = 5 keys and an answer of m = 3 lines: at most k + (m - 1) = 7 lines added; one line per key is 5.
     expect(both.split("\n").length - LEDGER.split("\n").length).toBe(5);
-    expect(both).toContain(
-      '    answer: "File all four: Each becomes a Linear issue.\\nUnder BRO-2800.\\nNot this week."\n',
-    );
-    const words = withAnswer(LEDGER, "test-arc.yaml", { uid: null, id: "A10", option: null, note: "Hold it." }, AT);
+    const words = answered(LEDGER, { note: "Hold it." });
     expect(words).toContain('    answer: "Hold it."\n');
     expect(words).not.toContain("answer_option");
-    expect(() => withAnswer(LEDGER, "test-arc.yaml", { uid: null, id: "A10", option: null, note: "  " }, AT)).toThrow(
-      "Choose an option or write an answer.",
-    );
+    expect(() => answered(LEDGER, { note: "  " })).toThrow("Choose an option or write an answer.");
   });
 
-  test("refuses an ask already answered, an option it no longer offers, and an ask that is gone", () => {
+  test("keys the entry already has are rewritten in place, whatever their shape: null, empty, or a block scalar", () => {
+    const shapes = [
+      "asks:\n  - id: a\n    ask: q\n    answered_at: null\n    status: open # still waiting\n  - id: b\n",
+      "asks:\n  - id: a\n    ask: q\n    answered_at:\n    status: open\n  - id: b\n",
+      "asks:\n  - id: a\n    ask: q\n    status: >\n      open for now\n\n  - id: b\n",
+    ];
+    for (const source of shapes) {
+      const out = answered(source, { id: "a", note: "yes" });
+      const [a, b] = decisionsOf(out, "l.yaml");
+      expect([a?.state, a?.answer, a?.answeredAt, b?.state]).toEqual([
+        "answered",
+        "yes",
+        "2026-10-03T17:00:00Z",
+        "open",
+      ]);
+      expect(out.split("\n").length - source.split("\n").length).toBeLessThanOrEqual(3);
+    }
+    expect(answered(shapes[0] ?? "", { id: "a", note: "yes" })).toContain('    status: "resolved" # still waiting\n');
+  });
+
+  test("the corpus's other spellings and line endings: open_asks, CRLF; a flow-style entry is refused", () => {
+    const open = answered("open_asks:\n  - id: a\n    ask: q\n", { id: "a", note: "yes" });
+    expect(decisionsOf(open, "l.yaml")[0]?.state).toBe("answered");
+    const crlf = answered("asks:\r\n  - id: a\r\n    ask: q\r\n", { id: "a", note: "yes" });
+    expect(crlf.replace(/\r\n/g, "")).not.toContain("\n");
+    expect(decisionsOf(crlf, "l.yaml")[0]?.state).toBe("answered");
+    expect(() => answered("asks:\n  - {id: a, ask: q}\n", { id: "a", note: "yes" })).toThrow("flow style");
+  });
+
+  test("an edit that would change anything but the answer's keys is refused, and nothing is written", () => {
+    // A keep-chomped block scalar owns the blank lines after it: an append there would change its value.
+    const keep = "asks:\n  - id: a\n    ask: |+\n      q\n\n\n  - id: b\n";
+    expect(() => answered(keep, { id: "a", note: "yes" })).toThrow("without changing anything else");
+  });
+
+  test("refuses an ask already answered, changed since you read it, an option it no longer offers, or gone", () => {
     const uid = "7d1e0c2a-5b8f-4e1a-9c4d-2f6b8a0e3c91";
-    expect(() => withAnswer(LEDGER, "test-arc.yaml", { uid, id: "A11", option: null, note: "x" }, AT)).toThrow(
-      "already answered",
+    expect(() => answered(LEDGER, { uid, id: "A11", note: "x" })).toThrow("already answered");
+    expect(() => answered(LEDGER, { option: "merge" })).toThrow("no longer offers that option");
+    expect(() => answered(LEDGER, { id: "A99", note: "x" })).toThrow("no longer holds the ask A99");
+    const [a10] = decisionsOf(LEDGER, "test-arc.yaml");
+    expect(answered(LEDGER, { hash: a10?.hash ?? "", note: "x" })).toContain('answer: "x"');
+    // The writer replaced A10's question between your read and your answer.
+    const replaced = LEDGER.replace("file or drop?", "merge or close?");
+    expect(() => withAnswer(replaced, "test-arc.yaml", input({ hash: a10?.hash ?? "", note: "x" }), AT)).toThrow(
+      "changed since you read it",
     );
-    expect(() => withAnswer(LEDGER, "test-arc.yaml", { uid: null, id: "A10", option: "merge", note: "" }, AT)).toThrow(
-      "no longer offers that option",
-    );
-    expect(() => withAnswer(LEDGER, "test-arc.yaml", { uid: null, id: "A99", option: null, note: "x" }, AT)).toThrow(
-      "no longer holds the ask A99",
-    );
+    expect(entryHash({ b: 1, a: 2 })).toBe(entryHash({ a: 2, b: 1 }));
   });
 
   test("an ask with a uid is found by its uid, not its handle", () => {
     const source = LEDGER.replace('    answer: "Merge it."\n    answered_at: 2026-10-02T10:00:00Z\n', "");
-    const out = withAnswer(
-      source,
-      "test-arc.yaml",
-      { uid: "7d1e0c2a-5b8f-4e1a-9c4d-2f6b8a0e3c91", id: "A11", option: null, note: "Merge it." },
-      AT,
-    );
+    const out = answered(source, { uid: "7d1e0c2a-5b8f-4e1a-9c4d-2f6b8a0e3c91", id: "A11", note: "Merge it." });
     const [a10, a11] = decisionsOf(out, "test-arc.yaml");
     expect([a10?.state, a11?.state]).toEqual(["open", "answered"]);
   });
 
   test("under the lock, through a temp file renamed over the ledger: its mode kept, no temp or lock left, a receipt", async () => {
     const { asks, path, locks, receipts } = await ledgerIn();
-    const ask = await answerDecision(
-      path,
-      { uid: null, id: "A10", option: "ticket-all", note: "" },
-      { lockRoot: locks, receipts, now: () => AT.getTime() },
-    );
-    expect([ask.state, ask.answerOption]).toEqual(["answered", "ticket-all"]);
+    const { ask, warning } = await answerDecision(path, input({ option: "ticket-all" }), {
+      lockRoot: locks,
+      receipts,
+      now: () => AT.getTime(),
+    });
+    expect([ask.state, ask.answerOption, warning]).toEqual(["answered", "ticket-all", null]);
     expect((await stat(path)).mode & 0o777).toBe(0o640);
     expect(await readdir(asks)).toEqual(["test-arc.yaml"]);
     expect(await readdir(locks)).toEqual([]);
@@ -268,10 +304,40 @@ describe("writing an answer", () => {
       uid: null,
       id: "A10",
       askedAt: "2026-10-01T03:27Z",
+      originAgentId: null,
+      entryHash: decisionsOf(LEDGER, "test-arc.yaml")[0]?.hash,
       answerOption: "ticket-all",
       answer: "File all four: Each becomes a Linear issue.",
     });
     expect((await readDecisions(asks)).asks.find((entry) => entry.id === "A10")?.state).toBe("answered");
+  });
+
+  test("a receipt that cannot be written is said, and the answer stands", async () => {
+    const { path, locks, dir } = await ledgerIn();
+    await writeFile(join(dir, "not-a-folder"), "");
+    const { ask, warning } = await answerDecision(path, input({ option: "drop" }), {
+      lockRoot: locks,
+      receipts: join(dir, "not-a-folder", "asks.jsonl"),
+    });
+    expect(ask.state).toBe("answered");
+    expect(warning).toContain("its receipt was not written");
+  });
+
+  test("a writer whose lock was taken over before its rename writes nothing, and leaves no temp file", async () => {
+    const { asks, path, locks, receipts } = await ledgerIn();
+    const attempt = answerDecision(path, input({ option: "drop" }), {
+      lockRoot: locks,
+      receipts,
+      beforeRename: async () => {
+        const [dir] = await readdir(locks);
+        await writeFile(join(locks, dir ?? "", "token"), "someone-else\n");
+      },
+    });
+    await expect(attempt).rejects.toThrow("This ledger's lock was taken over; nothing was written.");
+    expect(await readFile(path, "utf8")).toBe(LEDGER);
+    expect(await readdir(asks)).toEqual(["test-arc.yaml"]);
+    // Not ours to remove: the lock stays with whoever holds its token now.
+    expect(await readdir(locks)).toHaveLength(1);
   });
 
   // The workspace's own validator, where this machine has it: an answer must leave a valid ledger valid.
@@ -280,11 +346,10 @@ describe("writing an answer", () => {
     const { path, locks, receipts } = await ledgerIn();
     const validate = () => spawnSync("python3", [validator, "validate", path], { encoding: "utf8" });
     expect(validate().status).toBe(0);
-    await answerDecision(
-      path,
-      { uid: null, id: "A10", option: "drop", note: "Not now.\nMaybe later." },
-      { lockRoot: locks, receipts },
-    );
+    await answerDecision(path, input({ option: "drop", note: "Not now.\nMaybe later." }), {
+      lockRoot: locks,
+      receipts,
+    });
     const after = validate();
     expect(after.stdout).toContain(" 0 error(s)");
     expect(after.status).toBe(0);
@@ -303,20 +368,23 @@ describe("the ledger lock", () => {
 
   test("a live holder is waited on and never reclaimed, however old: the answer is refused and nothing written", async () => {
     const { path, locks, receipts } = await ledgerIn();
-    const held = await acquireLock(path, locks);
-    const dir = join(locks, `${await lockKey(path)}.d`);
-    const old = new Date(Date.now() - 10 * LOCK_STALE_MS);
-    await utimes(dir, old, old);
-    await expect(
-      answerDecision(
-        path,
-        { uid: null, id: "A10", option: "drop", note: "" },
-        { lockRoot: locks, receipts, waitMs: 200 },
-      ),
-    ).rejects.toThrow(`Another writer holds this ledger's lock (pid ${process.pid})`);
-    expect(await readFile(path, "utf8")).toBe(LEDGER);
-    await releaseLock(held);
-    expect(await readdir(locks)).toEqual([]);
+    const holder = spawn("/bin/sleep", ["30"]);
+    try {
+      await mkdir(locks, { recursive: true });
+      const dir = join(locks, `${await lockKey(path)}.d`);
+      await mkdir(dir);
+      await writeFile(join(dir, "pid"), `${holder.pid}\n`);
+      await writeFile(join(dir, "token"), "theirs\n");
+      const old = new Date(Date.now() - 10 * LOCK_STALE_MS);
+      await utimes(dir, old, old);
+      await expect(
+        answerDecision(path, input({ option: "drop" }), { lockRoot: locks, receipts, waitMs: 300 }),
+      ).rejects.toThrow(`Another writer holds this ledger's lock (pid ${holder.pid})`);
+      expect(await readFile(path, "utf8")).toBe(LEDGER);
+      expect(await readdir(locks)).toEqual([`${await lockKey(path)}.d`]);
+    } finally {
+      holder.kill();
+    }
   });
 
   test("a dead holder's lock is reclaimed once 120 s old, not before; one with no pid yet is live until then", async () => {
@@ -339,12 +407,18 @@ describe("the ledger lock", () => {
     expect(await readdir(locks)).toEqual([]);
   });
 
-  test("a holder whose token was taken writes nothing and leaves the lock to its new owner", async () => {
-    const { asks, path, locks } = await ledgerIn();
+  test("a lock of this process's own that it no longer holds is dropped at once; one it holds is waited on", async () => {
+    const { path, locks } = await ledgerIn();
     const lock = await acquireLock(path, locks);
-    await writeFile(join(lock.dir, "token"), "someone-else\n");
+    // Held: a second take waits, and gives up.
+    await expect(acquireLock(path, locks, { waitMs: 150 })).rejects.toThrow(`pid ${process.pid}`);
+    // Released while its token could not be read: the directory stays behind, ours and no longer held.
+    await writeFile(join(lock.dir, "token"), "garbled\n");
     await releaseLock(lock);
-    expect(await readdir(locks)).toEqual([`${await lockKey(path)}.d`]);
-    expect(await readdir(asks)).toEqual(["test-arc.yaml"]);
+    expect(await readdir(locks)).toHaveLength(1);
+    const again = await acquireLock(path, locks, { waitMs: 1000 });
+    expect(again.token).not.toBe(lock.token);
+    await releaseLock(again);
+    expect(await readdir(locks)).toEqual([]);
   });
 });

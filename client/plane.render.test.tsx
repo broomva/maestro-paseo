@@ -410,6 +410,7 @@ const decisionFixture = (): DecisionAsk => ({
   ledger: "maestro-paseo-gaps.yaml",
   uid: null,
   id: "A10",
+  hash: "0123456789abcdef",
   arc: "maestro-paseo-gaps",
   headline: "Four small review follow-ups from #7 and #8: ticket them, or drop them?",
   question: "Four review follow-ups are open and unscheduled: file or drop?",
@@ -674,6 +675,7 @@ const invoke = async (method: string, input: unknown) => {
     const { tick } = input as { tick: number };
     return {
       tick,
+      notes: [],
       report: { markdown: `# fleet-reconcile · broomva · tick ${tick}\n\nReport of tick ${tick}.\n`, truncated: false },
       log: {
         path: "/state/broomva/tick.log",
@@ -695,7 +697,7 @@ const invoke = async (method: string, input: unknown) => {
       answeredAt: new Date().toISOString(),
     };
     decisionsNow = decisionsNow.map((entry) => (entry.id === id ? answered : entry));
-    return { ask: answered };
+    return { ask: answered, warning: null };
   }
   if (method === "fleet.review") {
     const { keys, verdict, note } = input as { keys: string[]; verdict: "accept" | "reject"; note: string };
@@ -1918,6 +1920,7 @@ describe("drilling in", () => {
         ledger: "maestro-paseo-gaps.yaml",
         uid: null,
         id: "A10",
+        hash: "0123456789abcdef",
         option: "ticket-all",
         note: "Under BRO-2800.",
       },
@@ -2011,5 +2014,9 @@ describe("drilling in", () => {
     expect(tab(view, "Fleet")?.getAttribute("aria-selected")).toBe("true");
     expect(sent("fleet.tick")).toEqual([{ scope: "broomva", tick: 35 }]);
     expect(view.text()).toContain("What tick 35 logged");
+    // That tick was the visit's: the Fleet tab chosen again later opens on none.
+    await view.press(tab(view, "Feed"));
+    await view.press(tab(view, "Fleet"));
+    expect(view.text()).not.toContain("What tick 35 logged");
   });
 });

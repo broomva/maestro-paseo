@@ -78,70 +78,124 @@ function stateOf(row: Row): DecisionAsk["state"] {
   return "open";
 }
 
-/** The rows of a ledger's `asks` (or the corpus's other spelling, `open_asks`). */
-function rowsOf(data: unknown): Row[] {
-  if (!isRow(data)) return [];
-  const rows = Array.isArray(data.asks) ? data.asks : Array.isArray(data.open_asks) ? data.open_asks : [];
-  return rows.filter(isRow);
+/** The key that holds a ledger's asks: `asks`, or the corpus's other spelling `open_asks`. Reader and writer share it. */
+function asksKey(data: unknown): "asks" | "open_asks" | null {
+  if (!isRow(data)) return null;
+  if (Array.isArray(data.asks)) return "asks";
+  return Array.isArray(data.open_asks) ? "open_asks" : null;
 }
 
-/** Handles more than one uid-less ask in the file uses: those asks cannot be told apart, so none is answered. */
-function collisions(rows: readonly Row[]): Set<string> {
-  const seen = new Set<string>();
-  const twice = new Set<string>();
-  for (const row of rows) {
-    const id = text(row.id);
-    if (!id || text(row.uid)) continue;
-    if (seen.has(id)) twice.add(id);
-    seen.add(id);
-  }
-  return twice;
+/** One entry per item of the asks list, in order, null for an item that is not a mapping: indices match the YAML's. */
+function rowsOf(data: unknown): (Row | null)[] {
+  const key = asksKey(data);
+  if (!key || !isRow(data)) return [];
+  return (data[key] as unknown[]).map((item) => (isRow(item) ? item : null));
 }
 
-/** One ledger's asks, as the Fleet view shows them. */
-export function decisionsOf(source: string, ledger: string): DecisionAsk[] {
+/**
+ * Handles that do not name one ask: an id two uid-less asks share, and a uid
+ * two asks share. An answer to either could land on the wrong entry, so none is
+ * written. (An id that a uid-less ask shares with asks that have a uid is not
+ * ambiguous: the uid-less one is the only ask that goes by it.)
+ */
+function ambiguity(rows: readonly (Row | null)[]): { ids: Set<string>; uids: Set<string> } {
+  const twice = (values: (string | null)[]) => {
+    const seen = new Set<string>();
+    const again = new Set<string>();
+    for (const value of values) {
+      if (value === null) continue;
+      if (seen.has(value)) again.add(value);
+      seen.add(value);
+    }
+    return again;
+  };
+  const present = rows.filter((row): row is Row => row !== null);
+  return {
+    ids: twice(present.filter((row) => !text(row.uid)).map((row) => text(row.id))),
+    uids: twice(present.map((row) => text(row.uid))),
+  };
+}
+
+/** A value with its keys in order, so two readings of one entry serialize alike. */
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value instanceof Date) return value.toISOString();
+  if (!isRow(value)) return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, canonical(value[key])]),
+  );
+}
+
+/** An entry as it reads now: the answer carries it, so an entry changed since you read it is not answered. */
+export function entryHash(row: Row): string {
+  return createHash("sha256")
+    .update(JSON.stringify(canonical(row)))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function decisionOf(
+  row: Row,
+  data: Row,
+  ledger: string,
+  ambiguous: { ids: Set<string>; uids: Set<string> },
+): DecisionAsk | null {
+  const id = text(row.id);
+  if (!id) return null;
+  const uid = text(row.uid);
+  const state = stateOf(row);
+  const answerKey = ANSWER_KEYS.find((key) => text(row[key]) !== null);
+  const origin = isRow(row.origin) ? row.origin : {};
+  const originAgent = text(origin.agent_id);
+  const refusal =
+    state !== "open"
+      ? null
+      : uid && ambiguous.uids.has(uid)
+        ? `Two asks in ${ledger} share the uid ${uid}, so an answer could land on the wrong one. Give one a new uid.`
+        : !uid && ambiguous.ids.has(id)
+          ? `Two asks in ${ledger} are named ${id} and neither has a uid, so an answer could land on the wrong one. Give one a uid or a new id.`
+          : null;
+  return {
+    ledger,
+    uid,
+    id,
+    hash: entryHash(row),
+    arc: text(data.arc),
+    headline: text(row.headline),
+    question: text(row.question) ?? text(row.ask),
+    stakes: text(row.stakes),
+    whyYou: text(row.why_you),
+    options: optionsOf(row.options),
+    fallback: text(row.default) ?? text(row.default_if_silent),
+    blocking: row.blocking === true,
+    askedAt: text(row.asked_at),
+    answeredAt: text(row.answered_at) ?? text(row.defaulted_at),
+    answer: answerKey ? text(row[answerKey]) : null,
+    answerOption: text(row.answer_option),
+    state,
+    origin: originAgent ? { agentId: originAgent, cwd: text(origin.cwd) } : null,
+    refusal,
+  };
+}
+
+function parsed(source: string): Row {
   const doc = parseDocument(source);
   if (doc.errors.length > 0) throw new Error(`it has a YAML error: ${doc.errors[0]?.message}`);
   const data = doc.toJS() as unknown;
   if (!isRow(data)) throw new Error("its top level is not a mapping");
+  return data;
+}
+
+/** One ledger's asks, as the Fleet view shows them. */
+export function decisionsOf(source: string, ledger: string): DecisionAsk[] {
+  const data = parsed(source);
   const rows = rowsOf(data);
-  const twice = collisions(rows);
+  const ambiguous = ambiguity(rows);
   return rows.flatMap((row) => {
-    const id = text(row.id);
-    if (!id) return [];
-    const uid = text(row.uid);
-    const state = stateOf(row);
-    const answerKey = ANSWER_KEYS.find((key) => text(row[key]) !== null);
-    const origin = isRow(row.origin) ? row.origin : {};
-    const originAgent = text(origin.agent_id);
-    const refusal =
-      state !== "open"
-        ? null
-        : !uid && twice.has(id)
-          ? `Two asks in ${ledger} are named ${id} and neither has a uid, so an answer could land on the wrong one. Give one a uid or a new id.`
-          : null;
-    return [
-      {
-        ledger,
-        uid,
-        id,
-        arc: text(data.arc),
-        headline: text(row.headline),
-        question: text(row.question) ?? text(row.ask),
-        stakes: text(row.stakes),
-        whyYou: text(row.why_you),
-        options: optionsOf(row.options),
-        fallback: text(row.default) ?? text(row.default_if_silent),
-        blocking: row.blocking === true,
-        askedAt: text(row.asked_at),
-        answeredAt: text(row.answered_at) ?? text(row.defaulted_at),
-        answer: answerKey ? text(row[answerKey]) : null,
-        answerOption: text(row.answer_option),
-        state,
-        origin: originAgent ? { agentId: originAgent, cwd: text(origin.cwd) } : null,
-        refusal,
-      },
-    ];
+    const ask = row ? decisionOf(row, data, ledger, ambiguous) : null;
+    return ask ? [ask] : [];
   });
 }
 
@@ -201,7 +255,12 @@ export async function lockKey(ledgerPath: string): Promise<string> {
     .slice(0, 16);
 }
 
-/** This process's start, in whole seconds since the epoch: a reused pid with another start is not this holder. */
+/**
+ * This process's start, in whole seconds since the epoch. A holder's pid file
+ * is `<pid> <start>\n`, both decimal, the start in seconds since the epoch, so a
+ * reused pid with another start is not the holder. Other writers taking this
+ * lock write the same grammar; a file without a start is judged by its pid alone.
+ */
 const started = () => Math.round(Date.now() / 1000 - process.uptime());
 
 /** `ps -o etime=`'s `[[dd-]hh:]mm:ss` in seconds: elapsed time, which no time zone shifts (lstart's local time does). */
@@ -222,26 +281,35 @@ function startOf(pid: number): Promise<number | null> {
   });
 }
 
-/** Whether the holder a pid file names is alive: its pid answers, and it started when it said. */
-export async function holderAlive(pidFile: string): Promise<boolean> {
+function pidOf(pidFile: string): { pid: number; start: number | null } | null {
   const [pidText, startText] = pidFile.trim().split(/\s+/);
   const pid = Number(pidText);
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const start = Number(startText);
+  return { pid, start: startText !== undefined && Number.isFinite(start) ? start : null };
+}
+
+/** Whether the holder a pid file names is alive: its pid answers, and it started when it said. */
+export async function holderAlive(pidFile: string): Promise<boolean> {
+  const holder = pidOf(pidFile);
+  if (!holder) return false;
   try {
-    process.kill(pid, 0);
+    process.kill(holder.pid, 0);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
   }
-  const said = Number(startText);
-  if (!Number.isFinite(said)) return true;
-  const actual = await startOf(pid);
-  return actual === null || Math.abs(actual - said) <= 2;
+  if (holder.start === null) return true;
+  const actual = await startOf(holder.pid);
+  return actual === null || Math.abs(actual - holder.start) <= 2;
 }
 
 export interface Lock {
   dir: string;
   token: string;
 }
+
+/** The locks this process holds now. One of its own it does not hold was left behind (§5.5: dropped at once). */
+const held = new Set<string>();
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -253,18 +321,42 @@ async function ageOf(path: string, now: number): Promise<number | null> {
   }
 }
 
-/** Takes a stale lock away under its reclaim mutex: renamed aside, then removed. */
-async function reclaim(dir: string, now: number): Promise<void> {
+/**
+ * Whether a lock may be taken away, and by whom it is held: null when it is gone.
+ * Stale: its holder is dead and it is 120 s old (one with no pid yet is live for
+ * its first 120 s), or it is this process's own and this process holds it no more.
+ * A live holder is never stale, however old.
+ */
+async function staleness(dir: string, now: number): Promise<{ stale: boolean; holder: string } | null> {
+  const age = await ageOf(dir, now);
+  if (age === null) return null;
+  const pidFile = await readFile(join(dir, "pid"), "utf8").catch(() => null);
+  const holder = pidFile ? pidOf(pidFile) : null;
+  const words = holder ? `pid ${holder.pid}` : "a writer starting up";
+  if (holder?.pid === process.pid && holder.start !== null && Math.abs(holder.start - started()) <= 2) {
+    return { stale: !held.has(dir), holder: words };
+  }
+  const alive = pidFile === null ? age < LOCK_STALE_MS : await holderAlive(pidFile);
+  return { stale: !alive && age >= LOCK_STALE_MS, holder: words };
+}
+
+/**
+ * Takes a stale lock away under its reclaim mutex, judging it again once the
+ * mutex is held (as tick.sh does): another writer may have reclaimed it and
+ * taken a fresh one meanwhile, which is live and stays.
+ */
+async function reclaim(dir: string, now: () => number): Promise<void> {
   const mutex = `${dir.replace(/\.d$/, "")}.reclaim.d`;
   try {
     await mkdir(mutex);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const age = await ageOf(mutex, now);
+    const age = await ageOf(mutex, now());
     if (age !== null && age >= RECLAIM_STALE_MS) await rm(mutex, { recursive: true, force: true });
     return;
   }
   try {
+    if (!(await staleness(dir, now()))?.stale) return;
     const aside = `${dir}.stale-${randomBytes(4).toString("hex")}`;
     await rename(dir, aside).then(
       () => rm(aside, { recursive: true, force: true }),
@@ -273,17 +365,6 @@ async function reclaim(dir: string, now: number): Promise<void> {
   } finally {
     await rm(mutex, { recursive: true, force: true });
   }
-}
-
-/** Why the lock is held and by whom, when it is not ours to take; null when it is stale and was reclaimed. */
-async function heldBy(dir: string, now: number): Promise<string | null> {
-  const pidFile = await readFile(join(dir, "pid"), "utf8").catch(() => null);
-  const age = await ageOf(dir, now);
-  if (age === null) return null;
-  const alive = pidFile === null ? age < LOCK_STALE_MS : await holderAlive(pidFile);
-  if (alive || age < LOCK_STALE_MS) return pidFile ? `pid ${pidFile.trim().split(/\s+/)[0]}` : "a writer starting up";
-  await reclaim(dir, now);
-  return null;
 }
 
 export async function acquireLock(
@@ -297,16 +378,26 @@ export async function acquireLock(
   const dir = join(lockRoot, `${await lockKey(ledgerPath)}.d`);
   let holder = "another writer";
   for (;;) {
+    let made = false;
     try {
       await mkdir(dir);
+      made = true;
       const token = randomBytes(16).toString("hex");
       await writeFile(join(dir, "pid"), `${process.pid} ${started()}\n`);
       await writeFile(join(dir, "token"), `${token}\n`);
+      held.add(dir);
       return { dir, token };
     } catch (error) {
+      // Made but not finished: taken back, so no half-written lock is left to wedge the ledger.
+      if (made) {
+        await rm(dir, { recursive: true, force: true });
+        throw error;
+      }
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
-    holder = (await heldBy(dir, now())) ?? holder;
+    const state = await staleness(dir, now());
+    if (state?.stale) await reclaim(dir, now);
+    else if (state) holder = state.holder;
     if (now() >= deadline) {
       throw new UserError(
         `Another writer holds this ledger's lock (${holder}), so nothing was written. Try again in a moment.`,
@@ -322,6 +413,8 @@ async function stillOurs(lock: Lock): Promise<boolean> {
 }
 
 export async function releaseLock(lock: Lock): Promise<void> {
+  // No longer held here, whatever follows: a lock of ours left behind is then stale to our next write.
+  held.delete(lock.dir);
   if (!(await stillOurs(lock))) return;
   await rm(join(lock.dir, "token"), { force: true });
   await rm(join(lock.dir, "pid"), { force: true });
@@ -349,27 +442,48 @@ interface Edit {
   start: number;
   end: number;
   text: string;
+  /** Build order, used to break ties between inserts at the same offset. */
   seq: number;
 }
 
-/** Replaces a key's value span in place, or appends the key after the map's last content. */
-function upsertKey(source: string, map: YAMLMap, key: string, value: string, indent: string, seq: number): Edit {
+type Range = [number, number, number];
+
+/**
+ * A key written as `key: "value"`. One the entry has is rewritten from its key
+ * to the end of its value: a value-less key (`answered_at:`) ends at its colon,
+ * and a block scalar's range, which runs on past its last line, is cut back to
+ * its last content. One it lacks is appended after the map's last content.
+ */
+function upsertKey(
+  source: string,
+  map: YAMLMap,
+  key: string,
+  value: string,
+  indent: string,
+  seq: number,
+  newline: string,
+): Edit {
   for (const pair of map.items) {
-    const pairKey = pair.key as { value?: unknown } | null;
-    if (!pairKey || String(pairKey.value ?? "") !== key) continue;
-    const node = pair.value as { range?: [number, number, number] } | null;
-    if (node?.range) return { start: node.range[0], end: node.range[1], text: renderScalar(value), seq };
+    const name = pair.key as { value?: unknown; range?: Range } | null;
+    if (!name?.range || String(name.value ?? "") !== key) continue;
+    const start = name.range[0];
+    const valueRange = (pair.value as { range?: Range } | null)?.range;
+    let end = Math.max(name.range[1], valueRange?.[1] ?? 0);
+    if (!valueRange || valueRange[0] === valueRange[1]) end = Math.max(end, source.indexOf(":", name.range[1]) + 1);
+    while (end > start && /\s/.test(source[end - 1] ?? "")) end--;
+    return { start, end, text: `${key}: ${renderScalar(value)}`, seq };
   }
-  // A block scalar's range runs past the blank line after it: walk back to the last content instead.
   let at = map.range?.[1] ?? source.length;
   while (at > 0 && /\s/.test(source[at - 1] ?? "")) at--;
-  return { start: at, end: at, text: `\n${indent}${key}: ${renderScalar(value)}`, seq };
+  return { start: at, end: at, text: `${newline}${indent}${key}: ${renderScalar(value)}`, seq };
 }
 
 export interface AnswerInput {
   /** Which ask: its uid when it has one, else its id. */
   uid: string | null;
   id: string;
+  /** The entry as you read it (DecisionAsk.hash): an entry changed since is not answered. Null: not checked. */
+  hash: string | null;
   /** The option you tapped, or none for an answer in words alone. */
   option: string | null;
   /** Your words, beside the option or alone. */
@@ -382,30 +496,65 @@ export function answerText(option: DecisionOption | null, note: string): string 
   return [chosen, note.trim()].filter(Boolean).join("\n");
 }
 
+const WRITTEN_KEYS = ["answer_option", "answered_at", "answered_by", "status"] as const;
+
+/** Every entry but the target, and the target's keys but those written: what an answer must leave as it was. */
+function untouched(data: Row, index: number, answerKey: string): string {
+  const rows = rowsOf(data).map((row, at) => {
+    if (at !== index || !row) return row;
+    const kept = { ...row };
+    for (const key of [answerKey, ...WRITTEN_KEYS]) delete kept[key];
+    return kept;
+  });
+  const key = asksKey(data) ?? "asks";
+  return JSON.stringify(canonical({ ...data, [key]: rows }));
+}
+
 /**
- * The ledger with the answer written into its target entry, and nothing else
- * changed; throws in words when the ask cannot be answered.
+ * The ledger with the answer written into its target entry and nothing else
+ * changed, and the ask as it then reads; throws in words when the ask cannot
+ * be answered, or the edit would change anything but the answer's keys.
  */
-export function withAnswer(source: string, ledger: string, input: AnswerInput, at: Date): string {
+export function withAnswer(
+  source: string,
+  ledger: string,
+  input: AnswerInput,
+  at: Date,
+): { out: string; ask: DecisionAsk; hash: string } {
+  const unwritable = `Maestro could not write this answer into ${ledger} without changing anything else there, so nothing was written.`;
   const doc = parseDocument(source);
   if (doc.errors.length > 0) throw new UserError(`${ledger} has a YAML error, so nothing was written to it.`);
-  const asks = doc.get("asks", true);
-  if (!isSeq(asks)) throw new UserError(`${ledger} has no asks list, so nothing was written to it.`);
-  const maps = asks.items.filter((item): item is YAMLMap => isMap(item));
-  const rows = maps.map((map) => map.toJSON() as Row);
+  const data = doc.toJS() as unknown;
+  const key = asksKey(data);
+  const asks = key ? doc.get(key, true) : null;
+  if (!isRow(data) || !key || !isSeq(asks)) {
+    throw new UserError(`${ledger} has no asks list, so nothing was written to it.`);
+  }
+  const rows = rowsOf(data);
+  const ambiguous = ambiguity(rows);
   const index = input.uid
-    ? rows.findIndex((row) => text(row.uid) === input.uid)
-    : rows.findIndex((row) => !text(row.uid) && text(row.id) === input.id);
+    ? rows.findIndex((row) => row !== null && text(row.uid) === input.uid)
+    : rows.findIndex((row) => row !== null && !text(row.uid) && text(row.id) === input.id);
   const row = rows[index];
-  const target = maps[index];
-  if (!row || !target)
+  const target = asks.items[index];
+  if (!row || !isMap(target)) {
     throw new UserError(`${ledger} no longer holds the ask ${input.id}. Look at the Fleet view again.`);
-  if (!input.uid && collisions(rows).has(input.id)) {
-    throw new UserError(`Two asks in ${ledger} are named ${input.id} and neither has a uid, so none was answered.`);
+  }
+  if (input.uid ? ambiguous.uids.has(input.uid) : ambiguous.ids.has(input.id)) {
+    throw new UserError(
+      input.uid
+        ? `Two asks in ${ledger} share the uid ${input.uid}, so none was answered.`
+        : `Two asks in ${ledger} are named ${input.id} and neither has a uid, so none was answered.`,
+    );
   }
   if (stateOf(row) !== "open") {
     throw new UserError(`The ask ${input.id} was already answered or retired; your answer was not written.`);
   }
+  const hash = entryHash(row);
+  if (input.hash !== null && input.hash !== hash) {
+    throw new UserError(`The ask ${input.id} changed since you read it; look at it again before answering.`);
+  }
+  if (target.flow) throw new UserError(`The ask ${input.id} is written in flow style ({ … }); ${unwritable}`);
   const options = optionsOf(row.options);
   const option = input.option ? (options.find((entry) => entry.id === input.option) ?? null) : null;
   if (input.option && !option) {
@@ -413,9 +562,10 @@ export function withAnswer(source: string, ledger: string, input: AnswerInput, a
   }
   const answer = answerText(option, input.note);
   if (!answer) throw new UserError("Choose an option or write an answer.");
-  const firstKey = target.items[0]?.key as { range?: [number, number, number] } | null;
+  const firstKey = target.items[0]?.key as { range?: Range } | null;
   const indent = firstKey?.range ? indentOf(source, firstKey.range[0]) : "    ";
-  const answerKey = ANSWER_KEYS.find((key) => target.has(key)) ?? "answer";
+  const newline = source.includes("\r\n") ? "\r\n" : "\n";
+  const answerKey = ANSWER_KEYS.find((name) => target.has(name)) ?? "answer";
   const stamp = at.toISOString().replace(/\.\d{3}Z$/, "Z");
   const writes: [string, string][] = [
     [answerKey, answer],
@@ -424,18 +574,24 @@ export function withAnswer(source: string, ledger: string, input: AnswerInput, a
     ["answered_by", "owner:maestro"],
     ["status", "resolved"],
   ];
-  const edits = writes.map(([key, value], seq) => upsertKey(source, target, key, value, indent, seq));
+  const edits = writes.map(([name, value], seq) => upsertKey(source, target, name, value, indent, seq, newline));
   // Back to front so earlier offsets hold; inserts at one offset go highest-seq first, which leaves them in order.
   let out = source;
   for (const edit of [...edits].sort((a, b) => b.start - a.start || b.seq - a.seq)) {
     out = out.slice(0, edit.start) + edit.text + out.slice(edit.end);
   }
-  // What was written must read back as this ask, answered, or nothing is written at all.
-  const back = decisionsOf(out, ledger).find((ask) => (input.uid ? ask.uid === input.uid : ask.id === input.id));
-  if (back?.state !== "answered" || back.answeredAt !== stamp) {
-    throw new Error(`the answer did not read back from ${ledger}`);
+  // It must read back as this entry, answered, with every other entry and key as it was; else nothing is written.
+  let after: Row;
+  try {
+    after = parsed(out);
+  } catch {
+    throw new UserError(unwritable);
   }
-  return out;
+  const back = rowsOf(after)[index];
+  const ask = back ? decisionOf(back, after, ledger, ambiguity(rowsOf(after))) : null;
+  if (ask?.state !== "answered" || ask.answeredAt !== stamp || ask.answer !== answer) throw new UserError(unwritable);
+  if (untouched(after, index, answerKey) !== untouched(data, index, answerKey)) throw new UserError(unwritable);
+  return { out, ask, hash };
 }
 
 export interface AnswerOptions {
@@ -445,52 +601,66 @@ export interface AnswerOptions {
   now?: () => number;
   waitMs?: number;
   log?: (message: string) => void;
+  /** For a test: runs after the temp file is written, before the token is checked and it is renamed. */
+  beforeRename?: () => Promise<void>;
 }
 
-/** Writes your answer into the ledger at `path` under the lock, and returns the ask as it now reads. */
-export async function answerDecision(path: string, input: AnswerInput, options: AnswerOptions): Promise<DecisionAsk> {
+/**
+ * Writes your answer into the ledger at `path` under the lock, and returns the
+ * ask as it now reads, with a warning when the answer is in but its receipt is not.
+ */
+export async function answerDecision(
+  path: string,
+  input: AnswerInput,
+  options: AnswerOptions,
+): Promise<{ ask: DecisionAsk; warning: string | null }> {
   const ledger = basename(path);
   const now = options.now ?? Date.now;
+  const gone = () => new UserError(`${ledger} is gone or not a regular file, so nothing was written.`);
+  if (!(await lstat(path).catch(() => null))?.isFile()) throw gone();
   const lock = await acquireLock(path, options.lockRoot, { now, waitMs: options.waitMs });
-  let written: DecisionAsk | undefined;
+  let written: ReturnType<typeof withAnswer>;
   try {
     const info = await lstat(path).catch(() => null);
-    if (!info?.isFile()) throw new UserError(`${ledger} is gone or not a regular file, so nothing was written.`);
-    const source = await readLedger(path);
-    const at = new Date(now());
-    const out = withAnswer(source, ledger, input, at);
+    if (!info?.isFile()) throw gone();
+    written = withAnswer(await readLedger(path), ledger, input, new Date(now()));
     const temp = join(dirname(path), `.${ledger}.tmp-${lock.token}`);
-    await writeFile(temp, out, { mode: info.mode & 0o777, flag: "wx" });
     try {
+      await writeFile(temp, written.out, { mode: info.mode & 0o777, flag: "wx" });
+      await options.beforeRename?.();
       if (!(await stillOurs(lock))) throw new UserError("This ledger's lock was taken over; nothing was written.");
       await rename(temp, path);
     } catch (error) {
       await rm(temp, { force: true });
       throw error;
     }
-    written = decisionsOf(out, ledger).find((ask) => (input.uid ? ask.uid === input.uid : ask.id === input.id));
   } finally {
     await releaseLock(lock);
   }
-  if (!written) throw new Error(`the answer did not read back from ${ledger}`);
+  const { ask, hash } = written;
   const receipt = {
     kind: "ask.answered",
     actor: "human",
-    at: written.answeredAt,
+    at: ask.answeredAt,
     home: path,
     ledger,
-    uid: written.uid,
-    id: written.id,
-    askedAt: written.askedAt,
-    answerOption: written.answerOption,
-    answer: written.answer,
+    uid: ask.uid,
+    id: ask.id,
+    askedAt: ask.askedAt,
+    originAgentId: ask.origin?.agentId ?? null,
+    /** The entry as it was answered (§5.2's legacy identity). */
+    entryHash: hash,
+    answerOption: ask.answerOption,
+    answer: ask.answer,
   };
   // The answer is in the ledger already: a receipt that cannot be written is said, not thrown.
   try {
     await mkdir(dirname(options.receipts), { recursive: true, mode: 0o700 });
     await appendFile(options.receipts, `${JSON.stringify(receipt)}\n`, { mode: 0o600 });
+    return { ask, warning: null };
   } catch (error) {
-    options.log?.(`asks: the receipt for ${ledger} ${written.id} was not written: ${(error as Error).message}`);
+    const message = `Your answer is in ${ledger}, but its receipt was not written (${(error as Error).message}).`;
+    options.log?.(`asks: ${message}`);
+    return { ask, warning: message };
   }
-  return written;
 }

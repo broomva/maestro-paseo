@@ -251,6 +251,11 @@ function TickDetail({
         </Notice>
       ) : (
         <>
+          {read.data.notes.map((note) => (
+            <Notice key={note} theme={theme} tone="warn">
+              {note}
+            </Notice>
+          ))}
           {read.data.log ? (
             <View style={{ gap: space[1] }}>
               <Text style={text.label}>{`What tick ${tick} logged`}</Text>
@@ -486,11 +491,12 @@ function DecisionCard({
   const origin = ask.origin;
   const submit = () =>
     answer.mutate(
-      { scope, ledger: ask.ledger, uid: ask.uid, id: ask.id, option: chosen, note },
+      { scope, ledger: ask.ledger, uid: ask.uid, id: ask.id, hash: ask.hash, option: chosen, note },
       {
-        onSuccess: () => {
+        onSuccess: ({ warning }) => {
           setChosen(null);
           setNote("");
+          if (warning) toast.error(warning);
         },
         onError: (error) => toast.error(errorText(error)),
       },

@@ -202,6 +202,8 @@ export const DecisionAskSchema = z.object({
   /** Its identity (§5.2); asks from before v2 have none and go by `id`. */
   uid: z.string().nullable(),
   id: z.string(),
+  /** The entry as read: an answer carries it back, and one to an entry changed since is refused. */
+  hash: z.string(),
   arc: z.string().nullable(),
   headline: z.string().nullable(),
   question: z.string().nullable(),
@@ -290,6 +292,8 @@ export const getFleetTick = defineRpc({
     tick: z.number(),
     /** That tick's own report.md, when it wrote one. */
     report: z.object({ markdown: z.string(), truncated: z.boolean() }).nullable(),
+    /** What could not be read, in words: a report.md that is there and unreadable, a tick older than the log kept. */
+    notes: z.array(z.string()),
     /** That tick's lines in tick.log, from its start line to its done line (the end of them past TICK_LOG_BYTES). */
     log: z.object({ path: z.string(), text: z.string(), truncated: z.boolean() }).nullable(),
   }),
@@ -310,10 +314,13 @@ export const answerAsk = defineRpc({
     ledger: z.string().min(1),
     uid: z.string().min(1).nullable(),
     id: z.string().min(1),
+    /** DecisionAsk.hash as you read it. */
+    hash: z.string().min(1),
     option: z.string().min(1).nullable(),
     note: z.string().max(ANSWER_NOTE_CHARS).default(""),
   }),
-  output: z.object({ ask: DecisionAskSchema }),
+  /** `warning`: the answer is in the ledger, but something after it (its receipt) failed, in words. */
+  output: z.object({ ask: DecisionAskSchema, warning: z.string().nullable() }),
 });
 
 /**

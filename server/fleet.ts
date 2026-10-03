@@ -19,7 +19,7 @@
 
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { type FileHandle, open, readdir, stat } from "node:fs/promises";
+import { type FileHandle, lstat, open, readdir, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import type { WorkItem } from "../shared/contracts";
@@ -337,15 +337,16 @@ function readRegular(path: string, limit = READ_LIMIT, own = false) {
   );
 }
 
-/** A regular file's last `limit` bytes as text, from the next whole line when cut. */
-function readEnd(path: string, limit: number): Promise<string> {
+/** A regular file's last `limit` bytes as text, from the next whole line when cut, and whether it was. */
+function readEnd(path: string, limit: number): Promise<{ text: string; cut: boolean }> {
   return withRegular(path, constants.O_RDONLY, async (handle) => {
     const info = await handle.stat();
     const length = Math.min(info.size, limit);
     const buffer = Buffer.alloc(length);
     const { bytesRead } = await handle.read(buffer, 0, length, info.size - length);
     const read = buffer.toString("utf8", 0, bytesRead);
-    return info.size > limit ? read.slice(read.indexOf("\n") + 1) : read;
+    const cut = info.size > limit;
+    return { text: cut ? read.slice(read.indexOf("\n") + 1) : read, cut };
   });
 }
 
@@ -763,13 +764,20 @@ export class Fleet {
   /** A tick's own report.md and its lines in tick.log, asked for when you open its row. */
   async tick(scope: string, tick: number): Promise<FleetTickDetail> {
     const config = await this.scopeNamed(scope);
-    const warnings: string[] = [];
-    const report = await this.markdown(config.stateDir, tick, warnings);
-    if (warnings.length > 0) throw new UserError(warnings[0] ?? "");
+    // A report that cannot be read is said beside the log, which is still shown.
+    const notes: string[] = [];
+    const report = await this.markdown(config.stateDir, tick, notes);
     const path = join(config.stateDir, "tick.log");
     let log: FleetTickDetail["log"] = null;
     try {
-      const section = tickLogSection(await readEnd(path, TICK_LOG_SEARCH), tick);
+      const { text, cut } = await readEnd(path, TICK_LOG_SEARCH);
+      const section = tickLogSection(text, tick);
+      const first = /\] tick (\d+) scope /.exec(text)?.[1];
+      if (section === null && cut && first !== undefined && tick < Number(first)) {
+        notes.push(
+          `Tick ${tick} is older than the last ${TICK_LOG_SEARCH / 1024 / 1024} MB of tick.log, which is all that is read.`,
+        );
+      }
       if (section !== null) {
         const bytes = Buffer.from(section);
         const truncated = bytes.length > TICK_LOG_BYTES;
@@ -778,9 +786,9 @@ export class Fleet {
         log = { path, text: truncated ? kept.slice(kept.indexOf("\n") + 1) : kept, truncated };
       }
     } catch (error) {
-      if (code(error) !== "ENOENT") throw new UserError(`tick.log could not be read: ${(error as Error).message}`);
+      if (code(error) !== "ENOENT") notes.push(`tick.log could not be read: ${(error as Error).message}`);
     }
-    return { tick, report: report ? { markdown: report.markdown, truncated: report.truncated } : null, log };
+    return { tick, report: report ? { markdown: report.markdown, truncated: report.truncated } : null, notes, log };
   }
 
   private async scopeNamed(scope: string): Promise<ScopeConfig> {
@@ -802,19 +810,26 @@ export class Fleet {
     ledger: string;
     uid: string | null;
     id: string;
+    hash: string;
     option: string | null;
     note: string;
-  }): Promise<{ ask: DecisionAsk }> {
+  }): Promise<{ ask: DecisionAsk; warning: string | null }> {
     const next = this.writes
       .catch(() => undefined)
       .then(async () => {
         const config = await this.scopeNamed(input.scope);
         if (!/^[^./][^/]*\.ya?ml$/.test(input.ledger)) throw new UserError(`${input.ledger} is not a ledger name.`);
+        // The root's folders are the fleet's own, never a link out of its state dir (into a git checkout, say).
+        for (const folder of [join(config.stateDir, ".control"), join(config.stateDir, ASK_ROOT)]) {
+          if ((await lstat(folder).catch(() => null))?.isDirectory() !== true) {
+            throw new UserError(`${folder} is not a folder of the fleet's own, so no answer was written there.`);
+          }
+        }
         const path = join(config.stateDir, ASK_ROOT, input.ledger);
         const paths = controlAskPaths();
-        const ask = await answerDecision(
+        const answered = await answerDecision(
           path,
-          { uid: input.uid, id: input.id, option: input.option, note: input.note },
+          { uid: input.uid, id: input.id, hash: input.hash, option: input.option, note: input.note },
           {
             lockRoot: this.options.askLocks ?? paths.locks,
             receipts: this.options.askReceipts ?? paths.receipts,
@@ -825,7 +840,7 @@ export class Fleet {
         this.log(
           `fleet ${config.id}: you answered ${input.ledger} ${input.id}${input.option ? ` (${input.option})` : ""}`,
         );
-        return { ask };
+        return answered;
       });
     this.writes = next;
     return next;

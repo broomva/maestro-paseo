@@ -1003,6 +1003,7 @@ describe("drilling in", () => {
     );
     const tick = await fleet.tick("alpha", 34);
     expect(tick.report).toEqual({ markdown: "# tick 34\n", truncated: false });
+    expect(tick.notes).toEqual([]);
     expect(tick.log).toEqual({
       path: join(paths.state, "alpha", "tick.log"),
       text: [
@@ -1015,7 +1016,7 @@ describe("drilling in", () => {
       truncated: false,
     });
     // A tick the log no longer holds, and one with no report: each is null, not an error.
-    expect(await fleet.tick("alpha", 7)).toEqual({ tick: 7, report: null, log: null });
+    expect(await fleet.tick("alpha", 7)).toEqual({ tick: 7, report: null, notes: [], log: null });
     await expect(fleet.tick("nowhere", 1)).rejects.toThrow("The fleet has no scope named nowhere.");
   });
 
@@ -1051,14 +1052,16 @@ describe("drilling in", () => {
     expect(detail?.decisions.map((ask) => [ask.id, ask.state, ask.options.map((option) => option.id)])).toEqual([
       ["spawn-duplicate-1", "open", ["stop-newer", "leave"]],
     ]);
-    const { ask } = await fleet.answer({
+    const { ask, warning } = await fleet.answer({
       scope: "alpha",
       ledger: "fleet-alpha.yaml",
       uid: "11111111-2222-4333-8444-555555555555",
       id: "spawn-duplicate-1",
+      hash: detail?.decisions[0]?.hash ?? "",
       option: "stop-newer",
       note: "",
     });
+    expect(warning).toBeNull();
     expect([ask.state, ask.answerOption, ask.answeredAt]).toEqual(["answered", "stop-newer", "2026-10-02T20:40:00Z"]);
     const written = await readFile(join(askRoot, "fleet-alpha.yaml"), "utf8");
     expect(written).toContain('    answer_option: "stop-newer"\n');
@@ -1067,10 +1070,29 @@ describe("drilling in", () => {
     expect(logs).toContain("fleet alpha: you answered fleet-alpha.yaml spawn-duplicate-1 (stop-newer)");
     // Answered once: a second answer is refused, and a name that is not a ledger in the root never resolves.
     await expect(
-      fleet.answer({ scope: "alpha", ledger: "fleet-alpha.yaml", uid: ask.uid, id: ask.id, option: "leave", note: "" }),
+      fleet.answer({
+        scope: "alpha",
+        ledger: "fleet-alpha.yaml",
+        uid: ask.uid,
+        id: ask.id,
+        hash: ask.hash,
+        option: "leave",
+        note: "",
+      }),
     ).rejects.toThrow("already answered");
-    await expect(
-      fleet.answer({ scope: "alpha", ledger: "../ledger.jsonl", uid: null, id: "x", option: null, note: "x" }),
-    ).rejects.toThrow("is not a ledger name");
+    const stray = { uid: null, id: "x", hash: "h", option: null, note: "x" };
+    await expect(fleet.answer({ scope: "alpha", ledger: "../ledger.jsonl", ...stray })).rejects.toThrow(
+      "is not a ledger name",
+    );
+    // A .control that links out of the state dir (into a git checkout, say) is never written through.
+    const elsewhere = join(root, "checkout");
+    await mkdir(join(elsewhere, "asks"), { recursive: true });
+    await writeFile(join(elsewhere, "asks", "fleet-alpha.yaml"), ledger);
+    await rm(join(paths.state, "alpha", ".control"), { recursive: true });
+    await symlink(elsewhere, join(paths.state, "alpha", ".control"));
+    await expect(fleet.answer({ scope: "alpha", ledger: "fleet-alpha.yaml", ...stray })).rejects.toThrow(
+      "is not a folder of the fleet's own",
+    );
+    expect(await readFile(join(elsewhere, "asks", "fleet-alpha.yaml"), "utf8")).toBe(ledger);
   });
 });

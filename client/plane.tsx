@@ -95,6 +95,8 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const chooseView = (next: PlaneView) => {
     setView(next);
     if (next === "board") setFilter("all");
+    // A tick opened from a timeline run is that visit's: the Fleet tab chosen later opens on none.
+    setFleetTick(null);
   };
 
   const newWork = (

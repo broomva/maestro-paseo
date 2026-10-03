@@ -346,20 +346,29 @@ Verdicts are yours alone, so the agent socket refuses `fleet.review`.
 An answer is the one thing Maestro writes into an ask ledger, under the control interface spec's
 contract (workspace#861, `docs/specs/2026-10-01-maestro-control-interface.html`):
 
-- **Which copy.** Only the fleet's registered root is read and written. A root's home is that root's
-  file, so no git checkout is chosen. Asks in the control repo's checkouts need the spec's full home
-  rule, and stay with the Asks plugin.
+- **Which copy.** Only one root is read and written: the fleet's own, at the path §5.6 gives it,
+  `<state dir>/.control/asks`. Drop-ins in `~/.config/maestro-paseo/ask-roots.d/` (p9's, say) are
+  not read yet. A root's home is that root's file, so no git checkout is chosen; and `.control` or
+  `asks` that is a link out of the state dir is refused. Asks in the control repo's checkouts need
+  the spec's full home rule, and stay with the Asks plugin. fleet-reconcile does not write this
+  ledger yet (skills#261), so until it does the Decisions section stays hidden.
 - **Which ask.** An ask is its `uid`. An ask without one goes by its `id`, but only while no other
-  uid-less ask in the file shares it. Two that do are an id collision: the card says so and takes no
-  answer.
+  uid-less ask in the file shares it. An id two uid-less asks share, or a uid two asks share, names
+  no one ask: the card says so and takes no answer. The answer also carries the entry as you read
+  it (a hash of its keys and values), and an entry changed since is refused, so your option never
+  lands on a question rewritten under it.
 - **The lock.** Every ledger writer takes `~/.local/state/control-asks/locks/<k>.d` first, where
   `<k>` is the first 16 hex characters of the SHA-256 of the ledger's real folder, `/`, and its name.
-  Maestro takes it with `mkdir`, then writes its pid and start time and a token. Under the lock it
+  Maestro takes it with `mkdir`, then writes `pid` (`<pid> <start>`, the start in whole seconds
+  since the epoch, so a reused pid is not the holder) and a `token`. Under the lock it
   re-reads the ledger and writes the edited ledger to a temp file beside it, with the same mode. It
   checks the token again, then renames the temp file over the ledger.
   - A live holder is waited on for 5 seconds and never reclaimed. Your answer is then refused and
     nothing is written.
-  - A dead holder's lock is reclaimed once it is 120 seconds old.
+  - A dead holder's lock is reclaimed once it is 120 seconds old, under a `<k>.reclaim.d` mutex,
+    and judged again once the mutex is held, so a fresh lock another writer took meanwhile stays.
+  - A lock left by Maestro's own process that it no longer holds is dropped at once, so a release
+    that failed never wedges the ledger until the daemon restarts.
 - **The answer.** The edit touches only the ask's own entry. It writes these keys, each on one line:
   - `answer`: the option's label and consequence, then your words;
   - `answer_option`: the option's id, when you chose one;
@@ -367,8 +376,11 @@ contract (workspace#861, `docs/specs/2026-10-01-maestro-control-interface.html`)
   - `answered_by: owner:maestro`;
   - `status: resolved`.
 
-  An answer that would not read back as this ask, answered, is not written. A receipt line goes to
-  `~/.local/state/maestro-paseo/asks.jsonl`.
+  An existing key is rewritten in place, whatever its shape (`null`, empty, a block scalar). An
+  edit that would not read back as this ask, answered, with every other entry and key as it was, is
+  not written, and the card says why. A receipt line goes to
+  `~/.local/state/maestro-paseo/asks.jsonl`, with the ask's uid or id, its `asked_at`, the asking
+  session, and the entry's hash; one that cannot be written is said beside the answer.
 - **Not routed.** Maestro does not send the answer to the session that asked. The fleet reads it from
   its own file at its next tick (the spec's *Record only*).
 
