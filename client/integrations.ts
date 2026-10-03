@@ -18,7 +18,7 @@ import type { OrchState } from "../shared/states";
 import { type HeaderSpec, headerFace, headerSpecs, needsYouCount, needsYouTarget } from "./header-count";
 import { type MaestroIntent, requestIntent } from "./intent";
 import { type PillSpec, pillFace, pillSpecs } from "./pills";
-import { Registrations } from "./registrations";
+import { createRegistrations } from "./registrations";
 
 export const REFRESH = {
   /** Between reads while what is shown keeps changing. */
@@ -109,7 +109,7 @@ export function startIntegrations(
   const sessions = new Map<string, string>();
   const listeners: Array<() => void> = [];
 
-  const headers = new Registrations(
+  const headers = createRegistrations(
     {
       add: (workspaceId, spec: HeaderSpec) =>
         client.addHeaderButton({
@@ -125,7 +125,7 @@ export function startIntegrations(
     },
     log,
   );
-  const pills = new Registrations(
+  const pills = createRegistrations(
     {
       add: (_key, spec: PillSpec) =>
         client.addComposerPill({

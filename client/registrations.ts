@@ -21,53 +21,61 @@ export function sameSpec(a: Spec, b: Spec): boolean {
   return keys.length === Object.keys(b).length && keys.every((key) => Object.is(a[key], b[key]));
 }
 
-export class Registrations<S extends Spec, H extends Removable> {
-  private readonly live = new Map<string, { spec: S; handle: H }>();
+export interface Registrations<S extends Spec> {
+  sync(next: ReadonlyMap<string, S>): void;
+  clear(): void;
+  keys(): string[];
+}
+
+// A closure, not a class: Paseo evaluates the client bundle with Hermes on iOS,
+// which rejects class syntax, and the whole plugin would fail to load there.
+export function createRegistrations<S extends Spec, H extends Removable>(
+  host: RegistrationHost<S, H>,
+  log: (message: string) => void = () => undefined,
+): Registrations<S> {
+  const live = new Map<string, { spec: S; handle: H }>();
   /** The last refusal logged per key, so a refusal that lasts is logged once, not on every sync. */
-  private readonly refused = new Map<string, string>();
+  const refused = new Map<string, string>();
 
-  constructor(
-    private readonly host: RegistrationHost<S, H>,
-    private readonly log: (message: string) => void = () => undefined,
-  ) {}
-
-  sync(next: ReadonlyMap<string, S>): void {
-    for (const key of [...this.refused.keys()]) if (!next.has(key)) this.refused.delete(key);
-    for (const [key, entry] of [...this.live]) {
-      if (next.has(key)) continue;
-      this.live.delete(key);
-      entry.handle.remove();
-    }
-    // The host validates what it is given; one refusal must not cost any other registration.
-    for (const [key, spec] of next) {
-      const entry = this.live.get(key);
-      try {
-        if (!entry) {
-          this.live.set(key, { spec, handle: this.host.add(key, spec) });
-        } else if (!sameSpec(entry.spec, spec)) {
-          this.host.update(entry.handle, spec);
-          // Recorded only once the host took it, so a refused update is tried again next time.
-          entry.spec = spec;
-        } else {
-          continue;
-        }
-        this.refused.delete(key);
-      } catch (error) {
-        const message = `Could not ${entry ? "update" : "add"} ${key}: ${(error as Error).message}`;
-        if (this.refused.get(key) !== message) this.log(message);
-        this.refused.set(key, message);
+  return {
+    sync(next) {
+      for (const key of [...refused.keys()]) if (!next.has(key)) refused.delete(key);
+      for (const [key, entry] of [...live]) {
+        if (next.has(key)) continue;
+        live.delete(key);
+        entry.handle.remove();
       }
-    }
-  }
+      // The host validates what it is given; one refusal must not cost any other registration.
+      for (const [key, spec] of next) {
+        const entry = live.get(key);
+        try {
+          if (!entry) {
+            live.set(key, { spec, handle: host.add(key, spec) });
+          } else if (!sameSpec(entry.spec, spec)) {
+            host.update(entry.handle, spec);
+            // Recorded only once the host took it, so a refused update is tried again next time.
+            entry.spec = spec;
+          } else {
+            continue;
+          }
+          refused.delete(key);
+        } catch (error) {
+          const message = `Could not ${entry ? "update" : "add"} ${key}: ${(error as Error).message}`;
+          if (refused.get(key) !== message) log(message);
+          refused.set(key, message);
+        }
+      }
+    },
 
-  clear(): void {
-    const entries = [...this.live.values()];
-    this.live.clear();
-    this.refused.clear();
-    for (const entry of entries) entry.handle.remove();
-  }
+    clear() {
+      const entries = [...live.values()];
+      live.clear();
+      refused.clear();
+      for (const entry of entries) entry.handle.remove();
+    },
 
-  keys(): string[] {
-    return [...this.live.keys()];
-  }
+    keys() {
+      return [...live.keys()];
+    },
+  };
 }
