@@ -605,13 +605,14 @@ describe("a launchd job", () => {
       },
     ];
     expect(launchdSource(molt, { ...context, exits: ran }, window).status).toBe("missed");
-    // The last good read of the unified log ended 50 minutes ago: ten minutes after that run, nothing was due.
+    // The last good read of the unified log ended 50 minutes ago: ten minutes after that run, nothing was due,
+    // and nothing since is known.
     const stale = launchdSource(
       molt,
       { ...context, exits: ran, seen: { from: NOW - 20 * H, to: NOW - 50 * M } },
       window,
     );
-    expect(stale).toMatchObject({ status: "ok", needsYou: false });
+    expect(stale).toMatchObject({ status: "unknown", needsYou: false });
   });
 
   test("a list's non-zero exit stands in when print failed; its 0 is not taken as a pass", () => {
@@ -655,6 +656,40 @@ describe("a launchd job", () => {
     expect(launchdSource(job({ plist: { RunAtLoad: true } }), context, window).cadence).toBe("once, when loaded");
     expect(launchdSource(job({ plist: {} }), context, window).cadence).toBe("on demand");
   });
+
+  test("an interval so long its next run is past year 9999 has no next run, never one the wire refuses", () => {
+    const absurd = launchdSource(
+      job({ plist: { StartInterval: 3e11 } }),
+      {
+        ...context,
+        exits: [
+          {
+            label: "com.broomva.kg-lint",
+            pid: 1,
+            endedAt: NOW - M,
+            exit: 0,
+            signal: null,
+            byLaunchd: false,
+            reason: null,
+            ranMs: 10,
+          },
+        ],
+      },
+      window,
+    );
+    expect(absurd.next).toBeNull();
+    // A print that says 0 seconds is no interval.
+    expect(
+      launchdSource(
+        job({
+          plist: {},
+          printed: { path: null, state: "not running", pid: null, lastExit: 0, stdout: null, intervalSeconds: 0 },
+        }),
+        context,
+        window,
+      ).cadence,
+    ).toBe("on demand");
+  });
 });
 
 describe("the window", () => {
@@ -665,10 +700,24 @@ describe("the window", () => {
       { at: iso(NOW - 26 * H), endedAt: null, status: "running" as const, exit: null, detail: null },
     ];
     // Newest first by when each began.
-    expect(inWindow(runs, window).map((run) => [run.status, run.at])).toEqual([
+    expect(inWindow(runs, window).runs.map((run) => [run.status, run.at])).toEqual([
       ["ok", iso(NOW - 25 * H)],
       ["running", iso(NOW - 26 * H)],
     ]);
+  });
+
+  test("more runs than are sent: the oldest are cut, and it is said", () => {
+    const many = Array.from({ length: 310 }, (_, index) => ({
+      at: iso(NOW - index * M),
+      endedAt: iso(NOW - index * M + 1000),
+      status: "ok" as const,
+      exit: 0,
+      detail: null,
+    }));
+    const { runs, runsCut } = inWindow(many, window);
+    expect(runs).toHaveLength(300);
+    expect(runsCut).toBe(true);
+    expect(inWindow(many.slice(0, 300), window).runsCut).toBe(false);
   });
 
   test("a log's end is its last whole lines", () => {

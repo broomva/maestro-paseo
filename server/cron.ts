@@ -140,7 +140,8 @@ interface Parts {
 const formatters = new Map<string, Intl.DateTimeFormat>();
 /** Minutes already read, per zone: the same days are walked on every read. Cleared, not grown, past its size. */
 const seenParts = new Map<string, Parts>();
-const SEEN_PARTS_MAX = 200_000;
+/** About two zones of the eight days walked back and the day ahead; a third clears it. */
+const SEEN_PARTS_MAX = 30_000;
 
 /** The wall-clock fields of an instant in a time zone (the Mac's own when none is given). */
 function partsOf(at: number, zone: string | undefined): Parts {

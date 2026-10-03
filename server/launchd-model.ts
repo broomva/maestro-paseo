@@ -27,6 +27,20 @@ export function awakeBetween(awake: AwakeFor, from: number, to: number): number 
 }
 
 /**
+ * The most awake time there can have been between two wall-clock times: the
+ * awake clock's count when it covers `from`, else wall time (the clock began
+ * later, after a restart, and only knows a lower bound). What could have been
+ * missed is judged on this, so a restart never hides one as on time.
+ */
+export function awakeAtMost(awake: AwakeFor, from: number, to: number): number {
+  if (to <= from) return 0;
+  return awake(from).whole ? awakeBetween(awake, from, to) : to - from;
+}
+
+/** What was seen ends more than this before now: the log has stopped being read, and nothing since is on time. */
+export const STALE_MS = 15 * 60_000;
+
+/**
  * Run ends, unloads and the stretch they prove are kept this long, together
  * (server/launchd.ts): a week and a day, the furthest back a miss is looked for.
  */
@@ -411,6 +425,8 @@ export interface LaunchdStatusInput {
   loadedSince: number | null;
   /** Awake time (server/fleet.ts AwakeClock): launchd fires nothing while the Mac sleeps. */
   awake: AwakeFor;
+  /** The wall clock now: what was seen ending well before it is said, never read as on time. */
+  now: number;
 }
 
 export interface Judged {
@@ -493,13 +509,21 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
         };
       }
     }
-    // Not judged is not on time: a run came due after the newest one ended, before judging could start.
+    // Not judged is not on time: a run came due after the newest one ended, before judging could start
+    // (up to where the judged walk begins, so no due time falls between the two), or, on an interval, so long
+    // ago that it could have been missed on the most awake time there can have been.
     const blindFrom = Math.max(newestEnd ?? seen.from, back);
     if (from > blindFrom) {
       const blind = schedule.calendar
-        ? (dueTimes(schedule.calendar, undefined, blindFrom + MATCH_SLACK_MS, Math.min(from, to), 1)[0] ?? null)
+        ? (dueTimes(
+            schedule.calendar,
+            undefined,
+            blindFrom + MATCH_SLACK_MS,
+            Math.min(from + MATCH_SLACK_MS, to),
+            1,
+          )[0] ?? null)
         : schedule.intervalMs !== null &&
-            awakeBetween(input.awake, blindFrom, to) > 2 * schedule.intervalMs + INTERVAL_GRACE_MS
+            awakeAtMost(input.awake, blindFrom, to) > 2 * schedule.intervalMs + INTERVAL_GRACE_MS
           ? blindFrom + schedule.intervalMs
           : null;
       if (blind !== null) {
@@ -513,6 +537,26 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
     }
   }
   if (!newest) return { status: "unknown", reason: "No run seen yet.", since: null, missed: [] };
+  const scheduled = schedule.calendar !== null || schedule.intervalMs !== null;
+  // Nothing read since a while is nothing known since: the log or its probe has kept failing.
+  if (scheduled && seen && input.now - seen.to > STALE_MS && newest.status !== "unknown") {
+    return {
+      status: "unknown",
+      reason:
+        "The unified log has not been read since its last good read; whether a run was missed since is not known.",
+      since: iso(seen.to),
+      missed: [],
+    };
+  }
+  // A last run older than what is kept: a run due between it and the horizon was never looked for.
+  if (scheduled && seen && newestEnd !== null && newestEnd < seen.to - EVIDENCE_MS) {
+    return {
+      status: "unknown",
+      reason: "Its last run is older than the eight days this keeps; whether one was missed since is not known.",
+      since: newest.at,
+      missed: [],
+    };
+  }
   if (newest.status === "unknown") {
     return {
       status: "unknown",
@@ -552,7 +596,7 @@ export function launchdUpcoming(
     const next = upcoming[0] ?? dueTimes(schedule.calendar, undefined, now, now + 8 * 86_400_000, 1)[0] ?? null;
     return { next, upcoming };
   }
-  if (schedule.intervalMs !== null && newestStart !== null) {
+  if (schedule.intervalMs !== null && schedule.intervalMs > 0 && newestStart !== null) {
     const due = newestStart + schedule.intervalMs;
     // Overdue past its grace: missed (launchdStatus), and when it runs next is not known.
     if (due < now && now - due > schedule.intervalMs + INTERVAL_GRACE_MS) return { next: null, upcoming: [] };

@@ -389,6 +389,21 @@ describe("reading the jobs", () => {
     expect(next.seen).toEqual({ from: first.seen?.from ?? 0, to: NOW + 10 * M });
   });
 
+  test("rows kept through a failed list say no run is going: the log's run ends say how it ended", async () => {
+    const { launchd, setNow, setShown, failList } = await setup();
+    const first = await launchd.read();
+    expect(first.jobs.find((job) => job.label === "com.broomva.moltbook-loop")?.running).toBe(true);
+    setNow(NOW + H);
+    failList();
+    setShown(
+      exitLine("com.broomva.moltbook-loop", 4321, localStamp(NOW + 30 * M), "exited due to exit(1), ran for 600000ms"),
+    );
+    const read = await launchd.read();
+    const molt = read.jobs.find((job) => job.label === "com.broomva.moltbook-loop");
+    expect(molt).toMatchObject({ running: false, runningSince: null, loadedSince: null });
+    expect(read.exits.some((exit) => exit.label === "com.broomva.moltbook-loop" && exit.exit === 1)).toBe(true);
+  });
+
   test("an unload the log shows on a read whose list fails still starts loaded-since again", async () => {
     const { launchd, setNow, setShown, failList, unfailList } = await setup();
     await launchd.read();
@@ -568,7 +583,7 @@ describe("what was seen is what the log held", () => {
       { Weekday: 0, Hour: 9, Minute: 0 },
     ];
     let found = 0;
-    for (let seed = 1; seed <= 45; seed += 1) {
+    for (let seed = 1; seed <= 90; seed += 1) {
       const random = mulberry32(seed);
       const calendar = cadences[seed % cadences.length];
       const specs = calendarSpecs(calendar);

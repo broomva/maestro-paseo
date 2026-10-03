@@ -91,6 +91,8 @@ export const TimelineSourceSchema = z.object({
   upcoming: z.array(InstantSchema),
   /** Runs inside the window, newest first, missed ones included. Capped at TIMELINE_RUNS. */
   runs: z.array(TimelineRunSchema),
+  /** More runs fell in the window than TIMELINE_RUNS: the oldest are not sent, nor drawn. */
+  runsCut: z.boolean(),
   /** The newest run there is, inside the window or before it. */
   last: TimelineRunSchema.nullable(),
   /** Where its own record lives: a launchd job's log, a schedule's file, the loop's wake log. */

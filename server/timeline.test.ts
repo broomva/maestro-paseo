@@ -305,7 +305,8 @@ describe("the timeline", () => {
     // moltbook last ran ten minutes before the good read; an hour on, on no new evidence, it is not missed.
     expect(await timeline.notices()).toEqual([]);
     const view = await timeline.get();
-    expect(view.sources.find((source) => source.id === "launchd:com.broomva.moltbook-loop")?.status).toBe("ok");
+    // Not on time either: nothing since the last read is known.
+    expect(view.sources.find((source) => source.id === "launchd:com.broomva.moltbook-loop")?.status).toBe("unknown");
     expect(view.warnings).toEqual([
       "launchd could not be read: launchctl is unhappy",
       "launchd has not been read for a while; its rows show the last read, and nothing since is called missed.",
@@ -422,7 +423,9 @@ describe("the timeline", () => {
       now: () => NOW,
       log: () => undefined,
     });
-    expect((await timeline.get()).warnings).toEqual(["The Mac's awake time could not be read (CLOCK_UPTIME_RAW)."]);
+    expect((await timeline.get()).warnings).toEqual([
+      "The Mac's awake time could not be read, so a missed run is judged late or not at all.",
+    ]);
   });
 
   test("a launchd job's log end, only when asked for", async () => {

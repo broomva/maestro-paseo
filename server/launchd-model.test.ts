@@ -388,6 +388,7 @@ const base = {
   awake: sleptThrough(NOW),
   // Seen loaded by a read a month ago and every read since.
   loadedSince: NOW - 30 * 24 * H,
+  now: NOW,
 };
 
 describe("a job's status", () => {
@@ -468,6 +469,76 @@ describe("a job's status", () => {
     expect(launchdStatus({ ...base, loadedSince: NOW, schedule: interval, runs: [run(NOW - 5 * M)] })).toMatchObject({
       status: "ok",
       reason: "Its last run passed; whether one is missed is told from the next due time on.",
+    });
+  });
+
+  test("a due time just after loaded-since (within the walk's two minutes) is not known, never on time", () => {
+    const calendar = { intervalMs: null, calendar: calendarSpecs({ Minute: 0 }) };
+    // Loaded-since 20:58:30, the 21:00 run missed, read at 21:20 past its grace? No: the grace is 30 min; read 21:45.
+    const at = Date.parse("2026-10-02T21:45:00Z");
+    const status = launchdStatus({
+      ...base,
+      seen: { from: at - 20 * H, to: at },
+      now: at,
+      awake: sleptThrough(at),
+      loadedSince: Date.parse("2026-10-02T20:58:30Z"),
+      schedule: calendar,
+      runs: [run(Date.parse("2026-10-02T20:00:05Z"))],
+    });
+    expect(status).toMatchObject({ status: "unknown", since: "2026-10-02T21:00:00.000Z" });
+  });
+
+  test("right after a restart the awake clock knows only a lower bound: an overdue interval is not known, never on time", () => {
+    // A clock that began five minutes ago: it counts only from then (whole: false before it).
+    const began = NOW - 5 * M;
+    const fresh = (from: number) =>
+      from < began ? { ms: NOW - began, whole: false } : { ms: NOW - from, whole: true };
+    const status = launchdStatus({
+      ...base,
+      awake: fresh,
+      loadedSince: began,
+      schedule: interval,
+      runs: [run(NOW - 3 * H)],
+    });
+    expect(status.status).toBe("unknown");
+  });
+
+  test("a stretch that stopped being read is not on time: the row says nothing since is known", () => {
+    expect(
+      launchdStatus({
+        ...base,
+        seen: { from: NOW - 20 * H, to: NOW - 40 * M },
+        schedule: interval,
+        runs: [run(NOW - 50 * M)],
+      }),
+    ).toMatchObject({
+      status: "unknown",
+      since: iso(NOW - 40 * M),
+    });
+    // Read a few minutes ago, as the header count reads it: on time.
+    expect(
+      launchdStatus({
+        ...base,
+        seen: { from: NOW - 20 * H, to: NOW - 4 * M },
+        schedule: interval,
+        runs: [run(NOW - 10 * M)],
+      }).status,
+    ).toBe("ok");
+  });
+
+  test("a last run older than the eight days kept is not on time", () => {
+    const monthly = { intervalMs: null, calendar: calendarSpecs({ Day: 15, Hour: 3, Minute: 0 }) };
+    expect(launchdStatus({ ...base, schedule: monthly, runs: [run(NOW - 48 * 24 * H)] })).toMatchObject({
+      status: "unknown",
+      reason: "Its last run is older than the eight days this keeps; whether one was missed since is not known.",
+    });
+  });
+
+  test("a zero interval never loops: it is no interval", () => {
+    // A run that just began: an interval of 0 would fill every slot with now (or, a minute late, never end).
+    expect(launchdUpcoming({ intervalMs: 0, calendar: null }, NOW, NOW, NOW + H, 100)).toEqual({
+      next: null,
+      upcoming: [],
     });
   });
 
@@ -600,10 +671,21 @@ describe("a job's status", () => {
   test("judged at the read's horizon: what came due after it is not missed, however late it is now", () => {
     const last = NOW - 3 * H;
     expect(launchdStatus({ ...base, schedule: interval, runs: [run(last)] }).status).toBe("missed");
-    // The evidence reaches 10 minutes past that run: nothing was due yet then.
+    // The evidence reaches 10 minutes past that run: nothing was due yet then, and nothing since is known.
     expect(
       launchdStatus({ ...base, seen: { from: NOW - 20 * H, to: last + 10 * M }, schedule: interval, runs: [run(last)] })
         .status,
+    ).toBe("unknown");
+    // Read just now, at that horizon: on time.
+    expect(
+      launchdStatus({
+        ...base,
+        seen: { from: NOW - 20 * H, to: last + 10 * M },
+        now: last + 12 * M,
+        awake: sleptThrough(last + 12 * M),
+        schedule: interval,
+        runs: [run(last)],
+      }).status,
     ).toBe("ok");
   });
 

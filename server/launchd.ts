@@ -19,9 +19,10 @@
 // What the log saw is observed, never inferred (LaunchdRead.seen): each read
 // asks the log for the first launchd event at or after where it starts, and
 // only when that event is no later than where the last read ended (the log
-// still held it) does the read extend the stretch the last one proved. A gap the log no longer holds,
-// a probe that fails, or a first read starts the stretch again at what the
-// log proves it holds now. A job's loaded-since is the first read that saw it
+// still held it) does the read extend the stretch the last one proved. A gap
+// the log no longer holds, or a first read, starts the stretch again at what
+// the log proves it holds now; a probe that fails leaves it as it was, to be
+// proved by the next read. A job's loaded-since is the first read that saw it
 // loaded, never a file's date, and it starts again at a read that finds an
 // unload of it in the log, or that had to start the stretch again (an unload
 // in a gap the log no longer holds could not be seen).
@@ -138,7 +139,8 @@ export interface LaunchdJob {
    * Since when it is proven loaded: the first read that saw it loaded, after
    * which every list that read saw it loaded, the log showed no unload of it,
    * and the stretch never started over. No miss before it is judged (a due
-   * time there reads as not known). Null when it is not loaded.
+   * time there reads as not known). Null when it is not loaded, or when the
+   * row is kept from an earlier list because this one failed.
    */
   loadedSince: number | null;
   /**
@@ -164,8 +166,9 @@ export interface LaunchdRead {
   /**
    * The stretch the unified log is proven to have held, unbroken, through
    * the reads so far, and whose run ends `exits` still holds all of; null when
-   * nothing is proven (no good read yet, or the last probe failed). Inside it,
-   * a run that ended would be in `exits`.
+   * nothing is proven yet (no good read). A probe that fails leaves it as the
+   * last good read left it, so it can end well before now (launchd-model.ts
+   * STALE_MS). Inside it, a run that ended would be in `exits`.
    */
   seen: Seen | null;
   warnings: string[];
@@ -292,8 +295,11 @@ export class Launchd {
     else if (this.lastJobs.length > 0) warnings.push("launchd's jobs are shown as the last list read them.");
     return {
       readAt,
-      // Kept rows prove nothing about loading meanwhile: no loaded-since, so a failure still shows and no miss is judged.
-      jobs: listed ? read : this.lastJobs.map((job) => ({ ...job, loadedSince: null })),
+      // Kept rows prove nothing about now: no loaded-since (no miss is judged) and no run going (the log's run ends
+      // say how it ended), so a failure still shows.
+      jobs: listed
+        ? read
+        : this.lastJobs.map((job) => ({ ...job, loadedSince: null, running: false, runningSince: null })),
       exits: [...this.exits.values()].sort((a, b) => a.endedAt - b.endedAt),
       seen: this.stretch ? { ...this.stretch } : null,
       warnings,
@@ -302,8 +308,9 @@ export class Launchd {
 
   /**
    * One job. `listed` is its `launchctl list` row (false: not loaded; null:
-   * the list could not be read, so the job is not shown). Each read that
-   * fails costs only what it would have said, with a warning, never the job.
+   * the list could not be read: the row comes from the last list that read,
+   * in readNow). Each read that fails costs only what it would have said,
+   * with a warning, never the job.
    */
   private async job(
     label: string,

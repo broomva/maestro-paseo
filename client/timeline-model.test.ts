@@ -42,6 +42,7 @@ function source(id: string, extra: Partial<TimelineSource> = {}): TimelineSource
     next: null,
     upcoming: [],
     runs: [],
+    runsCut: false,
     last: null,
     where: null,
     hasLog: false,

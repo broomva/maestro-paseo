@@ -365,7 +365,7 @@ function SourceDetail({
           ))
         )}
         {more > 0 ? <Text style={text.small}>{`And ${more} more in the window.`}</Text> : null}
-        {source.runs.length >= TIMELINE_RUNS ? (
+        {source.runsCut ? (
           <Text
             style={text.small}
           >{`The track draws its newest ${TIMELINE_RUNS} runs; earlier ones are not drawn.`}</Text>

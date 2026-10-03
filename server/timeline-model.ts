@@ -65,17 +65,24 @@ const instant = (at: string | null | undefined) => {
 /** A run starting this close to its due time is the run that was due. */
 const DUE_SLACK_MS = 2 * 60_000;
 
-/** The runs a window shows, newest first: begun before its end, ended (or still going) after its start. */
-export function inWindow(runs: readonly TimelineRun[], window: Window): TimelineRun[] {
-  return runs
+/**
+ * The runs a window shows, newest first: begun before its end, ended (or
+ * still going) after its start; at most TIMELINE_RUNS, and whether more were
+ * cut (TimelineSource.runsCut).
+ */
+export function inWindow(runs: readonly TimelineRun[], window: Window): { runs: TimelineRun[]; runsCut: boolean } {
+  const shown = runs
     .filter((run) => {
       const start = ms(run.at) ?? 0;
       const end = run.endedAt ? (ms(run.endedAt) ?? start) : run.status === "running" ? window.now : start;
       return start <= window.now && end >= window.from;
     })
-    .sort((a, b) => (ms(b.at) ?? 0) - (ms(a.at) ?? 0))
-    .slice(0, TIMELINE_RUNS);
+    .sort((a, b) => (ms(b.at) ?? 0) - (ms(a.at) ?? 0));
+  return { runs: shown.slice(0, TIMELINE_RUNS), runsCut: shown.length > TIMELINE_RUNS };
 }
+
+/** An instant the wire takes (InstantSchema), else null: a year past 9999 from an absurd interval fails no view. */
+const wire = (at: number | null) => (at === null ? null : instant(iso(at)));
 
 /** The newest run that ran (missed ones did not). */
 function lastRun(runs: readonly TimelineRun[]): TimelineRun | null {
@@ -246,7 +253,7 @@ export function scheduleSource(
     reason = newest ? "On schedule; its last run succeeded." : "On schedule; no run yet.";
     since = newest?.at ?? null;
   }
-  const runs = inWindow([...missed, ...all], window);
+  const { runs, runsCut } = inWindow([...missed, ...all], window);
   if (!active && !going && runs.length === 0 && schedule.status !== "paused") return null;
   const agentId =
     schedule.target.type === "agent"
@@ -264,6 +271,7 @@ export function scheduleSource(
     next: nextAt !== null ? iso(nextAt) : null,
     upcoming: scheduleUpcoming(schedule, nextAt, window).map(iso),
     runs,
+    runsCut,
     last: newest,
     where: file,
     hasLog: false,
@@ -353,7 +361,7 @@ export function loopSource(
     needsYou: needs(status),
     next: nextAt !== null && status !== "missed" ? iso(nextAt) : null,
     upcoming: upcoming.map(iso),
-    runs: inWindow([...missed, ...all], window),
+    ...inWindow([...missed, ...all], window),
     last: lastRun(all),
     where: wakeLog,
     hasLog: false,
@@ -443,7 +451,7 @@ export function fleetSource(scope: FleetScope, detail: FleetDetail | null, windo
       .filter((at) => at <= window.to)
       .slice(0, TIMELINE_UPCOMING)
       .map(iso),
-    runs: inWindow([...missed, ...all], window),
+    ...inWindow([...missed, ...all], window),
     last: lastRun(all),
     where: detail?.stateDir ?? null,
     hasLog: false,
@@ -456,7 +464,10 @@ export function fleetSource(scope: FleetScope, detail: FleetDetail | null, windo
 /** How a job's plist says it runs. */
 export function launchdSchedule(job: Pick<LaunchdJob, "plist" | "printed">): LaunchdSchedule {
   const interval = job.plist?.StartInterval;
-  const seconds = typeof interval === "number" && interval > 0 ? interval : (job.printed?.intervalSeconds ?? null);
+  const printed = job.printed?.intervalSeconds ?? null;
+  // A zero or negative interval is no interval: it would never move a run on.
+  const seconds =
+    typeof interval === "number" && interval > 0 ? interval : printed !== null && printed > 0 ? printed : null;
   const calendar = job.plist?.StartCalendarInterval;
   return {
     intervalMs: seconds !== null ? seconds * 1000 : null,
@@ -518,6 +529,7 @@ export function launchdSource(job: LaunchdJob, context: LaunchdContext, window: 
     seen: context.seen,
     loadedSince: job.loadedSince,
     awake: context.awake,
+    now,
   });
   const newest = all[0] ? ms(all[0].at) : null;
   const { next, upcoming } = job.loaded
@@ -533,9 +545,9 @@ export function launchdSource(job: LaunchdJob, context: LaunchdContext, window: 
     reason: judged.reason,
     since: judged.since,
     needsYou: needs(judged.status),
-    next: next !== null ? iso(next) : null,
-    upcoming: upcoming.map(iso),
-    runs: inWindow([...judged.missed, ...all], window),
+    next: wire(next),
+    upcoming: upcoming.flatMap((at) => wire(at) ?? []),
+    ...inWindow([...judged.missed, ...all], window),
     last: lastRun(all),
     where: job.logPath,
     hasLog: job.logPath !== null && job.logText !== null,
