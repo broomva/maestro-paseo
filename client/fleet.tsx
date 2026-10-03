@@ -5,17 +5,25 @@
 // report. Your verdict is recorded in the fleet's review file; nothing here
 // changes what the fleet does, its mode or its dry run.
 //
+// Each thing drills in: an ask opens the session it is about and the tick
+// that raised it; a decision ask in the fleet's own ledger shows what it costs
+// and what each option does, and takes your answer in place; a proposal opens
+// its session in Paseo; a tick opens its report, its failed step and its log.
+//
 // FleetNotices is the same scope health where the rest of Maestro shows what
 // needs you: a missed or failing tick the fleet has not raised as work of its own.
 
 import type { PluginTheme } from "@getpaseo/plugin";
-import { useRpc } from "@getpaseo/plugin/client";
+import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { ActivityIndicator, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { attentionWork } from "../shared/contracts";
 import {
+  ANSWER_NOTE_CHARS,
+  answerAsk,
+  type DecisionAsk,
   type FleetAsk,
   type FleetDetail,
   type FleetItem,
@@ -24,6 +32,7 @@ import {
   type FleetScope,
   type FleetTick,
   getFleet,
+  getFleetTick,
   groupProposals,
   type ProposalGroup,
   type ReviewVerdict,
@@ -35,6 +44,8 @@ import {
   askMeta,
   askWhere,
   classText,
+  decisionAnswered,
+  decisionMeta,
   groupReviewText,
   groupSubject,
   HEALTH_LABEL,
@@ -46,7 +57,9 @@ import {
   proposalSubject,
   proposalsHeading,
   scopeChipLabel,
+  sessionFacts,
   TICK_LABEL,
+  tickFacts,
   tickLabel,
   tickTone,
   tickWhen,
@@ -60,6 +73,19 @@ import { Button, Card, Notice, radius, size, space, useText } from "./ui";
 /** Ticks come hourly: a read every 30 s is plenty, and the reads are files. */
 const POLL_MS = 30_000;
 const TICKS = 24;
+
+type Navigation = PluginSurfaceProps["navigation"];
+
+/** One tick's report and log lines, read when its row (or an ask raised at it) is opened. */
+function useFleetTick(scope: string, tick: number, enabled: boolean) {
+  const get = useRpc(getFleetTick);
+  return useQuery({
+    queryKey: ["maestro", "fleet-tick", scope, tick],
+    queryFn: () => get({ scope, tick }),
+    enabled,
+    staleTime: POLL_MS,
+  });
+}
 
 export function useFleet(scope: string | null) {
   const get = useRpc(getFleet);
@@ -198,19 +224,142 @@ function HealthCard({
   );
 }
 
+/** A tick's report, failed step, exit and log lines: what opening a tick row shows, and an ask's details. */
+function TickDetail({
+  theme,
+  scope,
+  tick,
+  facts,
+  compact,
+}: {
+  theme: PluginTheme;
+  scope: string;
+  tick: number;
+  facts: string | null;
+  compact: boolean;
+}) {
+  const text = useText(theme);
+  const read = useFleetTick(scope, tick, true);
+  return (
+    <View style={{ gap: space[2], paddingVertical: space[2] }}>
+      {facts ? <Text style={[text.small, text.tabular, { color: theme.colors.foreground }]}>{facts}</Text> : null}
+      {read.isPending ? (
+        <ActivityIndicator color={theme.colors.foregroundMuted} />
+      ) : read.isError ? (
+        <Notice theme={theme} tone="danger">
+          {errorText(read.error)}
+        </Notice>
+      ) : (
+        <>
+          {read.data.notes.map((note) => (
+            <Notice key={note} theme={theme} tone="warn">
+              {note}
+            </Notice>
+          ))}
+          {read.data.log ? (
+            <View style={{ gap: space[1] }}>
+              <Text style={text.label}>{`What tick ${tick} logged`}</Text>
+              <View
+                style={{
+                  padding: space[2],
+                  borderRadius: radius.control,
+                  borderWidth: 1,
+                  borderColor: theme.colors.border,
+                  backgroundColor: theme.colors.surface0,
+                }}
+              >
+                <Text style={text.mono} selectable numberOfLines={compact ? 16 : 40}>
+                  {read.data.log.text}
+                </Text>
+              </View>
+              <Text style={text.small} selectable numberOfLines={1}>
+                {read.data.log.truncated ? `The end of it, from ${read.data.log.path}` : read.data.log.path}
+              </Text>
+            </View>
+          ) : (
+            <Text style={text.small}>{`tick.log holds no lines for tick ${tick}.`}</Text>
+          )}
+          {read.data.report ? (
+            <View style={{ gap: space[1] }}>
+              <Text style={text.label}>{`Tick ${tick}'s report`}</Text>
+              <Card theme={theme}>
+                <MarkdownView source={read.data.report.markdown} theme={theme} compact={compact} />
+                {read.data.report.truncated ? <Text style={text.small}>The report is longer than this.</Text> : null}
+              </Card>
+            </View>
+          ) : (
+            <Text style={text.small}>{`Tick ${tick} wrote no report.`}</Text>
+          )}
+        </>
+      )}
+    </View>
+  );
+}
+
+/** A session's name, how it is, where it runs and its branch, with Open in Paseo when it is a Paseo agent. */
+function SessionLine({
+  theme,
+  session,
+  compact,
+  navigation,
+}: {
+  theme: PluginTheme;
+  session: NonNullable<FleetProposal["session"]>;
+  compact: boolean;
+  navigation: Navigation;
+}) {
+  const text = useText(theme);
+  const agentId = session.agentId;
+  const facts = sessionFacts(session);
+  const name = `${session.short}${session.name ? ` ${session.name}` : ""}`;
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
+      <View style={{ flex: 1, minWidth: 160, gap: 2 }}>
+        <Text style={text.small} numberOfLines={1}>
+          {name}
+        </Text>
+        {facts ? (
+          <Text style={[text.small, { color: theme.colors.foregroundMuted }]} numberOfLines={2} selectable>
+            {facts}
+          </Text>
+        ) : null}
+      </View>
+      {!agentId ? (
+        <Text style={text.small}>Not a Paseo session</Text>
+      ) : navigation ? (
+        <Button
+          theme={theme}
+          icon="ArrowUpRight"
+          label="Open in Paseo"
+          compact={compact}
+          accessibilityLabel={`Open session ${name} in Paseo`}
+          onPress={() => navigation.openAgent({ agentId })}
+        />
+      ) : null}
+    </View>
+  );
+}
+
 function AskRow({
   theme,
+  scope,
   ask,
   compact,
+  navigation,
   onSelect,
 }: {
   theme: PluginTheme;
+  scope: string;
   ask: FleetAsk;
   compact: boolean;
+  navigation: Navigation;
   onSelect: (id: string) => void;
 }) {
   const text = useText(theme);
+  const [open, setOpen] = useState(false);
   const item = ask.item;
+  const session = ask.session;
+  const agentId = session?.agentId ?? null;
   return (
     <View
       style={{
@@ -236,6 +385,16 @@ function AskRow({
         >
           {askWhere(ask)}
         </Text>
+        {agentId && navigation ? (
+          <Button
+            theme={theme}
+            icon="ArrowUpRight"
+            label="Open session"
+            compact={compact}
+            accessibilityLabel={`Open the session ask ${ask.id} is about: ${session?.name ?? session?.short}`}
+            onPress={() => navigation.openAgent({ agentId })}
+          />
+        ) : null}
         {item ? (
           <Button
             theme={theme}
@@ -246,8 +405,238 @@ function AskRow({
             onPress={() => onSelect(item.id)}
           />
         ) : null}
+        <Button
+          theme={theme}
+          variant="quiet"
+          icon={open ? "ChevronUp" : "ChevronDown"}
+          label={open ? "Less" : "Details"}
+          compact={compact}
+          accessibilityLabel={`${open ? "Hide" : "Show"} the details of ask ${ask.id}`}
+          onPress={() => setOpen((shown) => !shown)}
+        />
       </View>
+      {open ? (
+        <View style={{ gap: space[1], paddingTop: space[1] }}>
+          <Text style={[text.small, text.tabular]} selectable>
+            {[
+              `key ${ask.key}`,
+              ask.batch ? `batch ${ask.batch}` : null,
+              session ? `session ${session.id}${agentId ? "" : " (not a Paseo session)"}` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </Text>
+          {ask.firstTick !== null ? (
+            <>
+              <Text style={text.label}>{`Raised at tick ${ask.firstTick}`}</Text>
+              <TickDetail theme={theme} scope={scope} tick={ask.firstTick} facts={null} compact={compact} />
+            </>
+          ) : null}
+        </View>
+      ) : null}
     </View>
+  );
+}
+
+/** Puts an answer the host has just written into every Fleet read held, so the card says so at once. */
+function useApplyAnswer() {
+  const client = useQueryClient();
+  return (scope: string, answered: DecisionAsk) => {
+    client.setQueriesData<FleetRead>({ queryKey: ["maestro", "fleet"] }, (view) => {
+      if (!view?.detail || view.detail.id !== scope) return view;
+      const decisions = view.detail.decisions.map((ask) =>
+        ask.ledger === answered.ledger && ask.id === answered.id && ask.uid === answered.uid ? answered : ask,
+      );
+      return { ...view, detail: { ...view.detail, decisions } };
+    });
+  };
+}
+
+/**
+ * A decision ask in the fleet's ledger, with everything a person needs to
+ * decide it: what waiting costs, why it is theirs, each option and what it
+ * does, and what happens if they say nothing. Choose an option (or write an
+ * answer), then Answer: it is written into the ledger, under its lock.
+ */
+function DecisionCard({
+  theme,
+  scope,
+  ask,
+  compact,
+  navigation,
+}: {
+  theme: PluginTheme;
+  scope: string;
+  ask: DecisionAsk;
+  compact: boolean;
+  navigation: Navigation;
+}) {
+  const text = useText(theme);
+  const toast = useToast();
+  const refresh = useRefresh();
+  const apply = useApplyAnswer();
+  const send = useRpc(answerAsk);
+  const answer = useMutation({
+    mutationFn: send,
+    onSuccess: ({ ask: answered }, sent) => apply(sent.scope, answered),
+    onSettled: () => {
+      void refresh();
+    },
+  });
+  const [chosen, setChosen] = useState<string | null>(null);
+  const [note, setNote] = useState("");
+  const open = ask.state === "open";
+  const option = ask.options.find((entry) => entry.id === chosen) ?? null;
+  const title = ask.headline ?? ask.question ?? ask.id;
+  const origin = ask.origin;
+  const submit = () =>
+    answer.mutate(
+      { scope, ledger: ask.ledger, uid: ask.uid, id: ask.id, hash: ask.hash, option: chosen, note },
+      {
+        onSuccess: ({ warning }) => {
+          setChosen(null);
+          setNote("");
+          if (warning) toast.error(warning);
+        },
+        onError: (error) => toast.error(errorText(error)),
+      },
+    );
+  return (
+    <Card theme={theme} style={{ gap: space[2] }}>
+      <Text style={[text.body, { fontWeight: "600" }]}>{title}</Text>
+      <Text style={text.small}>{decisionMeta(ask)}</Text>
+      {ask.headline && ask.question ? <Text style={text.muted}>{ask.question}</Text> : null}
+      {ask.stakes ? (
+        <Text style={text.small}>
+          <Text style={{ fontWeight: "600", color: theme.colors.foreground }}>What waiting costs: </Text>
+          {ask.stakes}
+        </Text>
+      ) : null}
+      {ask.whyYou ? (
+        <Text style={text.small}>
+          <Text style={{ fontWeight: "600", color: theme.colors.foreground }}>Why you: </Text>
+          {ask.whyYou}
+        </Text>
+      ) : null}
+      {ask.options.length > 0 ? (
+        <View accessibilityRole="radiogroup" accessibilityLabel={`Options for ${ask.id}`} style={{ gap: space[2] }}>
+          {ask.options.map((entry) => {
+            const picked = open ? chosen === entry.id : ask.answerOption === entry.id;
+            const badges = [
+              entry.recommended ? "Recommended" : null,
+              entry.reversible === false ? "Cannot be undone" : null,
+              !open && picked ? "Your answer" : null,
+            ].filter(Boolean);
+            return (
+              <Pressable
+                key={entry.id}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: picked, disabled: !open || answer.isPending }}
+                aria-checked={picked}
+                accessibilityLabel={`${entry.label}${entry.recommended ? ", recommended" : ""}`}
+                disabled={!open || answer.isPending}
+                onPress={() => setChosen((current) => (current === entry.id ? null : entry.id))}
+                style={({ pressed }) => ({
+                  gap: 2,
+                  padding: space[3],
+                  borderRadius: radius.control,
+                  borderWidth: picked ? 2 : 1,
+                  borderColor: picked ? theme.colors.accent : theme.colors.border,
+                  opacity: pressed ? 0.85 : 1,
+                })}
+              >
+                <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[2], flexWrap: "wrap" }}>
+                  <Text style={[text.body, { flex: 1, minWidth: 140, fontWeight: picked ? "600" : "400" }]}>
+                    {entry.label}
+                  </Text>
+                  {badges.length > 0 ? (
+                    <Text
+                      style={[
+                        text.small,
+                        { color: entry.reversible === false ? theme.colors.statusWarning : theme.colors.accent },
+                      ]}
+                    >
+                      {badges.join(" · ")}
+                    </Text>
+                  ) : null}
+                </View>
+                {entry.consequence ? <Text style={text.small}>{entry.consequence}</Text> : null}
+              </Pressable>
+            );
+          })}
+        </View>
+      ) : null}
+      {ask.fallback ? (
+        <Text style={text.small}>
+          <Text style={{ fontWeight: "600", color: theme.colors.foreground }}>If you say nothing: </Text>
+          {ask.fallback}
+        </Text>
+      ) : null}
+      {!open ? (
+        <View style={{ gap: 2 }}>
+          <Text style={[text.small, { color: theme.colors.statusSuccess }]}>{decisionAnswered(ask)}</Text>
+          {ask.answer ? (
+            <Text style={text.small} selectable>
+              {ask.answer}
+            </Text>
+          ) : null}
+        </View>
+      ) : ask.refusal ? (
+        <Notice theme={theme} tone="warn">
+          {ask.refusal}
+        </Notice>
+      ) : (
+        <View style={{ gap: space[2] }}>
+          <TextInput
+            value={note}
+            onChangeText={setNote}
+            multiline
+            maxLength={ANSWER_NOTE_CHARS}
+            placeholder={ask.options.length > 0 ? "Add words (optional)" : "Your answer"}
+            placeholderTextColor={theme.colors.foregroundMuted}
+            accessibilityLabel={`Your words for ${ask.id}`}
+            style={{
+              minHeight: 48,
+              padding: space[3],
+              borderRadius: radius.control,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+              backgroundColor: theme.colors.surface2,
+              color: theme.colors.foreground,
+              fontSize: 14,
+              textAlignVertical: "top",
+            }}
+          />
+          <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap", alignItems: "center" }}>
+            <Button
+              theme={theme}
+              variant="primary"
+              icon="Check"
+              label={option ? `Answer: ${option.label}` : "Answer"}
+              compact={compact}
+              busy={answer.isPending}
+              disabled={!option && note.trim().length === 0}
+              accessibilityLabel={`Answer ${ask.id}${option ? `: ${option.label}` : ""}`}
+              onPress={submit}
+            />
+            <Text style={[text.small, { flex: 1, minWidth: 160 }]}>{`Written into ${ask.ledger}.`}</Text>
+          </View>
+        </View>
+      )}
+      {origin && navigation ? (
+        <View style={{ flexDirection: "row" }}>
+          <Button
+            theme={theme}
+            variant="quiet"
+            icon="ArrowUpRight"
+            label="Open the session that asked"
+            compact={compact}
+            accessibilityLabel={`Open the session that asked ${ask.id}`}
+            onPress={() => navigation.openAgent({ agentId: origin.agentId })}
+          />
+        </View>
+      ) : null}
+    </Card>
   );
 }
 
@@ -283,11 +672,13 @@ function ProposalCard({
   scope,
   group,
   compact,
+  navigation,
 }: {
   theme: PluginTheme;
   scope: string;
   group: ProposalGroup;
   compact: boolean;
+  navigation: Navigation;
 }) {
   const text = useText(theme);
   const toast = useToast();
@@ -344,6 +735,9 @@ function ProposalCard({
         <Text style={text.muted} numberOfLines={3}>
           {first.evidence}
         </Text>
+      ) : null}
+      {!many && first?.session ? (
+        <SessionLine theme={theme} session={first.session} compact={compact} navigation={navigation} />
       ) : null}
       <Text
         style={[
@@ -430,9 +824,13 @@ function ProposalCard({
         <View style={{ gap: space[1] }}>
           {shown.map((proposal) => (
             <View key={proposal.key} style={{ gap: 2 }}>
-              <Text style={text.small} numberOfLines={1}>
-                {proposalSubject(proposal)}
-              </Text>
+              {proposal.session ? (
+                <SessionLine theme={theme} session={proposal.session} compact={compact} navigation={navigation} />
+              ) : (
+                <Text style={text.small} numberOfLines={1}>
+                  {proposalSubject(proposal)}
+                </Text>
+              )}
               {proposal.evidence ? (
                 <Text style={[text.small, { paddingLeft: space[3] }]} numberOfLines={2}>
                   {proposal.evidence}
@@ -458,7 +856,21 @@ function ProposalCard({
   );
 }
 
-function TickRow({ theme, tick, compact }: { theme: PluginTheme; tick: FleetTick; compact: boolean }) {
+function TickRow({
+  theme,
+  scope,
+  tick,
+  compact,
+  open,
+  onToggle,
+}: {
+  theme: PluginTheme;
+  scope: string;
+  tick: FleetTick;
+  compact: boolean;
+  open: boolean;
+  onToggle: () => void;
+}) {
   const text = useText(theme);
   const status = (
     <Status
@@ -469,18 +881,26 @@ function TickRow({ theme, tick, compact }: { theme: PluginTheme; tick: FleetTick
   );
   const classes = <Text style={[text.small, compact ? null : { flex: 1 }]}>{classText(tick.classCounts)}</Text>;
   return (
-    <View
-      accessible
-      accessibilityLabel={`${tickLabel(tick)}. ${classText(tick.classCounts)}`}
-      style={{ paddingVertical: space[2], borderBottomWidth: 1, borderBottomColor: theme.colors.border, gap: 2 }}
-    >
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space[3], flexWrap: "wrap" }}>
-        <Text style={[text.body, text.tabular, { fontWeight: "600", minWidth: 32 }]}>{tick.tick}</Text>
-        <Text style={[text.small, text.tabular, { minWidth: 92 }]}>{tickWhen(tick.at)}</Text>
-        {status}
-        {compact ? null : classes}
-      </View>
-      {compact ? classes : null}
+    <View style={{ borderBottomWidth: 1, borderBottomColor: theme.colors.border }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        aria-expanded={open}
+        accessibilityLabel={`${tickLabel(tick)}. ${classText(tick.classCounts)}`}
+        onPress={onToggle}
+        style={({ pressed }) => ({ paddingVertical: space[2], gap: 2, opacity: pressed ? 0.85 : 1 })}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space[3], flexWrap: "wrap" }}>
+          <Text style={[text.body, text.tabular, { fontWeight: "600", minWidth: 32 }]}>{tick.tick}</Text>
+          <Text style={[text.small, text.tabular, { minWidth: 92 }]}>{tickWhen(tick.at)}</Text>
+          {status}
+          {compact ? null : classes}
+        </View>
+        {compact ? classes : null}
+      </Pressable>
+      {open ? (
+        <TickDetail theme={theme} scope={scope} tick={tick.tick} facts={tickFacts(tick)} compact={compact} />
+      ) : null}
     </View>
   );
 }
@@ -489,18 +909,30 @@ export function FleetView({
   theme,
   compact,
   scope,
+  tick = null,
+  navigation,
   onScope,
   onSelect,
 }: {
   theme: PluginTheme;
   compact: boolean;
   scope: string | null;
+  /** A tick to open, when the view is opened on one (from a timeline run). */
+  tick?: number | null;
+  navigation: Navigation;
   onScope: (scope: string) => void;
   onSelect: (id: string) => void;
 }) {
   const fleet = useFleet(scope);
   const text = useText(theme);
   const [reportOpen, setReportOpen] = useState(!compact);
+  const [openTick, setOpenTick] = useState<number | null>(tick);
+  const [opened, setOpened] = useState(tick);
+  // Opened on another tick while mounted (a second timeline run): that one opens.
+  if (tick !== opened) {
+    setOpened(tick);
+    setOpenTick(tick);
+  }
 
   if (fleet.isPending) return <ActivityIndicator color={theme.colors.foregroundMuted} />;
   if (fleet.isError) {
@@ -561,6 +993,29 @@ export function FleetView({
             </Notice>
           ))}
 
+          {detail.decisions.length > 0 ? (
+            <Section
+              theme={theme}
+              title="Decisions"
+              meta={`${detail.decisions.filter((ask) => ask.state === "open").length} open`}
+            >
+              <Text style={text.small}>
+                The fleet's own ask ledger, in {detail.askRoot}. Your answer is written there, under the lock every
+                ledger writer shares, and the fleet reads it at its next tick.
+              </Text>
+              {detail.decisions.map((ask) => (
+                <DecisionCard
+                  key={`${ask.ledger}:${ask.uid ?? ask.id}`}
+                  theme={theme}
+                  scope={current.id}
+                  ask={ask}
+                  compact={compact}
+                  navigation={navigation}
+                />
+              ))}
+            </Section>
+          ) : null}
+
           <Section theme={theme} title="Asks" meta={detail.asks.length > 0 ? `${detail.asks.length} open` : undefined}>
             {detail.asks.length === 0 ? (
               <Text style={text.muted}>The fleet has no open asks for you.</Text>
@@ -568,14 +1023,16 @@ export function FleetView({
               <View style={{ gap: space[2] }}>
                 <Text style={text.small}>
                   You answer each in the work the fleet raised for its batch: approve to acknowledge, send back a note
-                  to answer, cancel to dismiss.
+                  to answer, cancel to dismiss. An ask about a session opens it; Details shows the tick that raised it.
                 </Text>
                 {detail.asks.map((ask) => (
                   <AskRow
                     key={`${ask.batch}-${ask.key}`}
                     theme={theme}
+                    scope={current.id}
                     ask={ask}
                     compact={compact}
+                    navigation={navigation}
                     onSelect={onSelect}
                   />
                 ))}
@@ -607,7 +1064,14 @@ export function FleetView({
               <Text style={text.muted}>The latest report proposes nothing.</Text>
             ) : (
               groupProposals(detail.proposals).map((group) => (
-                <ProposalCard key={group.key} theme={theme} scope={current.id} group={group} compact={compact} />
+                <ProposalCard
+                  key={group.key}
+                  theme={theme}
+                  scope={current.id}
+                  group={group}
+                  compact={compact}
+                  navigation={navigation}
+                />
               ))
             )}
           </Section>
@@ -617,8 +1081,16 @@ export function FleetView({
               <Text style={text.muted}>No tick has run in this scope yet.</Text>
             ) : (
               <View>
-                {detail.ticks.map((tick) => (
-                  <TickRow key={tick.tick} theme={theme} tick={tick} compact={compact} />
+                {detail.ticks.map((row) => (
+                  <TickRow
+                    key={row.tick}
+                    theme={theme}
+                    scope={current.id}
+                    tick={row}
+                    compact={compact}
+                    open={openTick === row.tick}
+                    onToggle={() => setOpenTick((now) => (now === row.tick ? null : row.tick))}
+                  />
                 ))}
               </View>
             )}

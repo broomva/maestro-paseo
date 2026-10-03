@@ -28,7 +28,16 @@ function proposal(key: string, extra: Partial<FleetProposal> = {}): FleetProposa
     tick: 35,
     at: minutesAgo(5),
     action: "report",
-    session: { id: `${key}-id`, short: key, name: "worried-walrus", kind: "interactive", status: "idle", cwd: "~" },
+    session: {
+      id: `${key}-id`,
+      short: key,
+      name: "worried-walrus",
+      kind: "interactive",
+      status: "idle",
+      cwd: "~",
+      branch: null,
+      agentId: null,
+    },
     classId: "10",
     className: "unmanaged",
     evidence: "no fleet key, not adopted",
@@ -146,7 +155,17 @@ describe("the Fleet view's words", () => {
   });
 
   test("an ask says where it is in Maestro, or why it is not there yet", () => {
-    const ask: FleetAsk = { id: "a1", key: "k", question: "q", class: "count", firstTick: 2, batch: "2-1", item: null };
+    const ask: FleetAsk = {
+      id: "a1",
+      key: "k",
+      question: "q",
+      class: "count",
+      className: null,
+      firstTick: 2,
+      session: null,
+      batch: "2-1",
+      item: null,
+    };
     expect(askWhere(ask)).toBe("Its batch has no Maestro work yet: the fleet raises it at a later tick.");
     expect(askWhere({ ...ask, batch: null })).toBe("Not raised yet: the fleet raises an ask once it lasts.");
     const item = { id: "w", title: "t", state: "review" as const, group: "review" as const, needsYou: true };

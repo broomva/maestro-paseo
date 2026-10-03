@@ -83,6 +83,45 @@ describe("a Paseo schedule", () => {
     expect(source?.runs.map((run) => [run.at, run.status])).toEqual([[iso(NOW - 7 * H), "ok"]]);
   });
 
+  test("each run carries the session it started, its workspace and the start of its last message", () => {
+    const long = `Waiting on four background jobs: ${"the STI-3417 push, ".repeat(30)}and its refutation pass.`;
+    const source = scheduleSource(
+      schedule({
+        runs: [
+          paseoRun(NOW - 7 * H, "succeeded", { output: long }),
+          paseoRun(NOW - 3 * H, "failed", { agentId: "b8c26013-30f3-4ebc-bd29-bbfdf08383ee", workspaceId: null }),
+        ],
+      }),
+      window,
+      null,
+      wall,
+    );
+    const [failed, ok] = source?.runs ?? [];
+    expect(failed).toEqual({
+      at: iso(NOW - 3 * H),
+      endedAt: iso(NOW - 3 * H + 5 * M),
+      status: "failed",
+      exit: null,
+      detail: "failed",
+      agentId: "b8c26013-30f3-4ebc-bd29-bbfdf08383ee",
+    });
+    expect([ok?.agentId, ok?.workspaceId]).toEqual(["4791055f-1726-4bb9-a010-1c201b43b7cf", "wks_1"]);
+    expect(ok?.output?.startsWith("Waiting on four background jobs: the STI-3417 push,")).toBe(true);
+    expect(ok?.output?.endsWith("…")).toBe(true);
+    expect(ok?.output?.length).toBeLessThanOrEqual(280);
+    // A heartbeat's run that recorded no agent ran in its target.
+    const beat = scheduleSource(
+      schedule({
+        target: { type: "agent", agentId: "ed6db489" },
+        runs: [paseoRun(NOW - H, "succeeded", { agentId: null })],
+      }),
+      window,
+      null,
+      wall,
+    );
+    expect(beat?.runs[0]?.agentId).toBe("ed6db489");
+  });
+
   test("an `every` cadence fills the window; a run limit and an expiry cut it short", () => {
     const every = { type: "every", everyMs: 6 * H };
     const next = iso(NOW + H);
@@ -424,6 +463,8 @@ const detail = (ticks: FleetDetail["ticks"]): FleetDetail => ({
   report: null,
   proposals: [],
   asks: [],
+  decisions: [],
+  askRoot: "/state/broomva/.control/asks",
   alerts: [],
   warnings: [],
 });

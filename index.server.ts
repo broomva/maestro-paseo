@@ -33,7 +33,7 @@ import {
   wakeLoop,
   workForAgent,
 } from "./shared/contracts";
-import { getFleet, reviewProposal } from "./shared/fleet";
+import { answerAsk, getFleet, getFleetTick, reviewProposal } from "./shared/fleet";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
 import { getTimeline, getTimelineLog } from "./shared/timeline";
 
@@ -152,6 +152,9 @@ export default function contribute(host: PluginServerContext) {
   // The Fleet view, and your verdict on a proposal: yours alone, never on the agent socket.
   server.handle(getFleet, ({ scope, ticks }) => fleet.get(scope, ticks));
   server.handle(reviewProposal, ({ scope, keys, verdict, note }) => fleet.review({ scope, keys, verdict, note }));
+  server.handle(getFleetTick, ({ scope, tick }) => fleet.tick(scope, tick));
+  // Your answer to a decision ask: written under the ledger lock, and never on the agent socket.
+  server.handle(answerAsk, (input) => fleet.answer(input));
   server.handle(getConfig, () => loadConfig());
   // Saved Settings may turn the loop on or off, or change its period: arm it again from them.
   server.handle(setConfig, async (input) => {

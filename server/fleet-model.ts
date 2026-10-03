@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import type { WorkItem } from "../shared/contracts";
 import {
+  type AskSession,
   type ClassCount,
   FLEET_CLASSES,
   FLEET_MISSED_MS,
@@ -213,6 +214,8 @@ export interface ReportSummary {
   classCounts: ClassCount[];
   proposals: FleetProposal[];
   asksOpen: Json[];
+  /** The report's sessions by id, kept small: what an ask about one names and opens. */
+  sessions: Map<string, { name: string | null; agentId: string | null }>;
 }
 
 /** A stable key for one proposal: the same session, class and words read the same at every tick. */
@@ -259,6 +262,8 @@ export function summarizeReport(raw: unknown, scope: string, fallbackTick: numbe
         kind: str(session.kind),
         status: str(session.status) ?? str(session.state),
         cwd: str(session.cwd),
+        branch: str(session.branch),
+        agentId: str(session.paseo_agent),
       },
       classId,
       className: str(session.class_name) ?? FLEET_CLASSES[classId] ?? null,
@@ -275,7 +280,57 @@ export function summarizeReport(raw: unknown, scope: string, fallbackTick: numbe
     classCounts,
     proposals,
     asksOpen: openAsksOf(raw),
+    sessions: new Map(
+      sessions.flatMap((session) => {
+        const id = str(session.session_id);
+        return id ? [[id, { name: str(session.name), agentId: str(session.paseo_agent) }] as const] : [];
+      }),
+    ),
   };
+}
+
+/**
+ * The session an ask is about, from its key (`prompt:<session id>:<words>`),
+ * with its name and Paseo agent from the report; a key that names a Paseo
+ * agent itself opens that agent.
+ */
+export function askSession(
+  key: string,
+  sessions: ReadonlyMap<string, { name: string | null; agentId: string | null }>,
+): AskSession | null {
+  const id = /^prompt:([0-9a-f][0-9a-f-]{7,}):/i.exec(key)?.[1];
+  if (!id) return null;
+  const known = sessions.get(id);
+  const asAgent = [...sessions.values()].find((session) => session.agentId === id);
+  return {
+    id,
+    short: id.slice(0, 8),
+    name: known?.name ?? asAgent?.name ?? null,
+    agentId: known?.agentId ?? asAgent?.agentId ?? null,
+  };
+}
+
+/**
+ * One tick's lines in tick.log: from its `tick <n> scope` line up to its
+ * `tick <n> done` line, or the next tick's start. Null when the log has none.
+ */
+export function tickLogSection(log: string, tick: number): string | null {
+  const lines = log.split("\n");
+  const start = lines.findIndex((line) => new RegExp(`\\] tick ${tick} scope `).test(line));
+  if (start < 0) return null;
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index++) {
+    const line = lines[index] ?? "";
+    if (new RegExp(`\\] tick ${tick} done`).test(line)) {
+      end = index + 1;
+      break;
+    }
+    if (/\] tick \d+ scope /.test(line)) {
+      end = index;
+      break;
+    }
+  }
+  return lines.slice(start, end).join("\n").trimEnd();
 }
 
 /**
@@ -286,12 +341,14 @@ export function summarizeReport(raw: unknown, scope: string, fallbackTick: numbe
 function openAsksOf(raw: Json): Json[] {
   const seen = new Set<string>();
   const out: Json[] = [];
+  const tick = int(raw.tick);
   for (const list of [raw.asks_open, raw.asks, raw.asks_unchecked]) {
     for (const ask of Array.isArray(list) ? list.filter(isObject) : []) {
       const key = str(ask.key);
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      out.push(ask);
+      // New this tick (`asks`, which carries no first_tick): this tick raised it.
+      out.push(list === raw.asks && ask.first_tick === undefined && tick !== null ? { ...ask, first_tick: tick } : ask);
     }
   }
   return out;
@@ -560,6 +617,7 @@ export function asksOf(
   asksOpen: readonly Json[],
   fold: LedgerFold,
   items: readonly WorkItem[],
+  sessions: ReadonlyMap<string, { name: string | null; agentId: string | null }> = new Map(),
 ): FleetAsk[] {
   const byBatch = new Map<string, WorkItem[]>();
   for (const item of items) {
@@ -578,13 +636,16 @@ export function asksOf(
     if (!key) return [];
     const batch = fold.batchOfAsk.get(key) ?? null;
     const work = batch ? workFor(batch) : null;
+    const klass = str(ask.class);
     return [
       {
         id: str(ask.id) ?? key,
         key,
         question: str(ask.question) ?? key,
-        class: str(ask.class),
+        class: klass,
+        className: klass ? (FLEET_CLASSES[klass] ?? null) : null,
         firstTick: int(ask.first_tick),
+        session: askSession(key, sessions),
         batch,
         item: work ? fleetItem(work) : null,
       },

@@ -43,6 +43,18 @@ export function fleetPaths(env: NodeJS.ProcessEnv = process.env): {
 }
 
 /**
+ * Where a ledger answer takes its lock and leaves its receipt (the control
+ * interface spec §5.5): the lock directory every ledger writer shares, and
+ * Maestro's receipts of the answers it wrote.
+ */
+export function controlAskPaths(env: NodeJS.ProcessEnv = process.env): { locks: string; receipts: string } {
+  return {
+    locks: env.MAESTRO_PASEO_ASK_LOCKS ?? join(homedir(), ".local", "state", "control-asks", "locks"),
+    receipts: env.MAESTRO_PASEO_ASK_RECEIPTS ?? join(homedir(), ".local", "state", "maestro-paseo", "asks.jsonl"),
+  };
+}
+
+/**
  * Where the Paseo daemon keeps its schedules and heartbeats, which the
  * Timeline view reads (server/timeline.ts): `schedules/` in its home, the
  * daemon's PASEO_HOME, else ~/.paseo.

@@ -142,6 +142,9 @@ export const FleetProposalSchema = z.object({
       kind: z.string().nullable(),
       status: z.string().nullable(),
       cwd: z.string().nullable(),
+      branch: z.string().nullable(),
+      /** Its Paseo agent, when it is one (the report's `paseo_agent`): what Open in Paseo opens. */
+      agentId: z.string().nullable(),
     })
     .nullable(),
   classId: z.string().nullable(),
@@ -153,17 +156,74 @@ export const FleetProposalSchema = z.object({
 });
 export type FleetProposal = z.infer<typeof FleetProposalSchema>;
 
+/** A session a fleet ask is about (a `prompt:<session>:…` key), and its Paseo agent when it is one. */
+export const AskSessionSchema = z.object({
+  id: z.string(),
+  short: z.string(),
+  name: z.string().nullable(),
+  agentId: z.string().nullable(),
+});
+export type AskSession = z.infer<typeof AskSessionSchema>;
+
 export const FleetAskSchema = z.object({
   id: z.string(),
   key: z.string(),
   question: z.string(),
   class: z.string().nullable(),
+  /** The class's name in the fleet's table (FLEET_CLASSES), when the class is one of its numbers. */
+  className: z.string().nullable(),
   firstTick: z.number().nullable(),
+  session: AskSessionSchema.nullable(),
   /** The batch that carries it now (its ledger intent id), and the Maestro work raised for that batch. */
   batch: z.string().nullable(),
   item: FleetItemSchema.nullable(),
 });
 export type FleetAsk = z.infer<typeof FleetAskSchema>;
+
+export const DecisionOptionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  consequence: z.string().nullable(),
+  /** null when the ledger does not say. */
+  reversible: z.boolean().nullable(),
+  recommended: z.boolean(),
+});
+export type DecisionOption = z.infer<typeof DecisionOptionSchema>;
+
+/**
+ * A decision ask in a `.control/asks` ledger in the fleet's own registered
+ * root (`<state dir>/.control/asks`, the control interface spec §5.6), with
+ * its decision layer: what it costs while it waits, why it is yours, the
+ * options and what each does, and what happens if you say nothing.
+ */
+export const DecisionAskSchema = z.object({
+  /** The ledger's file name in the root. */
+  ledger: z.string(),
+  /** Its identity (§5.2); asks from before v2 have none and go by `id`. */
+  uid: z.string().nullable(),
+  id: z.string(),
+  /** The entry as read: an answer carries it back, and one to an entry changed since is refused. */
+  hash: z.string(),
+  arc: z.string().nullable(),
+  headline: z.string().nullable(),
+  question: z.string().nullable(),
+  stakes: z.string().nullable(),
+  whyYou: z.string().nullable(),
+  options: z.array(DecisionOptionSchema),
+  /** What happens if you stay silent (`default`). */
+  fallback: z.string().nullable(),
+  blocking: z.boolean(),
+  askedAt: z.string().nullable(),
+  answeredAt: z.string().nullable(),
+  answer: z.string().nullable(),
+  answerOption: z.string().nullable(),
+  state: z.enum(["open", "answered", "archived"]),
+  /** The session that asked, when the ask is stamped with one. */
+  origin: z.object({ agentId: z.string(), cwd: z.string().nullable() }).nullable(),
+  /** Why it cannot be answered here, in words (an id collision); null when it can. */
+  refusal: z.string().nullable(),
+});
+export type DecisionAsk = z.infer<typeof DecisionAskSchema>;
 
 export const FleetScopeSchema = z.object({
   id: z.string(),
@@ -187,6 +247,10 @@ export const FleetDetailSchema = z.object({
   report: z.object({ tick: z.number(), markdown: z.string(), truncated: z.boolean() }).nullable(),
   proposals: z.array(FleetProposalSchema),
   asks: z.array(FleetAskSchema),
+  /** Decision asks in the fleet's own ask root: the open ones, then the latest answered. */
+  decisions: z.array(DecisionAskSchema),
+  /** That root, where a decision ask's answer is written. */
+  askRoot: z.string(),
   /** The fleet's alert items for this scope that are not done or canceled. */
   alerts: z.array(FleetItemSchema),
   /** Files that could not be read, in words. */
@@ -213,6 +277,51 @@ export const getFleet = defineRpc({
   }),
 });
 export type FleetView = z.infer<typeof getFleet.output>;
+
+/** A tick's log section is read up to this much of its end. */
+export const TICK_LOG_BYTES = 4096;
+
+/**
+ * One tick opened: its report and what its runner logged, asked for when you
+ * open its row, so a report and a log travel only to the one who looks.
+ */
+export const getFleetTick = defineRpc({
+  name: "fleet.tick",
+  input: z.object({ scope: z.string().min(1), tick: z.number().int().min(0) }),
+  output: z.object({
+    tick: z.number(),
+    /** That tick's own report.md, when it wrote one. */
+    report: z.object({ markdown: z.string(), truncated: z.boolean() }).nullable(),
+    /** What could not be read, in words: a report.md that is there and unreadable, a tick older than the log kept. */
+    notes: z.array(z.string()),
+    /** That tick's lines in tick.log, from its start line to its done line (the end of them past TICK_LOG_BYTES). */
+    log: z.object({ path: z.string(), text: z.string(), truncated: z.boolean() }).nullable(),
+  }),
+});
+export type FleetTickDetail = z.infer<typeof getFleetTick.output>;
+
+export const ANSWER_NOTE_CHARS = 2000;
+
+/**
+ * Your answer to a decision ask in the fleet's ask root, written into its
+ * ledger under the shared lock (server/control-asks.ts): the option you chose,
+ * your words, or both. Yours alone: never on the agent socket.
+ */
+export const answerAsk = defineRpc({
+  name: "ask.answer",
+  input: z.object({
+    scope: z.string().min(1),
+    ledger: z.string().min(1),
+    uid: z.string().min(1).nullable(),
+    id: z.string().min(1),
+    /** DecisionAsk.hash as you read it. */
+    hash: z.string().min(1),
+    option: z.string().min(1).nullable(),
+    note: z.string().max(ANSWER_NOTE_CHARS).default(""),
+  }),
+  /** `warning`: the answer is in the ledger, but something after it (its receipt) failed, in words. */
+  output: z.object({ ask: DecisionAskSchema, warning: z.string().nullable() }),
+});
 
 /**
  * Your verdict on proposals, written to the scope's review file: one line per

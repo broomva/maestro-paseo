@@ -5,6 +5,7 @@ import { groupOf, type OrchState } from "../shared/states";
 import { askBatch, H, report, session } from "./fake-fleet";
 import {
   actProposals,
+  askSession,
   asksOf,
   awakeAsWall,
   coverOf,
@@ -20,6 +21,7 @@ import {
   reviewRecord,
   span,
   summarizeReport,
+  tickLogSection,
   tickRows,
   tickStatusOf,
 } from "./fleet-model";
@@ -591,5 +593,41 @@ describe("reviews", () => {
       ts: new Date(NOW).toISOString(),
     });
     expect(foldReviews([record], "alpha").get(proposal.key)?.verdict).toBe("reject");
+  });
+});
+
+describe("drilling into a tick and an ask", () => {
+  test("a tick's log lines run from its start line to its done line; tick 3 is never tick 35", () => {
+    const log = [
+      "[t] tick 3 scope alpha (dry_run=1)",
+      "[t] step observe rc=1",
+      "[t] tick 3 done: observe=1",
+      "[t] tick 35 scope alpha (dry_run=1)",
+      "[t] step observe rc=0",
+      "[t] tick 36 scope alpha (dry_run=1)",
+      "[t] tick 36 done: observe=0",
+    ].join("\n");
+    expect(tickLogSection(log, 3)).toBe(
+      "[t] tick 3 scope alpha (dry_run=1)\n[t] step observe rc=1\n[t] tick 3 done: observe=1",
+    );
+    // One that never finished ends where the next tick starts.
+    expect(tickLogSection(log, 35)).toBe("[t] tick 35 scope alpha (dry_run=1)\n[t] step observe rc=0");
+    expect(tickLogSection(log, 5)).toBeNull();
+  });
+
+  test("an ask's session comes from its prompt key, named and opened through the report's sessions", () => {
+    const sessions = new Map([["d4b991f0-1133", { name: "broomva-88", agentId: "agent-88" }]]);
+    expect(askSession("prompt:d4b991f0-1133:3efecb94", sessions)).toEqual({
+      id: "d4b991f0-1133",
+      short: "d4b991f0",
+      name: "broomva-88",
+      agentId: "agent-88",
+    });
+    // A key that names the Paseo agent itself opens it.
+    expect(askSession("prompt:agent-88:x", new Map())).toBeNull();
+    expect(askSession("prompt:aaaaaaaa-88:x", new Map([["s", { name: "n", agentId: "aaaaaaaa-88" }]]))?.agentId).toBe(
+      "aaaaaaaa-88",
+    );
+    expect(askSession("records-without-process", sessions)).toBeNull();
   });
 });

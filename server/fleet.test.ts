@@ -1,10 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkItem } from "../shared/contracts";
 import { groupOf, type OrchState } from "../shared/states";
+import { acquireLock, releaseLock } from "./control-asks";
 import { askBatch, H, report, session, writeFleet } from "./fake-fleet";
 import { AwakeClock, DISABLED_NOTICE, Fleet, REVIEWS_FILE, uptimeRaw, wallClock } from "./fleet";
 
@@ -74,6 +75,9 @@ async function setup(items: WorkItem[] = [], options: { beating?: number } = {})
     clock: beating ?? wallClock(() => now),
     now: () => now,
     log: (message) => logs.push(message),
+    // Never the real lock directory or receipts: a test writes only under its own root.
+    askLocks: join(root, "locks"),
+    askReceipts: join(root, "receipts.jsonl"),
   });
   const awakeFor = async (ms: number) => {
     for (let step = 0; step < ms; step += 60_000) {
@@ -927,5 +931,187 @@ describe("your verdict", () => {
       fleet.review({ scope: "alpha", keys: [first?.key ?? ""], verdict: "accept", note: "" }),
     ).rejects.toThrow("The fleet no longer proposes this");
     await expect(stat(join(paths.state, "alpha", REVIEWS_FILE))).rejects.toThrow();
+  });
+});
+
+describe("drilling in", () => {
+  test("a proposal names its session's branch and Paseo agent; an ask about a session at a prompt names it", async () => {
+    const { paths, fleet } = await setup();
+    const agent = "aaaaaaaa-0000-4000-8000-000000000001";
+    const waiting = "d4b991f0-1133-4c26-9c1a-2b213ec6aaa1";
+    await writeFleet(paths, {
+      alpha: {
+        ticks: [
+          {
+            tick: 35,
+            at: ago(0.2),
+            exit: 0,
+            report: report(35, ago(0.2), {
+              sessions: [
+                session("22222222-bbbb", "4", "report", { branch: "feat/x", paseo_agent: agent, kind: "interactive" }),
+                session(waiting, "3", "nothing", { name: "broomva-88", paseo_agent: agent }),
+              ],
+              asks_open: [
+                { id: "a2", key: "records-without-process", class: "count", first_tick: 30, question: "3 records" },
+              ],
+              // New this tick: the report lists it under `asks`, with no first_tick of its own.
+              asks: [{ id: "a1", key: `prompt:${waiting}:3efecb94`, class: "3", question: "At a prompt." }],
+            }),
+          },
+        ],
+      },
+    });
+    const detail = (await fleet.get()).detail;
+    expect(detail?.proposals[0]?.session).toEqual({
+      id: "22222222-bbbb",
+      short: "22222222",
+      name: "session-2222",
+      kind: "interactive",
+      status: "failed",
+      cwd: "~/alpha",
+      branch: "feat/x",
+      agentId: agent,
+    });
+    expect(detail?.asks.map((ask) => [ask.id, ask.className, ask.firstTick, ask.session])).toEqual([
+      ["a2", null, 30, null],
+      ["a1", "waiting at a prompt", 35, { id: waiting, short: "d4b991f0", name: "broomva-88", agentId: agent }],
+    ]);
+  });
+
+  test("a tick opens to its own report and its lines in tick.log, from its start to its done line", async () => {
+    const { paths, fleet } = await setup();
+    await writeFleet(paths, {
+      alpha: {
+        ticks: [
+          { tick: 34, at: ago(1.2), exit: 1, detail: "recover=0 observe=1", markdown: "# tick 34\n" },
+          { tick: 35, at: ago(0.2), exit: 0, markdown: "# tick 35\n" },
+        ],
+      },
+    });
+    await writeFile(
+      join(paths.state, "alpha", "tick.log"),
+      [
+        "[2026-10-02T19:00:00Z] tick 34 scope alpha (dry_run=1)",
+        "[2026-10-02T19:00:01Z] step recover rc=0",
+        "fleet observe: claude agents timed out",
+        "[2026-10-02T19:00:09Z] step observe rc=1",
+        "[2026-10-02T19:00:09Z] tick 34 done: recover=0 observe=1",
+        "fleet config-check: ok",
+        "[2026-10-02T20:00:00Z] tick 35 scope alpha (dry_run=1)",
+        "[2026-10-02T20:00:05Z] tick 35 done: recover=0 observe=0",
+        "",
+      ].join("\n"),
+    );
+    const tick = await fleet.tick("alpha", 34);
+    expect(tick.report).toEqual({ markdown: "# tick 34\n", truncated: false });
+    expect(tick.notes).toEqual([]);
+    expect(tick.log).toEqual({
+      path: join(paths.state, "alpha", "tick.log"),
+      text: [
+        "[2026-10-02T19:00:00Z] tick 34 scope alpha (dry_run=1)",
+        "[2026-10-02T19:00:01Z] step recover rc=0",
+        "fleet observe: claude agents timed out",
+        "[2026-10-02T19:00:09Z] step observe rc=1",
+        "[2026-10-02T19:00:09Z] tick 34 done: recover=0 observe=1",
+      ].join("\n"),
+      truncated: false,
+    });
+    // A tick the log no longer holds, and one with no report: each is null, not an error.
+    expect(await fleet.tick("alpha", 7)).toEqual({ tick: 7, report: null, notes: [], log: null });
+    await expect(fleet.tick("nowhere", 1)).rejects.toThrow("The fleet has no scope named nowhere.");
+  });
+
+  test("decision asks in the fleet's ask root are in the view, and an answer is written there under the lock", async () => {
+    const { root, paths, fleet, logs } = await setup();
+    await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: ago(0.2), exit: 0 }] } });
+    const askRoot = join(paths.state, "alpha", ".control", "asks");
+    await mkdir(askRoot, { recursive: true });
+    const ledger = [
+      "arc: fleet-alpha",
+      "asks:",
+      "  - id: spawn-duplicate-1",
+      "    uid: 11111111-2222-4333-8444-555555555555",
+      '    headline: "Stop the newer of two sessions on one ticket?"',
+      '    stakes: "Both push to one branch."',
+      "    options:",
+      "      - id: stop-newer",
+      '        label: "Stop the newer"',
+      '        consequence: "Its work so far stays on disk."',
+      "        reversible: true",
+      "        recommended: true",
+      "      - id: leave",
+      '        label: "Leave both"',
+      '        consequence: "They race."',
+      "        reversible: true",
+      '    default: "leave it; asked again while it lasts"',
+      "    blocking: false",
+      "",
+    ].join("\n");
+    await writeFile(join(askRoot, "fleet-alpha.yaml"), ledger);
+    const detail = (await fleet.get()).detail;
+    expect(detail?.askRoot).toBe(askRoot);
+    expect(detail?.decisions.map((ask) => [ask.id, ask.state, ask.options.map((option) => option.id)])).toEqual([
+      ["spawn-duplicate-1", "open", ["stop-newer", "leave"]],
+    ]);
+    const { ask, warning } = await fleet.answer({
+      scope: "alpha",
+      ledger: "fleet-alpha.yaml",
+      uid: "11111111-2222-4333-8444-555555555555",
+      id: "spawn-duplicate-1",
+      hash: detail?.decisions[0]?.hash ?? "",
+      option: "stop-newer",
+      note: "",
+    });
+    expect(warning).toBeNull();
+    expect([ask.state, ask.answerOption, ask.answeredAt]).toEqual(["answered", "stop-newer", "2026-10-02T20:40:00Z"]);
+    const written = await readFile(join(askRoot, "fleet-alpha.yaml"), "utf8");
+    expect(written).toContain('    answer_option: "stop-newer"\n');
+    expect(written).toContain('    answered_by: "owner:maestro"\n');
+    expect((await readFile(join(root, "receipts.jsonl"), "utf8")).split("\n").filter(Boolean)).toHaveLength(1);
+    expect(logs).toContain("fleet alpha: you answered fleet-alpha.yaml spawn-duplicate-1 (stop-newer)");
+    // Answered once: a second answer is refused, and a name that is not a ledger in the root never resolves.
+    await expect(
+      fleet.answer({
+        scope: "alpha",
+        ledger: "fleet-alpha.yaml",
+        uid: ask.uid,
+        id: ask.id,
+        hash: ask.hash,
+        option: "leave",
+        note: "",
+      }),
+    ).rejects.toThrow("already answered");
+    const stray = { uid: null, id: "x", hash: "h", option: null, note: "x" };
+    await expect(fleet.answer({ scope: "alpha", ledger: "../ledger.jsonl", ...stray })).rejects.toThrow(
+      "is not a ledger name",
+    );
+    // A .control that links out of the state dir (into a git checkout, say) is never written through.
+    const elsewhere = join(root, "checkout");
+    await mkdir(join(elsewhere, "asks"), { recursive: true });
+    await writeFile(join(elsewhere, "asks", "fleet-alpha.yaml"), ledger);
+    await rm(join(paths.state, "alpha", ".control"), { recursive: true });
+    await symlink(elsewhere, join(paths.state, "alpha", ".control"));
+    await expect(fleet.answer({ scope: "alpha", ledger: "fleet-alpha.yaml", ...stray })).rejects.toThrow(
+      "is not a folder of the fleet's own",
+    );
+    expect(await readFile(join(elsewhere, "asks", "fleet-alpha.yaml"), "utf8")).toBe(ledger);
+  });
+});
+
+describe("ledger locks Maestro left behind", () => {
+  test("are cleared by a sweep a Fleet read queues, with no scope at all", async () => {
+    const { root, fleet } = await setup();
+    const ledger = join(root, "asks", "l.yaml");
+    await mkdir(join(root, "asks"), { recursive: true });
+    await writeFile(ledger, "asks: []\n");
+    const locks = join(root, "locks");
+    // A release whose token could not be read leaves the lock, our pid on it.
+    const lock = await acquireLock(ledger, locks);
+    await writeFile(join(lock.dir, "token"), "garbled\n");
+    await releaseLock(lock);
+    expect(await readdir(locks)).toHaveLength(1);
+    expect((await fleet.get()).scopes).toEqual([]);
+    for (let tries = 0; tries < 50 && (await readdir(locks)).length > 0; tries++) await Bun.sleep(20);
+    expect(await readdir(locks)).toEqual([]);
   });
 });
