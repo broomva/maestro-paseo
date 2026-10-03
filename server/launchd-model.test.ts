@@ -554,25 +554,27 @@ describe("a job's status", () => {
 
   test("a last run older than the eight days kept is not on time only when a run could have come due unseen", () => {
     const monthly = { intervalMs: null, calendar: calendarSpecs({ Day: 15, Hour: 3, Minute: 0 }) };
-    // Due on Sep 15 and Aug 15 since its Aug 15 run 48 days ago: the Sep 15 one fell before the horizon.
-    expect(
-      launchdStatus({ ...base, schedule: monthly, runs: [run(Date.parse("2026-08-15T03:00:05Z"))] }),
-    ).toMatchObject({
+    // The calendar is the Mac's own time zone: the runs are its wall times, so this reads the same in any zone.
+    const local = (month: number, day: number, hour: number, year = 2026) =>
+      new Date(year, month - 1, day, hour, 0, 5).getTime();
+    // Due on Sep 15 since its Aug 15 run 48 days ago: the Sep 15 one fell before the horizon.
+    expect(launchdStatus({ ...base, schedule: monthly, runs: [run(local(8, 15, 3))] })).toMatchObject({
       status: "unknown",
       reason: "Its last run is older than the eight days this keeps; whether one was missed since is not known.",
     });
     // Its Sep 15 run, 17 days ago: the next is Oct 15. On time.
-    expect(
-      launchdStatus({ ...base, schedule: monthly, runs: [run(Date.parse("2026-09-15T03:00:05Z"))] }),
-    ).toMatchObject({ status: "ok", reason: "On schedule; its last run passed." });
+    expect(launchdStatus({ ...base, schedule: monthly, runs: [run(local(9, 15, 3))] })).toMatchObject({
+      status: "ok",
+      reason: "On schedule; its last run passed.",
+    });
     // A yearly job's run of last January: walked in hours, on time; one of two Januaries ago: not known.
     const yearly = { intervalMs: null, calendar: calendarSpecs({ Month: 1, Day: 1, Hour: 0, Minute: 0 }) };
-    expect(launchdStatus({ ...base, schedule: yearly, runs: [run(Date.parse("2026-01-01T00:00:05Z"))] }).status).toBe(
-      "ok",
-    );
-    expect(launchdStatus({ ...base, schedule: yearly, runs: [run(Date.parse("2025-01-01T00:00:05Z"))] }).status).toBe(
-      "unknown",
-    );
+    expect(launchdStatus({ ...base, schedule: yearly, runs: [run(local(1, 1, 0))] }).status).toBe("ok");
+    expect(launchdStatus({ ...base, schedule: yearly, runs: [run(local(1, 1, 0, 2025))] }).status).toBe("unknown");
+    // Past a year and a day it is not walked back to: a calendar that never comes due (Feb 30) is not known either.
+    const never = { intervalMs: null, calendar: calendarSpecs({ Month: 2, Day: 30, Hour: 0, Minute: 0 }) };
+    expect(launchdStatus({ ...base, schedule: never, runs: [run(local(9, 1, 0, 2025))] }).status).toBe("unknown");
+    expect(launchdStatus({ ...base, schedule: never, runs: [run(local(9, 1, 0))] }).status).toBe("ok");
     // On a 14-day interval, its run 10 days ago is within two intervals: on time; 30 days ago: missed.
     const fortnight = { intervalMs: 14 * 24 * H, calendar: null };
     expect(launchdStatus({ ...base, schedule: fortnight, runs: [run(NOW - 10 * 24 * H)] }).status).toBe("ok");
@@ -580,10 +582,17 @@ describe("a job's status", () => {
   });
 
   test("a job with a calendar and an interval: a miss on its interval is never hidden by its calendar's not known", () => {
-    // The clock cannot read the kernel (not whole): the calendar's 21:00 is late on wall time only.
-    const stalled = (from: number) => ({ ...sleptThrough(NOW)(from), whole: false });
+    // The clock counts awake time only up to 100 minutes ago (not whole). Since the run at 19:10, 30 minutes awake at
+    // least: past the interval's 15. The calendar's 20:00 and 21:00 are late on wall time only: not known on their own.
+    const stalled = (from: number) => ({ ms: Math.max(0, NOW - from - 100 * M), whole: false });
     const both = { intervalMs: 5 * M, calendar: calendarSpecs({ Minute: 0 }) };
-    expect(launchdStatus({ ...base, awake: stalled, schedule: both, runs: [run(NOW - 50 * M)] }).status).toBe("missed");
+    const hourly = { intervalMs: null, calendar: both.calendar };
+    expect(launchdStatus({ ...base, awake: stalled, schedule: hourly, runs: [run(NOW - 130 * M)] }).status).toBe(
+      "unknown",
+    );
+    expect(launchdStatus({ ...base, awake: stalled, schedule: both, runs: [run(NOW - 130 * M)] }).status).toBe(
+      "missed",
+    );
   });
 
   test("a zero interval never loops: it is no interval", () => {

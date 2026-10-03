@@ -211,9 +211,10 @@ const MINUTE = 60_000;
  * The times any of the matchers falls due after `from` and up to `to`, each
  * on a whole minute, soonest first, at most `limit` of them. The minutes are
  * walked in real time, so a daylight-saving change is handled as the wall
- * clock moves. An hour no matcher allows any minute of is stepped over to the
- * next whole hour: a clock change inside the step only shortens or repeats
- * minutes of that same hour, so no due time is stepped over.
+ * clock moves. An hour no matcher allows any minute of is stepped over, but
+ * only when the step lands on the next hour's minute 0. A clock change that
+ * lands it anywhere else, as Chatham's 02:45 → 03:45 lands 02:00 + 60 min on
+ * 04:00, is walked a minute at a time instead, so no due time is stepped over.
  */
 export function dueTimes(
   specs: readonly CronSpec[],
@@ -227,7 +228,9 @@ export function dueTimes(
   for (let at = Math.floor(from / MINUTE) * MINUTE + MINUTE; at <= to && out.length < limit; ) {
     const parts = partsOf(at, zone);
     if (specs.some((spec) => matches(spec, parts))) out.push(at);
-    at += specs.some((spec) => inHour(spec, parts)) ? MINUTE : (60 - parts.minute) * MINUTE;
+    const next = at + (60 - parts.minute) * MINUTE;
+    const landed = specs.some((spec) => inHour(spec, parts)) ? null : partsOf(next, zone);
+    at = landed?.minute === 0 && landed.hour === (parts.hour + 1) % 24 ? next : at + MINUTE;
   }
   return out;
 }

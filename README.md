@@ -513,6 +513,12 @@ It is pinned to 0.8.0 so one build serves 0.8 and 0.9 hosts.
   - With the Mac's awake time unreadable from the start (no record at all), nothing overdue is called
     missed: the rows say *not known* and the view says why. Needs you hears of it from the Fleet
     view's notice, which needs a scheduled fleet scope; the Timeline raises none of its own.
+  - Once the kernel's clock reads again after an outage, the awake clock places that stretch's awake
+    time as early in it as it can be. For a due time inside the outage, the awake time since is
+    then a lower bound read as exact, so a run missed there can read on time. Only due times
+    inside the outage are affected.
+  - While both `launchctl list` and the unified log fail, a run the last good list saw going shows
+    as running until either reads again. The view says each read failed.
   - On the night the clocks go back, a calendar job in the repeated hour is due twice by the wall
     clock; if launchd runs it once, the second can read as missed. Bogotá, with no daylight saving,
     is not affected.

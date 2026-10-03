@@ -58,6 +58,8 @@ export const EVIDENCE_MS = 8 * 24 * 60 * 60_000;
 
 /** A run counts as missed this long after its interval would have fired twice. */
 export const INTERVAL_GRACE_MS = 5 * 60_000;
+/** No run for this long on an interval is a miss: two intervals and the grace. */
+const intervalLimit = (intervalMs: number) => 2 * intervalMs + INTERVAL_GRACE_MS;
 /** A calendar run counts as missed this long, in awake time, after it was due (launchd runs one the Mac slept through at wake). */
 export const CALENDAR_GRACE_MS = 30 * 60_000;
 /** A run starting this close to a due time, or this close to a run seen elsewhere, is the same run. */
@@ -505,7 +507,7 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
       }
     }
     if (schedule.intervalMs !== null) {
-      if (awakeBetween(input.awake, from, to) > 2 * schedule.intervalMs + INTERVAL_GRACE_MS) {
+      if (awakeBetween(input.awake, from, to) > intervalLimit(schedule.intervalMs)) {
         // Due an interval after it; in wall time, where no sleep fell between.
         const dueAt = from + schedule.intervalMs;
         return {
@@ -521,10 +523,7 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
     // Missed on either key comes first: a job with both is never hidden by the other's not known.
     const maybe = due.find((at) => awakeAtMost(input.awake, at, to) > CALENDAR_GRACE_MS);
     if (maybe !== undefined) return { status: "unknown", reason: AWAKE_NOT_KNOWN, since: iso(maybe), missed: [] };
-    if (
-      schedule.intervalMs !== null &&
-      awakeAtMost(input.awake, from, to) > 2 * schedule.intervalMs + INTERVAL_GRACE_MS
-    ) {
+    if (schedule.intervalMs !== null && awakeAtMost(input.awake, from, to) > intervalLimit(schedule.intervalMs)) {
       return { status: "unknown", reason: AWAKE_NOT_KNOWN, since: iso(from + schedule.intervalMs), missed: [] };
     }
     // Not judged is not on time: a run came due after the newest one ended, before judging could start
@@ -540,8 +539,7 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
             Math.min(from + MATCH_SLACK_MS, to),
             1,
           )[0] ?? null)
-        : schedule.intervalMs !== null &&
-            awakeAtMost(input.awake, blindFrom, to) > 2 * schedule.intervalMs + INTERVAL_GRACE_MS
+        : schedule.intervalMs !== null && awakeAtMost(input.awake, blindFrom, to) > intervalLimit(schedule.intervalMs)
           ? blindFrom + schedule.intervalMs
           : null;
       if (blind !== null) {
@@ -610,7 +608,7 @@ export function launchdStatus(input: LaunchdStatusInput): Judged {
   };
 }
 
-/** A newest run older than this before the horizon: a run came due between, whatever the calendar (a year and a day). */
+/** A newest run older than this before the horizon is not walked back to: whether one came due between is not known. */
 const UNSEEN_WALK_MS = 366 * 86_400_000;
 
 /**
@@ -628,9 +626,7 @@ function dueUnseen(schedule: LaunchdSchedule, awake: AwakeFor, newestEnd: number
       return true;
     }
   }
-  return (
-    schedule.intervalMs !== null && awakeAtMost(awake, newestEnd, to) > 2 * schedule.intervalMs + INTERVAL_GRACE_MS
-  );
+  return schedule.intervalMs !== null && awakeAtMost(awake, newestEnd, to) > intervalLimit(schedule.intervalMs);
 }
 
 /** The runs still to come within `to`, soonest first: from the calendar, or an interval after the newest run. */

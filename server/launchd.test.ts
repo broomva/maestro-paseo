@@ -416,6 +416,13 @@ describe("reading the jobs", () => {
       running: true,
       loadedSince: null,
     });
+    // The run before's end (another pid), logged after the list began, is not this run's.
+    setNow(NOW + 10 * M);
+    setShown(
+      exitLine("com.broomva.moltbook-loop", 4320, localStamp(NOW + M), "exited due to exit(1), ran for 600000ms"),
+    );
+    const before = await launchd.read();
+    expect(before.jobs.find((job) => job.label === "com.broomva.moltbook-loop")?.running).toBe(true);
   });
 
   test("an unload the log shows on a read whose list fails still starts loaded-since again", async () => {

@@ -311,12 +311,20 @@ export class Launchd {
    * loaded-since, so no miss is judged on it. A run going then is going still
    * unless the unified log has recorded an end of it since: then that end says
    * how it ended, so a failure still shows, and launchd's last exit (the run
-   * before) never stands in for a run still going.
+   * before) never stands in for a run still going. An end is that run's when
+   * both pids are known and agree: the run before's, logged just after the
+   * list began, is not.
    */
   private kept(job: LaunchdJob): LaunchdJob {
+    const pid = job.printed?.pid ?? null;
     const ended =
       job.running &&
-      [...this.exits.values()].some((exit) => exit.label === job.label && exit.endedAt >= this.lastListAt);
+      [...this.exits.values()].some(
+        (exit) =>
+          exit.label === job.label &&
+          exit.endedAt >= this.lastListAt &&
+          (pid === null || exit.pid === null || exit.pid === pid),
+      );
     return { ...job, loadedSince: null, ...(ended ? { running: false, runningSince: null } : {}) };
   }
 
