@@ -368,6 +368,16 @@ describe("reading the jobs", () => {
     ).toBe(true);
   });
 
+  test("a log that forgot even the minutes just after the last read ended starts the stretch again", async () => {
+    const { launchd, setNow, setRetain } = await setup();
+    await launchd.read();
+    // An hour on, the log holds only from four minutes after the last read ended: those four are unseen.
+    setNow(NOW + H);
+    setRetain(H - 4 * M);
+    const read = await launchd.read();
+    expect(read.seen).toEqual({ from: NOW + 4 * M, to: NOW + H });
+  });
+
   test("a probe that fails proves nothing: no stretch, said; the next good one starts it again", async () => {
     const { launchd, failProbe, setNow } = await setup();
     await launchd.read();
