@@ -34,6 +34,7 @@ import type { MaestroConfig, Scoreboard, WakeEntry, WorkItem } from "../shared/c
 import { type FleetNotice, type FleetProposal, type FleetView, groupProposals } from "../shared/fleet";
 import type { HistoryEvent } from "../shared/records";
 import { groupOf, type OrchState } from "../shared/states";
+import type { TimelineNotice, TimelineSource, TimelineView } from "../shared/timeline";
 
 // A cold first mount alone can pass bun's 5 s default under load; that is not a failure of the surface.
 setDefaultTimeout(60_000);
@@ -482,6 +483,75 @@ const fleetView = (scope: string | undefined): FleetView => {
     },
   };
 };
+/** The timeline as timeline.get answers: kg-lint failed, moltbook on time, the fleet scope and the loop. */
+const timelineView = (): TimelineView => {
+  const now = Date.now();
+  const at = (ms: number) => new Date(now + ms).toISOString();
+  const row = (id: string, extra: Partial<TimelineSource>): TimelineSource => ({
+    id,
+    kind: "launchd",
+    name: id,
+    cadence: "every 15 minutes",
+    status: "ok",
+    reason: "On schedule; its last run passed.",
+    since: null,
+    needsYou: false,
+    next: null,
+    upcoming: [],
+    runs: [],
+    runsCut: false,
+    last: null,
+    where: null,
+    hasLog: false,
+    link: null,
+    ...extra,
+  });
+  const failed = { at: at(-2 * H), endedAt: at(-2 * H + 5000), status: "failed" as const, exit: 1, detail: "exit 1" };
+  return {
+    now: at(0),
+    from: at(-24 * H),
+    to: at(24 * H),
+    warnings: [],
+    sources: [
+      row("fleet:broomva", {
+        kind: "fleet",
+        name: "fleet-reconcile broomva",
+        cadence: "every hour",
+        reason: "Ticks every hour. The last, tick 35, passed.",
+        next: at(25 * 60_000),
+        link: { kind: "fleet", scope: "broomva" },
+      }),
+      row("launchd:com.broomva.moltbook-loop", {
+        name: "moltbook-loop",
+        next: at(10 * 60_000),
+        upcoming: [at(10 * 60_000), at(25 * 60_000)],
+        runs: [{ at: at(-5 * 60_000), endedAt: at(-5 * 60_000 + 22), status: "ok", exit: 0, detail: "exit 0" }],
+        last: { at: at(-5 * 60_000), endedAt: at(-5 * 60_000 + 22), status: "ok", exit: 0, detail: "exit 0" },
+      }),
+      row("launchd:com.broomva.kg-lint", {
+        name: "kg-lint",
+        cadence: "Sundays at 02:30",
+        status: "failed",
+        needsYou: true,
+        reason: "Its last run failed: exit 1.",
+        since: failed.at,
+        runs: [failed],
+        last: failed,
+        where: "/tmp/broomva-kg-lint.log",
+        hasLog: true,
+      }),
+      row("loop", {
+        kind: "loop",
+        name: "Maestro's loop",
+        cadence: "off",
+        status: "off",
+        reason: "The loop is off; turn it on in Settings.",
+        link: { kind: "loop" },
+      }),
+    ],
+  };
+};
+let timelineNotices: TimelineNotice[] = [];
 const calls: { method: string; input: unknown }[] = [];
 const invoke = async (method: string, input: unknown) => {
   calls.push({ method, input });
@@ -495,7 +565,14 @@ const invoke = async (method: string, input: unknown) => {
   if (method === "config.set") return input;
   if (method === "work.list") return { root: "/work", items, warnings: [], scoreboard: board() };
   if (method === "work.history") return { events: history(), capped: false };
-  if (method === "work.attention") return { waiting: [], sessions: [], fleet: fleetNotices };
+  if (method === "work.attention") return { waiting: [], sessions: [], fleet: fleetNotices, timeline: timelineNotices };
+  if (method === "timeline.get") return timelineView();
+  if (method === "timeline.log") {
+    const { id } = input as { id: string };
+    return id === "launchd:com.broomva.kg-lint"
+      ? { path: "/tmp/broomva-kg-lint.log", tail: "[2026-10-02T07:30:00Z] lint: 3 pages fail the schema" }
+      : { path: null, tail: null };
+  }
   if (method === "fleet.get") {
     if (fleetHeld) await fleetHeld;
     return fleetView((input as { scope?: string }).scope);
@@ -667,6 +744,7 @@ afterEach(async () => {
   stopHeld = null;
   fleetNotices = [];
   fleetHeld = null;
+  timelineNotices = [];
   proposalsNow = fleetProposals();
   sriProposals = sriFixture();
   calls.length = 0;
@@ -1124,9 +1202,9 @@ describe("views and filters", () => {
     expect(view.byLabel("Work f, Done, genesis, updated 12 minutes ago")).not.toBeNull();
   });
 
-  test("compact switches only between the feed, History and the Fleet", async () => {
+  test("compact switches only between the feed, History, the Fleet and the Timeline", async () => {
     const view = await mount(surface(true));
-    expect(view.tabs().map((tab) => tab.getAttribute("aria-label"))).toEqual(["Feed", "History", "Fleet"]);
+    expect(view.tabs().map((tab) => tab.getAttribute("aria-label"))).toEqual(["Feed", "History", "Fleet", "Timeline"]);
     expect(view.text()).toContain("claude · own worktree");
     await view.press(view.tabs()[1]);
     await settle(50);
@@ -1601,5 +1679,84 @@ describe("the Fleet view", () => {
     // Each row stands alone: a bare number leads with the cell after it, the rest under their column names.
     expect(view.text()).toContain("1 · out of scopesessions53");
     expect(view.text()).not.toContain("classout of scope");
+  });
+});
+
+describe("the Timeline", () => {
+  const tab = (view: Awaited<ReturnType<typeof mount>>, label = "Timeline") =>
+    view.tabs().find((one) => one.getAttribute("aria-label") === label);
+  const rows = (view: Awaited<ReturnType<typeof mount>>) =>
+    view
+      .all('[role="button"][aria-expanded]')
+      .map((row) => row.getAttribute("aria-label") ?? "")
+      .filter((label) => !label.includes("the loop"));
+
+  test("every scheduled source on one axis, what needs you first, each with its last and next run", async () => {
+    const view = await mount(surface(false));
+    await view.press(tab(view));
+    const text = view.text();
+    expect(text).toContain("The past 24 h and the next 24 h. 4 scheduled sources; 1 needs you.");
+    expect(text).toContain("Its last run failed: exit 1.");
+    expect(text).toContain("Next in 10 min");
+    expect(text).toContain("Sundays at 02:30");
+    // Failed first, then on time by next run, then off.
+    expect(rows(view).map((label) => label.split(",")[0])).toEqual([
+      "kg-lint",
+      "moltbook-loop",
+      "fleet-reconcile broomva",
+      "Maestro's loop",
+    ]);
+  });
+
+  test("a row opens its runs, its log's end and where it keeps it; the log is read only then", async () => {
+    const view = await mount(surface(false));
+    await view.press(tab(view));
+    expect(view.text()).not.toContain("Runs in the last 24 h");
+    expect(calls.filter((call) => call.method === "timeline.log")).toEqual([]);
+    await view.press(view.all('[aria-label^="kg-lint, launchd"]')[0]);
+    await settle(50);
+    expect(calls.filter((call) => call.method === "timeline.log").map((call) => call.input)).toEqual([
+      { id: "launchd:com.broomva.kg-lint" },
+    ]);
+    const text = view.text();
+    expect(text).toContain("Runs in the last 24 h");
+    expect(text).toContain("failed · 5 s · exit 1");
+    expect(text).toContain("lint: 3 pages fail the schema");
+    expect(text).toContain("/tmp/broomva-kg-lint.log");
+  });
+
+  test("a fleet scope's row opens the Fleet view; the loop's opens the loop", async () => {
+    const view = await mount(surface(false));
+    await view.press(tab(view));
+    await view.press(view.all('[aria-label^="fleet-reconcile broomva, Fleet"]')[0]);
+    // A source with no log of its own asks for none.
+    expect(calls.filter((call) => call.method === "timeline.log")).toEqual([]);
+    await view.press(view.byLabel("Open Fleet"));
+    expect(tab(view, "Fleet")?.getAttribute("aria-selected")).toBe("true");
+    await view.press(tab(view));
+    await view.press(view.all('[aria-label^="Maestro\'s loop, Maestro"]')[0]);
+    await view.press(view.byLabel("Open the loop"));
+    expect(view.byLabel("Close the loop")).not.toBeNull();
+  });
+
+  test("on the phone: a failed run shows above the other views, opens the Timeline, and is not repeated there", async () => {
+    timelineNotices = [
+      {
+        id: "launchd:com.broomva.kg-lint",
+        kind: "launchd",
+        name: "kg-lint",
+        status: "failed",
+        reason: "Its last run failed: exit 1.",
+        since: new Date(Date.now() - 2 * H).toISOString(),
+      },
+    ];
+    const view = await mount(surface(true));
+    await settle(50);
+    expect(view.text()).toContain("kg-lint: failed run");
+    expect(view.text()).toContain("Its last run failed: exit 1.");
+    await view.press(view.byLabel("Open Timeline, kg-lint"));
+    expect(tab(view)?.getAttribute("aria-selected")).toBe("true");
+    expect(view.text()).not.toContain("kg-lint: failed run.");
+    expect(view.text()).toContain("1 needs you.");
   });
 });

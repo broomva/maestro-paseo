@@ -118,3 +118,22 @@ describe("the fleet in the header count", () => {
     expect(needsYouTarget([], [{ scope: "broomva" }])).toEqual({ kind: "fleet", scope: "broomva" });
   });
 });
+
+describe("the timeline in the header count", () => {
+  const notice = (id: string) => ({ id });
+
+  test("each timeline notice counts once, beside the work and the fleet's", () => {
+    const items = [fakeWork("r", "review"), fakeWork("run", "running")];
+    expect(needsYouCount(items, [], [notice("launchd:com.broomva.kg-lint")])).toBe(2);
+    expect(needsYouCount(items, [{ scope: "broomva" }], [notice("a"), notice("b")])).toBe(4);
+  });
+
+  test("only timeline notices open the Timeline; with the fleet's too, the Fleet; with work, Needs you", () => {
+    expect(needsYouTarget([], [], [notice("a")])).toEqual({ kind: "timeline" });
+    expect(needsYouTarget([], [{ scope: "broomva" }], [notice("a")])).toEqual({ kind: "fleet", scope: "broomva" });
+    // One item and a timeline notice: not that one item, since the count is two.
+    expect(needsYouTarget([fakeWork("r", "review")], [], [notice("a")])).toEqual({ kind: "filter", group: "review" });
+    // Only stuck work and a notice: Needs you, not Stuck, where the notice shows above the list.
+    expect(needsYouTarget([fakeWork("b", "blocked")], [], [notice("a")])).toEqual({ kind: "filter", group: "review" });
+  });
+});

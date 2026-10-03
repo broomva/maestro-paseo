@@ -18,6 +18,19 @@ const ago = (ms: number) => new Date(now - ms).toISOString();
 const inA = { agentId: "a1", workspaceId: "ws1" };
 
 describe("work.attention", () => {
+  test("the timeline's notices ride along beside the fleet's, as given", () => {
+    const notice = {
+      id: "launchd:com.broomva.kg-lint",
+      kind: "launchd" as const,
+      name: "kg-lint",
+      status: "missed" as const,
+      reason: "A run came due 2h ago and it has not run.",
+      since: ago(7_200_000),
+    };
+    expect(attentionOf([], now, [], [notice]).timeline).toEqual([notice]);
+    expect(attentionOf([], now).timeline).toEqual([]);
+  });
+
   test("waiting is the work at your gate or stuck, in list order", () => {
     const { waiting } = attentionOf(
       [fakeWork("r", "review"), fakeWork("b", "blocked"), fakeWork("x", "running"), fakeWork("d", "done")],

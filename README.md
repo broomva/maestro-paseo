@@ -34,6 +34,8 @@ those, and nothing Paseo already does.
   work, and Needs you, Running, Queued and Done add up to All.
 - **Fleet**, a view beside History: fleet-reconcile's hourly runs per scope, with your verdict on
   what its dry run would do (see [The Fleet](#the-fleet)).
+- **Timeline**, a view beside the Fleet: every scheduled session and loop on one time axis, the past
+  24 hours and the next 24, with a failed or missed run in Needs you (see [The Timeline](#the-timeline)).
 - **Work** panel beside any agent: the work it is running, or a button to track it.
 - **Command Center**: *Open Maestro*, and *Track this session in Maestro* on an agent.
 - **`/maestro [title]`** in the composer: track the current session as work.
@@ -351,6 +353,89 @@ For a second daemon or a test, these override the defaults:
 - `MAESTRO_PASEO_FLEET_AGENTS` overrides the LaunchAgents folder.
 - `MAESTRO_PASEO_FLEET_AWAKE_CLOCK=wall` counts awake time as wall time.
 
+## The Timeline
+
+The **Timeline** view puts every scheduled thing on one time axis, the past 24 hours to the left of
+now and the next 24 to its right. It reads four kinds of source:
+
+| Source | Read from | Its runs | Its next run |
+|---|---|---|---|
+| Paseo schedules and heartbeats | the daemon's schedule files, `<paseo home>/schedules/*.json` | each run Paseo kept, with `succeeded` or `failed` and its error | `nextRunAt`, then what its cron or interval makes of the window |
+| launchd jobs (`com.broomva.*`) | `launchctl list`, `launchctl print`, the plist, the job's log, and the unified log | each run end launchd logged ("exited due to exit(0), ran for 26ms"), plus the runs its own log stamped; launchd's last exit code fills the newest | its `StartCalendarInterval`, or an interval after its newest run |
+| Maestro's loop | the loop's state and its wake log | each wake, with what it did | its next wake, then every period |
+| fleet-reconcile scopes | the Fleet view's own read (one reader of the fleet's files) | each tick, with its exit and failed step | an interval after the last tick |
+
+- **One row per source.** Each row shows the source's name, its status in words beside its color,
+  and how often it runs. A track shows its runs as marks: green passed, red failed, a hollow amber
+  mark for a run that was missed, grey when no exit was recorded, and hollow rings for the runs
+  still to come. Last and next run are in words below the track.
+- **Opening a row.** Press a row for its runs in the window, why it has its status, where it keeps
+  its record, and a way on: a fleet scope opens the Fleet view, the loop opens its panel, a Paseo
+  schedule opens the session of its last run. A launchd job's row also shows the end of its log,
+  read (`timeline.log`) only while the row is open, never sent with the view every client polls.
+- **What needs you comes first.** A source is *failed* when its newest run failed: a non-zero exit,
+  a signal, or Paseo's `failed`. A later run that passes puts it back on time; the red mark stays
+  on the track. A run whose exit nobody recorded is *not known*, never on time, and a SIGTERM
+  launchd sent itself (at logout, or an unload) stops a run without failing it.
+- **When a run counts as missed.** Every grace is awake time, from the plugin's one awake clock,
+  which the Fleet view counts in too (the kernel's `CLOCK_UPTIME_RAW`, which stops while the Mac sleeps).
+  launchd fires nothing while the Mac sleeps, and runs a calendar job it slept through once at wake:
+  - A launchd job on an interval: two intervals and 5 minutes of awake time with no run, after its
+    newest run ended.
+  - A launchd job on a calendar: a due time after its newest run ended, with 30 minutes of awake time
+    gone since.
+  - A Paseo schedule: its next run 10 minutes of awake time overdue, with no run started at or after
+    it was due. A paused, completed or expired schedule never needs you, whatever its last run did:
+    it will not run again on its own.
+  - The loop: a wake 5 minutes of awake time overdue.
+  - A fleet scope: the Fleet view's own rule.
+
+  Each grace is judged on both bounds of awake time. A run is missed only when the least awake
+  time there can have been is past its grace, and on time only when the most is within it. In
+  between, the row says *not known*. That happens after a reload, for a due time before the clock's
+  first record, and while the clock cannot read the kernel.
+- **A read that fails is said, never read as healthy.** A command that exits non-zero, or a plist
+  that will not convert, is a warning in the view and costs only what it would have said.
+- **A miss is judged only on what was seen.** The launchd reader keeps one stretch the unified log is
+  proven to have held. Each read asks the log for the first launchd event at or after where the read
+  starts. Only when that event is no later than where the last read ended (the log still held it)
+  does the read extend the stretch; a gap the log no longer holds starts it again at what the log
+  holds now, and a probe that fails changes nothing until the next read proves the same range. Run
+  ends and the stretch are kept to one horizon, eight days, so the stretch never reaches back past
+  them. A job is proven loaded from the first read that saw it loaded, again after a read finds
+  its unload in the log (`removing service: <label>`), and again whenever the stretch starts over. A
+  run is called missed only if it came due inside the stretch, after the newest run ended and since
+  the job was proven loaded. A due time after the newest run that falls before judging could start
+  (the plugin's first read, a reload, a gap) is never called missed and never read as on time: the
+  row says it is not known until the next one.
+- **In Needs you.** A failed or missed source shows above every other view, with *Open Timeline*,
+  and counts in the header count, so it reaches the phone. Fleet scopes are counted once, by the
+  Fleet view's notice or the fleet's own alert work, and never again by the Timeline. The launchd
+  job that runs a fleet scope's ticks is shown as that scope. If the Fleet view cannot be read (or
+  does not know that scope), it is shown as a plain launchd job and counted like one, so a failure
+  is never hidden for want of the Fleet view.
+- **On the phone.** The Timeline is one of the views a compact window offers. Its axis labels every
+  12 hours there, and every 6 on a wide window.
+
+| The Timeline | On the phone, a row open |
+|---|---|
+| ![The Timeline](docs/timeline-view.png) | ![A failed run, opened, on the phone](docs/timeline-phone.png) |
+
+It only reads. Every command goes through a guard that runs `launchctl list`, `launchctl print`,
+`plutil -convert json -o -`, `log show` and `ps -o etime=` and refuses anything else, so it can
+never load, unload, kickstart or kill a job. It never starts, pauses or edits a schedule.
+
+The unified log costs a few seconds to search, so launchd is read in full once (a day back), then
+only from where the last read ended. The view reads it at most once a minute and the header count
+once every five, and the header count never waits on it more than two seconds.
+
+For a second daemon or a test:
+
+- `MAESTRO_PASEO_SCHEDULES` overrides the Paseo schedule folder (else `$PASEO_HOME/schedules`, else
+  `~/.paseo/schedules`).
+- `MAESTRO_PASEO_LAUNCHD` names another label prefix (letters, digits, `.`, `_`, `-`), or `off` to
+  read no launchd job. Anything else reads none.
+
 ## The agent's instructions
 
 The receipt of each dispatch, and the detail pane, say how the agent was started: provider, mode,
@@ -412,3 +497,28 @@ It is pinned to 0.8.0 so one build serves 0.8 and 0.9 hosts.
   installed does not appear until it is tracked.
 - Cancel does not stop or archive the Paseo session. Stop it from the session if it is still
   working.
+- The Timeline sees what the Mac and the daemon keep, nothing more:
+  - A cron a Claude session made for itself lives only in that session, so it is not shown. The
+    coordinator's :13/:43 tick is one.
+  - launchd keeps no run history of its own, and the unified log holds about a day of run ends.
+    Run ends read are kept for eight days; a run older than that, or one before the log's reach, is
+    known only if the job stamps its own log.
+  - A job whose log carries no timestamps shows its last run at the time the log was last written.
+  - A launchd job's calendar is read from its plist on disk: one edited but not yet reloaded is
+    judged on its new times.
+  - A calendar a plist gives that this cannot read (a value out of range) is said in its cadence, and
+    its runs are neither drawn nor judged.
+  - A launchd calendar is read in the daemon process's time zone, which is the Mac's own unless the
+    daemon was started with `TZ` set; launchd itself always uses the Mac's.
+  - With the Mac's awake time unreadable from the start (no record at all), nothing overdue is called
+    missed: the rows say *not known* and the view says why. Needs you hears of it from the Fleet
+    view's notice, which needs a scheduled fleet scope; the Timeline raises none of its own.
+  - Once the kernel's clock reads again after an outage, the awake clock places that stretch's awake
+    time as early in it as it can be. For a due time inside the outage, the awake time since is
+    then a lower bound read as exact, so a run missed there can read on time. Only due times
+    inside the outage are affected.
+  - While both `launchctl list` and the unified log fail, a run the last good list saw going shows
+    as running until either reads again. The view says each read failed.
+  - On the night the clocks go back, a calendar job in the repeated hour is due twice by the wall
+    clock; if launchd runs it once, the second can read as missed. Bogotá, with no daylight saving,
+    is not affected.

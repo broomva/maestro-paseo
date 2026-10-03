@@ -41,3 +41,34 @@ export function fleetPaths(env: NodeJS.ProcessEnv = process.env): {
     agents: env.MAESTRO_PASEO_FLEET_AGENTS ?? join(homedir(), "Library", "LaunchAgents"),
   };
 }
+
+/**
+ * Where the Paseo daemon keeps its schedules and heartbeats, which the
+ * Timeline view reads (server/timeline.ts): `schedules/` in its home, the
+ * daemon's PASEO_HOME, else ~/.paseo.
+ */
+export function paseoSchedulesDir(env: NodeJS.ProcessEnv = process.env): string {
+  return (
+    env.MAESTRO_PASEO_SCHEDULES ??
+    join(env.PASEO_HOME ? expandHome(env.PASEO_HOME) : join(homedir(), ".paseo"), "schedules")
+  );
+}
+
+/** A launchd label prefix: it can reach a log predicate or a launchctl target only as a name. */
+export const LABEL_PREFIX = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * The launchd jobs the Timeline view reads: those whose label starts with
+ * this, `com.broomva.` unless MAESTRO_PASEO_LAUNCHD names another prefix;
+ * `off` reads none (null), as on a host without launchd.
+ */
+export function launchdPrefix(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: string = process.platform,
+): string | null {
+  const chosen = env.MAESTRO_PASEO_LAUNCHD?.trim();
+  if (chosen === "off" || platform !== "darwin") return null;
+  // A label prefix only: anything else could reach the log predicate, so it reads none rather than a guess.
+  if (chosen && !LABEL_PREFIX.test(chosen)) return null;
+  return chosen || "com.broomva.";
+}
