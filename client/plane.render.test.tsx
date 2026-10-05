@@ -2052,6 +2052,10 @@ describe("the workspace's decisions", () => {
   const fleetTab = (view: Awaited<ReturnType<typeof mount>>) =>
     view.tabs().find((one) => one.getAttribute("aria-label") === "Fleet");
   const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
+  /** The workspace's asks load on their own query once the Fleet view opens: waited for, never assumed, on a slow runner. */
+  const until = async (view: Awaited<ReturnType<typeof mount>>, text: string) => {
+    for (let tries = 0; tries < 150 && !view.text().includes(text); tries += 1) await settle(20);
+  };
   const checkout = { kind: "checkout" as const, path: "/Users/me/broomva", branch: "feat/prompt-cache" };
   const main = { kind: "main" as const, path: "/Users/me/broomva", branch: null };
   /** The #863 merge ask: blocking with a default, at home in the main checkout, which has not landed it. */
@@ -2107,6 +2111,7 @@ describe("the workspace's decisions", () => {
     ];
     const view = await mount(surface(false));
     await view.press(fleetTab(view));
+    await until(view, "Your workspace's asks");
     const text = view.text();
     expect(text).toContain("Decisions2 open · 1 waits on you");
     // The ledger that waits on you comes first.
@@ -2138,6 +2143,7 @@ describe("the workspace's decisions", () => {
     workspaceNow = [merge()];
     const view = await mount(surface(true));
     await view.press(fleetTab(view));
+    await until(view, "Your workspace's asks");
     await view.press(view.byLabel("Merge PR #863, recommended"));
     await view.press(view.byLabel("Answer A1: Merge PR #863"));
     expect(sent("ask.answer")).toEqual([
@@ -2163,6 +2169,7 @@ describe("the workspace's decisions", () => {
     ];
     const view = await mount(surface(false));
     await view.press(fleetTab(view));
+    await until(view, "Your workspace's asks");
     expect(view.text()).toContain("Approve merge of PR #863");
     expect(view.text()).not.toContain("Canvas ask q3");
     await view.press(view.byLabel("ledger-3.yaml: 1 open"));
@@ -2188,8 +2195,10 @@ describe("the workspace's decisions", () => {
       },
     ];
     const view = await mount(surface(false));
+    await until(view, "A decision waits on you");
     expect(view.text()).toContain("A decision waits on you: Approve merge of PR #863");
     await view.press(view.byLabel("Open Decisions, 1 waiting"));
+    await until(view, "Waits on you: it blocks until you answer.");
     expect(fleetTab(view)?.getAttribute("aria-selected")).toBe("true");
     expect(view.text()).toContain("Waits on you: it blocks until you answer.");
     // In the Fleet view, Decisions holds it; the notice is not shown twice.
