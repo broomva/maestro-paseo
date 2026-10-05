@@ -339,3 +339,29 @@ export function Notice({
     </View>
   );
 }
+
+/** A titled part of a view: its heading, a line of facts beside it, and its body. */
+export function Section({
+  theme,
+  title,
+  meta,
+  children,
+}: {
+  theme: PluginTheme;
+  title: string;
+  meta?: string;
+  children: ReactNode;
+}) {
+  const text = useText(theme);
+  return (
+    <View style={{ gap: space[2] }}>
+      <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[2], flexWrap: "wrap" }}>
+        <Text style={[text.body, { fontWeight: "600" }]} accessibilityRole="header">
+          {title}
+        </Text>
+        {meta ? <Text style={[text.small, text.tabular]}>{meta}</Text> : null}
+      </View>
+      {children}
+    </View>
+  );
+}

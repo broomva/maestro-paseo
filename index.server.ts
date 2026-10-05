@@ -2,13 +2,21 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { agentMethods, keepServing } from "./server/agent-socket";
 import { attentionOf } from "./server/attention";
 import { loadConfig, saveConfig } from "./server/config";
-import { Engine } from "./server/engine";
+import { WorkspaceAsks } from "./server/control-home";
+import { Engine, UserError } from "./server/engine";
 import { AwakeClock, Fleet, wallClock } from "./server/fleet";
 import { inspectFolder as inspect } from "./server/folders";
 import { GateCards } from "./server/gate-card";
 import { Launchd } from "./server/launchd";
 import { Loop } from "./server/loop";
-import { launchdPrefix, paseoSchedulesDir, socketPath, wakeLogPath } from "./server/paths";
+import {
+  controlAskPaths,
+  controlRepoPaths,
+  launchdPrefix,
+  paseoSchedulesDir,
+  socketPath,
+  wakeLogPath,
+} from "./server/paths";
 import { Records } from "./server/records";
 import type { Paseo } from "./server/runs";
 import { Timeline } from "./server/timeline";
@@ -33,7 +41,7 @@ import {
   wakeLoop,
   workForAgent,
 } from "./shared/contracts";
-import { answerAsk, getFleet, getFleetTick, reviewProposal } from "./shared/fleet";
+import { answerAsk, getFleet, getFleetTick, getWorkspaceAsks, reviewProposal } from "./shared/fleet";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
 import { getTimeline, getTimelineLog } from "./shared/timeline";
 
@@ -88,6 +96,18 @@ export default function contribute(host: PluginServerContext) {
   awakeClock?.start();
   const clock = awakeClock ?? wallClock();
   const fleet = new Fleet({ items: () => engine.list().then(({ items }) => items), clock, log });
+  // The workspace's own asks: the control repo's ledgers, at their homes (spec #861 §5.2).
+  const control = controlRepoPaths();
+  const askPaths = controlAskPaths();
+  const workspace = control.repo
+    ? new WorkspaceAsks({
+        controlRepo: control.repo,
+        answersPath: control.answers,
+        lockRoot: askPaths.locks,
+        receipts: askPaths.receipts,
+        log,
+      })
+    : null;
   // Every scheduled thing on one axis (server/timeline.ts): Paseo's schedules, launchd, the loop, the fleet. Read-only.
   const wakes = new WakeLog(wakeLogPath(), log);
   const prefix = launchdPrefix();
@@ -110,7 +130,7 @@ export default function contribute(host: PluginServerContext) {
   // A fleet or a timeline that cannot be read costs the count its notices, never the work's.
   server.handle(attentionWork, async () => {
     const { items } = await engine.list();
-    const [notices, scheduled] = await Promise.all([
+    const [notices, scheduled, workspaceAsks, fleetAsks] = await Promise.all([
       fleet.notices(items).catch((error) => {
         log(`reading the fleet for the header count: ${(error as Error).message}`);
         return [];
@@ -119,8 +139,16 @@ export default function contribute(host: PluginServerContext) {
         log(`reading the timeline for the header count: ${(error as Error).message}`);
         return [];
       }),
+      (workspace?.waiting() ?? Promise.resolve([])).catch((error) => {
+        log(`reading the workspace's asks for the header count: ${(error as Error).message}`);
+        return [];
+      }),
+      fleet.waitingAsks().catch((error) => {
+        log(`reading the fleet's asks for the header count: ${(error as Error).message}`);
+        return [];
+      }),
     ]);
-    return attentionOf(items, Date.now(), notices, scheduled);
+    return attentionOf(items, Date.now(), notices, scheduled, [...workspaceAsks, ...fleetAsks]);
   });
   server.handle(getTimeline, () => timeline.get());
   // A launchd job's log end, only when you open its row: never in the polled view.
@@ -153,8 +181,16 @@ export default function contribute(host: PluginServerContext) {
   server.handle(getFleet, ({ scope, ticks }) => fleet.get(scope, ticks));
   server.handle(reviewProposal, ({ scope, keys, verdict, note }) => fleet.review({ scope, keys, verdict, note }));
   server.handle(getFleetTick, ({ scope, tick }) => fleet.tick(scope, tick));
-  // Your answer to a decision ask: written under the ledger lock, and never on the agent socket.
-  server.handle(answerAsk, (input) => fleet.answer(input));
+  // The workspace's asks, each read at its home (server/control-home.ts).
+  server.handle(getWorkspaceAsks, () =>
+    workspace ? workspace.view() : Promise.resolve({ controlRepo: "", main: null, decisions: [], warnings: [] }),
+  );
+  // Your answer to a decision ask, at its home: written under the ledger lock, and never on the agent socket.
+  server.handle(answerAsk, async ({ where, ...input }) => {
+    if (where.kind === "fleet") return fleet.answer({ ...input, scope: where.scope });
+    if (!workspace) throw new UserError("Maestro reads no control repo here (MAESTRO_PASEO_CONTROL_REPO is off).");
+    return workspace.answer({ ...input, home: where.home });
+  });
   server.handle(getConfig, () => loadConfig());
   // Saved Settings may turn the loop on or off, or change its period: arm it again from them.
   server.handle(setConfig, async (input) => {

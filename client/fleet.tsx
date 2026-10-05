@@ -6,8 +6,9 @@
 // changes what the fleet does, its mode or its dry run.
 //
 // Each thing drills in: an ask opens the session it is about and the tick
-// that raised it; a decision ask in the fleet's own ledger shows what it costs
-// and what each option does, and takes your answer in place; a proposal opens
+// that raised it; a decision ask, the workspace's or the fleet's own ledger's
+// (client/decisions.tsx), shows what it costs and what each option does, and
+// takes your answer in place; a proposal opens
 // its session in Paseo; a tick opens its report, its failed step and its log.
 //
 // FleetNotices is the same scope health where the rest of Maestro shows what
@@ -21,8 +22,6 @@ import { useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { attentionWork } from "../shared/contracts";
 import {
-  ANSWER_NOTE_CHARS,
-  answerAsk,
   type DecisionAsk,
   type FleetAsk,
   type FleetDetail,
@@ -39,13 +38,12 @@ import {
   reviewProposal,
 } from "../shared/fleet";
 import { PLAIN_VOICE } from "../shared/states";
+import { DecisionGroups, sameAsk, WorkspaceDecisions } from "./decisions";
 import {
   agoText,
   askMeta,
   askWhere,
   classText,
-  decisionAnswered,
-  decisionMeta,
   groupReviewText,
   groupSubject,
   HEALTH_LABEL,
@@ -68,7 +66,7 @@ import { errorText, plural } from "./format";
 import { useRefresh } from "./hooks";
 import { MarkdownView } from "./markdown-view";
 import { Chip } from "./plane-controls";
-import { Button, Card, Notice, radius, size, space, useText } from "./ui";
+import { Button, Card, Notice, radius, Section, size, space, useText } from "./ui";
 
 /** Ticks come hourly: a read every 30 s is plenty, and the reads are files. */
 const POLL_MS = 30_000;
@@ -118,31 +116,6 @@ function Status({ theme, tone, label }: { theme: PluginTheme; tone: Parameters<t
     <View style={{ flexDirection: "row", alignItems: "center", gap: space[1] }}>
       <View style={{ width: 7, height: 7, borderRadius: 7, backgroundColor: ink }} />
       <Text style={{ color: ink, fontSize: size.xs, fontWeight: "600" }}>{label}</Text>
-    </View>
-  );
-}
-
-function Section({
-  theme,
-  title,
-  meta,
-  children,
-}: {
-  theme: PluginTheme;
-  title: string;
-  meta?: string;
-  children: React.ReactNode;
-}) {
-  const text = useText(theme);
-  return (
-    <View style={{ gap: space[2] }}>
-      <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[2], flexWrap: "wrap" }}>
-        <Text style={[text.body, { fontWeight: "600" }]} accessibilityRole="header">
-          {title}
-        </Text>
-        {meta ? <Text style={[text.small, text.tabular]}>{meta}</Text> : null}
-      </View>
-      {children}
     </View>
   );
 }
@@ -438,208 +411,6 @@ function AskRow({
   );
 }
 
-/** Puts an answer the host has just written into every Fleet read held, so the card says so at once. */
-function useApplyAnswer() {
-  const client = useQueryClient();
-  return (scope: string, answered: DecisionAsk) => {
-    client.setQueriesData<FleetRead>({ queryKey: ["maestro", "fleet"] }, (view) => {
-      if (!view?.detail || view.detail.id !== scope) return view;
-      const decisions = view.detail.decisions.map((ask) =>
-        ask.ledger === answered.ledger && ask.id === answered.id && ask.uid === answered.uid ? answered : ask,
-      );
-      return { ...view, detail: { ...view.detail, decisions } };
-    });
-  };
-}
-
-/**
- * A decision ask in the fleet's ledger, with everything a person needs to
- * decide it: what waiting costs, why it is theirs, each option and what it
- * does, and what happens if they say nothing. Choose an option (or write an
- * answer), then Answer: it is written into the ledger, under its lock.
- */
-function DecisionCard({
-  theme,
-  scope,
-  ask,
-  compact,
-  navigation,
-}: {
-  theme: PluginTheme;
-  scope: string;
-  ask: DecisionAsk;
-  compact: boolean;
-  navigation: Navigation;
-}) {
-  const text = useText(theme);
-  const toast = useToast();
-  const refresh = useRefresh();
-  const apply = useApplyAnswer();
-  const send = useRpc(answerAsk);
-  const answer = useMutation({
-    mutationFn: send,
-    onSuccess: ({ ask: answered }, sent) => apply(sent.scope, answered),
-    onSettled: () => {
-      void refresh();
-    },
-  });
-  const [chosen, setChosen] = useState<string | null>(null);
-  const [note, setNote] = useState("");
-  const open = ask.state === "open";
-  const option = ask.options.find((entry) => entry.id === chosen) ?? null;
-  const title = ask.headline ?? ask.question ?? ask.id;
-  const origin = ask.origin;
-  const submit = () =>
-    answer.mutate(
-      { scope, ledger: ask.ledger, uid: ask.uid, id: ask.id, hash: ask.hash, option: chosen, note },
-      {
-        onSuccess: ({ warning }) => {
-          setChosen(null);
-          setNote("");
-          if (warning) toast.error(warning);
-        },
-        onError: (error) => toast.error(errorText(error)),
-      },
-    );
-  return (
-    <Card theme={theme} style={{ gap: space[2] }}>
-      <Text style={[text.body, { fontWeight: "600" }]}>{title}</Text>
-      <Text style={text.small}>{decisionMeta(ask)}</Text>
-      {ask.headline && ask.question ? <Text style={text.muted}>{ask.question}</Text> : null}
-      {ask.stakes ? (
-        <Text style={text.small}>
-          <Text style={{ fontWeight: "600", color: theme.colors.foreground }}>What waiting costs: </Text>
-          {ask.stakes}
-        </Text>
-      ) : null}
-      {ask.whyYou ? (
-        <Text style={text.small}>
-          <Text style={{ fontWeight: "600", color: theme.colors.foreground }}>Why you: </Text>
-          {ask.whyYou}
-        </Text>
-      ) : null}
-      {ask.options.length > 0 ? (
-        <View accessibilityRole="radiogroup" accessibilityLabel={`Options for ${ask.id}`} style={{ gap: space[2] }}>
-          {ask.options.map((entry) => {
-            const picked = open ? chosen === entry.id : ask.answerOption === entry.id;
-            const badges = [
-              entry.recommended ? "Recommended" : null,
-              entry.reversible === false ? "Cannot be undone" : null,
-              !open && picked ? "Your answer" : null,
-            ].filter(Boolean);
-            return (
-              <Pressable
-                key={entry.id}
-                accessibilityRole="radio"
-                accessibilityState={{ checked: picked, disabled: !open || answer.isPending }}
-                aria-checked={picked}
-                accessibilityLabel={`${entry.label}${entry.recommended ? ", recommended" : ""}`}
-                disabled={!open || answer.isPending}
-                onPress={() => setChosen((current) => (current === entry.id ? null : entry.id))}
-                style={({ pressed }) => ({
-                  gap: 2,
-                  padding: space[3],
-                  borderRadius: radius.control,
-                  borderWidth: picked ? 2 : 1,
-                  borderColor: picked ? theme.colors.accent : theme.colors.border,
-                  opacity: pressed ? 0.85 : 1,
-                })}
-              >
-                <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[2], flexWrap: "wrap" }}>
-                  <Text style={[text.body, { flex: 1, minWidth: 140, fontWeight: picked ? "600" : "400" }]}>
-                    {entry.label}
-                  </Text>
-                  {badges.length > 0 ? (
-                    <Text
-                      style={[
-                        text.small,
-                        { color: entry.reversible === false ? theme.colors.statusWarning : theme.colors.accent },
-                      ]}
-                    >
-                      {badges.join(" · ")}
-                    </Text>
-                  ) : null}
-                </View>
-                {entry.consequence ? <Text style={text.small}>{entry.consequence}</Text> : null}
-              </Pressable>
-            );
-          })}
-        </View>
-      ) : null}
-      {ask.fallback ? (
-        <Text style={text.small}>
-          <Text style={{ fontWeight: "600", color: theme.colors.foreground }}>If you say nothing: </Text>
-          {ask.fallback}
-        </Text>
-      ) : null}
-      {!open ? (
-        <View style={{ gap: 2 }}>
-          <Text style={[text.small, { color: theme.colors.statusSuccess }]}>{decisionAnswered(ask)}</Text>
-          {ask.answer ? (
-            <Text style={text.small} selectable>
-              {ask.answer}
-            </Text>
-          ) : null}
-        </View>
-      ) : ask.refusal ? (
-        <Notice theme={theme} tone="warn">
-          {ask.refusal}
-        </Notice>
-      ) : (
-        <View style={{ gap: space[2] }}>
-          <TextInput
-            value={note}
-            onChangeText={setNote}
-            multiline
-            maxLength={ANSWER_NOTE_CHARS}
-            placeholder={ask.options.length > 0 ? "Add words (optional)" : "Your answer"}
-            placeholderTextColor={theme.colors.foregroundMuted}
-            accessibilityLabel={`Your words for ${ask.id}`}
-            style={{
-              minHeight: 48,
-              padding: space[3],
-              borderRadius: radius.control,
-              borderWidth: 1,
-              borderColor: theme.colors.border,
-              backgroundColor: theme.colors.surface2,
-              color: theme.colors.foreground,
-              fontSize: 14,
-              textAlignVertical: "top",
-            }}
-          />
-          <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap", alignItems: "center" }}>
-            <Button
-              theme={theme}
-              variant="primary"
-              icon="Check"
-              label={option ? `Answer: ${option.label}` : "Answer"}
-              compact={compact}
-              busy={answer.isPending}
-              disabled={!option && note.trim().length === 0}
-              accessibilityLabel={`Answer ${ask.id}${option ? `: ${option.label}` : ""}`}
-              onPress={submit}
-            />
-            <Text style={[text.small, { flex: 1, minWidth: 160 }]}>{`Written into ${ask.ledger}.`}</Text>
-          </View>
-        </View>
-      )}
-      {origin && navigation ? (
-        <View style={{ flexDirection: "row" }}>
-          <Button
-            theme={theme}
-            variant="quiet"
-            icon="ArrowUpRight"
-            label="Open the session that asked"
-            compact={compact}
-            accessibilityLabel={`Open the session that asked ${ask.id}`}
-            onPress={() => navigation.openAgent({ agentId: origin.agentId })}
-          />
-        </View>
-      ) : null}
-    </Card>
-  );
-}
-
 /**
  * Puts verdicts the host has just recorded into every Fleet read held, so the
  * card says so at once: no second tap on a button that still reads Accept,
@@ -925,6 +696,14 @@ export function FleetView({
 }) {
   const fleet = useFleet(scope);
   const text = useText(theme);
+  const client = useQueryClient();
+  // An answer the host has just written goes into every Fleet read held, so the card says so at once.
+  const applyAnswer = (scopeId: string, answered: DecisionAsk) =>
+    client.setQueriesData<FleetRead>({ queryKey: ["maestro", "fleet"] }, (view) => {
+      if (!view?.detail || view.detail.id !== scopeId) return view;
+      const decisions = view.detail.decisions.map((ask) => (sameAsk(ask, answered) ? answered : ask));
+      return { ...view, detail: { ...view.detail, decisions } };
+    });
   const [reportOpen, setReportOpen] = useState(!compact);
   const [openTick, setOpenTick] = useState<number | null>(tick);
   const [opened, setOpened] = useState(tick);
@@ -949,6 +728,7 @@ export function FleetView({
   const current = scopes.find((entry) => entry.id === detail?.id) ?? null;
   return (
     <View style={{ gap: space[5] }}>
+      <WorkspaceDecisions theme={theme} compact={compact} navigation={navigation} />
       {error ? (
         <Notice theme={theme} tone="warn">
           {error}
@@ -996,23 +776,21 @@ export function FleetView({
           {detail.decisions.length > 0 ? (
             <Section
               theme={theme}
-              title="Decisions"
+              title="The fleet's decisions"
               meta={`${detail.decisions.filter((ask) => ask.state === "open").length} open`}
             >
               <Text style={text.small}>
-                The fleet's own ask ledger, in {detail.askRoot}. Your answer is written there, under the lock every
-                ledger writer shares, and the fleet reads it at its next tick.
+                The fleet's own ask ledger, in {detail.askRoot}. Your answer is written there, under Maestro's ledger
+                lock (§5.5), and the fleet reads it at its next tick.
               </Text>
-              {detail.decisions.map((ask) => (
-                <DecisionCard
-                  key={`${ask.ledger}:${ask.uid ?? ask.id}`}
-                  theme={theme}
-                  scope={current.id}
-                  ask={ask}
-                  compact={compact}
-                  navigation={navigation}
-                />
-              ))}
+              <DecisionGroups
+                theme={theme}
+                asks={detail.decisions}
+                where={() => ({ kind: "fleet", scope: current.id })}
+                compact={compact}
+                navigation={navigation}
+                onAnswered={(answered) => applyAnswer(current.id, answered)}
+              />
             </Section>
           ) : null}
 

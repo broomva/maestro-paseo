@@ -52,7 +52,15 @@ async function withPlugin(
     MAESTRO_PASEO_FLEET_AWAKE_CLOCK: "wall",
   };
   // So are Paseo's schedules, and no launchd job is read: the machine's own never reach a test.
-  const timelineEnv = { MAESTRO_PASEO_SCHEDULES: join(root, "paseo", "schedules"), MAESTRO_PASEO_LAUNCHD: "off" };
+  // And the control repo is this test's own (none): the owner's ledgers are never read or written by a test.
+  const timelineEnv = {
+    MAESTRO_PASEO_SCHEDULES: join(root, "paseo", "schedules"),
+    MAESTRO_PASEO_LAUNCHD: "off",
+    MAESTRO_PASEO_CONTROL_REPO: join(root, "control"),
+    MAESTRO_PASEO_CONTROL_ANSWERS: join(root, "control-answers"),
+    MAESTRO_PASEO_ASK_LOCKS: join(root, "ask-locks"),
+    MAESTRO_PASEO_ASK_RECEIPTS: join(root, "asks.jsonl"),
+  };
   const saved = {
     MAESTRO_PASEO_CONFIG: process.env.MAESTRO_PASEO_CONFIG,
     MAESTRO_PASEO_SOCKET: process.env.MAESTRO_PASEO_SOCKET,
@@ -116,6 +124,7 @@ test("the plugin cards a landing through the client its hooks were handed", asyn
       agent: { id: "agent-1" },
       outcome: { kind: "completed" },
       timeline: [],
+      asks: [],
       turnId: "t1",
     });
     await flush();
@@ -142,6 +151,7 @@ test("work.attention reads the files and reconciles no session; work.list does",
       sessions: [{ workId: item.id, title: "Counted", state: "running", agentId: "agent-1", workspaceId: "ws-1" }],
       fleet: [],
       timeline: [],
+      asks: [],
     });
     const agent = fake.agents.get("agent-1");
     if (agent) agent.status = "idle";
@@ -149,6 +159,7 @@ test("work.attention reads the files and reconciles no session; work.list does",
       agent: { id: "agent-1" },
       outcome: { kind: "completed" },
       timeline: [],
+      asks: [],
       turnId: "t1",
     });
     for (let read = 0; read < 5; read += 1) await call("work.attention", {});

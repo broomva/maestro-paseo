@@ -1048,6 +1048,13 @@ describe("drilling in", () => {
       "",
     ].join("\n");
     await writeFile(join(askRoot, "fleet-alpha.yaml"), ledger);
+    // Not blocking, and nothing it recommends is final: it does not wait on you, so the header does not count it.
+    expect(await fleet.waitingAsks()).toEqual([]);
+    await writeFile(join(askRoot, "fleet-blocking.yaml"), ledger.replace("blocking: false", "blocking: true"));
+    expect((await fleet.waitingAsks()).map((notice) => [notice.scope, notice.ledger, notice.blocking])).toEqual([
+      ["alpha", "fleet-blocking.yaml", true],
+    ]);
+    await rm(join(askRoot, "fleet-blocking.yaml"));
     const detail = (await fleet.get()).detail;
     expect(detail?.askRoot).toBe(askRoot);
     expect(detail?.decisions.map((ask) => [ask.id, ask.state, ask.options.map((option) => option.id)])).toEqual([

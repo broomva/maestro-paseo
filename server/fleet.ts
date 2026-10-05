@@ -24,6 +24,8 @@ import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import type { WorkItem } from "../shared/contracts";
 import {
+  type AskNotice,
+  askNotice,
   type DecisionAsk,
   FLEET_REPORT_BYTES,
   FLEET_TICKS,
@@ -662,6 +664,16 @@ export class Fleet {
     const urgent = base.status === "missed" || (base.status === "failing" && read.schedule.scheduled);
     const counted = item !== null && (item.needsYou || cover?.answered === true);
     return { health: { ...base, item, needsYou: urgent && !counted }, latest };
+  }
+
+  /** The decision asks in each scope's own root that wait on you (shared/fleet.ts isWaiting), for work.attention. */
+  async waitingAsks(): Promise<AskNotice[]> {
+    const { scopes } = await this.scopes();
+    const reads = await Promise.all(scopes.map((config) => readDecisions(join(config.stateDir, ASK_ROOT))));
+    return reads.flatMap((read, at) => {
+      const scope = scopes[at]?.id ?? null;
+      return read.asks.filter((ask) => ask.waiting).map((ask) => askNotice(ask, scope));
+    });
   }
 
   /** What needs you on its own (work.attention): each scope's missed or failing tick not already in Needs you as the fleet's item. */

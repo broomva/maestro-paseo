@@ -30,7 +30,14 @@ test("work.list and work.get carry the changed line; History and files are serve
   );
   const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
   // No fleet here: the plugin's Fleet view reads this test's empty folder, never the machine's fleet.
-  const fleet = ["MAESTRO_PASEO_FLEET_CONFIG", "MAESTRO_PASEO_FLEET_STATE", "MAESTRO_PASEO_FLEET_AGENTS"] as const;
+  const fleet = [
+    "MAESTRO_PASEO_FLEET_CONFIG",
+    "MAESTRO_PASEO_FLEET_STATE",
+    "MAESTRO_PASEO_FLEET_AGENTS",
+    // Nor the owner's control repo, whose ledgers a test never reads or writes.
+    "MAESTRO_PASEO_CONTROL_REPO",
+    "MAESTRO_PASEO_CONTROL_ANSWERS",
+  ] as const;
   const savedFleet = fleet.map((key) => [key, process.env[key]] as const);
   for (const key of fleet) process.env[key] = join(root, "no-fleet", key);
   process.env.MAESTRO_PASEO_CONFIG = config;

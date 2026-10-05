@@ -2,11 +2,10 @@
 // answered from it, under the control interface's contract (workspace#861,
 // docs/specs/2026-10-01-maestro-control-interface.html):
 //
-// - Which checkout (§5.2, §5.6). Only a registered machine-local root is read
-//   here: the fleet's own, `<state dir>/.control/asks`. A root's home is that
-//   root's file, so no git checkout is chosen, and none is ever written. Asks
-//   in the control repo's checkouts need the full home rule and stay with the
-//   Asks plugin.
+// - Which checkout (§5.2, §5.6). Here, a registered machine-local root (the
+//   fleet's own, `<state dir>/.control/asks`), whose home is the root's file.
+//   The control repo's asks take the full home rule first
+//   (server/control-home.ts), then are written here, at the home it chose.
 // - Identity (§5.2). An ask is its `uid`. One without a uid is its `id`, and
 //   only while no other uid-less ask in the file shares it: a duplicate handle
 //   is an id collision, shown and never answered.
@@ -28,7 +27,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { isMap, isSeq, parseDocument, type YAMLMap } from "yaml";
-import type { DecisionAsk, DecisionOption } from "../shared/fleet";
+import { type AskHome, type DecisionAsk, type DecisionOption, isWaiting } from "../shared/fleet";
 import { UserError } from "./engine";
 
 /** A ledger is read up to this size; past it it is refused, not cut. */
@@ -42,9 +41,9 @@ const TERMINAL_STATUS = /^(resolved|answered|closed|rerouted|withdrawn|defaulted
 /** The answer's text, under whichever key the entry already uses; `answer` when none. */
 const ANSWER_KEYS = ["answer", "answered", "resolution", "outcome"] as const;
 
-type Row = Record<string, unknown>;
+export type Row = Record<string, unknown>;
 
-function text(value: unknown): string | null {
+export function text(value: unknown): string | null {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (typeof value !== "string") return null;
@@ -52,9 +51,10 @@ function text(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-const isRow = (value: unknown): value is Row => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+export const isRow = (value: unknown): value is Row =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
-function optionsOf(raw: unknown): DecisionOption[] {
+export function optionsOf(raw: unknown): DecisionOption[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter(isRow).flatMap((option) => {
     const id = text(option.id);
@@ -71,7 +71,7 @@ function optionsOf(raw: unknown): DecisionOption[] {
   });
 }
 
-function stateOf(row: Row): DecisionAsk["state"] {
+export function stateOf(row: Row): DecisionAsk["state"] {
   const status = (text(row.status) ?? "").toLowerCase();
   if (text(row.archived_at) || status.startsWith("archived")) return "archived";
   if (OUTCOME_KEYS.some((key) => text(row[key]) !== null) || TERMINAL_STATUS.test(status)) return "answered";
@@ -86,7 +86,7 @@ function asksKey(data: unknown): "asks" | "open_asks" | null {
 }
 
 /** One entry per item of the asks list, in order, null for an item that is not a mapping: indices match the YAML's. */
-function rowsOf(data: unknown): (Row | null)[] {
+export function rowsOf(data: unknown): (Row | null)[] {
   const key = asksKey(data);
   if (!key || !isRow(data)) return [];
   return (data[key] as unknown[]).map((item) => (isRow(item) ? item : null));
@@ -98,7 +98,7 @@ function rowsOf(data: unknown): (Row | null)[] {
  * written. (An id that a uid-less ask shares with asks that have a uid is not
  * ambiguous: the uid-less one is the only ask that goes by it.)
  */
-function ambiguity(rows: readonly (Row | null)[]): { ids: Set<string>; uids: Set<string> } {
+export function ambiguity(rows: readonly (Row | null)[]): { ids: Set<string>; uids: Set<string> } {
   const twice = (values: (string | null)[]) => {
     const seen = new Set<string>();
     const again = new Set<string>();
@@ -117,7 +117,7 @@ function ambiguity(rows: readonly (Row | null)[]): { ids: Set<string>; uids: Set
 }
 
 /** A value with its keys in order, so two readings of one entry serialize alike. */
-function canonical(value: unknown): unknown {
+export function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value instanceof Date) return value.toISOString();
   if (!isRow(value)) return value;
@@ -136,11 +136,12 @@ export function entryHash(row: Row): string {
     .slice(0, 16);
 }
 
-function decisionOf(
+export function decisionOf(
   row: Row,
   data: Row,
   ledger: string,
   ambiguous: { ids: Set<string>; uids: Set<string> },
+  home: AskHome,
 ): DecisionAsk | null {
   const id = text(row.id);
   if (!id) return null;
@@ -157,6 +158,8 @@ function decisionOf(
         : !uid && ambiguous.ids.has(id)
           ? `Two asks in ${ledger} are named ${id} and neither has a uid, so an answer could land on the wrong one. Give one a uid or a new id.`
           : null;
+  const options = optionsOf(row.options);
+  const blocking = row.blocking === true;
   return {
     ledger,
     uid,
@@ -167,9 +170,9 @@ function decisionOf(
     question: text(row.question) ?? text(row.ask),
     stakes: text(row.stakes),
     whyYou: text(row.why_you),
-    options: optionsOf(row.options),
+    options,
     fallback: text(row.default) ?? text(row.default_if_silent),
-    blocking: row.blocking === true,
+    blocking,
     askedAt: text(row.asked_at),
     answeredAt: text(row.answered_at) ?? text(row.defaulted_at),
     answer: answerKey ? text(row[answerKey]) : null,
@@ -177,10 +180,13 @@ function decisionOf(
     state,
     origin: originAgent ? { agentId: originAgent, cwd: text(origin.cwd) } : null,
     refusal,
+    home,
+    batched: false,
+    waiting: isWaiting({ state, blocking, options }),
   };
 }
 
-function parsed(source: string): Row {
+export function parsed(source: string): Row {
   const doc = parseDocument(source);
   if (doc.errors.length > 0) throw new Error(`it has a YAML error: ${doc.errors[0]?.message}`);
   const data = doc.toJS() as unknown;
@@ -189,17 +195,30 @@ function parsed(source: string): Row {
 }
 
 /** One ledger's asks, as the Fleet view shows them. */
-export function decisionsOf(source: string, ledger: string): DecisionAsk[] {
+export function decisionsOf(source: string, ledger: string, home: AskHome = ROOTLESS): DecisionAsk[] {
   const data = parsed(source);
   const rows = rowsOf(data);
   const ambiguous = ambiguity(rows);
   return rows.flatMap((row) => {
-    const ask = row ? decisionOf(row, data, ledger, ambiguous) : null;
+    const ask = row ? decisionOf(row, data, ledger, ambiguous, home) : null;
     return ask ? [ask] : [];
   });
 }
 
-const LEDGER = /^[^./][^/]*\.ya?ml$/;
+/** A home for a ledger read on its own, outside any root. */
+const ROOTLESS: AskHome = { kind: "root", path: "", branch: null };
+
+/** A ledger's file name: no folder, no dot file (a temp file of the lock's is `.<name>.tmp-…`). */
+export const LEDGER = /^[^./][^/]*\.ya?ml$/;
+
+/** The open asks, then the latest answered (ANSWERED_SHOWN), newest first. */
+export function shown(all: readonly DecisionAsk[]): DecisionAsk[] {
+  const answered = all
+    .filter((ask) => ask.state === "answered")
+    .sort((a, b) => (b.answeredAt ?? "").localeCompare(a.answeredAt ?? ""))
+    .slice(0, ANSWERED_SHOWN);
+  return [...all.filter((ask) => ask.state === "open"), ...answered];
+}
 
 /**
  * Every ask in a root's ledgers that is open, and the latest answered ones.
@@ -216,23 +235,20 @@ export async function readDecisions(root: string): Promise<{ asks: DecisionAsk[]
   }
   const warnings: string[] = [];
   const all: DecisionAsk[] = [];
+  const home: AskHome = { kind: "root", path: root, branch: null };
   for (const name of names) {
     try {
       const source = await readLedger(join(root, name));
-      all.push(...decisionsOf(source, name));
+      all.push(...decisionsOf(source, name, home));
     } catch (error) {
       warnings.push(`The ask ledger ${name} could not be read: ${(error as Error).message}`);
     }
   }
-  const answered = all
-    .filter((ask) => ask.state === "answered")
-    .sort((a, b) => (b.answeredAt ?? "").localeCompare(a.answeredAt ?? ""))
-    .slice(0, ANSWERED_SHOWN);
-  return { asks: [...all.filter((ask) => ask.state === "open"), ...answered], warnings };
+  return { asks: shown(all), warnings };
 }
 
 /** A ledger's text: a regular file only (a link would be replaced by the rename), within the limit. */
-async function readLedger(path: string): Promise<string> {
+export async function readLedger(path: string): Promise<string> {
   const info = await lstat(path);
   if (!info.isFile()) throw new Error("it is not a regular file");
   if (info.size > LEDGER_LIMIT) throw new Error(`it is over ${LEDGER_LIMIT} bytes`);
@@ -422,11 +438,14 @@ export async function acquireLock(
  * Drops every lock in the root that this process left behind: its own pid and
  * start, not held now. Run at each scan (§5.5), so another writer is never kept
  * waiting on a lock of Maestro's that only Maestro's next answer would clear.
- * The caller runs it when no answer of this process is in flight (Fleet queues
- * it behind its answers): a lock released and taken again meanwhile would
- * otherwise read as left behind.
+ * It runs between this process's answers, never during one (exclusive): a lock
+ * released and taken again meanwhile would otherwise read as left behind.
  */
-export async function dropLeftovers(lockRoot: string): Promise<void> {
+export function dropLeftovers(lockRoot: string): Promise<void> {
+  return exclusive(() => dropNow(lockRoot));
+}
+
+async function dropNow(lockRoot: string): Promise<void> {
   const names = await readdir(lockRoot).catch(() => [] as string[]);
   for (const name of names.filter((entry) => entry.endsWith(".d") && !entry.endsWith(".reclaim.d"))) {
     const dir = join(lockRoot, name);
@@ -551,6 +570,7 @@ export function withAnswer(
   ledger: string,
   input: AnswerInput,
   at: Date,
+  home: AskHome = ROOTLESS,
 ): { out: string; ask: DecisionAsk; hash: string } {
   const unwritable = `Maestro could not write this answer into ${ledger} without changing anything else there, so nothing was written.`;
   const doc = parseDocument(source);
@@ -632,7 +652,7 @@ export function withAnswer(
     throw new UserError(unwritable);
   }
   const back = rowsOf(after)[index];
-  const ask = back ? decisionOf(back, after, ledger, ambiguity(rowsOf(after))) : null;
+  const ask = back ? decisionOf(back, after, ledger, ambiguity(rowsOf(after)), home) : null;
   if (
     ask?.state !== "answered" ||
     ask.answeredAt !== stamp ||
@@ -654,18 +674,42 @@ export interface AnswerOptions {
   log?: (message: string) => void;
   /** For a test: runs after the temp file is written, before the token is checked and it is renamed. */
   beforeRename?: () => Promise<void>;
+  /** The ask's home, as the answered ask then says; the ledger's own folder when not given. */
+  home?: AskHome;
+}
+
+/**
+ * Every lock step of this process, one at a time: an answer (take, write,
+ * release) and a sweep of leftovers. The Fleet view and the workspace's asks
+ * each queue their own writes, and share this, so a sweep never reads a lock
+ * released and taken again meanwhile as left behind.
+ */
+let lockSteps: Promise<unknown> = Promise.resolve();
+function exclusive<T>(run: () => Promise<T>): Promise<T> {
+  const next = lockSteps.catch(() => undefined).then(run);
+  lockSteps = next;
+  return next;
 }
 
 /**
  * Writes your answer into the ledger at `path` under the lock, and returns the
  * ask as it now reads, with a warning when the answer is in but its receipt is not.
  */
-export async function answerDecision(
+export function answerDecision(
+  path: string,
+  input: AnswerInput,
+  options: AnswerOptions,
+): Promise<{ ask: DecisionAsk; warning: string | null }> {
+  return exclusive(() => answerNow(path, input, options));
+}
+
+async function answerNow(
   path: string,
   input: AnswerInput,
   options: AnswerOptions,
 ): Promise<{ ask: DecisionAsk; warning: string | null }> {
   const ledger = basename(path);
+  const home: AskHome = options.home ?? { kind: "root", path: dirname(path), branch: null };
   const now = options.now ?? Date.now;
   const gone = () => new UserError(`${ledger} is gone or not a regular file, so nothing was written.`);
   if (!(await lstat(path).catch(() => null))?.isFile()) throw gone();
@@ -674,7 +718,7 @@ export async function answerDecision(
   try {
     const info = await lstat(path).catch(() => null);
     if (!info?.isFile()) throw gone();
-    written = withAnswer(await readLedger(path), ledger, input, new Date(now()));
+    written = withAnswer(await readLedger(path), ledger, input, new Date(now()), home);
     const temp = join(dirname(path), `.${ledger}.tmp-${lock.token}`);
     try {
       await writeFile(temp, written.out, { mode: info.mode & 0o777, flag: "wx" });
@@ -694,6 +738,7 @@ export async function answerDecision(
     actor: "human",
     at: ask.answeredAt,
     home: path,
+    homeKind: home.kind,
     ledger,
     uid: ask.uid,
     id: ask.id,

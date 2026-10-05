@@ -32,6 +32,7 @@ import { Window } from "happy-dom";
 import type { ReactNode } from "react";
 import type { MaestroConfig, Scoreboard, WakeEntry, WorkItem } from "../shared/contracts";
 import {
+  type AskNotice,
   type AskSession,
   type DecisionAsk,
   type FleetNotice,
@@ -441,9 +442,16 @@ const decisionFixture = (): DecisionAsk => ({
   state: "open",
   origin: { agentId: "agent-asker", cwd: "~/broomva" },
   refusal: null,
+  home: { kind: "root", path: "/state/broomva/.control/asks", branch: null },
+  batched: false,
+  waiting: false,
 });
 /** The fleet's decision asks now: none unless a test puts one there. */
 let decisionsNow: DecisionAsk[] = [];
+/** The workspace's asks (asks.workspace) now: none unless a test puts some there. */
+let workspaceNow: DecisionAsk[] = [];
+/** The asks work.attention says wait on you: none unless a test says. */
+let askNoticesNow: AskNotice[] = [];
 /** The session broomva's ask a1 is about: none unless a test says. */
 let askSessionNow: AskSession | null = null;
 /** Paseo sessions the surface asked the host to open. */
@@ -659,7 +667,17 @@ const invoke = async (method: string, input: unknown) => {
   if (method === "config.set") return input;
   if (method === "work.list") return { root: "/work", items, warnings: [], scoreboard: board() };
   if (method === "work.history") return { events: history(), capped: false };
-  if (method === "work.attention") return { waiting: [], sessions: [], fleet: fleetNotices, timeline: timelineNotices };
+  if (method === "work.attention") {
+    return { waiting: [], sessions: [], fleet: fleetNotices, timeline: timelineNotices, asks: askNoticesNow };
+  }
+  if (method === "asks.workspace") {
+    return {
+      controlRepo: "/Users/me/broomva",
+      main: { sha: "1c7740c5", fetchedAt: null },
+      decisions: workspaceNow,
+      warnings: [],
+    };
+  }
   if (method === "timeline.get") return timelineView();
   if (method === "timeline.log") {
     const { id } = input as { id: string };
@@ -685,8 +703,14 @@ const invoke = async (method: string, input: unknown) => {
     };
   }
   if (method === "ask.answer") {
-    const { id, option, note } = input as { id: string; option: string | null; note: string };
-    const ask = decisionsNow.find((entry) => entry.id === id);
+    const { id, option, note, where } = input as {
+      id: string;
+      option: string | null;
+      note: string;
+      where: { kind: "fleet" | "workspace" };
+    };
+    const held = where.kind === "workspace" ? workspaceNow : decisionsNow;
+    const ask = held.find((entry) => entry.id === id);
     if (!ask) throw new Error("no such ask");
     const chosen = ask.options.find((entry) => entry.id === option);
     const answered: DecisionAsk = {
@@ -696,7 +720,8 @@ const invoke = async (method: string, input: unknown) => {
       answer: [chosen ? `${chosen.label}: ${chosen.consequence}` : "", note].filter(Boolean).join("\n"),
       answeredAt: new Date().toISOString(),
     };
-    decisionsNow = decisionsNow.map((entry) => (entry.id === id ? answered : entry));
+    if (where.kind === "workspace") workspaceNow = workspaceNow.map((entry) => (entry.id === id ? answered : entry));
+    else decisionsNow = decisionsNow.map((entry) => (entry.id === id ? answered : entry));
     return { ask: answered, warning: null };
   }
   if (method === "fleet.review") {
@@ -875,6 +900,8 @@ afterEach(async () => {
   proposalsNow = fleetProposals();
   sriProposals = sriFixture();
   decisionsNow = [];
+  workspaceNow = [];
+  askNoticesNow = [];
   askSessionNow = null;
   opened = [];
   timelineRuns = false;
@@ -1916,7 +1943,7 @@ describe("drilling in", () => {
     await view.press(view.byLabel("Answer A10: File all four"));
     expect(sent("ask.answer")).toEqual([
       {
-        scope: "broomva",
+        where: { kind: "fleet", scope: "broomva" },
         ledger: "maestro-paseo-gaps.yaml",
         uid: null,
         id: "A10",
@@ -2018,5 +2045,163 @@ describe("drilling in", () => {
     await view.press(tab(view, "Feed"));
     await view.press(tab(view, "Fleet"));
     expect(view.text()).not.toContain("What tick 35 logged");
+  });
+});
+
+describe("the workspace's decisions", () => {
+  const fleetTab = (view: Awaited<ReturnType<typeof mount>>) =>
+    view.tabs().find((one) => one.getAttribute("aria-label") === "Fleet");
+  const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
+  /** The workspace's asks load on their own query once the Fleet view opens: waited for, never assumed, on a slow runner. */
+  const until = async (view: Awaited<ReturnType<typeof mount>>, text: string) => {
+    for (let tries = 0; tries < 150 && !view.text().includes(text); tries += 1) await settle(20);
+  };
+  const checkout = { kind: "checkout" as const, path: "/Users/me/broomva", branch: "feat/prompt-cache" };
+  const main = { kind: "main" as const, path: "/Users/me/broomva", branch: null };
+  /** The #863 merge ask: blocking with a default, at home in the main checkout, which has not landed it. */
+  const merge = (): DecisionAsk => ({
+    ...decisionFixture(),
+    ledger: "2026-10-01-auth-preflight-hook-stderr.yaml",
+    arc: "prompt-cache-and-preflight-caching",
+    id: "A1",
+    hash: "aaaaaaaaaaaaaaaa",
+    headline: "Approve merge of PR #863 touching scripts/auth-preflight-hook.sh?",
+    question: "Approve merge of PR #863",
+    stakes: "scripts/auth-preflight-hook.sh is in require_human paths.",
+    whyYou: "policy.yaml asks a human for hook scripts.",
+    options: [
+      {
+        id: "merge",
+        label: "Merge PR #863",
+        consequence: "Warnings go to stderr.",
+        reversible: true,
+        recommended: true,
+      },
+      { id: "hold", label: "Hold PR #863", consequence: "It stays open.", reversible: true, recommended: false },
+    ],
+    fallback: "hold",
+    blocking: true,
+    waiting: true,
+    origin: null,
+    home: checkout,
+  });
+  const canvas = (id: string, extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
+    ...decisionFixture(),
+    ledger: "bro-2795-local-first-agentic-canvas.yaml",
+    arc: "bro-2795-local-first-agentic-canvas",
+    id,
+    hash: "bbbbbbbbbbbbbbbb",
+    headline: `Canvas ask ${id}`,
+    origin: null,
+    home: main,
+    ...extra,
+  });
+
+  test("each ledger's asks together, with their full context, the answered folded; a blocking ask with a default waits", async () => {
+    workspaceNow = [
+      canvas("product-name"),
+      merge(),
+      canvas("old-one", {
+        state: "answered",
+        answer: "Keep it.",
+        answerOption: "ticket-all",
+        answeredAt: new Date(Date.now() - H).toISOString(),
+        batched: true,
+      }),
+    ];
+    const view = await mount(surface(false));
+    await view.press(fleetTab(view));
+    await until(view, "Your workspace's asks");
+    const text = view.text();
+    expect(text).toContain("Decisions2 open · 1 waits on you");
+    // The ledger that waits on you comes first.
+    expect(text.indexOf("prompt-cache-and-preflight-caching")).toBeLessThan(text.indexOf("bro-2795-local-first"));
+    expect(text).toContain("Waits on you: it blocks until you answer.");
+    expect(text).toContain("What waiting costs: scripts/auth-preflight-hook.sh is in require_human paths.");
+    expect(text).toContain("Merge PR #863RecommendedWarnings go to stderr.");
+    expect(text).toContain("If you say nothing: hold");
+    expect(text).toContain("Its home is the checkout /Users/me/broomva, on feat/prompt-cache");
+    expect(text).toContain("Its home is origin/main: your answer goes to Maestro's answers worktree");
+    // The answered ask is folded under its ledger until asked for.
+    expect(text).not.toContain("Canvas ask old-one");
+    await view.press(view.byLabel("Show the answered asks in bro-2795-local-first-agentic-canvas.yaml"));
+    expect(view.text()).toContain("Canvas ask old-one");
+    expect(view.text()).toContain("In the answers batch on maestro/answers");
+    await view.press(view.byLabel("Hide the answered asks in bro-2795-local-first-agentic-canvas.yaml"));
+    expect(view.text()).not.toContain("Canvas ask old-one");
+    // A ledger folds and opens from its heading.
+    const heading = "2026-10-01-auth-preflight-hook-stderr.yaml: 1 open · 1 waits on you";
+    expect(view.byLabel(heading)?.getAttribute("aria-expanded")).toBe("true");
+    await view.press(view.byLabel(heading));
+    expect(view.byLabel(heading)?.getAttribute("aria-expanded")).toBe("false");
+    expect(view.text()).not.toContain("Merge PR #863Recommended");
+    await view.press(view.byLabel(heading));
+    expect(view.text()).toContain("Merge PR #863Recommended");
+  });
+
+  test("an answer goes to the ask's home as read, and the card says so at once", async () => {
+    workspaceNow = [merge()];
+    const view = await mount(surface(true));
+    await view.press(fleetTab(view));
+    await until(view, "Your workspace's asks");
+    await view.press(view.byLabel("Merge PR #863, recommended"));
+    await view.press(view.byLabel("Answer A1: Merge PR #863"));
+    expect(sent("ask.answer")).toEqual([
+      {
+        where: { kind: "workspace", home: "/Users/me/broomva" },
+        ledger: "2026-10-01-auth-preflight-hook-stderr.yaml",
+        uid: null,
+        id: "A1",
+        hash: "aaaaaaaaaaaaaaaa",
+        option: "merge",
+        note: "",
+      },
+    ]);
+    expect(view.text()).toContain("Answered just now: “Merge PR #863”");
+    expect(view.byLabel("Answer A1: Merge PR #863")).toBeNull();
+  });
+
+  test("past ten open asks, only the ledgers with one that waits on you start open", async () => {
+    workspaceNow = [
+      merge(),
+      // Eleven open in all: past ten, so the ledgers start folded; answering one brings it to ten.
+      ...Array.from({ length: 10 }, (_, at) => canvas(`q${at}`, { ledger: `ledger-${at}.yaml`, arc: `arc-${at}` })),
+    ];
+    const view = await mount(surface(false));
+    await view.press(fleetTab(view));
+    await until(view, "Your workspace's asks");
+    expect(view.text()).toContain("Approve merge of PR #863");
+    expect(view.text()).not.toContain("Canvas ask q3");
+    await view.press(view.byLabel("ledger-3.yaml: 1 open"));
+    expect(view.text()).toContain("Canvas ask q3");
+    // Answering its only open ask leaves the ledger open, saying so; the rest stay folded though the count is now ten.
+    await view.press(view.byLabel("File all four, recommended"));
+    await view.press(view.byLabel("Answer q3: File all four"));
+    expect(view.text()).toContain("Answered just now: “File all four”");
+    expect(view.text()).not.toContain("Canvas ask q4");
+  });
+
+  test("an ask that waits on you shows above the work, and opens the Fleet view's Decisions", async () => {
+    workspaceNow = [merge()];
+    askNoticesNow = [
+      {
+        scope: null,
+        ledger: "2026-10-01-auth-preflight-hook-stderr.yaml",
+        uid: null,
+        id: "A1",
+        headline: "Approve merge of PR #863 touching scripts/auth-preflight-hook.sh?",
+        blocking: true,
+        askedAt: null,
+      },
+    ];
+    const view = await mount(surface(false));
+    await until(view, "A decision waits on you");
+    expect(view.text()).toContain("A decision waits on you: Approve merge of PR #863");
+    await view.press(view.byLabel("Open Decisions, 1 waiting"));
+    await until(view, "Waits on you: it blocks until you answer.");
+    expect(fleetTab(view)?.getAttribute("aria-selected")).toBe("true");
+    expect(view.text()).toContain("Waits on you: it blocks until you answer.");
+    // In the Fleet view, Decisions holds it; the notice is not shown twice.
+    expect(view.text()).not.toContain("A decision waits on you");
   });
 });
