@@ -6,7 +6,10 @@
 // show the feed, History or the Fleet and push the item over it, with a way
 // back. A fleet tick that is missed or failing shows above every view but the
 // Fleet, as the header count counts it; so does any other scheduled run that
-// failed or was missed, above every view but the Timeline (client/timeline.tsx).
+// failed or was missed, above every view but the Timeline (client/timeline.tsx);
+// so does an initiative past its date, above every view but Initiatives
+// (client/initiatives.tsx), where an ask it waits on opens in the Fleet view's
+// Decisions.
 
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
@@ -19,6 +22,7 @@ import { FleetNotices, FleetView } from "./fleet";
 import { errorText, plural } from "./format";
 import { HistoryView } from "./history";
 import { useLoop, useWorkList } from "./hooks";
+import { InitiativeNotices, InitiativesView } from "./initiatives";
 import { useIntent } from "./intent";
 import { LoopControl, LoopPanel } from "./loop";
 import { NewWork } from "./new-work";
@@ -55,9 +59,11 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const [loopOpen, setLoopOpen] = useState(false);
   const [fleetScope, setFleetScope] = useState<string | null>(null);
   const [fleetTick, setFleetTick] = useState<number | null>(null);
-  const openFleet = (scope: string | null, tick: number | null = null) => {
+  const [focus, setFocus] = useState<string | null>(null);
+  const openFleet = (scope: string | null, tick: number | null = null, ledger: string | null = null) => {
     setFleetScope(scope);
     setFleetTick(tick);
+    setFocus(ledger);
     setView("fleet");
   };
   useIntent((intent) => {
@@ -65,13 +71,16 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     else if (intent.kind === "new") setCreating(true);
     else if (intent.kind === "fleet") openFleet(intent.scope);
     else if (intent.kind === "timeline") setView("timeline");
+    else if (intent.kind === "initiatives") setView("initiatives");
     else {
       // A filter opened from elsewhere means that group across all work, where its chips show.
       setFilter(intent.group);
       setScope(null);
-      // The Board splits by state, History lists receipts, and the Fleet and the Timeline are not work: none applies the chips.
+      // The Board splits by state, History lists receipts, and the Fleet, the Timeline and Initiatives are not work: none applies the chips.
       setView((view) =>
-        view === "board" || view === "history" || view === "fleet" || view === "timeline" ? "feed" : view,
+        view === "board" || view === "history" || view === "fleet" || view === "timeline" || view === "initiatives"
+          ? "feed"
+          : view,
       );
     }
   });
@@ -96,8 +105,9 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const chooseView = (next: PlaneView) => {
     setView(next);
     if (next === "board") setFilter("all");
-    // A tick opened from a timeline run is that visit's: the Fleet tab chosen later opens on none.
+    // A tick opened from a timeline run is that visit's: the Fleet tab chosen later opens on none. So is a ledger an initiative opened.
     setFleetTick(null);
+    setFocus(null);
   };
 
   const newWork = (
@@ -151,6 +161,9 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
       {view === "timeline" ? null : (
         <TimelineNotices theme={theme} compact={compact} onOpen={() => setView("timeline")} />
       )}
+      {view === "initiatives" ? null : (
+        <InitiativeNotices theme={theme} compact={compact} onOpen={() => chooseView("initiatives")} />
+      )}
 
       <ViewSwitch theme={theme} view={view} onView={chooseView} views={viewsFor(compact)} />
 
@@ -163,6 +176,15 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
           navigation={navigation}
           onScope={(scope) => openFleet(scope)}
           onSelect={setSelected}
+          focus={focus}
+        />
+      ) : view === "initiatives" ? (
+        <InitiativesView
+          theme={theme}
+          compact={compact}
+          navigation={navigation}
+          onOpenDecision={(ledger) => openFleet(null, null, ledger)}
+          onOpenWork={setSelected}
         />
       ) : view === "timeline" ? (
         <TimelineView

@@ -13,12 +13,15 @@ export const VIEWS = [
   { id: "history", label: "History", icon: "History" },
   { id: "fleet", label: "Fleet", icon: "Activity" },
   { id: "timeline", label: "Timeline", icon: "CalendarClock" },
+  { id: "initiatives", label: "Initiatives", icon: "Target" },
 ] as const;
 export type PlaneView = (typeof VIEWS)[number]["id"];
 
-/** Compact windows have no room for columns or dense rows: they show the feed, History, the Fleet or the Timeline. */
+/** Compact windows have no room for columns or dense rows: they show the feed, History, the Fleet, the Timeline or Initiatives. */
 export function viewFor(view: PlaneView, compact: boolean): PlaneView {
-  return compact && view !== "history" && view !== "fleet" && view !== "timeline" ? "feed" : view;
+  return compact && view !== "history" && view !== "fleet" && view !== "timeline" && view !== "initiatives"
+    ? "feed"
+    : view;
 }
 
 /** The views a window offers: compact ones only those viewFor keeps. */

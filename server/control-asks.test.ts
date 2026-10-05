@@ -150,6 +150,7 @@ describe("reading decision asks", () => {
       home: { kind: "root", path: "", branch: null },
       batched: false,
       waiting: false,
+      idea: null,
     });
     expect([answer?.uid, answer?.state, answer?.answer]).toEqual([
       "7d1e0c2a-5b8f-4e1a-9c4d-2f6b8a0e3c91",
@@ -375,6 +376,127 @@ describe("writing an answer", () => {
     expect(after.stdout).toContain(" 0 error(s)");
     expect(after.status).toBe(0);
   });
+});
+
+/** An ideas ledger as workspace#894 writes one. */
+const IDEAS = `arc: ideas-maestro
+opened: 2026-10-03T12:00Z
+tz: America/Bogota
+lanes: [triage]
+asks:
+  - id: I1
+    class: idea
+    initiative: maestro
+    idea: "An Initiatives tab"
+    source: {kind: pr, ref: "broomva/workspace#894"}
+    evidence: BRO-2802
+    ask: "Develop, park or kill?"
+    headline: "Build it, or park it?"
+    stakes: "Ideas are forgotten."
+    why_you: "Your call."
+    options:
+      - {id: develop, label: Develop, consequence: "A work item", reversible: true}
+      - {id: park, label: "Park until 2026-11-02", consequence: "Comes back", reversible: true, recommended: true}
+      - {id: kill, label: Kill, consequence: "Closed", reversible: true}
+    default: "park until 2026-11-02"
+    wake: 2026-11-02
+    blocking: false
+    asked_at: 2026-10-03T12:00Z
+    answered_at: null
+`;
+
+describe("an idea's answer", () => {
+  const idea = (extra: Partial<AnswerInput>) =>
+    withAnswer(IDEAS, "ideas-maestro.yaml", input({ id: "I1", ...extra }), AT);
+
+  test("park writes the wake you chose in place of the proposed one, and nothing else but the answer", () => {
+    const { out, ask } = idea({ option: "park", wake: "2026-11-20" });
+    const before = IDEAS.split("\n");
+    const after = out.split("\n");
+    expect(after.filter((line) => !before.includes(line))).toEqual([
+      '    wake: "2026-11-20"',
+      '    answered_at: "2026-10-03T17:00:00Z"',
+      '    answer: "Park until 2026-11-02: Comes back\\nWake: 2026-11-20."',
+      '    answer_option: "park"',
+      '    answered_by: "owner:maestro"',
+      '    status: "resolved"',
+    ]);
+    expect(before.filter((line) => !after.includes(line))).toEqual(["    wake: 2026-11-02", "    answered_at: null"]);
+    expect([ask.state, ask.answerOption, ask.idea?.wake]).toEqual(["answered", "park", "2026-11-20"]);
+  });
+
+  test("park without a wake keeps the proposed one; develop and kill take none", () => {
+    expect(idea({ option: "park" }).ask.idea?.wake).toBe("2026-11-02");
+    expect(idea({ option: "develop" }).ask.answerOption).toBe("develop");
+    expect(() => idea({ option: "kill", wake: "2026-11-20" })).toThrow("Only an idea you park takes a wake date");
+  });
+
+  test("a wake that is not a date, or has passed, is refused and nothing is written", () => {
+    expect(() => idea({ option: "park", wake: "2026-13-40" })).toThrow("is not a date");
+    // A day the calendar lacks: Date.parse would roll it into March, and ask_ledger.py refuses it.
+    expect(() => idea({ option: "park", wake: "2027-02-30" })).toThrow("is not a date");
+    expect(() => idea({ option: "park", wake: "2026-10-02" })).toThrow("has passed");
+    // Today is not past: a park until today wakes at once, which is your call.
+    expect(idea({ option: "park", wake: "2026-10-03" }).ask.idea?.wake).toBe("2026-10-03");
+  });
+
+  test("an idea takes develop, park or kill, never words alone", () => {
+    expect(() => idea({ option: null, note: "sounds good" })).toThrow("choose develop, park or kill");
+    const extra = IDEAS.replace(
+      "      - {id: kill, label: Kill",
+      '      - {id: later, label: Later, consequence: "Someday", reversible: true}\n      - {id: kill, label: Kill',
+    );
+    expect(() => withAnswer(extra, "ideas-maestro.yaml", input({ id: "I1", option: "later" }), AT)).toThrow(
+      "choose develop, park or kill",
+    );
+  });
+
+  test("a wake before the day the idea was asked is refused, as ask_ledger.py refuses it", () => {
+    const later = IDEAS.replace("asked_at: 2026-10-03T12:00Z", "asked_at: 2026-10-04T01:00Z");
+    expect(() =>
+      withAnswer(later, "ideas-maestro.yaml", input({ id: "I1", option: "park", wake: "2026-10-03" }), AT),
+    ).toThrow("before the idea was asked (2026-10-04)");
+    expect(
+      withAnswer(later, "ideas-maestro.yaml", input({ id: "I1", option: "park", wake: "2026-10-04" }), AT).ask.idea
+        ?.wake,
+    ).toBe("2026-10-04");
+  });
+
+  test("an ask that is not an idea takes no wake", () => {
+    expect(() => answered(LEDGER, { option: "drop", wake: "2026-11-20" })).toThrow(
+      "Only an idea you park takes a wake date",
+    );
+  });
+
+  // MAESTRO_ASK_LEDGER_PY names a workspace checkout's validator; else the owner's ~/broomva copy. Skipped,
+  // and said so, where neither is: CI has no workspace.
+  const validatorScript = process.env.MAESTRO_ASK_LEDGER_PY ?? join(homedir(), "broomva", "scripts", "ask_ledger.py");
+  test.skipIf(!existsSync(validatorScript))(
+    "each answer Maestro writes still passes ask_ledger.py: develop, park with a wake, kill",
+    async () => {
+      for (const answer of [{ option: "develop" }, { option: "park", wake: "2026-11-20" }, { option: "kill" }]) {
+        // Where an ideas ledger lives: .control/asks, beside the initiative file it names.
+        const dir = await root();
+        await mkdir(join(dir, ".control", "asks"), { recursive: true });
+        await mkdir(join(dir, ".control", "initiatives"), { recursive: true });
+        await writeFile(join(dir, ".control", "initiatives", "maestro.yaml"), "id: maestro\n");
+        const path = join(dir, ".control", "asks", "ideas-maestro.yaml");
+        await writeFile(path, idea(answer).out);
+        const result = spawnSync(
+          "python3",
+          [validatorScript, "validate", path, "--require-decision", "--preauth", join(dir, "none.yaml")],
+          { encoding: "utf8" },
+        );
+        // A validator older than workspace#894 has no idea class: nothing to hold this answer to yet.
+        if (result.stdout.includes("class 'idea' not one of")) return;
+        expect([answer.option, result.status, result.stdout]).toEqual([
+          answer.option,
+          0,
+          expect.stringContaining("0 error(s)"),
+        ]);
+      }
+    },
+  );
 });
 
 describe("the ledger lock", () => {

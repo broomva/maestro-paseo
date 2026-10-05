@@ -40,6 +40,7 @@ import {
   type FleetView,
   groupProposals,
 } from "../shared/fleet";
+import type { Initiative, InitiativeNotice, InitiativesView } from "../shared/initiatives";
 import type { HistoryEvent } from "../shared/records";
 import { groupOf, type OrchState } from "../shared/states";
 import type { TimelineNotice, TimelineRun, TimelineSource, TimelineView } from "../shared/timeline";
@@ -456,6 +457,135 @@ let askNoticesNow: AskNotice[] = [];
 let askSessionNow: AskSession | null = null;
 /** Paseo sessions the surface asked the host to open. */
 let opened: string[] = [];
+/** An idea-triage ask in ideas-mod-anything.yaml, as workspace#894 files them. */
+const ideaFixture = (id: string, extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
+  ...decisionFixture(),
+  ledger: "ideas-mod-anything.yaml",
+  id,
+  hash: `hash-${id}`,
+  arc: "ideas-mod-anything",
+  headline: `Build idea ${id}, or park it?`,
+  question: `Develop, park or kill idea ${id}?`,
+  stakes: "Nothing is blocked.",
+  whyYou: "Your call.",
+  options: [
+    { id: "develop", label: "Develop", consequence: "A queued work item.", reversible: true, recommended: false },
+    {
+      id: "park",
+      label: "Park until 2099-01-10",
+      consequence: "Back on the wake date.",
+      reversible: true,
+      recommended: true,
+    },
+    { id: "kill", label: "Kill", consequence: "Closed.", reversible: true, recommended: false },
+  ],
+  fallback: "park until 2099-01-10",
+  origin: null,
+  home: { kind: "main", path: "/Users/me/broomva", branch: null },
+  idea: {
+    initiative: "mod-anything",
+    idea: `The idea ${id} in one line`,
+    source: { kind: "report", ref: "docs/reports/beyond-games.html" },
+    evidence: "BRO-2810",
+    wake: "2099-01-10",
+  },
+  ...extra,
+});
+const initiativeFixture = (id: string, extra: Partial<Initiative> = {}): Initiative => ({
+  id,
+  file: `${id}.yaml`,
+  home: { kind: "main", path: "/Users/me/broomva", branch: null },
+  error: null,
+  title: `Initiative ${id}`,
+  quote: null,
+  intentSource: null,
+  summary: null,
+  status: "active",
+  stated: "2026-10-01",
+  reviewBy: "2099-01-01",
+  wake: null,
+  nextAction: `Next for ${id}`,
+  driver: "owner",
+  waitingOn: [],
+  linear: [],
+  prs: [],
+  repos: [],
+  sessions: [],
+  asks: [],
+  exit: "Done.",
+  closedAt: null,
+  outcome: null,
+  stale: null,
+  local: [],
+  ideas: { open: 0, triaged: 0 },
+  ...extra,
+});
+const initiativesFixture = (): InitiativesView => ({
+  controlRepo: "/Users/me/broomva",
+  today: "2026-10-05",
+  initiatives: [
+    initiativeFixture("broken", { error: "broken.yaml: it has a YAML error: Map keys must be unique.", title: null }),
+    initiativeFixture("mod-anything", {
+      title: "mod-anything skill",
+      status: "blocked_on_owner",
+      reviewBy: "2026-10-01",
+      stale: { kind: "overdue", date: "2026-10-01" },
+      driver: "coordinator:f5307ce7",
+      waitingOn: [
+        {
+          kind: "ask",
+          ref: "maestro-paseo-gaps.yaml#A10",
+          note: null,
+          ledger: "maestro-paseo-gaps.yaml",
+          askId: "A10",
+        },
+        { kind: "owner-step", ref: "pick a path on the P20 stop", note: null, ledger: null, askId: null },
+        { kind: "pr", ref: "broomva/skills#267", note: null, ledger: null, askId: null },
+      ],
+      linear: ["BRO-2808"],
+      prs: [{ ref: "broomva/skills#267", url: "https://github.com/broomva/skills/pull/267", state: "open" }],
+      sessions: [
+        { id: "445aac2a", agentId: "445aac2a-full-agent-id" },
+        { id: "deadbeef", agentId: null },
+      ],
+      local: [
+        {
+          path: "/Users/me/wt/park-mods",
+          branch: "feat/park",
+          fields: ["status", "wake"],
+          status: "parked",
+          nextAction: null,
+        },
+      ],
+      ideas: { open: 2, triaged: 1 },
+    }),
+    initiativeFixture("fleet-autonomy", {
+      title: "Fleet autonomy",
+      quote: "the work we start get forgotten",
+      intentSource: "owner, 2026-10-03",
+    }),
+  ],
+  ideas: [
+    ideaFixture("I1"),
+    ideaFixture("I2"),
+    ideaFixture("I3", {
+      state: "answered",
+      answerOption: "develop",
+      answer: "Develop: already in progress.",
+      answeredAt: "2026-10-05T13:34:21Z",
+    }),
+  ],
+  warnings: [],
+});
+let initiativesNow = initiativesFixture();
+let initiativeNoticesNow: InitiativeNotice[] = [];
+/** While set, initiatives.list fails with it. */
+let initiativesFail: string | null = null;
+/** URLs the surface asked the host to open. */
+const urls: string[] = [];
+spyOn(web.Linking, "openURL").mockImplementation(async (url: string) => {
+  urls.push(url);
+});
 /** Whether the timeline carries runs that open something: a schedule's, and the fleet's ticks. */
 let timelineRuns = false;
 const fleetView = (scope: string | undefined): FleetView => {
@@ -668,7 +798,14 @@ const invoke = async (method: string, input: unknown) => {
   if (method === "work.list") return { root: "/work", items, warnings: [], scoreboard: board() };
   if (method === "work.history") return { events: history(), capped: false };
   if (method === "work.attention") {
-    return { waiting: [], sessions: [], fleet: fleetNotices, timeline: timelineNotices, asks: askNoticesNow };
+    return {
+      waiting: [],
+      sessions: [],
+      fleet: fleetNotices,
+      timeline: timelineNotices,
+      asks: askNoticesNow,
+      initiatives: initiativeNoticesNow,
+    };
   }
   if (method === "asks.workspace") {
     return {
@@ -677,6 +814,19 @@ const invoke = async (method: string, input: unknown) => {
       decisions: workspaceNow,
       warnings: [],
     };
+  }
+  if (method === "initiatives.list") {
+    if (initiativesFail) throw new Error(initiativesFail);
+    return initiativesNow;
+  }
+  if (method === "initiatives.file") {
+    const { ledger, id } = input as { ledger: string; id: string };
+    const work = { id: `filed-${id}`, title: `Work for ${id}`, path: `mod-anything/filed-${id}` };
+    initiativesNow = {
+      ...initiativesNow,
+      developed: [...(initiativesNow.developed ?? []), { ref: `${ledger}#${id}`, ...work }],
+    };
+    return { work, warning: null };
   }
   if (method === "timeline.get") return timelineView();
   if (method === "timeline.log") {
@@ -709,6 +859,29 @@ const invoke = async (method: string, input: unknown) => {
       note: string;
       where: { kind: "fleet" | "workspace" };
     };
+    const idea = where.kind === "workspace" ? initiativesNow.ideas.find((entry) => entry.id === id) : undefined;
+    if (idea) {
+      const { wake } = input as { wake?: string };
+      const chosen = idea.options.find((entry) => entry.id === option);
+      const answered: DecisionAsk = {
+        ...idea,
+        state: "answered",
+        answerOption: option,
+        answer: [chosen ? `${chosen.label}: ${chosen.consequence}` : "", note].filter(Boolean).join("\n"),
+        answeredAt: new Date().toISOString(),
+        idea: idea.idea ? { ...idea.idea, wake: wake ?? idea.idea.wake } : null,
+      };
+      initiativesNow = {
+        ...initiativesNow,
+        ideas: initiativesNow.ideas.map((entry) => (entry.id === id ? answered : entry)),
+      };
+      // Develop files work: here, the fixture's queued item d.
+      return {
+        ask: answered,
+        warning: null,
+        work: option === "develop" ? { id: "d", title: "Work d", path: "mod-anything/d" } : null,
+      };
+    }
     const held = where.kind === "workspace" ? workspaceNow : decisionsNow;
     const ask = held.find((entry) => entry.id === id);
     if (!ask) throw new Error("no such ask");
@@ -904,6 +1077,10 @@ afterEach(async () => {
   askNoticesNow = [];
   askSessionNow = null;
   opened = [];
+  initiativesNow = initiativesFixture();
+  initiativeNoticesNow = [];
+  initiativesFail = null;
+  urls.length = 0;
   timelineRuns = false;
   calls.length = 0;
   setReduced(true);
@@ -1360,9 +1537,15 @@ describe("views and filters", () => {
     expect(view.byLabel("Work f, Done, genesis, updated 12 minutes ago")).not.toBeNull();
   });
 
-  test("compact switches only between the feed, History, the Fleet and the Timeline", async () => {
+  test("compact switches only between the feed, History, the Fleet, the Timeline and Initiatives", async () => {
     const view = await mount(surface(true));
-    expect(view.tabs().map((tab) => tab.getAttribute("aria-label"))).toEqual(["Feed", "History", "Fleet", "Timeline"]);
+    expect(view.tabs().map((tab) => tab.getAttribute("aria-label"))).toEqual([
+      "Feed",
+      "History",
+      "Fleet",
+      "Timeline",
+      "Initiatives",
+    ]);
     expect(view.text()).toContain("claude · own worktree");
     await view.press(view.tabs()[1]);
     await settle(50);
@@ -2203,5 +2386,222 @@ describe("the workspace's decisions", () => {
     expect(view.text()).toContain("Waits on you: it blocks until you answer.");
     // In the Fleet view, Decisions holds it; the notice is not shown twice.
     expect(view.text()).not.toContain("A decision waits on you");
+  });
+});
+
+describe("Initiatives", () => {
+  const tab = (view: Awaited<ReturnType<typeof mount>>, label: string) =>
+    view.tabs().find((one) => one.getAttribute("aria-label") === label);
+  const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
+  /** The tab loads on its own query once it opens: waited for, never assumed, on a slow runner. */
+  const until = async (view: Awaited<ReturnType<typeof mount>>, text: string) => {
+    for (let tries = 0; tries < 150 && !view.text().includes(text); tries += 1) await settle(20);
+  };
+  const open = async (compact = false) => {
+    const view = await mount(surface(compact));
+    await view.press(tab(view, "Initiatives"));
+    await until(view, "mod-anything skill");
+    return view;
+  };
+
+  test("a card shows every field: title, intent, status, review date with its badge, next action, driver, waits, links, local edit, ideas", async () => {
+    const view = await open();
+    const text = view.text();
+    for (const part of [
+      "3 initiatives · 1 needs you · 1 cannot be read · 2 open ideas",
+      "mod-anything skill",
+      "Waits on you",
+      "Intent not stated: the owner's words were not written down",
+      "Review by 2026-10-01",
+      "Overdue",
+      "Next: Next for mod-anything",
+      "Driven by the coordinator f5307ce7",
+      "Your answer to maestro-paseo-gaps.yaml A10",
+      "Your step: pick a path on the P20 stop",
+      "The PR broomva/skills#267",
+      "broomva/skills#267 · open",
+      "BRO-2808",
+      "deadbeef (not a session on this Paseo)",
+      "Edited in /Users/me/wt/park-mods (feat/park), not on origin/main yet: status, wake. There it is parked.",
+      "3 ideas: 2 open, 1 triaged",
+      "Done when: Done.",
+      // A quote is the owner's words with their source; the sentinel is never dressed as one.
+      "“the work we start get forgotten” — owner, 2026-10-03",
+      // A file that cannot be read is a row with the reason, never hidden.
+      "This initiative cannot be read, so it is shown as it is: broken.yaml: it has a YAML error",
+    ]) {
+      expect(text).toContain(part);
+    }
+    expect(view.byLabel("mod-anything skill: Overdue")).not.toBeNull();
+    expect(view.byLabel("Fleet autonomy: Overdue")).toBeNull();
+  });
+
+  test("links open where they point: Linear, the PR, the session; a waiting PR opens too", async () => {
+    const view = await open();
+    await view.press(view.byLabel("Open BRO-2808 in Linear"));
+    await view.press(view.byLabel("Open the PR broomva/skills#267, open"));
+    await view.press(view.byLabel("Open the PR broomva/skills#267"));
+    expect(urls).toEqual([
+      "https://linear.app/broomva/issue/BRO-2808",
+      "https://github.com/broomva/skills/pull/267",
+      "https://github.com/broomva/skills/pull/267",
+    ]);
+    await view.press(view.byLabel("Open the session 445aac2a"));
+    expect(opened).toEqual(["445aac2a-full-agent-id"]);
+    // A session no agent here answers to has no button that would open nothing.
+    expect(view.byLabel("Open the session deadbeef")).toBeNull();
+  });
+
+  test("an ask it waits on opens in Decisions, its ledger open even where the rest fold", async () => {
+    // Eleven open asks elsewhere fold every ledger that does not wait on you; the one the initiative names opens.
+    workspaceNow = [
+      ...Array.from({ length: 11 }, (_, at) => ({
+        ...decisionFixture(),
+        ledger: "other.yaml",
+        arc: "other",
+        id: `O${at}`,
+        home: { kind: "main" as const, path: "/Users/me/broomva", branch: null },
+        origin: null,
+      })),
+      { ...decisionFixture(), home: { kind: "main" as const, path: "/Users/me/broomva", branch: null }, origin: null },
+    ];
+    const view = await open();
+    await view.press(view.byLabel("Open maestro-paseo-gaps.yaml#A10 in Decisions"));
+    for (let tries = 0; tries < 150 && !view.text().includes("Your workspace's asks"); tries += 1) await settle(20);
+    expect(tab(view, "Fleet")?.getAttribute("aria-selected")).toBe("true");
+    const heading = (ledger: string) =>
+      view.all("[aria-expanded]").find((one) => one.getAttribute("aria-label")?.startsWith(`${ledger}:`));
+    expect(heading("maestro-paseo-gaps.yaml")?.getAttribute("aria-expanded")).toBe("true");
+    expect(heading("other.yaml")?.getAttribute("aria-expanded")).toBe("false");
+    expect(view.text()).toContain("Four small review follow-ups");
+  });
+
+  test("an idea answered develop is sent through ask.answer at its home, and its held work opens", async () => {
+    const view = await open();
+    await view.press(view.byLabel("Show the ideas for mod-anything"));
+    expect(view.text()).toContain("Build idea I1, or park it?");
+    expect(view.text()).toContain("mod-anything · from report docs/reports/beyond-games.html · evidence BRO-2810");
+    // The triaged one waits behind its own button.
+    expect(view.text()).not.toContain("Build idea I3");
+    await view.press(view.byLabel("Show 1 triaged"));
+    // Answered develop outside Maestro: no work item is filed for it, and the card says so and offers to file it.
+    expect(view.text()).toContain("Developed on 2026-10-05. No work item is filed for it in Maestro yet.");
+    expect(view.byLabel("Open the work filed for I3")).toBeNull();
+    await view.press(view.byLabel("File the work for I3"));
+    expect(sent("initiatives.file")).toEqual([{ ledger: "ideas-mod-anything.yaml", id: "I3", home: "origin/main" }]);
+    expect(view.text()).toContain("Developed on 2026-10-05: a work item was filed for it, held for you to start.");
+    expect(view.byLabel("File the work for I3")).toBeNull();
+    await view.press(view.byLabel("Open the work filed for I3"));
+    await view.press(view.byLabel("Open the evidence for I1, BRO-2810"));
+    expect(urls).toEqual(["https://linear.app/broomva/issue/BRO-2810"]);
+    expect(view.byLabel("Answer I1")?.getAttribute("aria-disabled")).toBe("true");
+    await view.press(view.byLabel("Develop for I1"));
+    await view.type(view.byLabel("Your words for I1"), "start with the recon scan");
+    await view.press(view.byLabel("Answer I1: Develop"));
+    expect(sent("ask.answer")).toEqual([
+      {
+        where: { kind: "workspace", home: "origin/main" },
+        ledger: "ideas-mod-anything.yaml",
+        uid: null,
+        id: "I1",
+        hash: "hash-I1",
+        option: "develop",
+        note: "start with the recon scan",
+      },
+    ]);
+    expect(view.text()).toContain("Developed on");
+    await view.press(view.byLabel("Open the work filed for I1"));
+    expect(view.text()).toContain("Work d");
+  });
+
+  test("only a develop shows its work: a parked idea whose ref has an item does not", async () => {
+    const parked = ideaFixture("I3", {
+      state: "answered",
+      answerOption: "park",
+      answer: "Park until 2099-01-10",
+      answeredAt: "2026-10-05T13:34:21Z",
+    });
+    initiativesNow = {
+      ...initiativesNow,
+      ideas: initiativesNow.ideas.map((entry) => (entry.id === "I3" ? parked : entry)),
+      developed: [{ ref: "ideas-mod-anything.yaml#I3", id: "w3", title: "Work w3", path: "mod-anything/w3" }],
+    };
+    const view = await open();
+    await view.press(view.byLabel("Show the ideas for mod-anything"));
+    await view.press(view.byLabel("Show 1 triaged"));
+    expect(view.text()).toContain("Parked on 2026-10-05 until 2099-01-10.");
+    expect(view.byLabel("Open the work filed for I3")).toBeNull();
+    expect(view.byLabel("File the work for I3")).toBeNull();
+  });
+
+  test("park takes a wake date: the idea's own by default, a bad or past one refused before it is sent", async () => {
+    const view = await open();
+    await view.press(view.byLabel("All ideas (2 open)"));
+    await view.press(view.byLabel("Park until 2099-01-10, recommended for I2"));
+    const wake = view.byLabel("The wake date for I2");
+    expect(wake?.getAttribute("value")).toBe("2099-01-10");
+    await view.type(wake, "2026-10-01");
+    expect(view.text()).toContain("Choose today or a later day.");
+    expect(view.byLabel("Answer I2: Park until 2099-01-10")?.getAttribute("aria-disabled")).toBe("true");
+    await view.type(wake, "soon");
+    expect(view.text()).toContain("Write the date as YYYY-MM-DD.");
+    await view.type(wake, "2099-03-04");
+    await view.press(view.byLabel("Answer I2: Park until 2099-01-10"));
+    expect(sent("ask.answer")).toEqual([
+      {
+        where: { kind: "workspace", home: "origin/main" },
+        ledger: "ideas-mod-anything.yaml",
+        uid: null,
+        id: "I2",
+        hash: "hash-I2",
+        option: "park",
+        note: "",
+        wake: "2099-03-04",
+      },
+    ]);
+    expect(view.text()).toContain("until 2099-03-04.");
+    // Kill and switching back: every option is a press, and the tab's own switch returns to the cards.
+    await view.press(view.byLabel("Kill for I1"));
+    await view.press(view.byLabel("Answer I1: Kill"));
+    expect((sent("ask.answer")[1] as { option: string }).option).toBe("kill");
+    await view.press(view.byLabel("By initiative"));
+    expect(view.text()).toContain("Fleet autonomy");
+  });
+
+  test("an initiative past its date shows where Maestro says what needs you, and opens the tab; ideas stay out of Decisions", async () => {
+    initiativeNoticesNow = [{ id: "mod-anything", title: "mod-anything skill", kind: "overdue", date: "2026-10-01" }];
+    workspaceNow = [ideaFixture("I9", { home: { kind: "main", path: "/Users/me/broomva", branch: null } })];
+    const view = await mount(surface(true));
+    for (let tries = 0; tries < 150 && !view.text().includes("was due for review"); tries += 1) await settle(20);
+    expect(view.text()).toContain("The initiative mod-anything skill was due for review on 2026-10-01.");
+    await view.press(view.byLabel("Open Initiatives, 1 need a look"));
+    await until(view, "mod-anything skill");
+    expect(tab(view, "Initiatives")?.getAttribute("aria-selected")).toBe("true");
+    expect(view.text()).not.toContain("was due for review on");
+    // The idea is answered here, never twice: Decisions does not list it.
+    await view.press(tab(view, "Fleet"));
+    await settle(100);
+    expect(view.text()).not.toContain("Build idea I9");
+  });
+
+  test("what folds, folds back; a read that fails says why and tries again", async () => {
+    const view = await open();
+    await view.press(view.byLabel("Show the ideas for mod-anything"));
+    await view.press(view.byLabel("Show 1 triaged"));
+    expect(view.text()).toContain("Build idea I3");
+    await view.press(view.byLabel("Hide the triaged"));
+    expect(view.text()).not.toContain("Build idea I3");
+    await view.press(view.byLabel("Hide the ideas for mod-anything"));
+    expect(view.text()).not.toContain("Build idea I1");
+
+    initiativesFail = "the control repo is gone";
+    const broken = await mount(surface(false));
+    await broken.press(tab(broken, "Initiatives"));
+    await until(broken, "could not be read");
+    expect(broken.text()).toContain("Your initiatives could not be read: the control repo is gone");
+    initiativesFail = null;
+    await broken.press(broken.byLabel("Try again"));
+    await until(broken, "mod-anything skill");
+    expect(broken.text()).toContain("mod-anything skill");
   });
 });

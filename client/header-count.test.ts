@@ -146,3 +146,15 @@ describe("the timeline in the header count", () => {
     expect(needsYouTarget([fakeWork("r", "review")], [], [], [ask(null)])).toEqual({ kind: "filter", group: "review" });
   });
 });
+
+describe("initiatives past their date", () => {
+  const stale = [{ id: "maestro" }];
+  test("count in Needs you, and alone open Initiatives", () => {
+    expect(needsYouCount([], [], [], [], stale)).toBe(1);
+    expect(needsYouTarget([], [], [], [], stale)).toEqual({ kind: "initiatives" });
+    // With work waiting, the work wins: the notice sits above every other view.
+    expect(needsYouTarget([fakeWork("r", "review")], [], [], [], stale)).toEqual({ kind: "filter", group: "review" });
+    // A fleet notice or an ask is opened first, as before.
+    expect(needsYouTarget([], [], [], [{ scope: null }], stale)).toEqual({ kind: "fleet", scope: null });
+  });
+});

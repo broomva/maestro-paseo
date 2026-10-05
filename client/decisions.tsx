@@ -6,6 +6,9 @@
 // ledgers with asks that wait on you first, open, and the rest folded; the
 // answered asks of a ledger stay folded under it.
 //
+// Ideas (idea-triage asks) are not listed here: they are answered in the
+// Initiatives tab, under their initiative (client/initiatives.tsx).
+//
 // AskNotices is the same where the rest of Maestro shows what needs you: the
 // asks that wait on you (blocking, or recommending what cannot be undone),
 // which the header count counts.
@@ -350,6 +353,7 @@ export function DecisionGroups({
   compact,
   navigation,
   onAnswered,
+  focus = null,
 }: {
   theme: PluginTheme;
   asks: readonly DecisionAsk[];
@@ -357,6 +361,8 @@ export function DecisionGroups({
   compact: boolean;
   navigation: Navigation;
   onAnswered: (answered: DecisionAsk) => void;
+  /** A ledger to open whatever else is folded: one an initiative's waiting_on named. */
+  focus?: string | null;
 }) {
   const groups = groupDecisions(asks);
   // Judged once, as you open the view: a count crossing ten as you answer or as asks arrive never folds or opens it all.
@@ -368,7 +374,7 @@ export function DecisionGroups({
           key={group.ledger}
           theme={theme}
           group={group}
-          startOpen={group.waiting > 0 || (group.open.length > 0 && !many)}
+          startOpen={group.ledger === focus || group.waiting > 0 || (group.open.length > 0 && !many)}
           where={where}
           compact={compact}
           navigation={navigation}
@@ -386,15 +392,18 @@ export function useWorkspaceAsks() {
 
 const workspaceWhere = (ask: DecisionAsk): AnswerWhere => ({ kind: "workspace", home: homeKey(ask.home) });
 
-/** The workspace's own asks, in the Fleet view: every ledger of the control repo, each ask at its home. */
+/** The workspace's own asks, in the Fleet view: every ledger of the control repo, each ask at its home; ideas aside. */
 export function WorkspaceDecisions({
   theme,
   compact,
   navigation,
+  focus = null,
 }: {
   theme: PluginTheme;
   compact: boolean;
   navigation: Navigation;
+  /** A ledger to open, from an initiative's waiting_on. */
+  focus?: string | null;
 }) {
   const text = useText(theme);
   const client = useQueryClient();
@@ -411,7 +420,9 @@ export function WorkspaceDecisions({
       </Notice>
     );
   }
-  const { controlRepo, decisions, warnings } = read.data;
+  const { controlRepo, warnings } = read.data;
+  // Ideas are answered under their initiative, in the Initiatives tab.
+  const decisions = read.data.decisions.filter((ask) => !ask.idea);
   if (decisions.length === 0 && warnings.length === 0) return null;
   const open = decisions.filter((ask) => ask.state === "open");
   const waiting = open.filter((ask) => ask.waiting).length;
@@ -438,6 +449,7 @@ export function WorkspaceDecisions({
         compact={compact}
         navigation={navigation}
         onAnswered={onAnswered}
+        focus={focus}
       />
     </Section>
   );

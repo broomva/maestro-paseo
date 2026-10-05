@@ -211,6 +211,21 @@ export function homeKey(home: AskHome): string {
 }
 
 /**
+ * An idea-triage ask's own fields (`class: idea`, workspace#894): the
+ * initiative it was filed for, the idea in one line, where it came from, where
+ * to read more, and the date a parked idea comes back.
+ */
+export const IdeaSchema = z.object({
+  initiative: z.string().nullable(),
+  idea: z.string().nullable(),
+  source: z.object({ kind: z.string(), ref: z.string() }).nullable(),
+  evidence: z.string().nullable(),
+  /** YYYY-MM-DD: proposed by whoever filed it; a park answer writes the one you chose. */
+  wake: z.string().nullable(),
+});
+export type Idea = z.infer<typeof IdeaSchema>;
+
+/**
  * A decision ask in a `.control/asks` ledger, with its decision layer: what it
  * costs while it waits, why it is yours, the options and what each does, and
  * what happens if you say nothing. From the fleet's own registered root
@@ -247,6 +262,8 @@ export const DecisionAskSchema = z.object({
   batched: z.boolean(),
   /** Open, and blocking or recommending what cannot be undone (§5.4): it counts in Needs you, default or not. */
   waiting: z.boolean(),
+  /** An idea-triage ask's fields; null (or absent, from an older daemon) for every other ask. */
+  idea: IdeaSchema.nullable().optional(),
 });
 export type DecisionAsk = z.infer<typeof DecisionAskSchema>;
 
@@ -383,9 +400,22 @@ export const answerAsk = defineRpc({
     hash: z.string().min(1),
     option: z.string().min(1).nullable(),
     note: z.string().max(ANSWER_NOTE_CHARS).default(""),
+    /** An idea parked: the date it comes back (YYYY-MM-DD, today or later), written as its `wake`. Only with option `park`. */
+    wake: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
   }),
-  /** `warning`: the answer is in the ledger, but something after it (its receipt, its commit) failed, in words. */
-  output: z.object({ ask: DecisionAskSchema, warning: z.string().nullable() }),
+  /**
+   * `warning`: the answer is in the ledger, but something after it (its
+   * receipt, its commit, the work an idea's develop files) failed, in words.
+   * `work`: the queued work item a develop answer filed, held for you to start.
+   */
+  output: z.object({
+    ask: DecisionAskSchema,
+    warning: z.string().nullable(),
+    work: z.object({ id: z.string(), title: z.string(), path: z.string() }).nullable().optional(),
+  }),
 });
 export type AnswerWhere = z.infer<typeof answerAsk.input>["where"];
 

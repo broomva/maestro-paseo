@@ -15,7 +15,8 @@ export type MaestroIntent =
   | { kind: "new" }
   | { kind: "filter"; group: Group }
   | { kind: "fleet"; scope: string | null }
-  | { kind: "timeline" };
+  | { kind: "timeline" }
+  | { kind: "initiatives" };
 
 export const INTENT_TTL_MS = 30_000;
 

@@ -684,12 +684,15 @@ export function FleetView({
   navigation,
   onScope,
   onSelect,
+  focus = null,
 }: {
   theme: PluginTheme;
   compact: boolean;
   scope: string | null;
   /** A tick to open, when the view is opened on one (from a timeline run). */
   tick?: number | null;
+  /** A workspace ledger to open in Decisions (from an initiative's waiting_on). */
+  focus?: string | null;
   navigation: Navigation;
   onScope: (scope: string) => void;
   onSelect: (id: string) => void;
@@ -728,7 +731,7 @@ export function FleetView({
   const current = scopes.find((entry) => entry.id === detail?.id) ?? null;
   return (
     <View style={{ gap: space[5] }}>
-      <WorkspaceDecisions theme={theme} compact={compact} navigation={navigation} />
+      <WorkspaceDecisions theme={theme} compact={compact} navigation={navigation} focus={focus} />
       {error ? (
         <Notice theme={theme} tone="warn">
           {error}

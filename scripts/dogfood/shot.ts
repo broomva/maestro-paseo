@@ -19,6 +19,7 @@ const USAGE = `bun scripts/dogfood/shot.ts --out <dir> [options]
   --path <surface>     Maestro surface id (default maestro), or an app path starting with / ({server} is replaced)
   --open <title>       Click this work item and save its detail (default: the seeded Needs you item)
   --no-open            Skip the detail shot
+  --steps "a|b|c"      After the desktop shot (and --open), click each name in turn and save step-N after each
   --wait-for <text>    Text that proves the surface rendered (default: the --open title)
   --state <dir>        The sandbox (default: MAESTRO_DOGFOOD_STATE, then the one up.ts last started here)
   --chrome <path>      Chromium binary (default: newest Playwright Chromium, then DOGFOOD_CHROME)
@@ -159,9 +160,10 @@ class Page {
   async click(name: string): Promise<void> {
     const point = await this.evaluate<{ x: number; y: number; label: string } | null>(`(() => {
       const name = ${JSON.stringify(name)};
+      // Rendered, not necessarily on screen: the target is scrolled into view below.
       const visible = (el) => {
         const r = el.getBoundingClientRect();
-        return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+        return r.width > 0 && r.height > 0;
       };
       const labelled = [...document.querySelectorAll('[aria-label]')]
         .filter((el) => el.getAttribute('aria-label').startsWith(name) && visible(el))
@@ -237,6 +239,10 @@ async function main(): Promise<void> {
   if (theme !== "light" && theme !== "dark") fail("--theme must be light or dark");
   const open = hasFlag(args, "no-open") ? null : (flag(args, "open") ?? DEFAULT_OPEN);
   const readyText = flag(args, "wait-for") ?? open ?? DEFAULT_OPEN;
+  const steps = (flag(args, "steps") ?? "")
+    .split("|")
+    .map((step) => step.trim())
+    .filter(Boolean);
 
   const dir = resolveStateDir(flag(args, "state"));
   const state = dir ? readState(dir) : null;
@@ -295,10 +301,18 @@ async function main(): Promise<void> {
       }
       await sleep(1500);
       await page.screenshot(join(out, `maestro-${shot.name}-${theme}.png`));
-      if (!open) continue;
-      await page.click(open);
-      await sleep(1500);
-      await page.screenshot(join(out, `maestro-detail-${shot.name}-${theme}.png`));
+      if (open) {
+        await page.click(open);
+        await sleep(1500);
+        await page.screenshot(join(out, `maestro-detail-${shot.name}-${theme}.png`));
+      }
+      // Steps change state (an answer is written once), so they run on the first viewport only.
+      if (shot !== shots[0]) continue;
+      for (const [index, step] of steps.entries()) {
+        await page.click(step);
+        await sleep(1500);
+        await page.screenshot(join(out, `maestro-step-${index + 1}-${shot.name}-${theme}.png`));
+      }
     }
   } finally {
     cdp?.close();

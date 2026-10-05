@@ -4,6 +4,7 @@
 
 import type { Attention, WorkItem } from "../shared/contracts";
 import type { AskNotice, FleetNotice } from "../shared/fleet";
+import type { InitiativeNotice } from "../shared/initiatives";
 import { needsYouOf } from "../shared/needs-you";
 import { isTerminal } from "../shared/states";
 import type { TimelineNotice } from "../shared/timeline";
@@ -21,6 +22,8 @@ export const RECENT_MS = 24 * 60 * 60 * 1000;
  * than a fleet scope, which `fleet` already counts (server/timeline.ts).
  * `asks`: decision asks that wait on you (shared/fleet.ts isWaiting): the
  * workspace's (server/control-home.ts) and each fleet scope's own root's.
+ * `initiatives`: initiatives past their review date, or parked ones whose
+ * wake date came (server/initiatives.ts).
  */
 export function attentionOf(
   items: readonly WorkItem[],
@@ -28,6 +31,7 @@ export function attentionOf(
   fleet: readonly FleetNotice[] = [],
   timeline: readonly TimelineNotice[] = [],
   asks: readonly AskNotice[] = [],
+  initiatives: readonly InitiativeNotice[] = [],
 ): Attention {
   const waiting = needsYouOf(items).map(({ id, group, flag }) => ({ id, group, flag }));
   const sessions: Attention["sessions"] = [];
@@ -43,5 +47,12 @@ export function attentionOf(
       workspaceId: worker.workspaceId,
     });
   }
-  return { waiting, sessions, fleet: [...fleet], timeline: [...timeline], asks: [...asks] };
+  return {
+    waiting,
+    sessions,
+    fleet: [...fleet],
+    timeline: [...timeline],
+    asks: [...asks],
+    initiatives: [...initiatives],
+  };
 }
