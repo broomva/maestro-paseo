@@ -168,7 +168,7 @@ describe("the home rule (§5.2)", () => {
     ]);
   });
 
-  test("an id with a uid in one copy and none in another is one row per handle, none answered", () => {
+  test("an id that reads with a uid in one copy and without in another (changed) is two rows, neither answered", () => {
     const stamped = OPEN.replace("  - id: A1\n", "  - id: A1\n    uid: u-1\n");
     const list = resolveHomes(
       sources({
@@ -176,8 +176,52 @@ describe("the home rule (§5.2)", () => {
         checkouts: [checkout("/w", { "l.yaml": stamped }, { "l.yaml": OPEN })],
       }),
     );
-    expect(list.length).toBeGreaterThan(0);
-    expect(list.every((entry) => entry.refusal?.includes("has a uid in one copy and none in another"))).toBe(true);
+    expect(list.map((entry) => [entry.uid, entry.home.kind, entry.refusal?.includes("one ask at two homes")])).toEqual([
+      [null, "main", true],
+      ["u-1", "checkout", true],
+    ]);
+  });
+
+  test("main stamped a uid; a lingering worktree's unstamped copy, unchanged, reads as nothing and refuses nothing", () => {
+    const stamped = OPEN.replace("  - id: A1\n", "  - id: A1\n    uid: u-1\n");
+    const other = `${OPEN}  - id: A2\n    ask: "Other"\n`;
+    const list = resolveHomes(
+      sources({
+        main: new Map([["l.yaml", ledger(stamped)]]),
+        checkouts: [checkout("/w", { "l.yaml": other }, { "l.yaml": OPEN })],
+      }),
+    );
+    expect(list.map((entry) => [entry.id, entry.uid, entry.home.kind, entry.refusal])).toEqual([
+      ["A1", "u-1", "main", null],
+      ["A2", null, "checkout", null],
+    ]);
+  });
+
+  test("a doubled handle in a checkout: main's outcome still wins; else every differing copy is listed, none answered", () => {
+    const twice = `${OPEN}  - id: A1\n    headline: "Another A1"\n`;
+    const closed = resolveHomes(
+      sources({
+        main: new Map([["l.yaml", ledger(ANSWERED)]]),
+        checkouts: [checkout("/w", { "l.yaml": twice }, { "l.yaml": OPEN })],
+      }),
+    );
+    expect(homes(closed)).toEqual([["A1", "answered", "main", "/repo"]]);
+    const open = resolveHomes(
+      sources({
+        main: new Map([["l.yaml", ledger(OPEN)]]),
+        checkouts: [
+          checkout("/w", { "l.yaml": twice }, { "l.yaml": OPEN }),
+          checkout("/v", { "l.yaml": OPEN }, { "l.yaml": OPEN }),
+          checkout("/u", { "l.yaml": ask(`    headline: "Merge it, u?"\n`) }, { "l.yaml": OPEN }),
+        ],
+      }),
+    );
+    expect(open.map((entry) => [entry.headline, entry.home.path, Boolean(entry.refusal)])).toEqual([
+      ["Merge it?", "/repo", true],
+      ["Merge it?", "/w", true],
+      ["Another A1", "/w", true],
+      ["Merge it, u?", "/u", true],
+    ]);
   });
 
   test("an ask a lingering worktree added, which main has edited since, is main's: not local, not a collision", () => {
@@ -195,10 +239,28 @@ describe("the home rule (§5.2)", () => {
     expect(local.map((entry) => [entry.state, entry.home.kind])).toEqual([["answered", "checkout"]]);
   });
 
-  test("git's words: its last lines that say something, past a hook's banner", () => {
-    expect(gitWords("=== bstack pre-commit gate ===\n  [FAIL] gitleaks: a secret\n\n")).toBe(
+  test("asked in the same minute is not enough: the words must agree too, else an id collision", () => {
+    const mine = ask(`    question: "Ship the cache?"\n    asked_at: 2026-10-01T10:00Z\n`);
+    const theirs = ask(`    ask: "Rename the repo?"\n    asked_at: 2026-10-01T10:00Z\n`);
+    const list = resolveHomes(
+      sources({ main: new Map([["l.yaml", ledger(theirs)]]), checkouts: [checkout("/w", { "l.yaml": mine }, {})] }),
+    );
+    expect(list.map((entry) => [entry.question, entry.home.kind, Boolean(entry.refusal)])).toEqual([
+      ["Rename the repo?", "main", true],
+      ["Ship the cache?", "checkout", true],
+    ]);
+  });
+
+  test("git's words: the line naming the cause, past a hook's banner and git's boilerplate", () => {
+    expect(gitWords("=== bstack pre-commit gate ===\n  [FAIL] gitleaks: a secret\n  Fix: remove it\n")).toBe(
       "[FAIL] gitleaks: a secret",
     );
+    expect(
+      gitWords(
+        "ERROR: Repository not found.\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n",
+      ),
+    ).toBe("ERROR: Repository not found.");
+    expect(gitWords("something odd\nthen this\n")).toBe("then this");
     expect(gitWords("")).toBe("it failed with no words");
   });
 
@@ -581,6 +643,47 @@ describe("the workspace's asks, in a scratch control repo", () => {
     expect(existsSync(join(state, "control-answers"))).toBe(false);
   });
 
+  test("an answer waits for a fetch in flight, and says when origin/main could not be fetched first", async () => {
+    const { repo, state } = await workspace();
+    let now = 1_000_000;
+    const asks = new WorkspaceAsks({
+      controlRepo: repo,
+      answersPath: join(state, "control-answers"),
+      lockRoot: join(state, "locks"),
+      receipts: join(state, "asks.jsonl"),
+      now: () => now,
+      ttlMs: 0,
+    });
+    run(repo, "remote", "set-url", "origin", join(state, "nowhere.git"));
+    // The read starts a fetch; the answer, at once, waits for it rather than judging on what was there.
+    const merge = find((await asks.read()).all, "A1");
+    const { warning } = await asks.answer({
+      ledger: merge.ledger,
+      home: repo,
+      uid: null,
+      id: "A1",
+      hash: merge.hash,
+      option: "hold",
+      note: "",
+    });
+    expect(warning).toContain("origin/main could not be fetched first");
+    expect(warning).toContain("nowhere.git");
+    // Within the window after a failure, the failure is still said.
+    now += 5_000;
+    await writeFile(join(repo, ".control", "asks", "third.yaml"), MERGE.replace("A1", "C1"));
+    const third = find((await asks.read()).all, "C1");
+    const again = await asks.answer({
+      ledger: "third.yaml",
+      home: repo,
+      uid: null,
+      id: "C1",
+      hash: third.hash,
+      option: "hold",
+      note: "",
+    });
+    expect(again.warning).toContain("could not be fetched first");
+  });
+
   test("a commit a hook refuses says why; the answers worktree then takes no answer until it is clean", async () => {
     const { root, repo, asks } = await workspace();
     const hooks = join(root, "hooks");
@@ -657,7 +760,7 @@ describe("the workspace's asks, in a scratch control repo", () => {
         option: null,
         note: "Now.",
       }),
-    ).rejects.toThrow("could not take origin/main's latest");
+    ).rejects.toThrow("could not take origin/main's latest (it conflicts in .control/asks/bro-2795-canvas.yaml)");
     const answers = join(state, "control-answers");
     expect(run(answers, "status", "--porcelain")).toBe("");
     expect(run(answers, "log", "-1", "--format=%s")).toBe("answer(bro-2795-canvas.yaml): product-name -> name-now");

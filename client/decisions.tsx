@@ -359,7 +359,8 @@ export function DecisionGroups({
   onAnswered: (answered: DecisionAsk) => void;
 }) {
   const groups = groupDecisions(asks);
-  const openCount = groups.reduce((sum, group) => sum + group.open.length, 0);
+  // Judged once, as you open the view: a count crossing ten as you answer or as asks arrive never folds or opens it all.
+  const [many] = useState(() => groups.reduce((sum, group) => sum + group.open.length, 0) > ALL_OPEN_UP_TO);
   return (
     <View style={{ gap: space[3] }}>
       {groups.map((group) => (
@@ -367,7 +368,7 @@ export function DecisionGroups({
           key={group.ledger}
           theme={theme}
           group={group}
-          startOpen={group.waiting > 0 || (group.open.length > 0 && openCount <= ALL_OPEN_UP_TO)}
+          startOpen={group.waiting > 0 || (group.open.length > 0 && !many)}
           where={where}
           compact={compact}
           navigation={navigation}
@@ -423,7 +424,7 @@ export function WorkspaceDecisions({
         .join(" · ")}
     >
       <Text style={text.small}>
-        {`Your workspace's asks, from every ledger in ${controlRepo}. Each is read where it lives: closed once origin/main records an answer, else at the one checkout whose copy has not landed, else on origin/main. Your answer is written there, under the ledger lock (§5.5) Maestro and the fleet take.`}
+        {`Your workspace's asks, from every ledger in ${controlRepo}. Each is read where it lives: closed once origin/main records an answer, else at the one checkout whose copy has not landed, else on origin/main. Your answer is written there, under Maestro's ledger lock (§5.5); agent edits, ask_ledger.py and the Asks plugin do not take it yet.`}
       </Text>
       {warnings.slice(0, 3).map((warning) => (
         <Notice key={warning} theme={theme} tone="warn">

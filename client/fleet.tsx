@@ -780,8 +780,8 @@ export function FleetView({
               meta={`${detail.decisions.filter((ask) => ask.state === "open").length} open`}
             >
               <Text style={text.small}>
-                The fleet's own ask ledger, in {detail.askRoot}. Your answer is written there, under the ledger lock
-                (§5.5), and the fleet reads it at its next tick.
+                The fleet's own ask ledger, in {detail.askRoot}. Your answer is written there, under Maestro's ledger
+                lock (§5.5), and the fleet reads it at its next tick.
               </Text>
               <DecisionGroups
                 theme={theme}

@@ -2166,6 +2166,11 @@ describe("the workspace's decisions", () => {
     expect(view.text()).not.toContain("Canvas ask q3");
     await view.press(view.byLabel("ledger-3.yaml: 1 open"));
     expect(view.text()).toContain("Canvas ask q3");
+    // Answering its only open ask leaves the ledger open, saying so; and the rest stay folded as the count drops.
+    await view.press(view.byLabel("File all four, recommended"));
+    await view.press(view.byLabel("Answer q3: File all four"));
+    expect(view.text()).toContain("Answered just now: “File all four”");
+    expect(view.text()).not.toContain("Canvas ask q4");
   });
 
   test("an ask that waits on you shows above the work, and opens the Fleet view's Decisions", async () => {
