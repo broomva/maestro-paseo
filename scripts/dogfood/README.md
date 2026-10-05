@@ -15,7 +15,7 @@ step fails (`--keep-on-failure` keeps it for inspection).
 
 `shot.ts` options: `--width/--height` (desktop size, default 1440x900; a 375x812 phone shot is always added),
 `--theme light|dark`, `--open "<title>"` (the item whose detail is captured; `--no-open` skips it), `--path <surface>`,
-`--wait-for <text>`. On a timeout it saves `failed-*.png` and prints what the page did show.
+`--wait-for <text>`, `--steps "a|b|c"` (click each name in turn on the desktop viewport, saving `maestro-step-N-*.png` after each). On a timeout it saves `failed-*.png` and prints what the page did show.
 
 Requirements: the Paseo desktop app (its `paseo` CLI and bundled web client), Bun, and a Playwright Chromium
 (`bunx playwright install chromium`) or `--chrome <path>`.
