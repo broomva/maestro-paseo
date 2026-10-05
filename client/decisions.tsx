@@ -269,7 +269,9 @@ function LedgerGroup({
   onAnswered: (answered: DecisionAsk) => void;
 }) {
   const text = useText(theme);
-  const [open, setOpen] = useState(startOpen);
+  // Your own fold or open holds; until you choose, a ledger opens once an ask in it waits on you.
+  const [chosen, setChosen] = useState<boolean | null>(null);
+  const open = chosen ?? startOpen;
   const [answeredOpen, setAnsweredOpen] = useState(false);
   // Asks you answered here stay where you answered them, saying so, rather than folding away at once.
   const [answeredHere, setAnsweredHere] = useState<ReadonlySet<string>>(() => new Set());
@@ -277,6 +279,8 @@ function LedgerGroup({
   const keyOf = (ask: DecisionAsk) => `${homeKey(ask.home)}:${ask.uid ?? ask.id}`;
   const answered = (ask: DecisionAsk) => {
     setAnsweredHere((now) => new Set([...now, keyOf(ask)]));
+    // Its last open ask answered, a ledger would fold under you: it stays as you had it, open.
+    setChosen((now) => now ?? true);
     onAnswered(ask);
   };
   const stay = group.answered.filter((ask) => answeredHere.has(keyOf(ask)));
@@ -299,7 +303,7 @@ function LedgerGroup({
         accessibilityState={{ expanded: open }}
         aria-expanded={open}
         accessibilityLabel={`${group.ledger}: ${meta}`}
-        onPress={() => setOpen((now) => !now)}
+        onPress={() => setChosen(!open)}
         style={({ pressed }) => ({
           flexDirection: "row",
           alignItems: "baseline",
@@ -419,7 +423,7 @@ export function WorkspaceDecisions({
         .join(" · ")}
     >
       <Text style={text.small}>
-        {`Your workspace's asks, from every ledger in ${controlRepo}. Each is read where it lives: closed once origin/main records an answer, else at the one checkout whose copy has not landed, else on origin/main. Your answer is written there, under the lock every ledger writer shares.`}
+        {`Your workspace's asks, from every ledger in ${controlRepo}. Each is read where it lives: closed once origin/main records an answer, else at the one checkout whose copy has not landed, else on origin/main. Your answer is written there, under the ledger lock (§5.5) Maestro and the fleet take.`}
       </Text>
       {warnings.slice(0, 3).map((warning) => (
         <Notice key={warning} theme={theme} tone="warn">

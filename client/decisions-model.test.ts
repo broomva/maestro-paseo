@@ -44,7 +44,7 @@ describe("Decisions, a ledger at a time", () => {
       ["a.yaml", ["a2", "a1"], 1],
       ["b.yaml", ["b1", "b2"], 0],
     ]);
-    expect(groups.map(groupMeta)).toEqual(["2 open · 1 waits on you", "2 open · 1 answered", "2 open"]);
+    expect(groups.map(groupMeta)).toEqual(["2 open · 1 waits on you", "2 open · 1 recently answered", "2 open"]);
   });
 
   test("where an answer goes, by the ask's home", () => {

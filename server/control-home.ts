@@ -19,8 +19,12 @@
 //   6. Otherwise origin/main, whose answers go to the answers worktree,
 //      `~/.local/state/maestro-paseo/control-answers` on `maestro/answers`.
 // - Identity. The uid; an ask without one is (ledger, id), under the same-ask
-//   test: W's entry existed at B, or equals main's. Two entries with one handle
-//   that fail it are an id collision: both shown, neither answered.
+//   test: W's entry existed at B, or equals main's, or (beyond the spec's
+//   letter, for §5.2's squash-merged worktree that outlives the merge) W added
+//   it and main holds it asked at the same time in the same words. Two entries
+//   with one handle that fail it are an id collision: both shown, neither
+//   answered. So is a handle two entries of one copy share, and an id with a uid
+//   in one copy and none in another.
 // - The main checkout is never a fallback: it is one checkout under the rule.
 //
 // Not here: landing the answers batch (a gated work item, §5.2 "The answers
@@ -58,6 +62,10 @@ export const FETCH_EVERY_MS = 5 * 60_000;
 /** A read is reused this long: the header count polls it from every client. */
 export const READ_TTL_MS = 10_000;
 const LEDGER_LIMIT = 1024 * 1024;
+/** A `git cat-file --batch` of every ledger blob takes well under a second; past this it is stuck. */
+const CAT_FILE_MS = 30_000;
+/** An answer fetches origin/main first, unless it was fetched this recently. */
+const ANSWER_FETCH_FRESH_MS = 30_000;
 
 /** One ledger as parsed: its top level (for `arc`) and its asks list, in order. */
 export interface Ledger {
@@ -146,34 +154,69 @@ function askOf(row: Row, ledger: Ledger, name: string, home: AskHome): DecisionA
   return decisionOf(row, ledger.data, name, ambiguity(ledger.rows), home);
 }
 
+/** The fields that say which ask an entry is, beside its handle: when it was asked, and what. */
+const IDENTITY = ["asked_at", "ask", "question", "headline"] as const;
+
+/**
+ * W added this ask (B lacks it) and main holds one by the same handle, asked at
+ * the same time in the same words: W's ask landed and main has edited it since.
+ * The spec's same-ask test (W's entry equals main's) misses that case and would
+ * call it a collision; §5.2 says a squash-merged worktree that outlives the
+ * merge must not, even after main edits the ask again.
+ */
+function landedAndEdited(mine: Row, main: Row): boolean {
+  const shared = IDENTITY.filter((key) => text(mine[key]) !== null && text(main[key]) !== null);
+  return (
+    shared.some((key) => key === "asked_at" || key === "ask" || key === "question") &&
+    shared.every((key) => same(mine[key], main[key]))
+  );
+}
+
+/** One ledger's copy in one source: its rows that go by a handle, and where an answer to them would go. */
+interface Held {
+  ledger: Ledger;
+  rows: Row[];
+  home: AskHome;
+}
+
 /**
  * Every ask in the sources, each read at its home (the rule above), with a
- * refusal on one that may not be answered: diverged, or an id collision.
+ * refusal on one that may not be answered: diverged, an id collision, a handle
+ * two entries of one copy share, or an id that has a uid in one copy and none
+ * in another. None is left out of the list.
  */
 export function resolveHomes(sources: Sources): DecisionAsk[] {
   const mainHome: AskHome = { kind: "main", path: sources.controlRepo, branch: null };
-  // Every handle in every ledger any source holds, in ledger then list order.
   const names = new Set<string>([
     ...sources.main.keys(),
     ...sources.checkouts.flatMap((copy) => [...copy.tree.keys()]),
   ]);
   const out: DecisionAsk[] = [];
   for (const name of [...names].sort()) {
+    const ledgers = [sources.main.get(name), ...sources.checkouts.map((copy) => copy.tree.get(name))];
+    // Every handle any copy holds, in list order; and the ids some copy stamps with a uid and another does not.
     const handles: { uid: string | null; id: string }[] = [];
     const seen = new Set<string>();
-    const sourcesOf = [sources.main.get(name), ...sources.checkouts.map((copy) => copy.tree.get(name))];
-    for (const ledger of sourcesOf) {
+    const stamped = new Set<string>();
+    const unstamped = new Set<string>();
+    for (const ledger of ledgers) {
       for (const row of ledger?.rows ?? []) {
         const id = row ? text(row.id) : null;
         if (!row || !id) continue;
         const uid = text(row.uid);
+        (uid ? stamped : unstamped).add(id);
         const key = uid ? `u:${uid}` : `i:${id}`;
         if (seen.has(key)) continue;
         seen.add(key);
         handles.push({ uid, id });
       }
     }
-    for (const handle of handles) out.push(...resolveOne(sources, name, handle, mainHome));
+    for (const handle of handles) {
+      const asks = resolveOne(sources, name, handle, mainHome);
+      const split = stamped.has(handle.id) && unstamped.has(handle.id);
+      const refusal = `The ask ${handle.id} in ${name} has a uid in one copy and none in another, so Maestro cannot tell whether they are one ask. Stamp every copy (ask_ledger.py stamp) or give one a new id; Maestro answers none of them.`;
+      out.push(...(split ? asks.map((ask) => (ask.state === "open" ? { ...ask, refusal } : ask)) : asks));
+    }
   }
   return out;
 }
@@ -185,6 +228,27 @@ function resolveOne(
   mainHome: AskHome,
 ): DecisionAsk[] {
   const mainLedger = sources.main.get(name);
+  const held: Held[] = [
+    ...(mainLedger ? [{ ledger: mainLedger, rows: entriesOf(mainLedger, uid, id), home: mainHome }] : []),
+    ...sources.checkouts.flatMap((checkout) => {
+      const ledger = checkout.tree.get(name);
+      return ledger ? [{ ledger, rows: entriesOf(ledger, uid, id), home: checkoutHome(checkout) }] : [];
+    }),
+  ];
+  // A handle two entries of one copy share names no one ask: every one of them is listed, and none answered.
+  const doubled = held.filter((copy) => copy.rows.length > 1);
+  if (doubled.length > 0) {
+    const where = doubled.map((copy) => (copy.home.kind === "main" ? MAIN_REF : homeWords(copy.home))).join("; ");
+    const refusal = `Two asks in ${name} go by ${uid ?? id} in ${where}, so an answer could land on the wrong one. Give one a uid or a new id; Maestro answers none of them.`;
+    const listed = [...doubled, ...held.filter((copy) => copy.home.kind === "main" && copy.rows.length === 1)];
+    return listed.flatMap((copy) =>
+      copy.rows.flatMap((row) => {
+        const ask = askOf(row, copy.ledger, name, copy.home);
+        return ask ? [ask.state === "open" ? { ...ask, refusal } : ask] : [];
+      }),
+    );
+  }
+
   const [main = null] = entriesOf(mainLedger, uid, id);
   const copies: Copy[] = [];
   const collisions: Copy[] = [];
@@ -194,8 +258,13 @@ function resolveOne(
     if (!ledger || !mine) return;
     const [base = null] = entriesOf(checkout.base.get(name), uid, id);
     // The same-ask test, for an ask without a uid: W inherited it from B, or W's added ask has landed.
-    const sameAsk = uid !== null || main === null || base !== null || same(mine, main);
-    const copy = { at, row: mine, ledger, local: isLocal(base, mine, main) };
+    const edited = uid === null && main !== null && base === null && landedAndEdited(mine, main);
+    const sameAsk = uid !== null || main === null || base !== null || same(mine, main) || edited;
+    // Landed and edited on main since: local only for an outcome W records and main does not.
+    const local = edited
+      ? !same(mine, main) && stateOf(mine) !== "open" && stateOf(main as Row) === "open"
+      : isLocal(base, mine, main);
+    const copy = { at, row: mine, ledger, local };
     if (sameAsk) copies.push(copy);
     else collisions.push(copy);
   });
@@ -268,11 +337,24 @@ export function git(cwd: string, args: readonly string[], timeout = 20_000): Pro
       ["-C", cwd, ...args],
       { timeout, maxBuffer: 64 * 1024 * 1024, env: gitEnv() },
       (error, stdout, stderr) => {
-        if (error) reject(new Error(`git ${args[0]}: ${(stderr || error.message).trim().split("\n")[0]}`));
+        if (error) reject(new Error(`git ${args[0]}: ${gitWords(stderr || error.message)}`));
         else resolve(stdout);
       },
     );
   });
+}
+
+/**
+ * What git said, in a line: its last two lines that say anything. A hook's
+ * banner comes first and its reason last, so the first line alone would only
+ * name the hook.
+ */
+export function gitWords(output: string): string {
+  const lines = output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !/^=+.*=+$/.test(line));
+  return lines.slice(-2).join(" / ") || "it failed with no words";
 }
 
 /** Many objects in one `git cat-file --batch`: each spec's bytes, or null when git has none. */
@@ -282,9 +364,17 @@ export function catFiles(repo: string, specs: readonly string[]): Promise<Map<st
   return new Promise((resolve, reject) => {
     const child = spawn("git", ["-C", repo, "cat-file", "--batch"], { env: gitEnv() });
     const chunks: Buffer[] = [];
+    // A git that hangs is killed, so a stalled object read never holds every later read and answer.
+    const timer = setTimeout(() => child.kill("SIGKILL"), CAT_FILE_MS);
     child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+    child.stdin.on("error", () => undefined);
     child.on("error", reject);
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (signal) {
+        reject(new Error(`git cat-file was stopped (${signal}) after ${CAT_FILE_MS / 1000} s`));
+        return;
+      }
       if (code !== 0) {
         reject(new Error(`git cat-file exited ${code}`));
         return;
@@ -382,7 +472,7 @@ export class WorkspaceAsks {
   private format: "sha1" | "sha256" | null = null;
   private lastFetch = 0;
   private fetchedAt: string | null = null;
-  private fetching: Promise<void> | null = null;
+  private fetching: Promise<string | null> | null = null;
   private cached: { at: number; read: Promise<WorkspaceRead> } | null = null;
   private writes: Promise<unknown> = Promise.resolve();
 
@@ -424,16 +514,29 @@ export class WorkspaceAsks {
   /** origin/main, fetched in the background at most every FETCH_EVERY_MS; a read never waits on it. */
   private maybeFetch(now: number): void {
     if (this.options.fetch === false || this.fetching || now - this.lastFetch < FETCH_EVERY_MS) return;
-    this.lastFetch = now;
-    this.fetching = git(this.options.controlRepo, ["fetch", "--quiet", "origin", "main"], 60_000)
+    void this.fetchNow();
+  }
+
+  /** Fetches origin/main (one fetch at a time); resolves to why it failed, or null. */
+  private fetchNow(): Promise<string | null> {
+    if (this.fetching) return this.fetching;
+    this.lastFetch = this.now();
+    const fetching = git(this.options.controlRepo, ["fetch", "--quiet", "origin", "main"], 60_000)
       .then(() => {
         this.fetchedAt = new Date(this.now()).toISOString();
         this.cached = null;
+        return null;
       })
-      .catch((error) => this.options.log?.(`asks: fetching origin/main: ${(error as Error).message}`))
+      .catch((error) => {
+        const message = (error as Error).message;
+        this.options.log?.(`asks: fetching origin/main: ${message}`);
+        return message;
+      })
       .finally(() => {
         this.fetching = null;
       });
+    this.fetching = fetching;
+    return fetching;
   }
 
   /** For a test: waits for a fetch in flight. */
@@ -463,7 +566,15 @@ export class WorkspaceAsks {
     const mainSha = (
       await git(repo, ["rev-parse", "--verify", "--quiet", `${MAIN_REF}^{commit}`]).catch(() => "")
     ).trim();
-    if (!mainSha) warnings.push(`${repo} has no ${MAIN_REF}, so only its checkouts' own copies are read.`);
+    if (!mainSha) {
+      // Without main there is no B, so every copy would read as local and every ask as diverged.
+      return {
+        controlRepo: repo,
+        main: null,
+        all: [],
+        warnings: [`${repo} has no ${MAIN_REF}, and the home rule needs it, so no ask was read. Fetch it there.`],
+      };
+    }
     const mainTree = mainSha ? await this.treeOf(mainSha) : new Map<string, string>();
     const answersReal = await realpath(this.options.answersPath).catch(() => this.options.answersPath);
     const checkouts: { tree: Worktree; base: string | null; files: Map<string, { id: string; bytes: Buffer }> }[] = [];
@@ -520,7 +631,11 @@ export class WorkspaceAsks {
     for (const [name, file] of answerFiles) {
       if (mainTree.get(name) === file.id) continue;
       const ledger = this.parseFile(file);
-      if (!(ledger instanceof Error)) answers.set(name, ledger);
+      if (ledger instanceof Error) {
+        warnings.push(
+          `The answers worktree's ${name} could not be read (${ledger.message}), so its answers are not shown.`,
+        );
+      } else answers.set(name, ledger);
     }
     this.trimCaches();
     return {
@@ -631,6 +746,12 @@ export class WorkspaceAsks {
     input: AnswerInput & { ledger: string; home: string },
   ): Promise<{ ask: DecisionAsk; warning: string | null }> {
     if (!LEDGER.test(input.ledger)) throw new UserError(`${input.ledger} is not a ledger name.`);
+    // The home is judged on origin/main as it is now: an ask closed or landed upstream since the last fetch moves.
+    const fresh = this.options.fetch === false || this.now() - this.lastFetch < ANSWER_FETCH_FRESH_MS;
+    const unfetched = fresh ? null : await this.fetchNow();
+    const stale = unfetched
+      ? `origin/main could not be fetched first (${unfetched}), so this was judged on origin/main as last fetched.`
+      : null;
     const read = await this.read(true);
     const named = read.all.filter(
       (ask) => ask.ledger === input.ledger && (input.uid ? ask.uid === input.uid : !ask.uid && ask.id === input.id),
@@ -663,7 +784,7 @@ export class WorkspaceAsks {
       const answered = await answerDecision(path, answer, { ...write, home: found.home });
       this.cached = null;
       this.options.log?.(`asks: you answered ${input.ledger} ${input.id} in ${found.home.path}`);
-      return answered;
+      return { ask: answered.ask, warning: [stale, answered.warning].filter(Boolean).join(" ") || null };
     }
     if (found.home.kind !== "main") throw new UserError(`The ask ${input.id} is not the workspace's to answer here.`);
     const answers = await this.answersWorktree();
@@ -674,7 +795,7 @@ export class WorkspaceAsks {
     this.options.log?.(`asks: you answered ${input.ledger} ${input.id}, in the answers batch`);
     return {
       ask: { ...answered.ask, batched: true },
-      warning: [answered.warning, committed].filter(Boolean).join(" ") || null,
+      warning: [stale, answered.warning, committed].filter(Boolean).join(" ") || null,
     };
   }
 
@@ -717,6 +838,17 @@ export class WorkspaceAsks {
         `${path} is not ${repo}'s answers worktree on ${ANSWERS_BRANCH}, so no answer was written there.`,
       );
     }
+    // Anything uncommitted there (an earlier answer whose commit failed, a hand edit) is never swept into this answer's commit.
+    // Each line is `XY path`; X may be a space, so lines are never trimmed before the cut.
+    const dirty = (await git(path, ["status", "--porcelain", "--untracked-files=all"]))
+      .split("\n")
+      .filter((line) => line.length > 3);
+    if (dirty.length > 0) {
+      const files = dirty.map((line) => line.slice(3)).join(", ");
+      throw new UserError(
+        `Maestro's answers worktree has changes not committed (${files}), so no answer was written. Commit or discard them in ${path} first.`,
+      );
+    }
     const current = await git(path, ["merge-base", "--is-ancestor", mainSha, "HEAD"]).then(
       () => true,
       () => false,
@@ -736,15 +868,19 @@ export class WorkspaceAsks {
     return path;
   }
 
-  /** Commits the answers worktree's ledgers on maestro/answers; a commit that fails is said, and the answer stays in its file. */
+  /**
+   * Commits this answer's ledger, and only it, on maestro/answers. A commit
+   * that fails (a hook refusing it, say) is said; the answer stays in the file,
+   * and the next answer is refused until the worktree is clean again.
+   */
   private async commitAnswer(answers: string, ledger: string, ask: DecisionAsk): Promise<string | null> {
+    const file = join(ASKS_DIR, ledger);
     try {
-      await git(answers, ["add", "--", ASKS_DIR]);
       const message = `answer(${ledger}): ${ask.id}${ask.answerOption ? ` -> ${ask.answerOption}` : ""}\n\nAnswered-by: owner:maestro`;
-      await git(answers, ["commit", "--quiet", "-m", message, "--", ASKS_DIR], 120_000);
+      await git(answers, ["commit", "--quiet", "-m", message, "--", file], 120_000);
       return null;
     } catch (error) {
-      const message = `Your answer is in the answers worktree, but its commit on ${ANSWERS_BRANCH} failed (${(error as Error).message}).`;
+      const message = `Your answer is in the answers worktree, but its commit on ${ANSWERS_BRANCH} failed (${(error as Error).message}). Maestro writes no other answer there until ${file} is committed or discarded in ${answers}.`;
       this.options.log?.(`asks: ${message}`);
       return message;
     }

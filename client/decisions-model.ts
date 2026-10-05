@@ -11,7 +11,7 @@ export interface DecisionGroup {
   arc: string | null;
   /** Its open asks, those that wait on you first, then oldest first. */
   open: DecisionAsk[];
-  /** Its answered asks, newest first. */
+  /** Its answered asks among the latest answered of all (control-asks ANSWERED_SHOWN), newest first. */
   answered: DecisionAsk[];
   waiting: number;
 }
@@ -47,12 +47,12 @@ export function groupDecisions(asks: readonly DecisionAsk[]): DecisionGroup[] {
   );
 }
 
-/** A group's heading line: `3 open · 1 waits on you · 2 answered`. */
+/** A group's heading line: `3 open · 1 waits on you · 2 recently answered`. */
 export function groupMeta(group: DecisionGroup): string {
   return [
     group.open.length > 0 ? `${group.open.length} open` : null,
     group.waiting > 0 ? `${group.waiting} ${group.waiting === 1 ? "waits" : "wait"} on you` : null,
-    group.answered.length > 0 ? `${group.answered.length} answered` : null,
+    group.answered.length > 0 ? `${group.answered.length} recently answered` : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -62,7 +62,7 @@ export function groupMeta(group: DecisionGroup): string {
 export function homeText(ask: DecisionAsk): string {
   const { home } = ask;
   if (home.kind === "main") {
-    return `Its home is origin/main: your answer goes to Maestro's answers worktree, committed on maestro/answers, and reaches main when that batch lands.`;
+    return `Its home is origin/main: your answer goes to Maestro's answers worktree, committed on maestro/answers. Landing that batch on main is a step of its own, not built yet.`;
   }
   if (home.kind === "checkout") {
     const where = home.branch ? `${home.path}, on ${home.branch}` : home.path;

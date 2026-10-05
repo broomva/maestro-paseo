@@ -9,6 +9,7 @@ import { parsed, rowsOf } from "./control-asks";
 import {
   ANSWERS_BRANCH,
   blobId,
+  gitWords,
   isLocal,
   type Ledger,
   parseWorktrees,
@@ -156,6 +157,49 @@ describe("the home rule (§5.2)", () => {
       ["b.yaml", true],
       ["c.yaml", false],
     ]);
+  });
+
+  test("a handle two entries of one copy share lists both, and answers neither", () => {
+    const twice = `${OPEN}  - id: A1\n    headline: "Another A1"\n`;
+    const list = resolveHomes(sources({ main: new Map([["l.yaml", ledger(twice)]]) }));
+    expect(list.map((entry) => [entry.headline, Boolean(entry.refusal)])).toEqual([
+      ["Merge it?", true],
+      ["Another A1", true],
+    ]);
+  });
+
+  test("an id with a uid in one copy and none in another is one row per handle, none answered", () => {
+    const stamped = OPEN.replace("  - id: A1\n", "  - id: A1\n    uid: u-1\n");
+    const list = resolveHomes(
+      sources({
+        main: new Map([["l.yaml", ledger(OPEN)]]),
+        checkouts: [checkout("/w", { "l.yaml": stamped }, { "l.yaml": OPEN })],
+      }),
+    );
+    expect(list.length).toBeGreaterThan(0);
+    expect(list.every((entry) => entry.refusal?.includes("has a uid in one copy and none in another"))).toBe(true);
+  });
+
+  test("an ask a lingering worktree added, which main has edited since, is main's: not local, not a collision", () => {
+    const added = ask(`    ask: "Merge it?"\n    asked_at: 2026-10-01T10:00Z\n    stakes: "old"\n`);
+    const edited = added.replace('stakes: "old"', 'stakes: "new"');
+    const list = resolveHomes(
+      sources({ main: new Map([["l.yaml", ledger(edited)]]), checkouts: [checkout("/w", { "l.yaml": added }, {})] }),
+    );
+    expect(list.map((entry) => [entry.stakes, entry.home.kind, entry.refusal])).toEqual([["new", "main", null]]);
+    // An answer that worktree recorded and main has not is still its own, and shows there.
+    const answered = `${added}    answer: "Merge."\n`;
+    const local = resolveHomes(
+      sources({ main: new Map([["l.yaml", ledger(edited)]]), checkouts: [checkout("/w", { "l.yaml": answered }, {})] }),
+    );
+    expect(local.map((entry) => [entry.state, entry.home.kind])).toEqual([["answered", "checkout"]]);
+  });
+
+  test("git's words: its last lines that say something, past a hook's banner", () => {
+    expect(gitWords("=== bstack pre-commit gate ===\n  [FAIL] gitleaks: a secret\n\n")).toBe(
+      "[FAIL] gitleaks: a secret",
+    );
+    expect(gitWords("")).toBe("it failed with no words");
   });
 
   test("git's worktree listing, without bare or prunable trees", () => {
@@ -500,6 +544,149 @@ describe("the workspace's asks, in a scratch control repo", () => {
     await asks.read();
     await asks.settled();
     expect(run(repo, "rev-parse", "origin/main")).toBe(sha);
+  });
+
+  test("an answer fetches origin/main first: an ask answered upstream since the last fetch is not answered again", async () => {
+    const { repo, root, origin, state } = await workspace();
+    let now = 1_000_000;
+    const asks = new WorkspaceAsks({
+      controlRepo: repo,
+      answersPath: join(state, "control-answers"),
+      lockRoot: join(state, "locks"),
+      receipts: join(state, "asks.jsonl"),
+      now: () => now,
+      ttlMs: 0,
+    });
+    const canvas = find((await asks.read()).all, "product-name");
+    await asks.settled();
+    const other = join(root, "other");
+    run(root, "clone", "--quiet", origin, other);
+    await writeFile(
+      join(other, ".control", "asks", "bro-2795-canvas.yaml"),
+      CANVAS.replace("status: open", "status: resolved"),
+    );
+    run(other, "commit", "--quiet", "-am", "answered upstream");
+    run(other, "push", "--quiet", "origin", "main");
+    now += 60_000;
+    const input = {
+      ledger: canvas.ledger,
+      home: "origin/main",
+      uid: null,
+      id: canvas.id,
+      hash: canvas.hash,
+      option: "name-now",
+      note: "",
+    };
+    await expect(asks.answer(input)).rejects.toThrow("already answered or retired");
+    expect(existsSync(join(state, "control-answers"))).toBe(false);
+  });
+
+  test("a commit a hook refuses says why; the answers worktree then takes no answer until it is clean", async () => {
+    const { root, repo, asks } = await workspace();
+    const hooks = join(root, "hooks");
+    await mkdir(hooks);
+    await writeFile(
+      join(hooks, "pre-commit"),
+      "#!/bin/sh\necho '=== gate ==='\necho '  [FAIL] no commits today' >&2\nexit 1\n",
+      { mode: 0o755 },
+    );
+    run(repo, "config", "core.hooksPath", hooks);
+    const canvas = find((await asks.read()).all, "product-name");
+    const { ask, warning } = await asks.answer({
+      ledger: canvas.ledger,
+      home: "origin/main",
+      uid: null,
+      id: canvas.id,
+      hash: canvas.hash,
+      option: "name-now",
+      note: "",
+    });
+    expect(ask.state).toBe("answered");
+    expect(warning).toContain("[FAIL] no commits today");
+    expect(warning).not.toContain("=== gate ===");
+    // The answer stays in its file, and is never swept into another answer's commit.
+    await writeFile(join(repo, ".control", "asks", "second.yaml"), MERGE.replace("A1", "B1"));
+    run(repo, "add", ".control/asks/second.yaml");
+    run(repo, "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "second");
+    run(repo, "-c", "core.hooksPath=/dev/null", "push", "--quiet", "origin", "HEAD:main");
+    run(repo, "fetch", "--quiet", "origin");
+    const second = find((await asks.read()).all, "B1");
+    await expect(
+      asks.answer({
+        ledger: "second.yaml",
+        home: "origin/main",
+        uid: null,
+        id: "B1",
+        hash: second.hash,
+        option: "hold",
+        note: "",
+      }),
+    ).rejects.toThrow("has changes not committed (.control/asks/bro-2795-canvas.yaml)");
+  });
+
+  test("an answers batch that cannot take origin/main's latest is refused, and left as it was", async () => {
+    const { repo, root, origin, state, asks } = await workspace();
+    const canvas = find((await asks.read()).all, "product-name");
+    await asks.answer({
+      ledger: canvas.ledger,
+      home: "origin/main",
+      uid: null,
+      id: canvas.id,
+      hash: canvas.hash,
+      option: "name-now",
+      note: "",
+    });
+    // Main rewrites the same lines the batch answered, and adds an ask to answer.
+    const other = join(root, "other");
+    run(root, "clone", "--quiet", origin, other);
+    await writeFile(
+      join(other, ".control", "asks", "bro-2795-canvas.yaml"),
+      `${CANVAS.replace("status: open", "status: deferred")}  - id: later\n    ask: "Later?"\n    blocking: false\n    default: wait\n`,
+    );
+    run(other, "commit", "--quiet", "-am", "edited upstream");
+    run(other, "push", "--quiet", "origin", "main");
+    run(repo, "fetch", "--quiet", "origin");
+    const later = find((await asks.read()).all, "later");
+    await expect(
+      asks.answer({
+        ledger: canvas.ledger,
+        home: "origin/main",
+        uid: null,
+        id: "later",
+        hash: later.hash,
+        option: null,
+        note: "Now.",
+      }),
+    ).rejects.toThrow("could not take origin/main's latest");
+    const answers = join(state, "control-answers");
+    expect(run(answers, "status", "--porcelain")).toBe("");
+    expect(run(answers, "log", "-1", "--format=%s")).toBe("answer(bro-2795-canvas.yaml): product-name -> name-now");
+  });
+
+  test("an answers-worktree ledger that cannot be read is said, not skipped", async () => {
+    const { state, asks } = await workspace();
+    const canvas = find((await asks.read()).all, "product-name");
+    await asks.answer({
+      ledger: canvas.ledger,
+      home: "origin/main",
+      uid: null,
+      id: canvas.id,
+      hash: canvas.hash,
+      option: "name-now",
+      note: "",
+    });
+    await writeFile(join(state, "control-answers", ".control", "asks", "bro-2795-canvas.yaml"), "asks: [unclosed\n");
+    const read = await asks.read();
+    expect(read.warnings.join(" ")).toContain("The answers worktree's bro-2795-canvas.yaml could not be read");
+    expect(find(read.all, "product-name").state).toBe("open");
+  });
+
+  test("with no origin/main, no ask is read, and the view says why", async () => {
+    const { repo, asks } = await workspace();
+    run(repo, "update-ref", "-d", "refs/remotes/origin/main");
+    const read = await asks.read();
+    expect([read.all, read.main]).toEqual([[], null]);
+    expect(read.warnings[0]).toContain("has no origin/main, and the home rule needs it");
   });
 
   test("no control repo reads as no asks, and a folder that is not a git repo says so", async () => {
