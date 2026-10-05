@@ -517,6 +517,21 @@ test("initiatives and their ideas are wired: develop files held work in the init
     expect(brief).toContain("hold: You chose to develop the idea ideas-maestro.yaml I1");
     expect(brief).toContain("Its next action: Ship the tab.");
     expect(brief).toContain("> start small");
+    expect(brief).toContain("idea: ideas-maestro.yaml#I1");
+    // Filed once: asked again (a retry after a warning), the idea gets the same work item back.
+    const again = await run<{ work: { id: string } | null; warning: string | null }>("initiatives.file", {
+      ledger: "ideas-maestro.yaml",
+      id: "I1",
+    });
+    expect([again.work?.id, again.warning]).toEqual([developed.work.id, null]);
+    const listed = await run<{ developed: { ref: string; id: string }[] }>("initiatives.list", {});
+    expect(listed.developed.map((entry) => [entry.ref, entry.id])).toEqual([
+      ["ideas-maestro.yaml#I1", developed.work.id],
+    ]);
+    // An idea not answered develop gets no work filed.
+    await expect(run("initiatives.file", { ledger: "ideas-maestro.yaml", id: "I2" })).rejects.toThrow(
+      "is not answered develop",
+    );
 
     const parked = await run<{ ask: Ask; work: unknown }>("ask.answer", {
       where,

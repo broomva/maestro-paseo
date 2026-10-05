@@ -43,7 +43,7 @@ import {
   workForAgent,
 } from "./shared/contracts";
 import { answerAsk, type DecisionAsk, getFleet, getFleetTick, getWorkspaceAsks, reviewProposal } from "./shared/fleet";
-import { getInitiatives } from "./shared/initiatives";
+import { fileIdeaWork, getInitiatives, ideaRef, type WorkRef } from "./shared/initiatives";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
 import { getTimeline, getTimelineLog } from "./shared/timeline";
 
@@ -124,35 +124,50 @@ export default function contribute(host: PluginServerContext) {
   /**
    * An idea you chose to develop: a queued work item in its initiative's
    * folder, briefed from the initiative file and the idea, held for you to
-   * start (`hold`: the loop and sessions leave it). The answer is in already,
-   * so a work item that cannot be filed is said, never thrown.
+   * start (`hold`: the loop and sessions leave it), and naming the idea
+   * (`idea: <ledger>#<id>`) so it is filed once: an idea that has its work
+   * item gets that one back. The answer is in already, so a work item that
+   * cannot be filed is said, never thrown; Initiatives offers to file it again.
    */
-  const develop = async (
+  const filing = new Map<string, Promise<{ work: WorkRef | null; warning: string | null }>>();
+  const develop = (
     ask: DecisionAsk,
     paseo: Paseo | null,
-  ): Promise<{ work: { id: string; title: string; path: string } | null; warning: string | null }> => {
+  ): Promise<{ work: WorkRef | null; warning: string | null }> => {
     const idea = ask.idea;
-    if (!idea || ask.answerOption !== "develop" || !control.repo) return { work: null, warning: null };
-    try {
-      const initiative = idea.initiative && initiatives ? await initiatives.one(idea.initiative) : null;
-      const { title, brief } = ideaWork(initiative, ask);
-      const item = await engine.create(paseo, {
-        title,
-        brief,
-        repo: control.repo,
-        gate: "human",
-        check: "",
-        initiative: idea.initiative ?? "",
-        dispatch: false,
-        hold: `You chose to develop the idea ${ask.ledger} ${ask.id}; it starts when you start it.`,
-      });
-      log(`initiatives: you chose develop for ${ask.ledger} ${ask.id}: queued ${item.id}, held for you`);
-      return { work: { id: item.id, title: item.title, path: item.path }, warning: null };
-    } catch (error) {
-      const message = `You chose develop, and that is in ${ask.ledger}, but its work item could not be filed (${(error as Error).message}). File it with New work.`;
-      log(`initiatives: ${message}`);
-      return { work: null, warning: message };
-    }
+    if (!idea || ask.answerOption !== "develop" || !control.repo) return Promise.resolve({ work: null, warning: null });
+    const ref = ideaRef(ask);
+    const pending = filing.get(ref);
+    if (pending) return pending;
+    const run = (async () => {
+      try {
+        const existing = (await engine.developed()).get(ref);
+        if (existing) return { work: existing, warning: null };
+        const initiative = idea.initiative && initiatives ? await initiatives.one(idea.initiative) : null;
+        const { title, brief } = ideaWork(initiative, ask);
+        const item = await engine.create(paseo, {
+          title,
+          brief,
+          repo: control.repo as string,
+          gate: "human",
+          check: "",
+          initiative: idea.initiative ?? "",
+          dispatch: false,
+          hold: `You chose to develop the idea ${ask.ledger} ${ask.id}; it starts when you start it.`,
+          idea: ref,
+        });
+        log(`initiatives: you chose develop for ${ask.ledger} ${ask.id}: queued ${item.id}, held for you`);
+        return { work: { id: item.id, title: item.title, path: item.path }, warning: null };
+      } catch (error) {
+        const message = `You chose develop, and that is in ${ask.ledger}, but its work item could not be filed (${(error as Error).message}). File it again from Initiatives.`;
+        log(`initiatives: ${message}`);
+        return { work: null, warning: message };
+      } finally {
+        filing.delete(ref);
+      }
+    })();
+    filing.set(ref, run);
+    return run;
   };
   // Every scheduled thing on one axis (server/timeline.ts): Paseo's schedules, launchd, the loop, the fleet. Read-only.
   const wakes = new WakeLog(wakeLogPath(), log);
@@ -252,11 +267,36 @@ export default function contribute(host: PluginServerContext) {
     };
   });
   // The workspace's initiatives, each with its ideas (server/initiatives.ts): read-only but for the answers above.
-  server.handle(getInitiatives, (_input, { paseo }) =>
-    initiatives
-      ? initiatives.view(paseo)
-      : Promise.resolve({ controlRepo: "", today: "", initiatives: [], ideas: [], warnings: [] }),
-  );
+  server.handle(getInitiatives, async (_input, { paseo }) => {
+    if (!initiatives) return { controlRepo: "", today: "", initiatives: [], ideas: [], developed: [], warnings: [] };
+    const [view, developed] = await Promise.all([
+      initiatives.view(paseo),
+      engine.developed().catch((error) => {
+        log(`initiatives: reading the work filed for ideas: ${(error as Error).message}`);
+        return null;
+      }),
+    ]);
+    // Only for ideas shown: a work item names an idea by its ref, which is all it is joined on.
+    const shown = new Set(view.ideas.map(ideaRef));
+    return {
+      ...view,
+      developed: developed
+        ? [...developed].filter(([ref]) => shown.has(ref)).map(([ref, work]) => ({ ref, ...work }))
+        : [],
+      warnings: developed ? view.warnings : [...view.warnings, "The work filed for ideas could not be read."],
+    };
+  });
+  // An idea answered develop with no work item: file it now (idempotent). Only an answered develop qualifies.
+  server.handle(fileIdeaWork, async ({ ledger, id }, { paseo }) => {
+    if (!workspace) throw new UserError("Maestro reads no control repo here (MAESTRO_PASEO_CONTROL_REPO is off).");
+    const { decisions } = await workspace.view();
+    const ask = decisions.find((entry) => entry.ledger === ledger && entry.id === id && entry.idea);
+    if (!ask) throw new UserError(`No idea ${id} in ${ledger}.`);
+    if (ask.state !== "answered" || ask.answerOption !== "develop") {
+      throw new UserError(`${ledger} ${id} is not answered develop, so no work is filed for it.`);
+    }
+    return develop(ask, paseo);
+  });
   server.handle(getConfig, () => loadConfig());
   // Saved Settings may turn the loop on or off, or change its period: arm it again from them.
   server.handle(setConfig, async (input) => {

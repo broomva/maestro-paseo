@@ -20,7 +20,13 @@ import { type ReactNode, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, Text, View } from "react-native";
 import { attentionWork } from "../shared/contracts";
 import { ANSWER_NOTE_CHARS, answerAsk, type DecisionAsk, homeKey } from "../shared/fleet";
-import { getInitiatives, type Initiative, type InitiativesView as InitiativesRead } from "../shared/initiatives";
+import {
+  fileIdeaWork,
+  getInitiatives,
+  type Initiative,
+  type InitiativesView as InitiativesRead,
+  ideaRef,
+} from "../shared/initiatives";
 import { sameAsk } from "./decisions";
 import { homeText } from "./decisions-model";
 import { errorText } from "./format";
@@ -88,7 +94,23 @@ export function IdeaCard({
   const refresh = useRefresh();
   const openUrl = useOpenUrl();
   const send = useRpc(answerAsk);
+  const fileWork = useRpc(fileIdeaWork);
+  // The tab's own read (one shared query): the work item each developed idea has, if any.
+  const developed = useInitiatives().data?.developed ?? [];
   const [filed, setFiled] = useState<{ id: string; title: string } | null>(null);
+  const ref = ideaRef(ask);
+  const work = filed ?? developed.find((entry) => entry.ref === ref) ?? null;
+  const refile = useMutation({
+    mutationFn: () => fileWork({ ledger: ask.ledger, id: ask.id }),
+    onSuccess: ({ work: filedNow, warning }) => {
+      if (filedNow) setFiled({ id: filedNow.id, title: filedNow.title });
+      if (warning) toast.error(warning);
+    },
+    onError: (error) => toast.error(errorText(error)),
+    onSettled: () => {
+      void refresh();
+    },
+  });
   const answer = useMutation({
     mutationFn: send,
     onSuccess: ({ ask: answered, work }) => {
@@ -194,22 +216,35 @@ export function IdeaCard({
       ) : null}
       {!open ? (
         <View style={{ gap: 2 }}>
-          <Text style={[text.small, { color: theme.colors.statusSuccess }]}>{ideaOutcome(ask)}</Text>
+          <Text style={[text.small, { color: theme.colors.statusSuccess }]}>{ideaOutcome(ask, work !== null)}</Text>
           {ask.answer ? (
             <Text style={text.small} selectable>
               {ask.answer}
             </Text>
           ) : null}
-          {filed ? (
+          {work ? (
             <View style={{ flexDirection: "row" }}>
               <Button
                 theme={theme}
                 variant="secondary"
                 icon="ArrowUpRight"
-                label={`Open the work: ${filed.title}`}
+                label={`Open the work: ${work.title}`}
                 compact={compact}
                 accessibilityLabel={`Open the work filed for ${ask.id}`}
-                onPress={() => onOpenWork(filed.id)}
+                onPress={() => onOpenWork(work.id)}
+              />
+            </View>
+          ) : ask.answerOption === "develop" ? (
+            <View style={{ flexDirection: "row" }}>
+              <Button
+                theme={theme}
+                variant="secondary"
+                icon="Plus"
+                label="File its work item"
+                compact={compact}
+                busy={refile.isPending}
+                accessibilityLabel={`File the work for ${ask.id}`}
+                onPress={() => refile.mutate()}
               />
             </View>
           ) : null}

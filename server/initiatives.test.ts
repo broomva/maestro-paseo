@@ -8,6 +8,7 @@ import type { Initiative } from "../shared/initiatives";
 import { decisionOf, parsed, rowsOf } from "./control-asks";
 import {
   agentIds,
+  ghOutput,
   ideaCounts,
   ideaWork,
   initiativeOf,
@@ -290,6 +291,13 @@ describe("ideas", () => {
 });
 
 describe("PR states, one cached query", () => {
+  test("gh's answer is kept when it exits 1 over one missing ref; with no answer, its error stands", () => {
+    const partial = '{"data":{"p0":{"state":"MERGED"},"p1":null}}';
+    expect(ghOutput(new Error("exit 1"), partial)).toBe(partial);
+    expect(ghOutput(null, "")).toBe("");
+    expect(() => ghOutput(new Error("gh: not logged in"), "  ")).toThrow("not logged in");
+  });
+
   test("every ref in one GraphQL call, each state read back; unknown ones stay null", async () => {
     const calls: string[][] = [];
     let at = 0;
@@ -501,6 +509,8 @@ describe("the workspace's initiatives, in a scratch control repo", () => {
   test("a malformed file on main is an error row; stale ones are notices; ideas are counted per initiative", async () => {
     const { repo, dir } = await controlRepo();
     await writeFile(join(dir, "broken.yaml"), "id: broken\nstatus: active\nstatus: parked\n");
+    // A .yml is not an initiative file to initiative_ledger.py, so it is none here either.
+    await writeFile(join(dir, "draft.yml"), MAESTRO.replaceAll("maestro", "draft"));
     git(repo, "add", ".");
     git(repo, "commit", "--quiet", "-m", "broken");
     git(repo, "push", "--quiet", "origin", "main");
@@ -516,6 +526,7 @@ describe("the workspace's initiatives, in a scratch control repo", () => {
     const view = await initiatives.view();
     const [first] = view.initiatives;
     expect([first?.id, first?.error]).toEqual(["broken", expect.stringContaining("broken.yaml: it has a YAML error")]);
+    expect(view.initiatives.map((entry) => entry.id)).not.toContain("draft");
     expect(byId(view.initiatives, "maestro").ideas).toEqual({ open: 1, triaged: 0 });
     expect(view.ideas.map((ask) => ask.id)).toEqual(["I1"]);
     expect(await initiatives.notices()).toEqual([

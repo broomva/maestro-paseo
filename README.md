@@ -555,10 +555,12 @@ shown beside it, never instead of it. A file that cannot be read is an error row
   [Answering a decision ask](#answering-a-decision-ask)); Decisions does not list ideas.
   - **Develop** also files a queued work item in the initiative's folder, briefed from the initiative
     and the idea, with `hold:` set: neither the loop nor a session starts it. It stays queued until you start
-    it; the loop, when it is on, flags it in Needs you as yours.
+    it; the loop, when it is on, flags it in Needs you as yours. The item names its idea (`idea: <ledger>#<id>`), so
+    an idea gets one item: when filing failed after the answer, or the idea was answered develop outside
+    Maestro, its card says no item is filed and offers *File its work item*.
   - **Park** writes the wake date you chose (today or later, a real calendar day), and the answer
     says it.
-  - **Kill** closes it with your words.
+  - **Kill** closes it with your words. An idea takes one of the three, never words alone.
 - **Needs you.** An active or blocked initiative past its `review_by`, or a parked one whose `wake`
   came, counts in the header count and shows above every other view.
 

@@ -440,30 +440,63 @@ describe("an idea's answer", () => {
     expect(idea({ option: "park", wake: "2026-10-03" }).ask.idea?.wake).toBe("2026-10-03");
   });
 
+  test("an idea takes develop, park or kill, never words alone", () => {
+    expect(() => idea({ option: null, note: "sounds good" })).toThrow("choose develop, park or kill");
+    const extra = IDEAS.replace(
+      "      - {id: kill, label: Kill",
+      '      - {id: later, label: Later, consequence: "Someday", reversible: true}\n      - {id: kill, label: Kill',
+    );
+    expect(() => withAnswer(extra, "ideas-maestro.yaml", input({ id: "I1", option: "later" }), AT)).toThrow(
+      "choose develop, park or kill",
+    );
+  });
+
+  test("a wake before the day the idea was asked is refused, as ask_ledger.py refuses it", () => {
+    const later = IDEAS.replace("asked_at: 2026-10-03T12:00Z", "asked_at: 2026-10-04T01:00Z");
+    expect(() =>
+      withAnswer(later, "ideas-maestro.yaml", input({ id: "I1", option: "park", wake: "2026-10-03" }), AT),
+    ).toThrow("before the idea was asked (2026-10-04)");
+    expect(
+      withAnswer(later, "ideas-maestro.yaml", input({ id: "I1", option: "park", wake: "2026-10-04" }), AT).ask.idea
+        ?.wake,
+    ).toBe("2026-10-04");
+  });
+
   test("an ask that is not an idea takes no wake", () => {
     expect(() => answered(LEDGER, { option: "drop", wake: "2026-11-20" })).toThrow(
       "Only an idea you park takes a wake date",
     );
   });
 
-  test("the answered ledger still passes ask_ledger.py, when this machine has the workspace's copy", async () => {
-    // MAESTRO_ASK_LEDGER_PY names a workspace checkout's validator; else the owner's ~/broomva copy, if any.
-    const script = process.env.MAESTRO_ASK_LEDGER_PY ?? join(homedir(), "broomva", "scripts", "ask_ledger.py");
-    if (!existsSync(script)) return;
-    // Where an ideas ledger lives: .control/asks, beside the initiative file it names.
-    const dir = await root();
-    await mkdir(join(dir, ".control", "asks"), { recursive: true });
-    await mkdir(join(dir, ".control", "initiatives"), { recursive: true });
-    await writeFile(join(dir, ".control", "initiatives", "maestro.yaml"), "id: maestro\n");
-    const path = join(dir, ".control", "asks", "ideas-maestro.yaml");
-    await writeFile(path, idea({ option: "park", wake: "2026-11-20" }).out);
-    const result = spawnSync("python3", [script, "validate", path, "--preauth", join(dir, "none.yaml")], {
-      encoding: "utf8",
-    });
-    // An older validator has no idea class and says so; the one with it must pass the answered entry.
-    if (result.stdout.includes("class 'idea' not one of")) return;
-    expect([result.status, result.stdout]).toEqual([0, expect.stringContaining("0 error(s)")]);
-  });
+  // MAESTRO_ASK_LEDGER_PY names a workspace checkout's validator; else the owner's ~/broomva copy. Skipped,
+  // and said so, where neither is: CI has no workspace.
+  const validatorScript = process.env.MAESTRO_ASK_LEDGER_PY ?? join(homedir(), "broomva", "scripts", "ask_ledger.py");
+  test.skipIf(!existsSync(validatorScript))(
+    "each answer Maestro writes still passes ask_ledger.py: develop, park with a wake, kill",
+    async () => {
+      for (const answer of [{ option: "develop" }, { option: "park", wake: "2026-11-20" }, { option: "kill" }]) {
+        // Where an ideas ledger lives: .control/asks, beside the initiative file it names.
+        const dir = await root();
+        await mkdir(join(dir, ".control", "asks"), { recursive: true });
+        await mkdir(join(dir, ".control", "initiatives"), { recursive: true });
+        await writeFile(join(dir, ".control", "initiatives", "maestro.yaml"), "id: maestro\n");
+        const path = join(dir, ".control", "asks", "ideas-maestro.yaml");
+        await writeFile(path, idea(answer).out);
+        const result = spawnSync(
+          "python3",
+          [validatorScript, "validate", path, "--require-decision", "--preauth", join(dir, "none.yaml")],
+          { encoding: "utf8" },
+        );
+        // A validator older than workspace#894 has no idea class: nothing to hold this answer to yet.
+        if (result.stdout.includes("class 'idea' not one of")) return;
+        expect([answer.option, result.status, result.stdout]).toEqual([
+          answer.option,
+          0,
+          expect.stringContaining("0 error(s)"),
+        ]);
+      }
+    },
+  );
 });
 
 describe("the ledger lock", () => {

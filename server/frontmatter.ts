@@ -9,7 +9,8 @@
 // `directory`), `mode`, `thinking`, and `features` (a mapping of the
 // provider's feature ids to simple values). An absent key means Settings.
 // `hold`, in words, says the work waits for you to start it: neither the loop
-// nor a session starts it (an idea you chose to develop, BRO-2802).
+// nor a session starts it (an idea you chose to develop, BRO-2802). `idea`,
+// `<ledger>#<id>`, names the idea a develop answer filed it for: one item per idea.
 
 import YAML from "yaml";
 import { type CheckSpec, FEATURE_LIMITS, type FeatureValues, ISOLATIONS, type Isolation } from "../shared/contracts";
@@ -39,6 +40,8 @@ export interface Contract {
   checks: CheckRun[];
   /** Why only you start this work, or null. */
   hold: string | null;
+  /** The idea this work was filed for (`<ledger>#<id>`), or null. */
+  idea: string | null;
 }
 
 export interface CheckRun extends CheckSpec {
@@ -150,6 +153,7 @@ export function readContract(work: WorkDoc): Contract {
     featureValues: readFeatures(data.features),
     checks: readChecks(done.check),
     hold: str(data.hold),
+    idea: str(data.idea),
   };
 }
 
@@ -217,6 +221,8 @@ export interface NewWork {
   run?: RunKeys;
   /** Why only you start this work (Contract.hold). */
   hold?: string;
+  /** The idea it was filed for (Contract.idea). */
+  idea?: string;
 }
 
 /** How the work's runs start, as stored. Absent or empty means Settings decides at dispatch. */
@@ -246,6 +252,7 @@ export function newWorkSource(input: NewWork): string {
   if (run.thinkingOptionId?.trim()) data.thinking = run.thinkingOptionId.trim();
   if (run.featureValues && Object.keys(run.featureValues).length > 0) data.features = { ...run.featureValues };
   if (input.hold?.trim()) data.hold = input.hold.trim();
+  if (input.idea?.trim()) data.idea = input.idea.trim();
   const yaml = YAML.stringify(data, { lineWidth: 0 }).replace(/\n+$/, "");
   const brief = input.brief.trim();
   const body = brief ? `\n# ${input.title}\n\n${brief}\n` : `\n# ${input.title}\n`;

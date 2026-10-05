@@ -71,6 +71,9 @@ export function optionsOf(raw: unknown): DecisionOption[] {
   });
 }
 
+/** The answers an idea takes (workspace#894 IDEA_OPTIONS). */
+export const IDEA_OPTIONS: readonly string[] = ["develop", "park", "kill"];
+
 /** A YYYY-MM-DD date as a ledger writes it: a string, or a date some parser made of it. */
 export function dayOf(value: unknown): string | null {
   const day = value instanceof Date ? value.toISOString().slice(0, 10) : text(value);
@@ -648,6 +651,10 @@ export function withAnswer(
   if (input.option && !option) {
     throw new UserError(`The ask ${input.id} no longer offers that option. Look at the Fleet view again.`);
   }
+  // An idea is answered develop, park or kill, never with words alone: what Maestro (and ask_ledger.py) acts on.
+  if (ideaOf(row) && !(option && IDEA_OPTIONS.includes(option.id))) {
+    throw new UserError(`${input.id} is an idea: choose develop, park or kill. It was not answered.`);
+  }
   // A wake goes only with an idea's park, and never into the past: the date a parked idea comes back.
   const wake = input.wake ?? null;
   if (wake !== null) {
@@ -659,6 +666,13 @@ export function withAnswer(
     }
     if (wake < localDay(at)) {
       throw new UserError(`The wake date ${wake} has passed; choose today or later. ${input.id} was not answered.`);
+    }
+    // ask_ledger.py refuses a wake before the day the idea was asked, as its asked_at writes it.
+    const asked = dayOf(text(row.asked_at)?.slice(0, 10) ?? row.asked_at);
+    if (asked && wake < asked) {
+      throw new UserError(
+        `The wake date ${wake} is before the idea was asked (${asked}); ${input.id} was not answered.`,
+      );
     }
   }
   // The option's label may name the date the ask proposed; the answer says the one you chose.

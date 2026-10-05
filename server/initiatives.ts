@@ -47,7 +47,8 @@ export const INITIATIVES_DIR = join(".control", "initiatives");
 const FILE_LIMIT = 256 * 1024;
 /** A read is reused this long: the header count polls it from every client. */
 export const INITIATIVES_TTL_MS = 10_000;
-const FILE = /^[^./][^/]*\.ya?ml$/;
+// `.yaml` only, as scripts/initiative_ledger.py reads them: a `.yml` would show here and fail the workspace's CI.
+const FILE = /^[^./][^/]*\.yaml$/;
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DRIVER = /^(owner|fleet|none|coordinator:[0-9a-f]{8}|session:[A-Za-z0-9_-]+)$/;
 const PR_REF = /^([\w.-]+)\/([\w.-]+)#(\d+)$/;
@@ -273,12 +274,26 @@ export function ideaWork(initiative: Initiative | null, ask: DecisionAsk): { tit
 
 export type Run = (args: readonly string[]) => Promise<string>;
 
+/**
+ * What a gh call gave back. GraphQL answers every ref it can and exits 1 when
+ * one is missing (a typo, a deleted or private repo), so its output is kept
+ * when it has any: one bad ref must not blank every PR's state.
+ */
+export function ghOutput(error: Error | null, stdout: string): string {
+  if (!error || stdout.trim()) return stdout;
+  throw error;
+}
+
 /** gh, bounded: the PR states are a nicety, never a wait. */
 export const ghRun: Run = (args) =>
   new Promise((resolve, reject) => {
-    execFile("gh", [...args], { timeout: 20_000, maxBuffer: 1024 * 1024 }, (error, stdout) =>
-      error ? reject(error) : resolve(stdout),
-    );
+    execFile("gh", [...args], { timeout: 20_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      try {
+        resolve(ghOutput(error, stdout));
+      } catch (thrown) {
+        reject(thrown);
+      }
+    });
   });
 
 /** Refreshed at most this often. */
@@ -520,8 +535,9 @@ export function workspaceInitiatives(options: WorkspaceInitiativesOptions) {
 
     const records = new Map<string, Scan["files"][number]>();
     for (const [name, id] of mainTree) {
-      const parsed = parsedBlob(id, name);
-      if (parsed) records.set(name, { name, parsed, home: { kind: "main", path: repo, branch: null }, locals: [] });
+      // A blob git could not give back is an error row, never a missing card.
+      const parsed = parsedBlob(id, name) ?? { row: null, errors: [`its blob ${id} could not be read from git`] };
+      records.set(name, { name, parsed, home: { kind: "main", path: repo, branch: null }, locals: [] });
     }
     const copies: (FileCopy & { checkout: (typeof checkouts)[number] })[] = [];
     for (const checkout of checkouts) {

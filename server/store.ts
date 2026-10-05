@@ -236,6 +236,8 @@ export class WorkStore {
     run?: RunKeys;
     /** Why only you start it (Contract.hold). */
     hold?: string;
+    /** The idea it was filed for (Contract.idea). */
+    idea?: string;
   }): Promise<StoredWork> {
     const now = input.now ?? this.now();
     const parent = input.initiative.trim() ? join(this.root, slugify(input.initiative)) : this.root;
@@ -259,6 +261,7 @@ export class WorkStore {
         date: now.toISOString().slice(0, 10),
         run: input.run,
         hold: input.hold,
+        idea: input.idea,
       }),
       "utf8",
     );

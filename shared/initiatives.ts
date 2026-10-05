@@ -46,6 +46,11 @@ export const WaitingOnSchema = z.object({
 });
 export type WaitingOn = z.infer<typeof WaitingOnSchema>;
 
+/** A work item, as an idea's develop filed it. */
+export const WorkRefSchema = z.object({ id: z.string(), title: z.string(), path: z.string() });
+export type WorkRef = z.infer<typeof WorkRefSchema>;
+export const DevelopedSchema = WorkRefSchema.extend({ ref: z.string() });
+
 /** Why an initiative needs you: its review date passed while active or blocked, or its wake date came while parked. */
 export const InitiativeStaleSchema = z.object({ kind: z.enum(["overdue", "wake"]), date: z.string() });
 
@@ -129,8 +134,24 @@ export const getInitiatives = defineRpc({
     today: z.string(),
     initiatives: z.array(InitiativeSchema),
     ideas: z.array(DecisionAskSchema),
+    /** The work item filed for each idea answered develop, by `<ledger>#<id>`; absent from an older daemon. */
+    developed: z.array(DevelopedSchema).optional(),
     /** What could not be read, in words. */
     warnings: z.array(z.string()),
   }),
 });
 export type InitiativesView = z.infer<typeof getInitiatives.output>;
+
+/** The ref a developed idea's work item carries (`idea:` in _work.md): its ledger and id. */
+export const ideaRef = (ask: { ledger: string; id: string }): string => `${ask.ledger}#${ask.id}`;
+
+/**
+ * Files the held work item for an idea answered develop that has none: the
+ * filing failed after the answer was written, or the idea was answered outside
+ * Maestro. Idempotent: an idea that has its work item gets that one back.
+ */
+export const fileIdeaWork = defineRpc({
+  name: "initiatives.file",
+  input: z.object({ ledger: z.string().min(1), id: z.string().min(1) }),
+  output: z.object({ work: WorkRefSchema.nullable(), warning: z.string().nullable() }),
+});

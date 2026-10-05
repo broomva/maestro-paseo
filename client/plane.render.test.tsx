@@ -819,6 +819,15 @@ const invoke = async (method: string, input: unknown) => {
     if (initiativesFail) throw new Error(initiativesFail);
     return initiativesNow;
   }
+  if (method === "initiatives.file") {
+    const { ledger, id } = input as { ledger: string; id: string };
+    const work = { id: `filed-${id}`, title: `Work for ${id}`, path: `mod-anything/filed-${id}` };
+    initiativesNow = {
+      ...initiativesNow,
+      developed: [...(initiativesNow.developed ?? []), { ref: `${ledger}#${id}`, ...work }],
+    };
+    return { work, warning: null };
+  }
   if (method === "timeline.get") return timelineView();
   if (method === "timeline.log") {
     const { id } = input as { id: string };
@@ -2475,7 +2484,14 @@ describe("Initiatives", () => {
     // The triaged one waits behind its own button.
     expect(view.text()).not.toContain("Build idea I3");
     await view.press(view.byLabel("Show 1 triaged"));
+    // Answered develop outside Maestro: no work item is filed for it, and the card says so and offers to file it.
+    expect(view.text()).toContain("Developed on 2026-10-05. No work item is filed for it in Maestro yet.");
+    expect(view.byLabel("Open the work filed for I3")).toBeNull();
+    await view.press(view.byLabel("File the work for I3"));
+    expect(sent("initiatives.file")).toEqual([{ ledger: "ideas-mod-anything.yaml", id: "I3" }]);
     expect(view.text()).toContain("Developed on 2026-10-05: a work item was filed for it, held for you to start.");
+    expect(view.byLabel("File the work for I3")).toBeNull();
+    await view.press(view.byLabel("Open the work filed for I3"));
     await view.press(view.byLabel("Open the evidence for I1, BRO-2810"));
     expect(urls).toEqual(["https://linear.app/broomva/issue/BRO-2810"]);
     expect(view.byLabel("Answer I1")?.getAttribute("aria-disabled")).toBe("true");

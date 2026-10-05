@@ -113,12 +113,14 @@ export function ideaMeta(ask: DecisionAsk): string {
     .join(" · ");
 }
 
-/** An answered idea, in words. */
-export function ideaOutcome(ask: DecisionAsk): string {
+/** An answered idea, in words. `filed`: whether Maestro holds a work item for it (a develop's). */
+export function ideaOutcome(ask: DecisionAsk, filed = false): string {
   const when = ask.answeredAt ? ` on ${ask.answeredAt.slice(0, 10)}` : "";
   switch (ask.answerOption) {
     case "develop":
-      return `Developed${when}: a work item was filed for it, held for you to start.`;
+      return filed
+        ? `Developed${when}: a work item was filed for it, held for you to start.`
+        : `Developed${when}. No work item is filed for it in Maestro yet.`;
     case "park":
       return `Parked${when} until ${ask.idea?.wake ?? "its wake date"}.`;
     case "kill":

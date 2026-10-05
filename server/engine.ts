@@ -225,6 +225,8 @@ export type CreateInput = RunChoices & {
   dispatch: boolean;
   /** Why only you start it (`hold`): set by Maestro itself, never by an RPC's input. */
   hold?: string;
+  /** The idea it was filed for (`<ledger>#<id>`): set by Maestro itself, never by an RPC's input. */
+  idea?: string;
 };
 
 /** Only the run choices that were made: an absent one means Settings at dispatch. */
@@ -499,6 +501,18 @@ export class Engine {
     };
   }
 
+  /** The work filed for each idea (Contract.idea, `<ledger>#<id>`): the first found, by id, wins. */
+  async developed(): Promise<Map<string, { id: string; title: string; path: string }>> {
+    const { store } = await this.store();
+    const { items } = await store.scan();
+    const found = new Map<string, { id: string; title: string; path: string }>();
+    for (const item of [...items].sort((a, b) => a.contract.id.localeCompare(b.contract.id))) {
+      const idea = item.contract.idea;
+      if (idea && !found.has(idea)) found.set(idea, { id: item.contract.id, title: item.title, path: item.rel });
+    }
+    return found;
+  }
+
   async get(id: string) {
     const { store, config } = await this.store();
     const item = await store.findById(id);
@@ -636,6 +650,7 @@ export class Engine {
       origin,
       run,
       hold: input.hold,
+      idea: input.idea,
     });
     if (input.dispatch) {
       if (!paseo) throw new UserError(`Created ${item.contract.id}, but it cannot be dispatched yet: ${NO_HANDLE}`);
