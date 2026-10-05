@@ -1,6 +1,6 @@
 // The loop's flags: how a wake puts work in Needs you when it is not at your
 // gate or stuck. Three kinds, each raised by a wake (server/loop.ts):
-//   yours   queued work the loop leaves to you (prompt-free, or a mode you chose);
+//   yours   queued work the loop leaves to you (prompt-free, a mode you chose, or held);
 //   failed  a start the loop tried that failed;
 //   quiet   running work with nothing new for QUIET_MS, by Maestro's events and
 //           by its session's own activity: Maestro sees only turn boundaries, so
@@ -16,7 +16,7 @@
 import type { Flag, FlagKind, MaestroConfig, NextRun } from "../shared/contracts";
 import { isDispatchable, type OrchState } from "../shared/states";
 import { type FlaggedEvent, flagOf, lastActivityOf, type WorkEvent } from "./events";
-import { leftToYou, MODED_BY_YOU, nextRun, PROMPT_FREE } from "./runs";
+import { HELD_FOR_YOU, leftToYou, MODED_BY_YOU, nextRun, PROMPT_FREE } from "./runs";
 import type { StoredWork } from "./store";
 
 /** Running work with nothing new for this long is flagged as worth a look. */
@@ -31,6 +31,7 @@ export const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}
 const WHY_YOURS: Record<string, string> = {
   [PROMPT_FREE]: "it runs without permission prompts",
   [MODED_BY_YOU]: "it runs in a mode you chose",
+  [HELD_FOR_YOU]: "it was filed to wait for you",
 };
 
 /** The `yours` reason, from what leftToYou said. */

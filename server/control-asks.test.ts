@@ -150,6 +150,7 @@ describe("reading decision asks", () => {
       home: { kind: "root", path: "", branch: null },
       batched: false,
       waiting: false,
+      idea: null,
     });
     expect([answer?.uid, answer?.state, answer?.answer]).toEqual([
       "7d1e0c2a-5b8f-4e1a-9c4d-2f6b8a0e3c91",
@@ -374,6 +375,88 @@ describe("writing an answer", () => {
     const after = validate();
     expect(after.stdout).toContain(" 0 error(s)");
     expect(after.status).toBe(0);
+  });
+});
+
+/** An ideas ledger as workspace#894 writes one. */
+const IDEAS = `arc: ideas-maestro
+opened: 2026-10-03T12:00Z
+tz: America/Bogota
+lanes: [triage]
+asks:
+  - id: I1
+    class: idea
+    initiative: maestro
+    idea: "An Initiatives tab"
+    source: {kind: pr, ref: "broomva/workspace#894"}
+    evidence: BRO-2802
+    ask: "Develop, park or kill?"
+    headline: "Build it, or park it?"
+    stakes: "Ideas are forgotten."
+    why_you: "Your call."
+    options:
+      - {id: develop, label: Develop, consequence: "A work item", reversible: true}
+      - {id: park, label: "Park until 2026-11-02", consequence: "Comes back", reversible: true, recommended: true}
+      - {id: kill, label: Kill, consequence: "Closed", reversible: true}
+    default: "park until 2026-11-02"
+    wake: 2026-11-02
+    blocking: false
+    asked_at: 2026-10-03T12:00Z
+    answered_at: null
+`;
+
+describe("an idea's answer", () => {
+  const idea = (extra: Partial<AnswerInput>) =>
+    withAnswer(IDEAS, "ideas-maestro.yaml", input({ id: "I1", ...extra }), AT);
+
+  test("park writes the wake you chose in place of the proposed one, and nothing else but the answer", () => {
+    const { out, ask } = idea({ option: "park", wake: "2026-11-20" });
+    const before = IDEAS.split("\n");
+    const after = out.split("\n");
+    expect(after.filter((line) => !before.includes(line))).toEqual([
+      '    wake: "2026-11-20"',
+      '    answered_at: "2026-10-03T17:00:00Z"',
+      '    answer: "Park until 2026-11-02: Comes back"',
+      '    answer_option: "park"',
+      '    answered_by: "owner:maestro"',
+      '    status: "resolved"',
+    ]);
+    expect(before.filter((line) => !after.includes(line))).toEqual(["    wake: 2026-11-02", "    answered_at: null"]);
+    expect([ask.state, ask.answerOption, ask.idea?.wake]).toEqual(["answered", "park", "2026-11-20"]);
+  });
+
+  test("park without a wake keeps the proposed one; develop and kill take none", () => {
+    expect(idea({ option: "park" }).ask.idea?.wake).toBe("2026-11-02");
+    expect(idea({ option: "develop" }).ask.answerOption).toBe("develop");
+    expect(() => idea({ option: "kill", wake: "2026-11-20" })).toThrow("Only an idea you park takes a wake date");
+  });
+
+  test("a wake that is not a date, or has passed, is refused and nothing is written", () => {
+    expect(() => idea({ option: "park", wake: "2026-13-40" })).toThrow("is not a date");
+    expect(() => idea({ option: "park", wake: "2026-10-02" })).toThrow("has passed");
+    // Today is not past: a park until today wakes at once, which is your call.
+    expect(idea({ option: "park", wake: "2026-10-03" }).ask.idea?.wake).toBe("2026-10-03");
+  });
+
+  test("an ask that is not an idea takes no wake", () => {
+    expect(() => answered(LEDGER, { option: "drop", wake: "2026-11-20" })).toThrow(
+      "Only an idea you park takes a wake date",
+    );
+  });
+
+  test("the answered ledger still passes ask_ledger.py, when this machine has the workspace's copy", async () => {
+    const validator = join(homedir(), ".paseo", "worktrees", "0t10n7id", "bro-2802-ideas", "scripts", "ask_ledger.py");
+    const script = existsSync(validator) ? validator : join(homedir(), "broomva", "scripts", "ask_ledger.py");
+    if (!existsSync(script)) return;
+    const dir = await root();
+    const path = join(dir, "ideas-maestro.yaml");
+    await writeFile(path, idea({ option: "park", wake: "2026-11-20" }).out);
+    const result = spawnSync("python3", [script, "validate", path, "--preauth", join(dir, "none.yaml")], {
+      encoding: "utf8",
+    });
+    // An older validator has no idea class and says so; the one with it must pass the answered entry.
+    if (result.stdout.includes("class 'idea' not one of")) return;
+    expect([result.status, result.stdout]).toEqual([0, expect.stringContaining("0 error(s)")]);
   });
 });
 

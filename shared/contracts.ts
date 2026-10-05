@@ -4,6 +4,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { AskNoticeSchema, FleetNoticeSchema } from "./fleet";
+import { InitiativeNoticeSchema } from "./initiatives";
 import { GATE_MODES, GROUP_ORDER, KINDS, ORCH_STATES, VERDICTS } from "./states";
 import { TimelineNoticeSchema } from "./timeline";
 
@@ -85,6 +86,8 @@ export const NextRunSchema = z.object({
   featureValues: FeatureValuesSchema.nullable(),
   /** The fields above that came from Settings because the work left them unset. */
   fromSettings: z.array(z.enum(SETTINGS_FIELDS)),
+  /** Why only you start this work (`hold` in _work.md), or null: absent from an older daemon. */
+  held: z.string().nullable().optional(),
 });
 export type NextRun = z.infer<typeof NextRunSchema>;
 
@@ -358,7 +361,8 @@ export const setConfig = defineRpc({
  * (shared/fleet.ts FleetHealth.needsYou); `timeline` are the other scheduled
  * sources whose run failed or was missed (shared/timeline.ts); `asks` are
  * decision asks that wait on you (blocking, or recommending what cannot be
- * undone). The header count counts all four.
+ * undone); `initiatives` are initiatives past their review date or parked
+ * ones whose wake date came (shared/initiatives.ts). The header count counts all five.
  */
 export const attentionWork = defineRpc({
   name: "work.attention",
@@ -380,6 +384,8 @@ export const attentionWork = defineRpc({
     timeline: z.array(TimelineNoticeSchema).optional(),
     /** Decision asks waiting on you (shared/fleet.ts isWaiting), the workspace's and each fleet root's; absent from an older daemon. */
     asks: z.array(AskNoticeSchema).optional(),
+    /** Initiatives past their review date, or parked ones whose wake date came (shared/initiatives.ts); absent from an older daemon. */
+    initiatives: z.array(InitiativeNoticeSchema).optional(),
   }),
 });
 export type Attention = z.infer<typeof attentionWork.output>;

@@ -27,7 +27,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { isMap, isSeq, parseDocument, type YAMLMap } from "yaml";
-import { type AskHome, type DecisionAsk, type DecisionOption, isWaiting } from "../shared/fleet";
+import { type AskHome, type DecisionAsk, type DecisionOption, type Idea, isWaiting } from "../shared/fleet";
 import { UserError } from "./engine";
 
 /** A ledger is read up to this size; past it it is refused, not cut. */
@@ -69,6 +69,27 @@ export function optionsOf(raw: unknown): DecisionOption[] {
       },
     ];
   });
+}
+
+/** A YYYY-MM-DD date as a ledger writes it: a string, or a date some parser made of it. */
+export function dayOf(value: unknown): string | null {
+  const day = value instanceof Date ? value.toISOString().slice(0, 10) : text(value);
+  return day && /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null;
+}
+
+/** An idea-triage ask's own fields (`class: idea`, workspace#894); null for any other ask. */
+export function ideaOf(row: Row): Idea | null {
+  if (text(row.class) !== "idea") return null;
+  const source = isRow(row.source) ? row.source : null;
+  const kind = source ? text(source.kind) : null;
+  const ref = source ? text(source.ref) : null;
+  return {
+    initiative: text(row.initiative),
+    idea: text(row.idea),
+    source: kind && ref ? { kind, ref } : null,
+    evidence: text(row.evidence),
+    wake: dayOf(row.wake),
+  };
 }
 
 export function stateOf(row: Row): DecisionAsk["state"] {
@@ -183,6 +204,7 @@ export function decisionOf(
     home,
     batched: false,
     waiting: isWaiting({ state, blocking, options }),
+    idea: ideaOf(row),
   };
 }
 
@@ -538,6 +560,8 @@ export interface AnswerInput {
   option: string | null;
   /** Your words, beside the option or alone. */
   note: string;
+  /** An idea parked: the day it comes back, written as its `wake`. Only an idea's `park` takes one. */
+  wake?: string | null;
 }
 
 /** The text an answer records: the option's label and consequence, so a person reads it later; then your words. */
@@ -548,12 +572,18 @@ export function answerText(option: DecisionOption | null, note: string): string 
 
 const WRITTEN_KEYS = ["answer_option", "answered_at", "answered_by", "status"] as const;
 
+/** Today as YYYY-MM-DD where this runs: a wake is judged against the owner's own calendar. */
+export function localDay(at: Date): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+}
+
 /** Every entry but the target, and the target's keys but those written: what an answer must leave as it was. */
-function untouched(data: Row, index: number, answerKey: string): string {
+function untouched(data: Row, index: number, answerKey: string, extra: readonly string[] = []): string {
   const rows = rowsOf(data).map((row, at) => {
     if (at !== index || !row) return row;
     const kept = { ...row };
-    for (const key of [answerKey, ...WRITTEN_KEYS]) delete kept[key];
+    for (const key of [answerKey, ...WRITTEN_KEYS, ...extra]) delete kept[key];
     return kept;
   });
   const key = asksKey(data) ?? "asks";
@@ -613,6 +643,19 @@ export function withAnswer(
   }
   const answer = answerText(option, input.note);
   if (!answer) throw new UserError("Choose an option or write an answer.");
+  // A wake goes only with an idea's park, and never into the past: the date a parked idea comes back.
+  const wake = input.wake ?? null;
+  if (wake !== null) {
+    if (!ideaOf(row) || option?.id !== "park") {
+      throw new UserError(`Only an idea you park takes a wake date; ${input.id} was not answered.`);
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(wake) || Number.isNaN(Date.parse(`${wake}T00:00:00Z`))) {
+      throw new UserError(`${wake} is not a date (YYYY-MM-DD); ${input.id} was not answered.`);
+    }
+    if (wake < localDay(at)) {
+      throw new UserError(`The wake date ${wake} has passed; choose today or later. ${input.id} was not answered.`);
+    }
+  }
   const firstKey = target.items[0]?.key as { range?: Range } | null;
   const indent = firstKey?.range ? indentOf(source, firstKey.range[0]) : "    ";
   const newline = source.includes("\r\n") ? "\r\n" : "\n";
@@ -630,6 +673,7 @@ export function withAnswer(
     ["answered_at", stamp],
     ["answered_by", "owner:maestro"],
     ["status", "resolved"],
+    ...(wake !== null ? ([["wake", wake]] as [string, string][]) : []),
   ];
   // A key to write that holds a list or a map is the writer's data, not a placeholder: never replaced by a line.
   for (const [name] of writes) {
@@ -657,11 +701,15 @@ export function withAnswer(
     ask?.state !== "answered" ||
     ask.answeredAt !== stamp ||
     ask.answer !== answer ||
-    ask.answerOption !== (option?.id ?? null)
+    ask.answerOption !== (option?.id ?? null) ||
+    (wake !== null && ask.idea?.wake !== wake)
   ) {
     throw new UserError(unwritable);
   }
-  if (untouched(after, index, answerKey) !== untouched(data, index, answerKey)) throw new UserError(unwritable);
+  const extra = wake !== null ? ["wake"] : [];
+  if (untouched(after, index, answerKey, extra) !== untouched(data, index, answerKey, extra)) {
+    throw new UserError(unwritable);
+  }
   return { out, ask, hash };
 }
 
@@ -748,6 +796,7 @@ async function answerNow(
     entryHash: hash,
     answerOption: ask.answerOption,
     answer: ask.answer,
+    ...(input.wake ? { wake: input.wake } : {}),
   };
   // The answer is in the ledger already: a receipt that cannot be written is said, not thrown.
   try {

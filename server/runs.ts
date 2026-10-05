@@ -107,6 +107,7 @@ export function nextRun(config: MaestroConfig, item: StoredWork): NextRun {
     thinkingOptionId: run.thinkingOptionId ?? null,
     featureValues: run.featureValues ? { ...run.featureValues } : null,
     fromSettings: run.fromSettings,
+    held: item.contract.hold,
   };
 }
 
@@ -116,14 +117,18 @@ export const MODED_BY_YOU = "This work runs in a mode you chose; start it yourse
 /** Why the loop leaves queued work to you: its run would edit files and run commands without asking. */
 export const PROMPT_FREE = "runs without permission prompts; start it yourself";
 
+/** Why a session or the loop leaves work to you: it is held for you (`hold`), as an idea you chose to develop is. */
+export const HELD_FOR_YOU = "This work waits for you to start it.";
+
 /**
  * Why the loop must leave this work for you to start, read from how its next
  * run would start (nextRun, Settings included), or null. A run that skips
  * permission prompts, by a mode (the work's or Settings') or an
  * auto-approving feature, is never the loop's to start; nor is work you gave
- * a mode of its own, which is yours to use.
+ * a mode of its own, which is yours to use, nor work held for you (`hold`).
  */
 export function leftToYou(next: NextRun): string | null {
+  if (next.held) return HELD_FOR_YOU;
   if (skipsPrompts(next)) return PROMPT_FREE;
   if (next.modeId && !next.fromSettings.includes("modeId")) return MODED_BY_YOU;
   return null;

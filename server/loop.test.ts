@@ -11,6 +11,7 @@ import { fakePaseo } from "./fake-paseo";
 import { ACTIVE_AGAIN, quietCleared, sessionActiveAt } from "./flags";
 import { ALREADY_WAKING, ASK_NOT_CONNECTED, AT_RUN_CAP, FAILED_BEFORE, Loop, NOT_CONNECTED, QUIET_MS } from "./loop";
 import type { Paseo } from "./runs";
+import { HELD_FOR_YOU } from "./runs";
 import { WorkStore } from "./store";
 import { WakeLog } from "./wake-log";
 
@@ -288,6 +289,23 @@ describe("a wake", () => {
     expect(entry.narrative).toContain("  Bypass: runs without permission prompts; start it yourself.");
     expect(entry.narrative).toContain(`  Planned: ${MODED_BY_YOU}`);
     expect(fake.created).toHaveLength(1);
+  });
+
+  test("leaves work held for you (an idea you chose to develop) to you, flagged, and only you start it", async () => {
+    const { loop, queue, fake, engine } = await setup();
+    const held = await queue("Held", { hold: "You chose to develop ideas-maestro.yaml I1." });
+    tickMinutes(1);
+    const plain = await queue("Plain");
+    expect(held.nextRun?.held).toBe("You chose to develop ideas-maestro.yaml I1.");
+    const entry = await loop.wake("manual");
+    expect(entry.dispatched).toEqual([{ id: plain.id, title: plain.title }]);
+    expect(entry.deferred).toEqual([{ id: held.id, title: held.title, reason: HELD_FOR_YOU }]);
+    // In Needs you, as the loop's other work it leaves to you.
+    const flagged = (await engine.get(held.id)).item;
+    expect(flagged.flag).toMatchObject({ kind: "yours", reason: "Start it yourself: it was filed to wait for you." });
+    // A session cannot start it either; you can.
+    await expect(engine.dispatch(fake.paseo, held.id, { actor: "agent", by: "a1" })).rejects.toThrow(HELD_FOR_YOU);
+    expect((await engine.dispatch(fake.paseo, held.id)).state).toBe("running");
   });
 
   test("after the cap, work the loop never starts keeps its own reason, not the cap's", async () => {

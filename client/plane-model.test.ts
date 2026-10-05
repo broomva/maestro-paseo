@@ -88,10 +88,11 @@ describe("views", () => {
     expect(viewFor("history", false)).toBe("history");
   });
 
-  test("compact offers the feed, History, the Fleet and the Timeline; wide offers all six", () => {
+  test("compact offers the feed, History, the Fleet, the Timeline and Initiatives; wide offers all seven", () => {
     expect(viewFor("fleet", true)).toBe("fleet");
     expect(viewFor("timeline", true)).toBe("timeline");
-    expect(viewsFor(true).map((view) => view.label)).toEqual(["Feed", "History", "Fleet", "Timeline"]);
+    expect(viewFor("initiatives", true)).toBe("initiatives");
+    expect(viewsFor(true).map((view) => view.label)).toEqual(["Feed", "History", "Fleet", "Timeline", "Initiatives"]);
     expect(viewsFor(false).map((view) => view.label)).toEqual([
       "Feed",
       "Board",
@@ -99,6 +100,7 @@ describe("views", () => {
       "History",
       "Fleet",
       "Timeline",
+      "Initiatives",
     ]);
   });
 });

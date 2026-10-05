@@ -2503,6 +2503,7 @@ describe("the composer's choices", () => {
       thinkingOptionId: "low",
       featureValues: null,
       fromSettings: ["provider", "isolation"],
+      held: null,
     });
     config.modeId = "bypassPermissions";
     config.isolation = "worktree";
@@ -2526,6 +2527,7 @@ describe("the composer's choices", () => {
         thinkingOptionId: null,
         featureValues: null,
         fromSettings: ["isolation", "modeId"],
+        held: null,
       });
       const queued = nextRunCopy(wire?.nextRun, "queued");
       expect(queued.line).toContain("mode bypassPermissions (from Settings)");

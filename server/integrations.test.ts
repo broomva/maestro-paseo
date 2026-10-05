@@ -152,6 +152,7 @@ test("work.attention reads the files and reconciles no session; work.list does",
       fleet: [],
       timeline: [],
       asks: [],
+      initiatives: [],
     });
     const agent = fake.agents.get("agent-1");
     if (agent) agent.status = "idle";
@@ -160,6 +161,7 @@ test("work.attention reads the files and reconciles no session; work.list does",
       outcome: { kind: "completed" },
       timeline: [],
       asks: [],
+      initiatives: [],
       turnId: "t1",
     });
     for (let read = 0; read < 5; read += 1) await call("work.attention", {});

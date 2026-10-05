@@ -58,7 +58,7 @@ import { ACTIVE_AGAIN, flagStands, quietCleared } from "./flags";
 import { inspectFolder, repoRefusal } from "./folders";
 import { briefOf, type RunKeys, workTitle } from "./frontmatter";
 import { describePermission, type PermissionLike } from "./permissions";
-import { leftToYou, MODED_BY_YOU, nextRun, type Paseo, startRun } from "./runs";
+import { HELD_FOR_YOU, leftToYou, MODED_BY_YOU, nextRun, type Paseo, startRun } from "./runs";
 import { type Mutation, placement, type StoredWork, WorkStore, withLock } from "./store";
 import { toWire } from "./wire";
 import { type WorktreeStatus, worktreeStatus } from "./worktree";
@@ -223,6 +223,8 @@ export type CreateInput = RunChoices & {
   check: string;
   initiative: string;
   dispatch: boolean;
+  /** Why only you start it (`hold`): set by Maestro itself, never by an RPC's input. */
+  hold?: string;
 };
 
 /** Only the run choices that were made: an absent one means Settings at dispatch. */
@@ -287,7 +289,8 @@ type ApplyOutcome = "applied" | "dropped" | "early" | "waiting" | "settled";
  * Why this caller may not start this work, or null. You may start queued or
  * stuck work, or a run with no session recorded. A session may start only
  * queued work (restarting stuck work is unblocking, and that is yours), and
- * never work that carries a mode you chose for it: the mode is yours to use.
+ * never work that carries a mode you chose for it: the mode is yours to use,
+ * nor work held for you (`hold`).
  * The loop starts only queued work too, and never work leftToYou names.
  */
 function startRefusal(item: StoredWork, origin: Origin, config: MaestroConfig): string | null {
@@ -295,6 +298,7 @@ function startRefusal(item: StoredWork, origin: Origin, config: MaestroConfig): 
   switch (origin.actor) {
     case "agent":
       if (!isDispatchable(state)) return "A session can start only queued work. Stuck work is unblocked in Maestro.";
+      if (item.contract.hold) return HELD_FOR_YOU;
       // auto_accept is a mode by another name: it skips the prompts too (shared/run.ts).
       return item.contract.modeId || skipsPrompts({ featureValues: item.contract.featureValues }) ? MODED_BY_YOU : null;
     case "maestro":
@@ -631,6 +635,7 @@ export class Engine {
       now: this.now(),
       origin,
       run,
+      hold: input.hold,
     });
     if (input.dispatch) {
       if (!paseo) throw new UserError(`Created ${item.contract.id}, but it cannot be dispatched yet: ${NO_HANDLE}`);

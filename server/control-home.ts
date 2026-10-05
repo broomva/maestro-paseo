@@ -799,7 +799,14 @@ export class WorkspaceAsks {
     if (found.hash !== input.hash) {
       throw new UserError(`The ask ${input.id} changed since you read it; look at it again before answering.`);
     }
-    const answer = { uid: input.uid, id: input.id, hash: input.hash, option: input.option, note: input.note };
+    const answer = {
+      uid: input.uid,
+      id: input.id,
+      hash: input.hash,
+      option: input.option,
+      note: input.note,
+      wake: input.wake ?? null,
+    };
     const write = {
       lockRoot: this.options.lockRoot,
       receipts: this.options.receipts,

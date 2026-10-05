@@ -7,6 +7,7 @@ import { Engine, UserError } from "./server/engine";
 import { AwakeClock, Fleet, wallClock } from "./server/fleet";
 import { inspectFolder as inspect } from "./server/folders";
 import { GateCards } from "./server/gate-card";
+import { agentIds, ghRun, ideaWork, prStates, workspaceInitiatives } from "./server/initiatives";
 import { Launchd } from "./server/launchd";
 import { Loop } from "./server/loop";
 import {
@@ -41,7 +42,8 @@ import {
   wakeLoop,
   workForAgent,
 } from "./shared/contracts";
-import { answerAsk, getFleet, getFleetTick, getWorkspaceAsks, reviewProposal } from "./shared/fleet";
+import { answerAsk, type DecisionAsk, getFleet, getFleetTick, getWorkspaceAsks, reviewProposal } from "./shared/fleet";
+import { getInitiatives } from "./shared/initiatives";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
 import { getTimeline, getTimelineLog } from "./shared/timeline";
 
@@ -108,6 +110,50 @@ export default function contribute(host: PluginServerContext) {
         log,
       })
     : null;
+  // The workspace's initiatives and their ideas (server/initiatives.ts), read under the same home rule.
+  const initiatives = control.repo
+    ? workspaceInitiatives({
+        controlRepo: control.repo,
+        answersPath: control.answers,
+        asks: workspace,
+        prs: prStates(ghRun, Date.now, log),
+        agents: agentIds(Date.now, log),
+        log,
+      })
+    : null;
+  /**
+   * An idea you chose to develop: a queued work item in its initiative's
+   * folder, briefed from the initiative file and the idea, held for you to
+   * start (`hold`: the loop and sessions leave it). The answer is in already,
+   * so a work item that cannot be filed is said, never thrown.
+   */
+  const develop = async (
+    ask: DecisionAsk,
+    paseo: Paseo | null,
+  ): Promise<{ work: { id: string; title: string; path: string } | null; warning: string | null }> => {
+    const idea = ask.idea;
+    if (!idea || ask.answerOption !== "develop" || !control.repo) return { work: null, warning: null };
+    try {
+      const initiative = idea.initiative && initiatives ? await initiatives.one(idea.initiative) : null;
+      const { title, brief } = ideaWork(initiative, ask);
+      const item = await engine.create(paseo, {
+        title,
+        brief,
+        repo: control.repo,
+        gate: "human",
+        check: "",
+        initiative: idea.initiative ?? "",
+        dispatch: false,
+        hold: `You chose to develop the idea ${ask.ledger} ${ask.id}; it starts when you start it.`,
+      });
+      log(`initiatives: you chose develop for ${ask.ledger} ${ask.id}: queued ${item.id}, held for you`);
+      return { work: { id: item.id, title: item.title, path: item.path }, warning: null };
+    } catch (error) {
+      const message = `You chose develop, and that is in ${ask.ledger}, but its work item could not be filed (${(error as Error).message}). File it with New work.`;
+      log(`initiatives: ${message}`);
+      return { work: null, warning: message };
+    }
+  };
   // Every scheduled thing on one axis (server/timeline.ts): Paseo's schedules, launchd, the loop, the fleet. Read-only.
   const wakes = new WakeLog(wakeLogPath(), log);
   const prefix = launchdPrefix();
@@ -130,7 +176,7 @@ export default function contribute(host: PluginServerContext) {
   // A fleet or a timeline that cannot be read costs the count its notices, never the work's.
   server.handle(attentionWork, async () => {
     const { items } = await engine.list();
-    const [notices, scheduled, workspaceAsks, fleetAsks] = await Promise.all([
+    const [notices, scheduled, workspaceAsks, fleetAsks, initiativeNotices] = await Promise.all([
       fleet.notices(items).catch((error) => {
         log(`reading the fleet for the header count: ${(error as Error).message}`);
         return [];
@@ -147,8 +193,12 @@ export default function contribute(host: PluginServerContext) {
         log(`reading the fleet's asks for the header count: ${(error as Error).message}`);
         return [];
       }),
+      (initiatives?.notices() ?? Promise.resolve([])).catch((error) => {
+        log(`reading the initiatives for the header count: ${(error as Error).message}`);
+        return [];
+      }),
     ]);
-    return attentionOf(items, Date.now(), notices, scheduled, [...workspaceAsks, ...fleetAsks]);
+    return attentionOf(items, Date.now(), notices, scheduled, [...workspaceAsks, ...fleetAsks], initiativeNotices);
   });
   server.handle(getTimeline, () => timeline.get());
   // A launchd job's log end, only when you open its row: never in the polled view.
@@ -186,11 +236,27 @@ export default function contribute(host: PluginServerContext) {
     workspace ? workspace.view() : Promise.resolve({ controlRepo: "", main: null, decisions: [], warnings: [] }),
   );
   // Your answer to a decision ask, at its home: written under the ledger lock, and never on the agent socket.
-  server.handle(answerAsk, async ({ where, ...input }) => {
-    if (where.kind === "fleet") return fleet.answer({ ...input, scope: where.scope });
+  // An idea answered develop also files its held work item (above); park writes the wake you chose.
+  server.handle(answerAsk, async ({ where, ...input }, { paseo }) => {
+    if (where.kind === "fleet") {
+      if (input.wake) throw new UserError("Only an idea in your workspace takes a wake date.");
+      return fleet.answer({ ...input, scope: where.scope });
+    }
     if (!workspace) throw new UserError("Maestro reads no control repo here (MAESTRO_PASEO_CONTROL_REPO is off).");
-    return workspace.answer({ ...input, home: where.home });
+    const answered = await workspace.answer({ ...input, home: where.home });
+    const filed = await develop(answered.ask, paseo);
+    return {
+      ask: answered.ask,
+      warning: [answered.warning, filed.warning].filter(Boolean).join(" ") || null,
+      work: filed.work,
+    };
   });
+  // The workspace's initiatives, each with its ideas (server/initiatives.ts): read-only but for the answers above.
+  server.handle(getInitiatives, (_input, { paseo }) =>
+    initiatives
+      ? initiatives.view(paseo)
+      : Promise.resolve({ controlRepo: "", today: "", initiatives: [], ideas: [], warnings: [] }),
+  );
   server.handle(getConfig, () => loadConfig());
   // Saved Settings may turn the loop on or off, or change its period: arm it again from them.
   server.handle(setConfig, async (input) => {
