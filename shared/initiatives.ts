@@ -152,6 +152,7 @@ export const ideaRef = (ask: { ledger: string; id: string }): string => `${ask.l
  */
 export const fileIdeaWork = defineRpc({
   name: "initiatives.file",
-  input: z.object({ ledger: z.string().min(1), id: z.string().min(1) }),
+  /** `home`: the idea's home as ask.answer names it (shared/fleet.ts homeKey): the same ledger can sit at two. */
+  input: z.object({ ledger: z.string().min(1), id: z.string().min(1), home: z.string().min(1) }),
   output: z.object({ work: WorkRefSchema.nullable(), warning: z.string().nullable() }),
 });

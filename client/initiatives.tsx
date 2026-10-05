@@ -95,16 +95,18 @@ export function IdeaCard({
   const openUrl = useOpenUrl();
   const send = useRpc(answerAsk);
   const fileWork = useRpc(fileIdeaWork);
-  // The tab's own read (one shared query): the work item each developed idea has, if any.
-  const developed = useInitiatives().data?.developed ?? [];
+  // The tab's own read, from its cache: the work item each developed idea has. Never fetched or polled per card.
+  const getView = useRpc(getInitiatives);
+  const developed = useQuery({ queryKey: QUERY_KEY, queryFn: () => getView({}), enabled: false }).data?.developed ?? [];
   const [filed, setFiled] = useState<{ id: string; title: string } | null>(null);
   const ref = ideaRef(ask);
-  const work = filed ?? developed.find((entry) => entry.ref === ref) ?? null;
+  // Only a develop has work: another answer for the same ref (another home's copy) never shows it.
+  const work = ask.answerOption === "develop" ? (filed ?? developed.find((entry) => entry.ref === ref) ?? null) : null;
   const refile = useMutation({
-    mutationFn: () => fileWork({ ledger: ask.ledger, id: ask.id }),
+    mutationFn: () => fileWork({ ledger: ask.ledger, id: ask.id, home: homeKey(ask.home) }),
     onSuccess: ({ work: filedNow, warning }) => {
       if (filedNow) setFiled({ id: filedNow.id, title: filedNow.title });
-      if (warning) toast.error(warning);
+      else toast.error(warning ?? "No work item was filed for it.");
     },
     onError: (error) => toast.error(errorText(error)),
     onSettled: () => {

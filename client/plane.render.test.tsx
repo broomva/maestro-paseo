@@ -2488,7 +2488,7 @@ describe("Initiatives", () => {
     expect(view.text()).toContain("Developed on 2026-10-05. No work item is filed for it in Maestro yet.");
     expect(view.byLabel("Open the work filed for I3")).toBeNull();
     await view.press(view.byLabel("File the work for I3"));
-    expect(sent("initiatives.file")).toEqual([{ ledger: "ideas-mod-anything.yaml", id: "I3" }]);
+    expect(sent("initiatives.file")).toEqual([{ ledger: "ideas-mod-anything.yaml", id: "I3", home: "origin/main" }]);
     expect(view.text()).toContain("Developed on 2026-10-05: a work item was filed for it, held for you to start.");
     expect(view.byLabel("File the work for I3")).toBeNull();
     await view.press(view.byLabel("Open the work filed for I3"));
@@ -2512,6 +2512,26 @@ describe("Initiatives", () => {
     expect(view.text()).toContain("Developed on");
     await view.press(view.byLabel("Open the work filed for I1"));
     expect(view.text()).toContain("Work d");
+  });
+
+  test("only a develop shows its work: a parked idea whose ref has an item does not", async () => {
+    const parked = ideaFixture("I3", {
+      state: "answered",
+      answerOption: "park",
+      answer: "Park until 2099-01-10",
+      answeredAt: "2026-10-05T13:34:21Z",
+    });
+    initiativesNow = {
+      ...initiativesNow,
+      ideas: initiativesNow.ideas.map((entry) => (entry.id === "I3" ? parked : entry)),
+      developed: [{ ref: "ideas-mod-anything.yaml#I3", id: "w3", title: "Work w3", path: "mod-anything/w3" }],
+    };
+    const view = await open();
+    await view.press(view.byLabel("Show the ideas for mod-anything"));
+    await view.press(view.byLabel("Show 1 triaged"));
+    expect(view.text()).toContain("Parked on 2026-10-05 until 2099-01-10.");
+    expect(view.byLabel("Open the work filed for I3")).toBeNull();
+    expect(view.byLabel("File the work for I3")).toBeNull();
   });
 
   test("park takes a wake date: the idea's own by default, a bad or past one refused before it is sent", async () => {

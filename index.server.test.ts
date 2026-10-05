@@ -1,6 +1,6 @@
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
@@ -519,19 +519,32 @@ test("initiatives and their ideas are wired: develop files held work in the init
     expect(brief).toContain("> start small");
     expect(brief).toContain("idea: ideas-maestro.yaml#I1");
     // Filed once: asked again (a retry after a warning), the idea gets the same work item back.
-    const again = await run<{ work: { id: string } | null; warning: string | null }>("initiatives.file", {
-      ledger: "ideas-maestro.yaml",
-      id: "I1",
-    });
+    const fileAgain = () =>
+      run<{ work: { id: string } | null; warning: string | null }>("initiatives.file", {
+        ledger: "ideas-maestro.yaml",
+        id: "I1",
+        home: "origin/main",
+      });
+    const again = await fileAgain();
     expect([again.work?.id, again.warning]).toEqual([developed.work.id, null]);
+    // At another home it is not this idea.
+    await expect(
+      run("initiatives.file", { ledger: "ideas-maestro.yaml", id: "I1", home: "/elsewhere" }),
+    ).rejects.toThrow("No idea I1");
+    // Its item gone (filing failed, or it was removed), two presses at once file exactly one.
+    await rm(join(root, "work", developed.work.path), { recursive: true, force: true });
+    const [one, two] = await Promise.all([fileAgain(), fileAgain()]);
+    if (!one.work || !two.work) throw new Error("no work filed again");
+    expect(one.work.id).toBe(two.work.id);
+    expect(one.work.id).not.toBe(developed.work.id);
+    const ideaItems = (await readdir(join(root, "work", "maestro"))).filter((name) => !name.startsWith("."));
+    expect(ideaItems).toHaveLength(1);
     const listed = await run<{ developed: { ref: string; id: string }[] }>("initiatives.list", {});
-    expect(listed.developed.map((entry) => [entry.ref, entry.id])).toEqual([
-      ["ideas-maestro.yaml#I1", developed.work.id],
-    ]);
+    expect(listed.developed.map((entry) => [entry.ref, entry.id])).toEqual([["ideas-maestro.yaml#I1", one.work.id]]);
     // An idea not answered develop gets no work filed.
-    await expect(run("initiatives.file", { ledger: "ideas-maestro.yaml", id: "I2" })).rejects.toThrow(
-      "is not answered develop",
-    );
+    await expect(
+      run("initiatives.file", { ledger: "ideas-maestro.yaml", id: "I2", home: "origin/main" }),
+    ).rejects.toThrow("is not answered develop");
 
     const parked = await run<{ ask: Ask; work: unknown }>("ask.answer", {
       where,

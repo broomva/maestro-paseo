@@ -42,7 +42,15 @@ import {
   wakeLoop,
   workForAgent,
 } from "./shared/contracts";
-import { answerAsk, type DecisionAsk, getFleet, getFleetTick, getWorkspaceAsks, reviewProposal } from "./shared/fleet";
+import {
+  answerAsk,
+  type DecisionAsk,
+  getFleet,
+  getFleetTick,
+  getWorkspaceAsks,
+  homeKey,
+  reviewProposal,
+} from "./shared/fleet";
 import { fileIdeaWork, getInitiatives, ideaRef, type WorkRef } from "./shared/initiatives";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
 import { getTimeline, getTimelineLog } from "./shared/timeline";
@@ -287,11 +295,13 @@ export default function contribute(host: PluginServerContext) {
     };
   });
   // An idea answered develop with no work item: file it now (idempotent). Only an answered develop qualifies.
-  server.handle(fileIdeaWork, async ({ ledger, id }, { paseo }) => {
+  server.handle(fileIdeaWork, async ({ ledger, id, home }, { paseo }) => {
     if (!workspace) throw new UserError("Maestro reads no control repo here (MAESTRO_PASEO_CONTROL_REPO is off).");
     const { decisions } = await workspace.view();
-    const ask = decisions.find((entry) => entry.ledger === ledger && entry.id === id && entry.idea);
-    if (!ask) throw new UserError(`No idea ${id} in ${ledger}.`);
+    const ask = decisions.find(
+      (entry) => entry.ledger === ledger && entry.id === id && homeKey(entry.home) === home && entry.idea,
+    );
+    if (!ask) throw new UserError(`No idea ${id} in ${ledger} at ${home}.`);
     if (ask.state !== "answered" || ask.answerOption !== "develop") {
       throw new UserError(`${ledger} ${id} is not answered develop, so no work is filed for it.`);
     }
