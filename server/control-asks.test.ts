@@ -416,7 +416,7 @@ describe("an idea's answer", () => {
     expect(after.filter((line) => !before.includes(line))).toEqual([
       '    wake: "2026-11-20"',
       '    answered_at: "2026-10-03T17:00:00Z"',
-      '    answer: "Park until 2026-11-02: Comes back"',
+      '    answer: "Park until 2026-11-02: Comes back\\nWake: 2026-11-20."',
       '    answer_option: "park"',
       '    answered_by: "owner:maestro"',
       '    status: "resolved"',
@@ -433,6 +433,8 @@ describe("an idea's answer", () => {
 
   test("a wake that is not a date, or has passed, is refused and nothing is written", () => {
     expect(() => idea({ option: "park", wake: "2026-13-40" })).toThrow("is not a date");
+    // A day the calendar lacks: Date.parse would roll it into March, and ask_ledger.py refuses it.
+    expect(() => idea({ option: "park", wake: "2027-02-30" })).toThrow("is not a date");
     expect(() => idea({ option: "park", wake: "2026-10-02" })).toThrow("has passed");
     // Today is not past: a park until today wakes at once, which is your call.
     expect(idea({ option: "park", wake: "2026-10-03" }).ask.idea?.wake).toBe("2026-10-03");
@@ -445,11 +447,15 @@ describe("an idea's answer", () => {
   });
 
   test("the answered ledger still passes ask_ledger.py, when this machine has the workspace's copy", async () => {
-    const validator = join(homedir(), ".paseo", "worktrees", "0t10n7id", "bro-2802-ideas", "scripts", "ask_ledger.py");
-    const script = existsSync(validator) ? validator : join(homedir(), "broomva", "scripts", "ask_ledger.py");
+    // MAESTRO_ASK_LEDGER_PY names a workspace checkout's validator; else the owner's ~/broomva copy, if any.
+    const script = process.env.MAESTRO_ASK_LEDGER_PY ?? join(homedir(), "broomva", "scripts", "ask_ledger.py");
     if (!existsSync(script)) return;
+    // Where an ideas ledger lives: .control/asks, beside the initiative file it names.
     const dir = await root();
-    const path = join(dir, "ideas-maestro.yaml");
+    await mkdir(join(dir, ".control", "asks"), { recursive: true });
+    await mkdir(join(dir, ".control", "initiatives"), { recursive: true });
+    await writeFile(join(dir, ".control", "initiatives", "maestro.yaml"), "id: maestro\n");
+    const path = join(dir, ".control", "asks", "ideas-maestro.yaml");
     await writeFile(path, idea({ option: "park", wake: "2026-11-20" }).out);
     const result = spawnSync("python3", [script, "validate", path, "--preauth", join(dir, "none.yaml")], {
       encoding: "utf8",

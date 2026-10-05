@@ -104,5 +104,7 @@ describe("the wake date", () => {
     expect(wakeProblem("2026-10-04", "2026-10-05")).toBe("Choose today or a later day.");
     expect(wakeProblem("2026-13-01", "2026-10-05")).toBe("Write the date as YYYY-MM-DD.");
     expect(wakeProblem("tomorrow", "2026-10-05")).toBe("Write the date as YYYY-MM-DD.");
+    // A day the calendar lacks, which Date.parse alone would roll into March.
+    expect(wakeProblem("2027-02-30", "2026-10-05")).toBe("Write the date as YYYY-MM-DD.");
   });
 });

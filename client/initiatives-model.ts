@@ -17,9 +17,12 @@ export const STATUS_TEXT: Record<InitiativeStatus, string> = {
 export const INTENT_NOT_STATED =
   "Intent not stated: the owner's words were not written down where they could be found.";
 
-/** A YYYY-MM-DD date. */
-export const isDay = (value: string): boolean =>
-  /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
+/** A YYYY-MM-DD that is a real day: 2026-02-30 is not, though Date.parse rolls it into March. */
+export const isDay = (value: string): boolean => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const time = Date.parse(`${value}T00:00:00Z`);
+  return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
+};
 
 /** A day `count` days after `day` (YYYY-MM-DD, by the calendar, not by a clock). */
 export function addDays(day: string, count: number): string {

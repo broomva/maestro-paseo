@@ -36,6 +36,9 @@ those, and nothing Paseo already does.
   what its dry run would do (see [The Fleet](#the-fleet)).
 - **Timeline**, a view beside the Fleet: every scheduled session and loop on one time axis, the past
   24 hours and the next 24, with a failed or missed run in Needs you (see [The Timeline](#the-timeline)).
+- **Initiatives**, a view beside the Timeline: your workspace's initiatives, one card each, and the
+  ideas agent sessions left for them, each answered develop / park / kill (see
+  [Initiatives](#initiatives)).
 - **Work** panel beside any agent: the work it is running, or a button to track it.
 - **Command Center**: *Open Maestro*, and *Track this session in Maestro* on an agent.
 - **`/maestro [title]`** in the composer: track the current session as work.
@@ -532,6 +535,32 @@ For a second daemon or a test:
   `~/.paseo/schedules`).
 - `MAESTRO_PASEO_LAUNCHD` names another label prefix (letters, digits, `.`, `_`, `-`), or `off` to
   read no launchd job. Anything else reads none.
+
+## Initiatives
+
+The **Initiatives** view reads the control repo's `.control/initiatives/*.yaml` (one file per thing
+you set out to do; spec `docs/specs/2026-10-03-initiative-ledger.html` in the workspace) under the same
+home rule as Decisions: each file as origin/main holds it, with a checkout's edit that has not landed
+shown beside it, never instead of it. A file that cannot be read is an error row with the reason.
+
+- **A card per initiative.** Title; the owner's intent quoted, or *Intent not stated* when the file
+  says it was never written down; status; `review_by` (or `wake` for a parked one) with an
+  *Overdue* or *Wake date passed* badge; the next action and its driver; what it waits on, an ask
+  opening its ledger in the Fleet view's Decisions; links to Linear, each PR (with its state when
+  GitHub says it in one cached query) and each session (opened in Paseo when one agent has that id);
+  and its open and triaged ideas.
+- **Ideas.** Each idea is an idea-triage ask (`class: idea`) in `.control/asks/ideas-<initiative>.yaml`,
+  shown under its initiative and together under *All ideas*. It is answered through the same
+  human-only `ask.answer` path, lock and receipt as any decision ask (see
+  [Answering a decision ask](#answering-a-decision-ask)); Decisions does not list ideas.
+  - **Develop** also files a queued work item in the initiative's folder, briefed from the initiative
+    and the idea, with `hold:` set: neither the loop nor a session starts it. It stays queued until you start
+    it; the loop, when it is on, flags it in Needs you as yours.
+  - **Park** writes the wake date you chose (today or later, a real calendar day), and the answer
+    says it.
+  - **Kill** closes it with your words.
+- **Needs you.** An active or blocked initiative past its `review_by`, or a parked one whose `wake`
+  came, counts in the header count and shows above every other view.
 
 ## The agent's instructions
 

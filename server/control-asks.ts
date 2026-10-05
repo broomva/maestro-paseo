@@ -572,6 +572,13 @@ export function answerText(option: DecisionOption | null, note: string): string 
 
 const WRITTEN_KEYS = ["answer_option", "answered_at", "answered_by", "status"] as const;
 
+/** A YYYY-MM-DD that is a real day: 2026-02-30 is not (JS would roll it to March; the ledger's validator refuses it). */
+export function isCalendarDay(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const time = Date.parse(`${value}T00:00:00Z`);
+  return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
+}
+
 /** Today as YYYY-MM-DD where this runs: a wake is judged against the owner's own calendar. */
 export function localDay(at: Date): string {
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -641,21 +648,22 @@ export function withAnswer(
   if (input.option && !option) {
     throw new UserError(`The ask ${input.id} no longer offers that option. Look at the Fleet view again.`);
   }
-  const answer = answerText(option, input.note);
-  if (!answer) throw new UserError("Choose an option or write an answer.");
   // A wake goes only with an idea's park, and never into the past: the date a parked idea comes back.
   const wake = input.wake ?? null;
   if (wake !== null) {
     if (!ideaOf(row) || option?.id !== "park") {
       throw new UserError(`Only an idea you park takes a wake date; ${input.id} was not answered.`);
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(wake) || Number.isNaN(Date.parse(`${wake}T00:00:00Z`))) {
+    if (!isCalendarDay(wake)) {
       throw new UserError(`${wake} is not a date (YYYY-MM-DD); ${input.id} was not answered.`);
     }
     if (wake < localDay(at)) {
       throw new UserError(`The wake date ${wake} has passed; choose today or later. ${input.id} was not answered.`);
     }
   }
+  // The option's label may name the date the ask proposed; the answer says the one you chose.
+  const answer = [answerText(option, input.note), wake !== null ? `Wake: ${wake}.` : ""].filter(Boolean).join("\n");
+  if (!answer) throw new UserError("Choose an option or write an answer.");
   const firstKey = target.items[0]?.key as { range?: Range } | null;
   const indent = firstKey?.range ? indentOf(source, firstKey.range[0]) : "    ";
   const newline = source.includes("\r\n") ? "\r\n" : "\n";
