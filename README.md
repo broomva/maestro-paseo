@@ -273,12 +273,23 @@ The **Fleet** view shows the rest, per scope, read from those files:
   - An ask about a session (a `prompt:<session>:…` key) names it, and *Open session* opens it in
     Paseo when it is a Paseo agent. *Details* shows the ask's key and batch, and the tick that raised
     it, opened as a tick row opens.
-- **Decisions.** Decision asks in the fleet's own ask ledger, `<state dir>/.control/asks/*.yaml`
-  (the fleet's registered root in the control interface spec, workspace#861 §5.6), shown only when
-  that folder holds one. Each card shows the headline and question, what waiting costs, why it is
-  yours, every option with its consequence (recommended, or cannot be undone), and what happens if
-  you say nothing. Choose an option, add words if you like, and *Answer*. See
-  [Answering a decision ask](#answering-a-decision-ask).
+- **Decisions.** At the top of the Fleet view, whether or not this Mac runs a fleet: your
+  workspace's decision asks, every `.control/asks/*.yaml` ledger of the control repo (`~/broomva`),
+  each read where it lives (see [Which copy](#answering-a-decision-ask)). Then, per scope, *The
+  fleet's decisions*: those in the fleet's own ask ledger, `<state dir>/.control/asks/*.yaml` (its
+  registered root, workspace#861 §5.6), shown only when that folder holds one.
+  - Asks are listed a ledger at a time, the ledgers with an ask that waits on you first. Every
+    ledger starts open while there are ten open asks or fewer; past that, only those with an ask
+    that waits on you. A ledger's heading folds and opens it. Its answered asks stay folded under
+    *Show N answered*; one you just answered stays in place, saying so.
+  - Each card shows the headline and question, what waiting costs, why it is yours, every option
+    with its consequence (recommended, or cannot be undone), what happens if you say nothing, and
+    where your answer will be written. Choose an option, add words if you like, and *Answer*. See
+    [Answering a decision ask](#answering-a-decision-ask).
+  - An ask *waits on you* when it is open and blocking, or recommends an option that cannot be
+    undone (§5.4), default or not: a default says the arc may go on in silence, not that it did.
+    Those count in the header's "N need you", and show above every other view with *Open
+    Decisions*.
 - **Would do.** These are proposals: each in-scope session whose "would do" in the newest report is
   something other than nothing, plus any verb the coordinator logged under dry run.
   - Proposals that read the same and stand the same with you are one card, and one verdict covers
@@ -346,14 +357,33 @@ Verdicts are yours alone, so the agent socket refuses `fleet.review`.
 An answer is the one thing Maestro writes into an ask ledger, under the control interface spec's
 contract (workspace#861, `docs/specs/2026-10-01-maestro-control-interface.html`):
 
-- **Which copy.** Only one root is read and written: the fleet's own, at the path §5.6 gives it,
-  `<state dir>/.control/asks`. Drop-ins in `~/.config/maestro-paseo/ask-roots.d/` (p9's, say) are
-  not read yet. A root's home is that root's file, so no git checkout is chosen; and `.control` or
-  `asks` that is a link out of the state dir is refused. Asks in the control repo's checkouts need
-  the spec's full home rule, and stay with the Asks plugin. fleet-reconcile does not write this
-  ledger yet (skills#261), so until it does the Decisions section stays hidden.
+- **Which copy (§5.2's home rule).** For the workspace's asks Maestro reads origin/main's blobs
+  (`git cat-file`, fetched at most every 5 minutes, in the background) and the working tree of every
+  checkout `git worktree list` names, the main checkout among them, as one checkout like any other:
+  never a fallback. In checkout W, with B its merge-base with origin/main, each ask takes the first
+  step that applies:
+  1. origin/main records its outcome: it is closed, whatever any checkout holds.
+  2. W's copy is *local* when it changed a field from B's and that change has not landed (each field
+     W changed reads, on main now, as W gave it). A checkout whose copy main has moved past is not
+     the ask.
+  3. Of the local copies, the one in the checkout its `origin.cwd` names.
+  4. The single local copy.
+  5. Two or more: *diverged*. The card lists them and takes no answer.
+  6. Otherwise origin/main.
+
+  An answer is written at that home: a checkout's file in place (it goes with that branch), or, for
+  origin/main, Maestro's answers worktree, `~/.local/state/maestro-paseo/control-answers` on the
+  branch `maestro/answers`. It is made from origin/main the first time, takes origin/main's newer
+  asks by a merge before each answer (a conflict is refused), and each answer is committed there.
+  The card then says it waits in the answers batch. Landing that batch on main is not built yet.
+  An ask whose home moved since you read it is refused. The fleet's own root is a home of its own:
+  its file, never a git checkout; `.control` or `asks` that is a link out of the state dir is
+  refused. Drop-ins in `~/.config/maestro-paseo/ask-roots.d/` (p9's, say) are not read yet.
+  fleet-reconcile does not write its ledger yet (skills#261).
 - **Which ask.** An ask is its `uid`. An ask without one goes by its `id`, but only while no other
-  uid-less ask in the file shares it. An id two uid-less asks share, or a uid two asks share, names
+  uid-less ask in the file shares it. Across copies, a uid-less ask in W is main's ask of that id
+  when W had it at B, or when W's entry equals main's; otherwise the two are an id collision, both
+  shown and neither answered. An id two uid-less asks share, or a uid two asks share, names
   no one ask: the card says so and takes no answer. The answer also carries the entry as you read
   it (a hash of its keys and values), and an entry changed since is refused, so your option never
   lands on a question rewritten under it.
@@ -388,8 +418,10 @@ contract (workspace#861, `docs/specs/2026-10-01-maestro-control-interface.html`)
 - **Not routed.** Maestro does not send the answer to the session that asked. The fleet reads it from
   its own file at its next tick (the spec's *Record only*).
 
-Answers are yours alone, so the agent socket refuses `ask.answer`. `MAESTRO_PASEO_ASK_LOCKS` and
+Answers are yours alone, so the agent socket refuses `ask.answer`, at every home. `MAESTRO_PASEO_ASK_LOCKS` and
 `MAESTRO_PASEO_ASK_RECEIPTS` move the lock folder and the receipts, for a second daemon or a test.
+`MAESTRO_PASEO_CONTROL_REPO` names the control repo (`off` reads none), and
+`MAESTRO_PASEO_CONTROL_ANSWERS` the answers worktree.
 
 A state dir can be written by the fleet's sessions, so any file there is read only if it is a
 regular file: never through a symlink as its last name, never with another hard link, and never a

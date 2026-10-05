@@ -211,6 +211,23 @@ describe("what a session is offered", () => {
     expect(!response.ok && response.error).toContain("your answers to its asks");
   });
 
+  test("an answer to the workspace's ask is refused too, at any home: the verb is yours", async () => {
+    const { ask } = await setup();
+    for (const home of ["origin/main", "/Users/me/broomva"]) {
+      const response = await ask("ask.answer", {
+        where: { kind: "workspace", home },
+        ledger: "2026-10-01-auth-preflight-hook-stderr.yaml",
+        uid: null,
+        id: "A1",
+        hash: "0123456789abcdef",
+        option: "merge",
+        note: "",
+      });
+      expect(response.ok).toBe(false);
+      expect(!response.ok && response.error).toContain("ask.answer is yours alone");
+    }
+  });
+
   test("leaving a quiet run running is refused: the flag is yours to clear", async () => {
     const { repo, ok, ask, engine, config } = await setup();
     const { item } = await ok("work.create", { title: "Long one", repo, dispatch: true });

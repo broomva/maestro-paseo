@@ -13,6 +13,7 @@ import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { ChangeScope } from "./changed";
+import { AskNotices } from "./decisions";
 import { WorkDetail } from "./detail";
 import { FleetNotices, FleetView } from "./fleet";
 import { errorText, plural } from "./format";
@@ -146,6 +147,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
       {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
 
       {view === "fleet" ? null : <FleetNotices theme={theme} compact={compact} onOpen={openFleet} />}
+      {view === "fleet" ? null : <AskNotices theme={theme} compact={compact} onOpen={(scope) => openFleet(scope)} />}
       {view === "timeline" ? null : (
         <TimelineNotices theme={theme} compact={compact} onOpen={() => setView("timeline")} />
       )}

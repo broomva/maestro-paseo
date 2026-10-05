@@ -191,10 +191,30 @@ export const DecisionOptionSchema = z.object({
 export type DecisionOption = z.infer<typeof DecisionOptionSchema>;
 
 /**
- * A decision ask in a `.control/asks` ledger in the fleet's own registered
- * root (`<state dir>/.control/asks`, the control interface spec §5.6), with
- * its decision layer: what it costs while it waits, why it is yours, the
- * options and what each does, and what happens if you say nothing.
+ * Where an ask lives, and so where its answer is written (the control
+ * interface spec §5.2): a registered machine-local root (the fleet's own), a
+ * checkout of the control repo whose copy has not reached origin/main, or
+ * origin/main itself, whose answers go to Maestro's answers worktree.
+ */
+export const AskHomeSchema = z.object({
+  kind: z.enum(["root", "checkout", "main"]),
+  /** The root's folder; the checkout's path; for main, the control repo. */
+  path: z.string(),
+  /** A checkout's branch, when it is on one. */
+  branch: z.string().nullable(),
+});
+export type AskHome = z.infer<typeof AskHomeSchema>;
+
+/** A home as one string, which an answer carries back: a checkout's or root's path, or `origin/main`. */
+export function homeKey(home: AskHome): string {
+  return home.kind === "main" ? "origin/main" : home.path;
+}
+
+/**
+ * A decision ask in a `.control/asks` ledger, with its decision layer: what it
+ * costs while it waits, why it is yours, the options and what each does, and
+ * what happens if you say nothing. From the fleet's own registered root
+ * (`<state dir>/.control/asks`, §5.6) or the workspace's control repo (§5.2).
  */
 export const DecisionAskSchema = z.object({
   /** The ledger's file name in the root. */
@@ -220,10 +240,50 @@ export const DecisionAskSchema = z.object({
   state: z.enum(["open", "answered", "archived"]),
   /** The session that asked, when the ask is stamped with one. */
   origin: z.object({ agentId: z.string(), cwd: z.string().nullable() }).nullable(),
-  /** Why it cannot be answered here, in words (an id collision); null when it can. */
+  /** Why it cannot be answered here, in words (an id collision, a diverged copy); null when it can. */
   refusal: z.string().nullable(),
+  home: AskHomeSchema,
+  /** Answered in Maestro's answers worktree, and not yet on origin/main. */
+  batched: z.boolean(),
+  /** Open, and blocking or recommending what cannot be undone (§5.4): it counts in Needs you, default or not. */
+  waiting: z.boolean(),
 });
 export type DecisionAsk = z.infer<typeof DecisionAskSchema>;
+
+/**
+ * Waiting (§5.4): an open ask that is blocking, or that recommends an option
+ * that cannot be undone. A default never takes an ask out (BRO-2693): it says
+ * the arc may go on in silence, not that it did.
+ */
+export function isWaiting(ask: Pick<DecisionAsk, "state" | "blocking" | "options">): boolean {
+  if (ask.state !== "open") return false;
+  return ask.blocking || ask.options.some((option) => option.recommended && option.reversible === false);
+}
+
+/** An ask that needs you, as work.attention carries it: `scope` null for the workspace's, else the fleet scope's root. */
+export const AskNoticeSchema = z.object({
+  scope: z.string().nullable(),
+  ledger: z.string(),
+  uid: z.string().nullable(),
+  id: z.string(),
+  headline: z.string(),
+  blocking: z.boolean(),
+  askedAt: z.string().nullable(),
+});
+export type AskNotice = z.infer<typeof AskNoticeSchema>;
+
+/** The notice for an ask that needs you. */
+export function askNotice(ask: DecisionAsk, scope: string | null): AskNotice {
+  return {
+    scope,
+    ledger: ask.ledger,
+    uid: ask.uid,
+    id: ask.id,
+    headline: ask.headline ?? ask.question ?? ask.id,
+    blocking: ask.blocking,
+    askedAt: ask.askedAt,
+  };
+}
 
 export const FleetScopeSchema = z.object({
   id: z.string(),
@@ -303,14 +363,19 @@ export type FleetTickDetail = z.infer<typeof getFleetTick.output>;
 export const ANSWER_NOTE_CHARS = 2000;
 
 /**
- * Your answer to a decision ask in the fleet's ask root, written into its
- * ledger under the shared lock (server/control-asks.ts): the option you chose,
- * your words, or both. Yours alone: never on the agent socket.
+ * Your answer to a decision ask, written into its home's ledger under the
+ * shared lock (server/control-asks.ts): the option you chose, your words, or
+ * both. `where` names the ask's home as you read it: a fleet scope's own root,
+ * or a workspace home (homeKey); an ask whose home moved since is refused.
+ * Yours alone: never on the agent socket.
  */
 export const answerAsk = defineRpc({
   name: "ask.answer",
   input: z.object({
-    scope: z.string().min(1),
+    where: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("fleet"), scope: z.string().min(1) }),
+      z.object({ kind: z.literal("workspace"), home: z.string().min(1) }),
+    ]),
     ledger: z.string().min(1),
     uid: z.string().min(1).nullable(),
     id: z.string().min(1),
@@ -319,9 +384,30 @@ export const answerAsk = defineRpc({
     option: z.string().min(1).nullable(),
     note: z.string().max(ANSWER_NOTE_CHARS).default(""),
   }),
-  /** `warning`: the answer is in the ledger, but something after it (its receipt) failed, in words. */
+  /** `warning`: the answer is in the ledger, but something after it (its receipt, its commit) failed, in words. */
   output: z.object({ ask: DecisionAskSchema, warning: z.string().nullable() }),
 });
+export type AnswerWhere = z.infer<typeof answerAsk.input>["where"];
+
+/**
+ * The workspace's own asks: every `.control/asks` ledger in the control repo
+ * (`~/broomva` unless MAESTRO_PASEO_CONTROL_REPO says), each ask read at its
+ * home by the §5.2 rule (server/control-home.ts). The open ones, then the
+ * latest answered.
+ */
+export const getWorkspaceAsks = defineRpc({
+  name: "asks.workspace",
+  input: z.object({}),
+  output: z.object({
+    controlRepo: z.string(),
+    /** origin/main's commit as read, and when it was last fetched (null: not this run). */
+    main: z.object({ sha: z.string(), fetchedAt: z.string().nullable() }).nullable(),
+    decisions: z.array(DecisionAskSchema),
+    /** What could not be read, in words. */
+    warnings: z.array(z.string()),
+  }),
+});
+export type WorkspaceAsksView = z.infer<typeof getWorkspaceAsks.output>;
 
 /**
  * Your verdict on proposals, written to the scope's review file: one line per

@@ -3,7 +3,7 @@
 // open client can poll it without costing an agent round trip per item. Pure.
 
 import type { Attention, WorkItem } from "../shared/contracts";
-import type { FleetNotice } from "../shared/fleet";
+import type { AskNotice, FleetNotice } from "../shared/fleet";
 import { needsYouOf } from "../shared/needs-you";
 import { isTerminal } from "../shared/states";
 import type { TimelineNotice } from "../shared/timeline";
@@ -19,12 +19,15 @@ export const RECENT_MS = 24 * 60 * 60 * 1000;
  * not already in Needs you as the fleet's own alert item (server/fleet.ts).
  * `timeline`: each scheduled source whose run failed or was missed, other
  * than a fleet scope, which `fleet` already counts (server/timeline.ts).
+ * `asks`: decision asks that wait on you (shared/fleet.ts isWaiting): the
+ * workspace's (server/control-home.ts) and each fleet scope's own root's.
  */
 export function attentionOf(
   items: readonly WorkItem[],
   now: number,
   fleet: readonly FleetNotice[] = [],
   timeline: readonly TimelineNotice[] = [],
+  asks: readonly AskNotice[] = [],
 ): Attention {
   const waiting = needsYouOf(items).map(({ id, group, flag }) => ({ id, group, flag }));
   const sessions: Attention["sessions"] = [];
@@ -40,5 +43,5 @@ export function attentionOf(
       workspaceId: worker.workspaceId,
     });
   }
-  return { waiting, sessions, fleet: [...fleet], timeline: [...timeline] };
+  return { waiting, sessions, fleet: [...fleet], timeline: [...timeline], asks: [...asks] };
 }

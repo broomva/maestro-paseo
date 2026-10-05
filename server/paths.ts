@@ -55,6 +55,22 @@ export function controlAskPaths(env: NodeJS.ProcessEnv = process.env): { locks: 
 }
 
 /**
+ * The workspace's control repo, whose `.control/asks` ledgers Decisions reads
+ * at their homes (server/control-home.ts; the spec's `controlRepo`, ~/broomva
+ * by default), and Maestro's answers worktree, where an answer whose home is
+ * origin/main is written, on maestro/answers. `off` reads no control repo.
+ */
+export function controlRepoPaths(env: NodeJS.ProcessEnv = process.env): { repo: string | null; answers: string } {
+  const repo = env.MAESTRO_PASEO_CONTROL_REPO ?? join(homedir(), "broomva");
+  return {
+    repo: repo === "off" ? null : expandHome(repo),
+    answers: expandHome(
+      env.MAESTRO_PASEO_CONTROL_ANSWERS ?? join(homedir(), ".local", "state", "maestro-paseo", "control-answers"),
+    ),
+  };
+}
+
+/**
  * Where the Paseo daemon keeps its schedules and heartbeats, which the
  * Timeline view reads (server/timeline.ts): `schedules/` in its home, the
  * daemon's PASEO_HOME, else ~/.paseo.

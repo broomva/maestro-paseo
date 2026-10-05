@@ -31,6 +31,20 @@ describe("work.attention", () => {
     expect(attentionOf([], now).timeline).toEqual([]);
   });
 
+  test("the decision asks that wait on you ride along, as given", () => {
+    const ask = {
+      scope: null,
+      ledger: "2026-10-01-auth-preflight-hook-stderr.yaml",
+      uid: null,
+      id: "A1",
+      headline: "Approve merge of PR #863?",
+      blocking: true,
+      askedAt: "2026-10-01T10:00Z",
+    };
+    expect(attentionOf([], now, [], [], [ask]).asks).toEqual([ask]);
+    expect(attentionOf([], now).asks).toEqual([]);
+  });
+
   test("waiting is the work at your gate or stuck, in list order", () => {
     const { waiting } = attentionOf(
       [fakeWork("r", "review"), fakeWork("b", "blocked"), fakeWork("x", "running"), fakeWork("d", "done")],

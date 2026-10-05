@@ -147,6 +147,9 @@ describe("reading decision asks", () => {
       state: "open",
       origin: null,
       refusal: null,
+      home: { kind: "root", path: "", branch: null },
+      batched: false,
+      waiting: false,
     });
     expect([answer?.uid, answer?.state, answer?.answer]).toEqual([
       "7d1e0c2a-5b8f-4e1a-9c4d-2f6b8a0e3c91",
@@ -317,6 +320,7 @@ describe("writing an answer", () => {
       actor: "human",
       at: "2026-10-03T17:00:00Z",
       home: path,
+      homeKind: "root",
       ledger: "test-arc.yaml",
       uid: null,
       id: "A10",

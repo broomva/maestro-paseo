@@ -136,4 +136,13 @@ describe("the timeline in the header count", () => {
     // Only stuck work and a notice: Needs you, not Stuck, where the notice shows above the list.
     expect(needsYouTarget([fakeWork("b", "blocked")], [], [notice("a")])).toEqual({ kind: "filter", group: "review" });
   });
+
+  test("each decision ask that waits on you counts once; with only asks, the count opens the Fleet view's Decisions", () => {
+    const ask = (scope: string | null) => ({ scope });
+    expect(needsYouCount([fakeWork("r", "review")], [], [], [ask(null), ask("broomva")])).toBe(3);
+    expect(needsYouTarget([], [], [], [ask(null)])).toEqual({ kind: "fleet", scope: null });
+    expect(needsYouTarget([], [], [notice("a")], [ask("broomva")])).toEqual({ kind: "fleet", scope: "broomva" });
+    // With work as well: Needs you, where the asks' notice shows above the list.
+    expect(needsYouTarget([fakeWork("r", "review")], [], [], [ask(null)])).toEqual({ kind: "filter", group: "review" });
+  });
 });
