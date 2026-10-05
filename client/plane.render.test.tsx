@@ -2158,7 +2158,8 @@ describe("the workspace's decisions", () => {
   test("past ten open asks, only the ledgers with one that waits on you start open", async () => {
     workspaceNow = [
       merge(),
-      ...Array.from({ length: 11 }, (_, at) => canvas(`q${at}`, { ledger: `ledger-${at}.yaml`, arc: `arc-${at}` })),
+      // Eleven open in all: past ten, so the ledgers start folded; answering one brings it to ten.
+      ...Array.from({ length: 10 }, (_, at) => canvas(`q${at}`, { ledger: `ledger-${at}.yaml`, arc: `arc-${at}` })),
     ];
     const view = await mount(surface(false));
     await view.press(fleetTab(view));
@@ -2166,7 +2167,7 @@ describe("the workspace's decisions", () => {
     expect(view.text()).not.toContain("Canvas ask q3");
     await view.press(view.byLabel("ledger-3.yaml: 1 open"));
     expect(view.text()).toContain("Canvas ask q3");
-    // Answering its only open ask leaves the ledger open, saying so; and the rest stay folded as the count drops.
+    // Answering its only open ask leaves the ledger open, saying so; the rest stay folded though the count is now ten.
     await view.press(view.byLabel("File all four, recommended"));
     await view.press(view.byLabel("Answer q3: File all four"));
     expect(view.text()).toContain("Answered just now: “File all four”");

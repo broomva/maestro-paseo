@@ -218,7 +218,7 @@ export function resolveHomes(sources: Sources): DecisionAsk[] {
     const byId = new Set(resolved.filter((r) => !r.handle.uid && r.asks.length > 0).map((r) => r.handle.id));
     for (const { handle, asks } of resolved) {
       const split = byUid.has(handle.id) && byId.has(handle.id);
-      const refusal = `The ask ${handle.id} in ${name} reads with a uid in one copy and without one in another, so it may be one ask at two homes. Bring the copies to one (ask_ledger.py stamp where it has none); Maestro answers neither.`;
+      const refusal = `The ask ${handle.id} in ${name} reads with a uid in one copy and without one in another, so it may be one ask at two homes. Bring the copies to one (merge origin/main into the checkout, or remove a worktree that is done); Maestro answers neither.`;
       out.push(...(split ? refuse(asks, refusal) : asks));
     }
   }
@@ -234,11 +234,9 @@ function resolveOne(
   const mainLedger = sources.main.get(name);
   const mainRows = entriesOf(mainLedger, uid, id);
   const [main = null] = mainRows;
-  // Step 1 before anything: main's outcome wins, when main holds the ask once.
-  if (main && mainLedger && mainRows.length === 1 && stateOf(main) !== "open") {
-    const ask = askOf(main, mainLedger, name, mainHome);
-    return ask ? [ask] : [];
-  }
+  // Step 1: main's outcome wins, for the same ask, whatever any checkout holds (a doubled copy included). A
+  // different ask under its id in a checkout is still listed, below, as a collision.
+  const closedOnMain = main !== null && mainLedger !== undefined && mainRows.length === 1 && stateOf(main) !== "open";
   const held: Held[] = [
     ...(mainLedger ? [{ ledger: mainLedger, rows: mainRows, home: mainHome }] : []),
     ...sources.checkouts.flatMap((checkout) => {
@@ -249,7 +247,7 @@ function resolveOne(
   // A handle two entries of one copy share names no one ask: every copy's rows are listed (a checkout's copy
   // only where it differs from main's), and none answered.
   const doubled = held.filter((copy) => copy.rows.length > 1);
-  if (doubled.length > 0) {
+  if (doubled.length > 0 && !closedOnMain) {
     const where = doubled.map((copy) => homeWords(copy.home)).join("; ");
     const refusal = `Two asks in ${name} go by ${uid ?? id} in ${where}, so an answer could land on the wrong one. Give one a uid or a new id; Maestro answers none of them.`;
     const listed = held.filter(
@@ -284,7 +282,7 @@ function resolveOne(
   });
 
   const asks: DecisionAsk[] = [];
-  const locals = copies.filter((copy) => copy.local);
+  const locals = closedOnMain ? [] : copies.filter((copy) => copy.local);
   // Step 3: the checkout the ask's stamp names, when it holds a local copy.
   const stamped = new Set(
     locals.flatMap((copy) => {
@@ -296,7 +294,10 @@ function resolveOne(
   const [stampedAt] = [...stamped];
   const home =
     stamped.size === 1 ? locals.find((copy) => copy.at === stampedAt) : locals.length === 1 ? locals[0] : null;
-  if (home) {
+  if (closedOnMain) {
+    const ask = askOf(main as Row, mainLedger as Ledger, name, mainHome);
+    if (ask) asks.push(ask);
+  } else if (home) {
     // Steps 3 and 4.
     const ask = askOf(home.row, home.ledger, name, checkoutHome(sources.checkouts[home.at] as CheckoutCopy));
     if (ask) asks.push(ask);
@@ -483,6 +484,7 @@ export class WorkspaceAsks {
   private lastFetch = 0;
   /** When a fetch last succeeded, and why the last one failed (null once one succeeds). */
   private lastFetchOk = 0;
+  private lastFetchTry = 0;
   private lastFetchError: string | null = null;
   private fetchedAt: string | null = null;
   private fetching: Promise<string | null> | null = null;
@@ -534,6 +536,7 @@ export class WorkspaceAsks {
   private fetchNow(): Promise<string | null> {
     if (this.fetching) return this.fetching;
     this.lastFetch = this.now();
+    this.lastFetchTry = this.now();
     const fetching = git(this.options.controlRepo, ["fetch", "--quiet", "origin", "main"], 60_000)
       .then(() => {
         this.fetchedAt = new Date(this.now()).toISOString();
@@ -766,9 +769,12 @@ export class WorkspaceAsks {
     // A fetch in flight is waited on; one that last succeeded within ANSWER_FETCH_FRESH_MS is enough; else one runs.
     let unfetched: string | null = null;
     if (this.options.fetch !== false) {
+      const now = this.now();
       if (this.fetching) unfetched = await this.fetching;
-      else if (this.now() - this.lastFetchOk >= ANSWER_FETCH_FRESH_MS) unfetched = await this.fetchNow();
-      else unfetched = this.lastFetchError;
+      else if (now - this.lastFetchOk < ANSWER_FETCH_FRESH_MS) unfetched = null;
+      // A fetch that failed this recently is said, not run again: an offline daemon never makes each answer wait 60 s.
+      else if (now - this.lastFetchTry < ANSWER_FETCH_FRESH_MS) unfetched = this.lastFetchError;
+      else unfetched = await this.fetchNow();
     }
     const stale = unfetched
       ? `origin/main could not be fetched first (${unfetched}), so this was judged on origin/main as last fetched.`
@@ -841,8 +847,22 @@ export class WorkspaceAsks {
       const args = branch.trim()
         ? ["worktree", "add", "--quiet", path, ANSWERS_BRANCH]
         : ["worktree", "add", "--quiet", "--no-track", "-b", ANSWERS_BRANCH, path, mainSha];
-      await git(repo, args, 60_000).catch((error) => {
-        throw new UserError(`Maestro's answers worktree could not be made at ${path}: ${(error as Error).message}`);
+      await git(repo, args, 60_000).catch(async (error) => {
+        // The branch still registered at a worktree whose folder is gone (a cleared state dir): that registration
+        // is dead, so git's own prune clears it, and the worktree is made again. One checked out anywhere live is refused.
+        const holder = await this.answersHolder();
+        if (holder && !(await lstat(holder).catch(() => null))) {
+          await git(repo, ["worktree", "prune"]);
+          await git(repo, args, 60_000).catch((again) => {
+            throw new UserError(`Maestro's answers worktree could not be made at ${path}: ${(again as Error).message}`);
+          });
+          return;
+        }
+        throw new UserError(
+          holder
+            ? `${ANSWERS_BRANCH} is checked out at ${holder}, not at Maestro's answers worktree ${path}, so no answer was written. Remove that worktree, or point MAESTRO_PASEO_CONTROL_ANSWERS at it.`
+            : `Maestro's answers worktree could not be made at ${path}: ${(error as Error).message}`,
+        );
       });
     }
     const [ours, theirs, onBranch] = await Promise.all([
@@ -891,6 +911,20 @@ export class WorkspaceAsks {
       });
     }
     return path;
+  }
+
+  /** Where git has maestro/answers checked out, by its listing (a worktree whose folder is gone included), or null. */
+  private async answersHolder(): Promise<string | null> {
+    const listing = await git(this.options.controlRepo, ["worktree", "list", "--porcelain"]).catch(() => "");
+    const block = listing
+      .split(/\n\n+/)
+      .find((entry) => entry.split("\n").includes(`branch refs/heads/${ANSWERS_BRANCH}`));
+    return (
+      block
+        ?.split("\n")
+        .find((line) => line.startsWith("worktree "))
+        ?.slice("worktree ".length) ?? null
+    );
   }
 
   /**

@@ -239,6 +239,19 @@ describe("the home rule (§5.2)", () => {
     expect(local.map((entry) => [entry.state, entry.home.kind])).toEqual([["answered", "checkout"]]);
   });
 
+  test("main's answer closes its own ask, never a different one a branch added under its id (spec §8 case 7)", () => {
+    const theirs = ask(`    headline: "Something else"\n    blocking: true\n`);
+    const list = resolveHomes(
+      sources({ main: new Map([["l.yaml", ledger(ANSWERED)]]), checkouts: [checkout("/w", { "l.yaml": theirs }, {})] }),
+    );
+    expect(
+      list.map((entry) => [entry.headline, entry.state, entry.home.kind, Boolean(entry.refusal), entry.waiting]),
+    ).toEqual([
+      ["Merge it?", "answered", "main", false, false],
+      ["Something else", "open", "checkout", true, true],
+    ]);
+  });
+
   test("asked in the same minute is not enough: the words must agree too, else an id collision", () => {
     const mine = ask(`    question: "Ship the cache?"\n    asked_at: 2026-10-01T10:00Z\n`);
     const theirs = ask(`    ask: "Rename the repo?"\n    asked_at: 2026-10-01T10:00Z\n`);
@@ -764,6 +777,63 @@ describe("the workspace's asks, in a scratch control repo", () => {
     const answers = join(state, "control-answers");
     expect(run(answers, "status", "--porcelain")).toBe("");
     expect(run(answers, "log", "-1", "--format=%s")).toBe("answer(bro-2795-canvas.yaml): product-name -> name-now");
+  });
+
+  test("an answers worktree whose folder is gone is made again; the branch checked out elsewhere is refused", async () => {
+    const { root, repo, state, asks } = await workspace();
+    const answers = join(state, "control-answers");
+    const canvas = find((await asks.read()).all, "product-name");
+    await asks.answer({
+      ledger: canvas.ledger,
+      home: "origin/main",
+      uid: null,
+      id: canvas.id,
+      hash: canvas.hash,
+      option: "name-now",
+      note: "",
+    });
+    // A cleared state dir: the folder is gone, git still lists it.
+    await rm(answers, { recursive: true, force: true });
+    await writeFile(join(repo, ".control", "asks", "fourth.yaml"), MERGE.replace("A1", "D1"));
+    run(repo, "add", ".control/asks/fourth.yaml");
+    run(repo, "commit", "--quiet", "-m", "fourth");
+    run(repo, "push", "--quiet", "origin", "HEAD:main");
+    run(repo, "fetch", "--quiet", "origin");
+    const fourth = find((await asks.read()).all, "D1");
+    await asks.answer({
+      ledger: "fourth.yaml",
+      home: "origin/main",
+      uid: null,
+      id: "D1",
+      hash: fourth.hash,
+      option: "hold",
+      note: "",
+    });
+    expect(run(answers, "log", "--no-merges", "-2", "--format=%s").split("\n")).toEqual([
+      "answer(fourth.yaml): D1 -> hold",
+      "answer(bro-2795-canvas.yaml): product-name -> name-now",
+    ]);
+    // Checked out in a live worktree of its own somewhere else: refused, saying where.
+    await rm(answers, { recursive: true, force: true });
+    run(repo, "worktree", "prune");
+    run(repo, "worktree", "add", "--quiet", join(root, "elsewhere"), "maestro/answers");
+    await writeFile(join(repo, ".control", "asks", "fifth.yaml"), MERGE.replace("A1", "E1"));
+    run(repo, "add", ".control/asks/fifth.yaml");
+    run(repo, "commit", "--quiet", "-m", "fifth");
+    run(repo, "push", "--quiet", "origin", "HEAD:main");
+    run(repo, "fetch", "--quiet", "origin");
+    const fifth = find((await asks.read()).all, "E1");
+    await expect(
+      asks.answer({
+        ledger: "fifth.yaml",
+        home: "origin/main",
+        uid: null,
+        id: "E1",
+        hash: fifth.hash,
+        option: "hold",
+        note: "",
+      }),
+    ).rejects.toThrow(`maestro/answers is checked out at ${join(root, "elsewhere")}`);
   });
 
   test("an answers-worktree ledger that cannot be read is said, not skipped", async () => {
