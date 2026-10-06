@@ -14,9 +14,12 @@
 //     marks `status_quo: true` needs none; nor does an idea's, whose develop
 //     answer files its own (index.server.ts). Read from the ask's own keys,
 //     never from the words of an option.
-// Answers given before routing first ran (`routing.began`) are never routed:
-// they were acted on by hand, or not, before Maestro could. A fleet scope's
-// own asks are the fleet's to act on, and are never routed here.
+// Answers given before routing first ran (`routing.began`, by time, so the
+// order its line and an answer's are appended in does not matter) are never
+// routed: they were acted on by hand, or not, before Maestro could. An answer
+// whose ask now records another outcome where it lives (main's wins, §5.2) is
+// superseded: recorded, never acted on, its words kept in its receipt. A
+// fleet scope's own asks are the fleet's to act on, and are never routed here.
 // Routing never decides: the delivery is your answer verbatim, the work item
 // waits at your gate, and how the loop starts it is the loop's own rule.
 
@@ -72,12 +75,38 @@ export function answerKey(receipt: Pick<AnsweredReceipt, "ledger" | "uid" | "id"
   return `${receipt.ledger}#${receipt.uid ?? receipt.id}@${receipt.at ?? ""}`;
 }
 
-/** The receipt log, read: the workspace's answers in order, those routed, and where routing began (an index into `answered`). */
+/** The receipt log, read: the workspace's answers in order, those routed, and when routing began. */
 export interface Log {
   answered: AnsweredReceipt[];
   routed: Map<string, RoutedReceipt>;
-  /** Answers at or past this index were given once routing ran; null: it has not begun. */
-  began: number | null;
+  /** When routing first ran (its first `routing.began`); null: it has not begun. */
+  began: string | null;
+}
+
+/**
+ * Whether an answer was given once routing ran: by its time, to the second
+ * (an answer's `answered_at` has no finer part), never by where its line
+ * fell in the log. One with no time is not routed. Pure.
+ */
+export function afterBegan(receipt: Pick<AnsweredReceipt, "at">, began: string | null): boolean {
+  if (began === null || receipt.at === null) return false;
+  const at = Date.parse(receipt.at);
+  const from = Date.parse(began);
+  if (!Number.isFinite(at) || !Number.isFinite(from)) return false;
+  return at >= Math.floor(from / 1000) * 1000;
+}
+
+/**
+ * Whether the ask as it reads now records this answer: the option it took, or
+ * for an answer in words alone, those words. Another outcome there means the
+ * ask was closed another way, and that outcome wins. Pure.
+ */
+export function records(
+  ask: Pick<DecisionAsk, "state" | "answerOption" | "answer">,
+  receipt: AnsweredReceipt,
+): boolean {
+  if (ask.state !== "answered") return false;
+  return receipt.answerOption ? ask.answerOption === receipt.answerOption : ask.answer === receipt.answer;
 }
 
 /** The receipt log's lines, read. A line that is not a receipt is skipped. Pure. */
@@ -93,7 +122,7 @@ export function readLog(source: string): Log {
     }
     if (!isRow(row)) continue;
     if (row.kind === "routing.began") {
-      log.began ??= log.answered.length;
+      log.began ??= text(row.at);
     } else if (row.kind === "ask.routed" && typeof row.key === "string") {
       if (!log.routed.has(row.key)) log.routed.set(row.key, row as unknown as RoutedReceipt);
     } else if (row.kind === "ask.answered" && (row.homeKind === "main" || row.homeKind === "checkout")) {
@@ -251,7 +280,7 @@ export class AnswerRouter {
       return [];
     }
     const due = log.answered
-      .slice(log.began ?? log.answered.length)
+      .filter((receipt) => afterBegan(receipt, log.began))
       .filter((receipt) => !log.routed.has(answerKey(receipt)))
       // A turn's end asks for its own session's answers: the receipt names the session that asked, as the ask did.
       .filter((receipt) => !only.agentId || receipt.originAgentId === only.agentId);
@@ -282,6 +311,16 @@ export class AnswerRouter {
     if (receipt.homeKind === "main") {
       const landed = ask !== null && ask.home.kind === "main" && !ask.batched;
       if (!landed) return this.wait(receipt, "unlanded", "It waits to land on origin/main.");
+    }
+    // Where the ask lives now it records another outcome: that one wins, and yours is never acted on.
+    if (ask && !records(ask, receipt)) {
+      const theirs = ask.answer ? `: "${clip(ask.answer.split("\n")[0] ?? "", 120)}"` : "";
+      return this.routed(receipt, {
+        route: "superseded",
+        agentId,
+        work: null,
+        reason: `The ask records another outcome in ${homeWords(ask.home)}${theirs}, and that one stands; yours is kept in its receipt.`,
+      });
     }
     const paseo = this.options.client();
     if (agentId) {
@@ -446,23 +485,17 @@ export class AnswerRouter {
       });
       const receipt = log.answered[at];
       if (!receipt) return ask;
-      return { ...ask, fate: this.fateOf(receipt, at, log, ask, landing) };
+      return { ...ask, fate: this.fateOf(receipt, log, ask, landing) };
     });
   }
 
-  private fateOf(
-    receipt: AnsweredReceipt,
-    index: number,
-    log: Log,
-    ask: DecisionAsk,
-    landing: AnswersLanding | null,
-  ): AnswerFate {
+  private fateOf(receipt: AnsweredReceipt, log: Log, ask: DecisionAsk, landing: AnswersLanding | null): AnswerFate {
     const key = answerKey(receipt);
     const routed = log.routed.get(key);
     const blank = { route: null, pr: null, work: null, agentId: null };
     if (routed) {
       return {
-        stage: "acted",
+        stage: routed.route === "superseded" ? "superseded" : "acted",
         words: fateWords(routed),
         route: routed.route,
         pr: null,
@@ -470,7 +503,7 @@ export class AnswerRouter {
         agentId: routed.agentId,
       };
     }
-    if (log.began === null || index < log.began) {
+    if (!afterBegan(receipt, log.began)) {
       return {
         ...blank,
         stage: "before",
@@ -507,5 +540,6 @@ export function fateWords(routed: Pick<RoutedReceipt, "route" | "work" | "reason
   if (routed.route === "delivered") return "Acted on: sent to the session that asked.";
   if (routed.route === "work")
     return `Acted on: filed as work, ${routed.work ? `"${routed.work.title}"` : "an item"}, for your gate.`;
+  if (routed.route === "superseded") return `Not acted on. ${routed.reason}`;
   return `Acted on: nothing to do. ${routed.reason}`;
 }

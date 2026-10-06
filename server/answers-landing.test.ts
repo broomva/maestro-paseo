@@ -286,6 +286,36 @@ describe("landing the answers batch", () => {
     expect([settled.stage, settled.pending, settled.conflict, settled.pr?.number]).toEqual(["waiting", 1, null, 915]);
   });
 
+  test("origin's batch holding an answer this one lacks (another daemon's push) is never pushed over", async () => {
+    const { origin, other, answersPath, lander, answer } = await workspace();
+    await answer("A1");
+    await lander.land();
+    // Someone else answers A2 on origin's maestro/answers, which this worktree never fetched.
+    run(other, "fetch", "--quiet", "origin");
+    run(other, "switch", "--quiet", "-c", "theirs", `origin/${ANSWERS_BRANCH}`);
+    const path = join(other, ".control", "asks", LEDGER);
+    const text = await readFile(path, "utf8");
+    await writeFile(
+      path,
+      text.replace(
+        "  - id: A2\n",
+        '  - id: A2\n    answer: "Hold"\n    answer_option: "hold"\n    answered_at: "2026-10-06T12:30:00Z"\n',
+      ),
+    );
+    run(other, "commit", "--quiet", "-am", "answer A2 elsewhere");
+    run(other, "push", "--quiet", "origin", `HEAD:${ANSWERS_BRANCH}`);
+    const theirs = run(origin, "rev-parse", ANSWERS_BRANCH);
+    // Here, a new answer moves the local batch on.
+    await answer("A2", "ship");
+    const landing = await lander.land();
+    expect(landing.stage).toBe("failed");
+    expect(landing.error).toContain(
+      `holds 2 answers main does not record, in commits this batch lacks (${LEDGER} A1, ${LEDGER} A2)`,
+    );
+    expect(run(origin, "rev-parse", ANSWERS_BRANCH)).toBe(theirs);
+    expect(run(answersPath, "rev-parse", "HEAD")).not.toBe(theirs);
+  });
+
   test("changes not committed in the answers worktree: the step fails in words, and the batch is untouched", async () => {
     const { answersPath, lander, answer } = await workspace();
     await answer("A1");

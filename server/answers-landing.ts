@@ -227,7 +227,7 @@ export class AnswersLander {
       }
       const refs = await this.unlanded(path, mainSha);
       // Pushed from inside the queue: no answer commits between the count and the push.
-      await this.push(path);
+      await this.push(path, mainSha);
       return { kind: "pending" as const, refs };
     });
     if (!outcome) return { ...BLANK(at), landed };
@@ -280,16 +280,16 @@ export class AnswersLander {
   }
 
   /** The answers HEAD records that main does not, over the ledgers the two hold differently. */
-  private async unlanded(path: string, mainSha: string): Promise<AskRef[]> {
-    const changed = (await git(path, ["diff", "--name-only", mainSha, "HEAD", "--", `${ASKS_DIR}/`]))
+  private async unlanded(path: string, mainSha: string, rev = "HEAD"): Promise<AskRef[]> {
+    const changed = (await git(path, ["diff", "--name-only", mainSha, rev, "--", `${ASKS_DIR}/`]))
       .split("\n")
       .filter(Boolean);
     const blobs = await catFiles(
       path,
-      changed.flatMap((file) => [`HEAD:${file}`, `${mainSha}:${file}`]),
+      changed.flatMap((file) => [`${rev}:${file}`, `${mainSha}:${file}`]),
     );
     return changed.flatMap((file) => {
-      const mine = blobs.get(`HEAD:${file}`);
+      const mine = blobs.get(`${rev}:${file}`);
       if (!mine) return [];
       const theirs = blobs.get(`${mainSha}:${file}`);
       const name = file.split("/").pop() ?? file;
@@ -301,17 +301,41 @@ export class AnswersLander {
     });
   }
 
-  /** The branch pushed to origin, when origin's differs: only ever over what origin held when last read. */
-  private async push(path: string): Promise<void> {
+  /**
+   * The branch pushed to origin, when origin's differs. Origin's own batch is
+   * fetched and judged first: the push is a fast-forward of it, or goes over a
+   * batch whose every answer main records already (one that landed). Origin
+   * holding an answer this batch lacks and main does not record (another
+   * daemon's, a hand push) is never pushed over: the step fails and says so.
+   * The lease pins the push to the very commit judged.
+   */
+  private async push(path: string, mainSha: string): Promise<void> {
     const head = (await git(path, ["rev-parse", "HEAD"])).trim();
-    const remote = (await git(path, ["ls-remote", "origin", `refs/heads/${ANSWERS_BRANCH}`], 60_000)).split(/\s/)[0];
+    const remote =
+      (await git(path, ["ls-remote", "origin", `refs/heads/${ANSWERS_BRANCH}`], 60_000)).split(/\s/)[0] ?? "";
     if (remote === head) return;
+    if (remote) {
+      await git(path, ["fetch", "--quiet", "origin", `refs/heads/${ANSWERS_BRANCH}`], 60_000);
+      const behind = await git(path, ["merge-base", "--is-ancestor", remote, "HEAD"]).then(
+        () => true,
+        () => false,
+      );
+      if (!behind) {
+        // Not a fast-forward: only over a batch every answer of which main records (one that landed).
+        const theirs = await this.unlanded(path, mainSha, remote);
+        if (theirs.length > 0) {
+          throw new Error(
+            `origin's ${ANSWERS_BRANCH} (${remote.slice(0, 9)}) holds ${answersWord(theirs.length)} main does not record, in commits this batch lacks (${theirs.map((ask) => `${ask.ledger} ${ask.id}`).join(", ")}); Maestro never pushes over them. Merge it into ${path}, or remove it on origin`,
+          );
+        }
+      }
+    }
     await git(
       path,
       [
         "push",
         "--quiet",
-        `--force-with-lease=refs/heads/${ANSWERS_BRANCH}:${remote ?? ""}`,
+        `--force-with-lease=refs/heads/${ANSWERS_BRANCH}:${remote}`,
         "origin",
         `HEAD:refs/heads/${ANSWERS_BRANCH}`,
       ],
@@ -323,7 +347,7 @@ export class AnswersLander {
   private async pushLevel(path: string, mainSha: string): Promise<void> {
     const remote = (await git(path, ["ls-remote", "origin", `refs/heads/${ANSWERS_BRANCH}`], 60_000)).split(/\s/)[0];
     if (!remote || remote === mainSha) return;
-    await this.options.asks.exclusive(() => this.push(path));
+    await this.options.asks.exclusive(() => this.push(path, mainSha));
   }
 
   private async save(state: AnswersLanding): Promise<void> {

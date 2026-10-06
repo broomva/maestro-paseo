@@ -41,13 +41,18 @@ export type AnswersLanding = z.infer<typeof AnswersLandingSchema>;
  * - `unrouted`: where it belongs (landed, or in its checkout), not acted on
  *   yet: a delivery waiting for its session to go idle, or the next wake;
  * - `acted`: routed, once, by its receipt (`route`);
+ * - `superseded`: the ask was closed another way where it lives (main's
+ *   outcome wins, §5.2), so your answer was recorded and not acted on;
  * - `before`: answered before Maestro routed answers, so nothing acted on it.
  */
-export const ANSWER_STAGES = ["unlanded", "unrouted", "acted", "before"] as const;
+export const ANSWER_STAGES = ["unlanded", "unrouted", "acted", "superseded", "before"] as const;
 export type AnswerStage = (typeof ANSWER_STAGES)[number];
 
-/** What routing did with an answer: told the session that asked, filed work, or nothing to do (and why). */
-export const ROUTES = ["delivered", "work", "none"] as const;
+/**
+ * What routing did with an answer: told the session that asked, filed work,
+ * nothing to do (and why), or nothing because the ask was closed another way.
+ */
+export const ROUTES = ["delivered", "work", "none", "superseded"] as const;
 export type Route = (typeof ROUTES)[number];
 
 export const AnswerFateSchema = z.object({

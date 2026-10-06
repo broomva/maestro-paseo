@@ -107,7 +107,8 @@ export const BATCHED_TEXT = "In the answers batch on maestro/answers: not on ori
 export function fateLine(ask: DecisionAsk): { words: string; tone: "done" | "waiting" | "plain" } | null {
   const fate = ask.fate;
   if (fate) {
-    const tone = fate.stage === "acted" ? "done" : fate.stage === "before" ? "plain" : "waiting";
+    const tone =
+      fate.stage === "acted" ? "done" : fate.stage === "before" || fate.stage === "superseded" ? "plain" : "waiting";
     return { words: fate.words, tone };
   }
   return ask.batched ? { words: BATCHED_TEXT, tone: "waiting" } : null;

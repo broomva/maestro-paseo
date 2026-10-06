@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AnswersLanding } from "../shared/answers";
 import type { DecisionAsk } from "../shared/fleet";
-import { AnswerRouter, answerKey, deliveryText, readLog } from "./answer-routes";
+import { AnswerRouter, afterBegan, answerKey, deliveryText, readLog } from "./answer-routes";
 import { decisionsOf } from "./control-asks";
 import type { Paseo } from "./runs";
 
@@ -104,7 +104,10 @@ async function setup(options: {
   const root = await mkdtemp(join(tmpdir(), "maestro-routes-"));
   roots.push(root);
   const receipts = join(root, "asks.jsonl");
-  const lines = [...(options.before ?? []), ...(options.after ? [{ kind: "routing.began", at: "x" }] : [])];
+  const lines = [
+    ...(options.before ?? []),
+    ...(options.after ? [{ kind: "routing.began", at: "2026-10-06T11:59:00.500Z" }] : []),
+  ];
   lines.push(...(options.after ?? []));
   await writeFile(receipts, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
   const home = options.home ?? "checkout";
@@ -150,7 +153,7 @@ describe("the receipt log", () => {
       [
         JSON.stringify(receipt("A1", "checkout")),
         JSON.stringify({ ...receipt("A2", "checkout"), homeKind: "root" }),
-        JSON.stringify({ kind: "routing.began", at: "x" }),
+        JSON.stringify({ kind: "routing.began", at: "2026-10-06T12:00:00.000Z" }),
         JSON.stringify(receipt("A2", "main")),
         "not json",
         JSON.stringify({ kind: "ask.routed", key: "k", route: "none" }),
@@ -158,9 +161,19 @@ describe("the receipt log", () => {
     );
     expect([log.answered.map((entry) => entry.id), log.began, [...log.routed.keys()]]).toEqual([
       ["A1", "A2"],
-      1,
+      "2026-10-06T12:00:00.000Z",
       ["k"],
     ]);
+  });
+
+  test("routing began by time, to the second, never by where its line fell", () => {
+    const began = "2026-10-06T12:00:05.700Z";
+    expect(afterBegan({ at: "2026-10-06T12:00:04Z" }, began)).toBe(false);
+    // Answered in the very second routing began (its time has no finer part): after.
+    expect(afterBegan({ at: "2026-10-06T12:00:05Z" }, began)).toBe(true);
+    expect(afterBegan({ at: "2026-10-06T12:00:06Z" }, began)).toBe(true);
+    expect(afterBegan({ at: null }, began)).toBe(false);
+    expect(afterBegan({ at: "2026-10-06T12:00:06Z" }, null)).toBe(false);
   });
 });
 
@@ -172,7 +185,7 @@ describe("routing an answer", () => {
     });
     await router.begin();
     await router.begin();
-    expect((await log()).began).toBe(1);
+    expect((await log()).began).toBe("2026-10-06T13:00:00.000Z");
     expect(await router.route()).toEqual([]);
     expect([sent, created]).toEqual([[], []]);
     const [fated] = await router.fates(
@@ -300,6 +313,47 @@ describe("routing an answer", () => {
     expect((await log()).routed.get(answerKey(hold as never))?.reason).toBe(
       '"Hold" keeps things as they are (the ledger marks it status_quo), so no work was filed.',
     );
+  });
+});
+
+describe("round 1 (P20)", () => {
+  test("an answer given at startup, whose line lands before routing's own mark, is still routed", async () => {
+    const { router, receipts, sent } = await setup({ agents: { "agent-1": "idle" } });
+    // The answer is appended first (13:00:00, the router's own clock second), then begin marks.
+    const answered = receipt("A1", "checkout", {
+      at: "2026-10-06T13:00:00Z",
+      originAgentId: "agent-1",
+      answerOption: "ship",
+      answer: "Ship: It ships.\nAnd tell me when it lands.",
+    });
+    await writeFile(receipts, `${JSON.stringify(answered)}\n`);
+    await router.begin();
+    const [outcome] = await router.route();
+    expect([outcome?.route, sent.length]).toEqual(["delivered", 1]);
+  });
+
+  test("an ask closed another way where it lives: your answer is superseded, never acted on, never done", async () => {
+    // The ledger records "ship" for A1; this answer took "hold".
+    const answered = receipt("A1", "main", {
+      originAgentId: "agent-1",
+      answerOption: "hold",
+      answer: "Hold: Nothing changes.",
+    });
+    const { router, sent, created, asks, log } = await setup({
+      home: "main",
+      after: [answered],
+      agents: { "agent-1": "idle" },
+    });
+    const [outcome] = await router.route();
+    expect([outcome?.route, sent.length, created.length]).toEqual(["superseded", 0, 0]);
+    expect((await log()).routed.get(answerKey(answered as never))?.reason).toBe(
+      'The ask records another outcome in origin/main: "Ship: It ships.", and that one stands; yours is kept in its receipt.',
+    );
+    const [fated] = await router.fates(
+      asks.filter((ask) => ask.id === "A1"),
+      null,
+    );
+    expect([fated?.fate?.stage, fated?.fate?.route]).toEqual(["superseded", "superseded"]);
   });
 });
 
