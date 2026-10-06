@@ -2829,19 +2829,26 @@ describe("a finished arc closes itself once its session is archived (BRO-2861)",
     { type: "user_message" as const, text: "go" },
     { type: "assistant_message" as const, text },
   ];
+  /** The daemon archives the session: its hook, then the session reads archived. */
+  const archive = async (engine: Engine, fake: ReturnType<typeof fakePaseo>, hook = true) => {
+    if (hook) await engine.onArchived({ id: "agent-1" });
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.archivedAt = new Date(clock).toISOString();
+  };
 
-  test("CLOSED, then archived: done, receipted as Maestro's, and the card says why", async () => {
+  test("CLOSED, then archived: the next list closes it, receipted as Maestro's, and the card says why", async () => {
     const { create, engine, fake } = await setup();
     const item = await create();
     await endTurn(engine, fake, said("Merged #12.\n\nARC-STATUS: CLOSED"));
+    await archive(engine, fake);
+    // The hook only notes the archive: the close is reconcile's, on the next list.
     expect((await engine.get(item.id)).item.state).toBe("review");
-    await engine.onArchived({ id: "agent-1" });
+    tick(1);
+    await engine.list(fake.paseo);
     const { item: closed, events } = await engine.get(item.id);
     expect(closed.state).toBe("done");
     expect(closed.verdict).toBe("Its arc reported “ARC-STATUS: CLOSED” and its session was archived");
-    const last = events.at(-1);
-    // The receipt: Maestro closed it, and why.
-    expect(last).toMatchObject({
+    expect(events.at(-1)).toMatchObject({
       type: "state",
       actor: "maestro",
       text: "Done",
@@ -2854,7 +2861,9 @@ describe("a finished arc closes itself once its session is archived (BRO-2861)",
       const { create, engine, fake } = await setup();
       const item = await create();
       await endTurn(engine, fake, said(text));
-      await engine.onArchived({ id: "agent-1" });
+      await archive(engine, fake);
+      tick(1);
+      await engine.list(fake.paseo);
       expect((await engine.get(item.id)).item.state).toBe("review");
     }
   });
@@ -2868,24 +2877,46 @@ describe("a finished arc closes itself once its session is archived (BRO-2861)",
     expect((await engine.get(item.id)).item.state).toBe("review");
   });
 
-  test("archived before this rule (its note already written): the next list closes it", async () => {
-    const { create, engine, fake, store } = await setup();
+  test("its archive hook missed: the daemon's archive is enough, and its note is written with the close", async () => {
+    const { create, engine, fake } = await setup();
     const item = await create();
     await endTurn(engine, fake, said("ARC-STATUS: MERGED"));
-    // As the hook wrote it before this rule: the note, and the work left at the gate.
-    const stored = await store.findById(item.id);
-    await store.mutate(
-      item.id,
-      () => ({ events: [{ ts: new Date(clock).toISOString(), type: "note", actor: "maestro", text: ARCHIVED_NOTE }] }),
-      stored.dir,
-    );
-    const agent = fake.agents.get("agent-1");
-    if (agent) agent.archivedAt = new Date(clock).toISOString();
-    tick(10);
+    await archive(engine, fake, false);
+    tick(1);
     await engine.list(fake.paseo);
-    expect((await engine.get(item.id)).item).toMatchObject({
+    const { item: closed, events } = await engine.get(item.id);
+    expect(closed).toMatchObject({
       state: "done",
       verdict: "Its arc reported “ARC-STATUS: MERGED” and its session was archived",
     });
+    expect(events.map((event) => event.text)).toContain(ARCHIVED_NOTE);
+  });
+
+  test("with archive on approve, the run's workspace goes as an approval's would; off, it stays", async () => {
+    for (const on of [true, false]) {
+      const { create, engine, fake, repo } = await setup({ archiveOnApprove: on });
+      const item = await create();
+      cleanWorktree(repo, item.worker);
+      await endTurn(engine, fake, said("ARC-STATUS: CLOSED"));
+      await archive(engine, fake);
+      tick(1);
+      await engine.list(fake.paseo);
+      expect((await engine.get(item.id)).item.state).toBe("done");
+      expect(fake.archivedWorkspaces).toEqual(on ? ["ws-1"] : []);
+    }
+  });
+
+  test("a decision of yours in its undo window wins: Cancel work lands as canceled, not done", async () => {
+    const { create, engine, fake, timers } = await setup();
+    const item = await create();
+    await endTurn(engine, fake, said("ARC-STATUS: CLOSED"));
+    await engine.verdict(fake.paseo, item.id, "block", "");
+    await archive(engine, fake);
+    // Inside the undo window: the list's reconcile leaves it at the gate, your decision still pending.
+    await engine.list(fake.paseo);
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "review", pending: { verdict: "block" } });
+    tickMs(UNDO_MS);
+    await timers.fire();
+    expect((await engine.get(item.id)).item.state).toBe("canceled");
   });
 });

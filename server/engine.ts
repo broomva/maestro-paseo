@@ -36,6 +36,7 @@ import { runChecks } from "./checks";
 import { loadConfig } from "./config";
 import {
   ARCHIVED_NOTE,
+  archivedSince,
   BY_HUMAN,
   checkOutcome,
   closedItself,
@@ -1609,18 +1610,8 @@ export class Engine {
             return { to: "blocked", reason: "The session was archived while it was asking" };
           }
           if (isTerminal(state)) return null;
-          const archived = this.note(ARCHIVED_NOTE);
-          // A finished arc at your gate closes itself once its session is archived (finishedArc).
-          const line = state === "review" ? finishedArc([...fresh.events, archived]) : null;
-          if (line)
-            return {
-              to: "done",
-              actor: "maestro",
-              ctx: { arcFinished: true },
-              reason: closedItself(line),
-              events: [archived],
-            };
-          return { events: [archived] };
+          // A finished arc at your gate closes on the next reconcile (finishedArc), which can follow through.
+          return { events: [this.note(ARCHIVED_NOTE)] };
         },
         item.dir,
       );
@@ -1900,10 +1891,27 @@ export class Engine {
     if (!agent || agent.archivedAt || agent.status === "closed") {
       if (state === "running") return guarded({ to: "blocked", reason: "The session ended before the run finished" });
       if (permission) return guarded({ to: "blocked", reason: "The session ended while it was asking" });
-      // Archived before this rule, or its hook missed: a finished arc closes itself here (finishedArc).
-      const line = state === "review" ? finishedArc(item.events) : null;
-      if (line)
-        return guarded({ to: "done", actor: "maestro", ctx: { arcFinished: true }, reason: closedItself(line) });
+      // A finished arc at your gate closes itself here, and only here (finishedArc): archived, by its hook's
+      // note or as the daemon now says (a missed hook, whose note is written with it).
+      if (state === "review") {
+        const archived = agent?.archivedAt && !archivedSince(item.events) ? [this.note(ARCHIVED_NOTE)] : [];
+        const line = finishedArc([...item.events, ...archived]);
+        if (line) {
+          const closed = await guarded({
+            to: "done",
+            actor: "maestro",
+            ctx: { arcFinished: true },
+            reason: closedItself(line),
+            events: archived,
+          });
+          // As an approval would: the workspace a run created goes when Settings says archive on approve.
+          const { config } = await this.store();
+          if (closed && config.archiveOnApprove) {
+            await this.archiveWorkspace(paseo, store, await store.findById(item.contract.id));
+          }
+          return closed;
+        }
+      }
       return false;
     }
     if (state === "review") {

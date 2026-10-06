@@ -21,7 +21,9 @@
 //      ends failed or canceled after the work landed (server/engine.ts
 //      endTurn): the gate then shows the turn that stopped, as Stuck.
 // The invariant that matters is kept exactly: under gate:human nothing reaches
-// done without an approve verdict.
+// done without an approve verdict, but for one named cause, arcFinished: the
+// work's own arc reported itself finished, its session was archived, and
+// nothing of yours is open (server/events.ts finishedArc).
 
 export const ORCH_STATES = [
   "proposed",

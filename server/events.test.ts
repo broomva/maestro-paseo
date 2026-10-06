@@ -566,6 +566,53 @@ describe("work that closes itself (BRO-2861)", () => {
     }
   });
 
+  test("never while a decision of yours or checks are open, and never over checks that failed", () => {
+    const result = (ok: boolean) => ({
+      name: "unit",
+      run: "bun test",
+      required: true,
+      ok,
+      exit: ok ? 0 : 1,
+      durationMs: 1,
+      timedOut: false,
+      tail: "",
+    });
+    const finished = (ok: boolean): WorkEvent => ({
+      ts: at(134),
+      type: "checks.finished",
+      actor: "maestro",
+      token: "t",
+      results: [result(ok)],
+    });
+    const turn = ended("ARC-STATUS: CLOSED");
+    expect(finishedArc([...turn, finished(true), archived])).toBe("ARC-STATUS: CLOSED");
+    expect(finishedArc([...turn, finished(false), archived])).toBeNull();
+    const started: WorkEvent = { ts: at(134), type: "checks.started", actor: "maestro", token: "t2" };
+    expect(finishedArc([...turn, started, archived])).toBeNull();
+    const yours: WorkEvent = {
+      ts: at(134),
+      type: "gate.pending",
+      actor: "human",
+      verdict: "block",
+      note: "",
+      token: "d1",
+      effectiveAt: at(135),
+    };
+    expect(finishedArc([...turn, yours, archived])).toBeNull();
+    // Closed itself after checks that passed: the card says both.
+    const closed: WorkEvent = {
+      ts: at(136),
+      type: "state",
+      actor: "maestro",
+      from: "review",
+      to: "done",
+      reason: "Its arc reported “ARC-STATUS: CLOSED” and its session was archived",
+    };
+    expect(verdictOf("done", [...turn, finished(true), archived, closed])).toBe(
+      "Check passed · its arc reported “ARC-STATUS: CLOSED” and its session was archived",
+    );
+  });
+
   test("a question pending, or an archive before the turn that landed it, keeps it waiting", () => {
     const asking: WorkEvent = {
       ts: at(134),

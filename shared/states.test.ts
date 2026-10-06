@@ -2,12 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { groupOf, IllegalTransitionError, landingState, ORCH_STATES, transition, verdictTarget } from "./states";
 
 describe("transition", () => {
-  test("gated work reaches done only through an approve verdict", () => {
+  test("gated work reaches done only through an approve verdict, or an arc that closed itself", () => {
     expect(transition("review", "done", { gate: "human", verdict: "approve" })).toBe("done");
     // An arc that reported itself finished and was archived closes gated work too; nothing else does.
     expect(transition("review", "done", { gate: "human", arcFinished: true })).toBe("done");
-    expect(() => transition("review", "done", { gate: "human" })).toThrow(IllegalTransitionError);
-    expect(() => transition("review", "done", { gate: "human", verdict: "revise" })).toThrow(IllegalTransitionError);
     expect(() => transition("review", "done", { gate: "human" })).toThrow(IllegalTransitionError);
     expect(() => transition("review", "done", { gate: "human", verdict: "revise" })).toThrow(IllegalTransitionError);
   });

@@ -289,9 +289,12 @@ export function verdictOf(state: OrchState, events: readonly WorkEvent[]): strin
   if (state === "done") {
     const gate = lastOf(events, "gate");
     if (gate?.verdict === "approve") return checks ? `${checks} · you approved` : "You approved";
-    // Closed itself (finishedArc): its receipt says why.
+    // Closed itself (finishedArc): its receipt says why, after the checks it passed.
     const closed = lastOf(events, "state");
-    return closed?.actor === "maestro" && closed.from === "review" && closed.reason ? closed.reason : checks;
+    if (closed?.actor === "maestro" && closed.from === "review" && closed.reason) {
+      return checks ? `${checks} · ${closed.reason.charAt(0).toLowerCase()}${closed.reason.slice(1)}` : closed.reason;
+    }
+    return checks;
   }
   if (state === "canceled") return "You canceled it";
   return checks;
@@ -426,12 +429,15 @@ export const FINISHED_ARC: ReadonlySet<string> = new Set(["CLOSED", "DONE", "MER
 
 /**
  * Work at your gate that closes itself: its last turn ends with a finished
- * arc's verdict (FINISHED_ARC, ctx-core's grammar), its session was archived
- * since (archivedSince), and no question is pending. The verdict line, else
- * null. HANDBACK, BLOCKED, any other word, or no verdict keeps waiting on you.
+ * arc's verdict (FINISHED_ARC, ctx-core's grammar) and its session was
+ * archived since (archivedSince). The verdict line, else null. Never while
+ * anything else is open: a question, a decision of yours in its undo window,
+ * or checks running; never over checks that failed. HANDBACK, BLOCKED, any
+ * other word, or no verdict keeps waiting on you.
  */
 export function finishedArc(events: readonly WorkEvent[]): string | null {
-  if (pendingPermission(events) || !archivedSince(events)) return null;
+  if (pendingPermission(events) || pendingDecision(events) || pendingChecks(events)) return null;
+  if (checkOutcome(latestChecks(events)) === "failed" || !archivedSince(events)) return null;
   const arc = arcStatus(lastOf(events, "turn.ended")?.summary ?? "");
   return arc && FINISHED_ARC.has(arc.status) ? arc.line : null;
 }
