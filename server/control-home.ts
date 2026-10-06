@@ -289,7 +289,7 @@ function resolveOne(
   const mainRows = entriesOf(mainLedger, uid, id);
   const [main = null] = mainRows;
   // Step 1: main's outcome wins, for the same ask, whatever any checkout holds (a doubled copy included). A
-  // different ask under its id in a checkout is still listed, below, as a collision.
+  // different ask under its id in a checkout, beside a copy of main's or alone, is still listed, below, as a collision.
   const closedOnMain = main !== null && mainLedger !== undefined && mainRows.length === 1 && stateOf(main) !== "open";
   const held: Held[] = [
     ...(mainLedger ? [{ ledger: mainLedger, rows: mainRows, home: mainHome }] : []),
@@ -320,23 +320,31 @@ function resolveOne(
   const collisions: Copy[] = [];
   sources.checkouts.forEach((checkout, at) => {
     const ledger = checkout.tree.get(name);
-    const [mine] = entriesOf(ledger, uid, id);
-    if (!ledger || !mine) return;
+    const rows = entriesOf(ledger, uid, id);
+    if (!ledger) return;
     const [base = null] = entriesOf(checkout.base.get(name), uid, id);
-    // The same-ask test, for an ask without a uid: W inherited it from B, or W's added ask has landed.
-    const edited = uid === null && main !== null && base === null && landedAndEdited(mine, main);
-    const sameAsk = uid !== null || main === null || base !== null || same(mine, main) || edited;
-    // Landed and edited on main since: its B is its entry as it first landed on main, which tells W's edits since
-    // from main's. With none in main's history window, W's copy counts only for an outcome it records and main
-    // does not; an edit W made to another field after its ask landed then reads as main's until W lands it.
-    const landed = edited ? firstLanded(sources.landed.get(name), id, mine) : null;
-    const local =
-      edited && !landed
-        ? stateOf(mine) !== "open" && stateOf(main as Row) === "open"
-        : isLocal(landed ?? base, mine, main);
-    const copy = { at, row: mine, ledger, local };
-    if (sameAsk) copies.push(copy);
-    else collisions.push(copy);
+    // Two rows by one handle in one copy reach here only when main's outcome wins (else refused above). Each is
+    // judged, whatever their order, so main's answer never hides a different ask added beside the one W inherited.
+    for (const mine of rows) {
+      // The same-ask test, for an ask without a uid: W inherited it from B, or W's added ask has landed. Of two
+      // rows, only one that equals B's or main's entry, or was asked at the same time in the same words, is it.
+      const edited = uid === null && main !== null && base === null && landedAndEdited(mine, main);
+      const sameAsk =
+        rows.length > 1
+          ? uid !== null || [base, main].some((ref) => ref !== null && (same(mine, ref) || landedAndEdited(mine, ref)))
+          : uid !== null || main === null || base !== null || same(mine, main) || edited;
+      // Landed and edited on main since: its B is its entry as it first landed on main, which tells W's edits since
+      // from main's. With none in main's history window, W's copy counts only for an outcome it records and main
+      // does not; an edit W made to another field after its ask landed then reads as main's until W lands it.
+      const landed = edited ? firstLanded(sources.landed.get(name), id, mine) : null;
+      const local =
+        edited && !landed
+          ? stateOf(mine) !== "open" && stateOf(main as Row) === "open"
+          : isLocal(landed ?? base, mine, main);
+      const copy = { at, row: mine, ledger, local };
+      if (sameAsk) copies.push(copy);
+      else collisions.push(copy);
+    }
   });
 
   const asks: DecisionAsk[] = [];

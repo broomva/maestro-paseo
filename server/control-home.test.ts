@@ -207,7 +207,11 @@ describe("the home rule (§5.2)", () => {
         checkouts: [checkout("/w", { "l.yaml": twice }, { "l.yaml": OPEN })],
       }),
     );
-    expect(homes(closed)).toEqual([["A1", "answered", "main", "/repo"]]);
+    // The second row is a different ask under main's id: listed, and refused.
+    expect(closed.map((entry) => [entry.headline, entry.state, entry.home.path, Boolean(entry.refusal)])).toEqual([
+      ["Merge it?", "answered", "/repo", false],
+      ["Another A1", "open", "/w", true],
+    ]);
     const open = resolveHomes(
       sources({
         main: new Map([["l.yaml", ledger(OPEN)]]),
@@ -262,6 +266,28 @@ describe("the home rule (§5.2)", () => {
     const named = (text: string, base: Record<string, string> = {}) =>
       landedLedgers({ main, checkouts: [checkout("/w", { "l.yaml": text }, base)] });
     expect([named(mine), named(edited), named(mine, { "l.yaml": added })]).toEqual([["l.yaml"], [], []]);
+  });
+
+  test("main's answer never hides a different ask doubled under its id beside the inherited one, in either order", () => {
+    const inherited = OPEN.replace("asks:\n", "");
+    const added = `  - id: A1\n    headline: "Something else"\n    blocking: true\n`;
+    for (const rows of [
+      [inherited, added],
+      [added, inherited],
+    ]) {
+      const list = resolveHomes(
+        sources({
+          main: new Map([["l.yaml", ledger(ANSWERED)]]),
+          checkouts: [checkout("/w", { "l.yaml": `asks:\n${rows.join("")}` }, { "l.yaml": OPEN })],
+        }),
+      );
+      expect(
+        list.map((entry) => [entry.headline, entry.state, entry.home.path, Boolean(entry.refusal), entry.waiting]),
+      ).toEqual([
+        ["Merge it?", "answered", "/repo", false, false],
+        ["Something else", "open", "/w", true, true],
+      ]);
+    }
   });
 
   test("main's answer closes its own ask, never a different one a branch added under its id (spec §8 case 7)", () => {
