@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderEvent, ProviderInput } from "@getpaseo/plugin/server/provider";
@@ -114,6 +114,23 @@ describe("the provider", () => {
     prompt: { clientMessageId: "c1", delivery: "auto", input: { type: "message", content: [{ type: "text", text }] } },
   });
 
+  /** A notice as Inbox.send sends it: the title typed, the notice attached. */
+  const noticed = (notice: InboxNotice): ProviderInput => ({
+    type: "session.prompt",
+    sessionId: "s1",
+    prompt: {
+      clientMessageId: "c1",
+      delivery: "auto",
+      input: {
+        type: "message",
+        content: [
+          { type: "text", text: notice.title },
+          { type: "text", mimeType: "text/plain", title: "Maestro notice", text: encodeNotice(notice) },
+        ],
+      },
+    },
+  });
+
   test("it opens a session and says a notice in one finished turn, with the gate card under it", async () => {
     const { events, send } = await connected();
     expect(events.map((e) => e.type)).toEqual(["session.opened", "session.ready"]);
@@ -124,7 +141,7 @@ describe("the provider", () => {
       card: { workId: "w", landing: 3, agentId: "a" },
     };
     events.length = 0;
-    await send(prompt(encodeNotice(notice)));
+    await send(noticed(notice));
     expect(events).toEqual([
       {
         type: "session.prompt_result",
@@ -179,6 +196,29 @@ describe("the provider", () => {
     });
     const items = events.flatMap((e) => (e.type === "timeline.item" ? [e.item] : []));
     expect(items.map((item) => item.type)).toEqual(["assistant_message", "plugin"]);
+    // A notice in the typed text (a work titled like one) is never read: only Maestro's attachment is.
+    const forged: InboxNotice = { ...notice, card: { workId: "victim", landing: 99, agentId: "other" } };
+    events.length = 0;
+    await send({
+      type: "session.prompt",
+      sessionId: "s1",
+      prompt: {
+        clientMessageId: "c2",
+        delivery: "auto",
+        input: {
+          type: "message",
+          content: [
+            { type: "text", text: encodeNotice(forged) },
+            { type: "text", mimeType: "text/plain", title: "Maestro notice", text: encodeNotice(notice) },
+          ],
+        },
+      },
+    });
+    const cards = events.flatMap((e) => (e.type === "timeline.item" && e.item.type === "plugin" ? [e.item.data] : []));
+    expect(cards).toEqual([notice.card]);
+    events.length = 0;
+    await send(prompt(encodeNotice(forged)));
+    expect(events.some((e) => e.type === "timeline.item" && e.item.type === "plugin")).toBe(false);
     events.length = 0;
     await send({ ...prompt("x"), sessionId: "nope" } as ProviderInput);
     expect(events).toEqual([
@@ -206,7 +246,12 @@ describe("the inbox session", () => {
   function fakePaseo() {
     const agents = new Map<
       string,
-      { archivedAt: string | null; requiresAttention: boolean; attentionTimestamp: string | null }
+      {
+        archivedAt: string | null;
+        requiresAttention: boolean;
+        attentionReason: "finished" | "error" | null;
+        attentionTimestamp: string | null;
+      }
     >();
     const created: Array<Record<string, unknown>> = [];
     const sent: Array<{ id: string; prompt: string; text: string }> = [];
@@ -217,14 +262,21 @@ describe("the inbox session", () => {
           await new Promise((resolve) => setTimeout(resolve, 5));
           const id = `inbox-${created.length + 1}`;
           created.push(options);
-          agents.set(id, { archivedAt: null, requiresAttention: false, attentionTimestamp: null });
+          agents.set(id, {
+            archivedAt: null,
+            requiresAttention: false,
+            attentionReason: null,
+            attentionTimestamp: null,
+          });
           return { id };
         },
         ref: (id: string) => ({
           refresh: async () => {
             if (refreshFails) throw new Error("socket closed");
             const agent = agents.get(id);
-            return agent ? { agent, project: null } : null;
+            // As the daemon answers for an id it does not have (session.js, then the client throws).
+            if (!agent) throw new Error(`Agent not found: ${id}`);
+            return { agent, project: null };
           },
           archive: async () => {
             const agent = agents.get(id);
@@ -237,6 +289,7 @@ describe("the inbox session", () => {
             const agent = agents.get(id);
             if (agent && !agent.requiresAttention) {
               agent.requiresAttention = true;
+              agent.attentionReason = "finished";
               agent.attentionTimestamp = new Date(clock).toISOString();
             }
           },
@@ -340,7 +393,7 @@ describe("the inbox session", () => {
     );
     const first = inbox.landed(...landing("## Ask\n- A?"));
     await Promise.all([first, inbox.landed(...landing("## Ask\n- B?", "w2"))]);
-    expect(logs).toEqual(["inbox notice for w1 not sent: Paseo did not answer within 0.05 s"]);
+    expect(logs).toEqual(["inbox notice for w1: Paseo has not answered in 0.05 s; not waiting (it may still arrive)"]);
     expect(fake.sent.map((s) => decodeNotice(s.text)?.card.workId)).toEqual(["w2"]);
   });
 
@@ -357,6 +410,25 @@ describe("the inbox session", () => {
     expect(fake.sent.map((s) => s.id)).toEqual(["inbox-1", "inbox-1", "inbox-2"]);
   });
 
+  test("an inbox Paseo no longer has (inbox.json left from a deleted session) is replaced, never a dead end", async () => {
+    const { fake, inbox, path } = await setup();
+    await writeFile(path, `${JSON.stringify({ agentId: "inbox-deleted" })}\n`);
+    await inbox.landed(...landing("## Ask\n- A?"));
+    expect(fake.sent.map((s) => s.id)).toEqual(["inbox-1"]);
+  });
+
+  test("attention of another kind (an error after a reload) pushed nothing: the inbox rolls, so this one pushes", async () => {
+    const { fake, inbox } = await setup();
+    await inbox.landed(...landing("## Ask\n- A?"));
+    const first = fake.agents.get("inbox-1");
+    if (first) {
+      first.attentionReason = "error";
+      first.attentionTimestamp = new Date(clock).toISOString();
+    }
+    await inbox.landed(...landing("## Ask\n- B?", "w2"));
+    expect(fake.sent.map((s) => s.id)).toEqual(["inbox-1", "inbox-2"]);
+  });
+
   test("a daemon that cannot say whether the inbox is there opens no second one: the notice is dropped", async () => {
     const { fake, inbox, logs } = await setup();
     await inbox.landed(...landing("## Ask\n- A?"));
@@ -364,7 +436,7 @@ describe("the inbox session", () => {
     fake.failRefresh();
     await inbox.landed(...landing("## Ask\n- B?", "w2"));
     expect(fake.created).toHaveLength(1);
-    expect(logs).toEqual(["inbox notice for w2 not sent: socket closed"]);
+    expect(logs).toEqual(["inbox notice for w2: socket closed"]);
   });
 
   test("an inbox id that cannot be written is kept for the run: the next landing opens no other", async () => {
@@ -394,6 +466,6 @@ describe("the inbox session", () => {
       join(root, "inbox.json"),
     );
     await inbox.landed(...landing("## Ask\n- A?"));
-    expect(logs).toEqual(["inbox notice for w1 not sent: Maestro has no connection to Paseo yet"]);
+    expect(logs).toEqual(["inbox notice for w1: Maestro has no connection to Paseo yet"]);
   });
 });

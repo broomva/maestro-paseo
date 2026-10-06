@@ -42,6 +42,8 @@ const NoticeSchema = z.object({
 });
 export type InboxNotice = z.infer<typeof NoticeSchema>;
 const PREFIX = "maestro-inbox:";
+/** The title of the attachment a notice rides in (Inbox.send); the provider reads a notice from nothing else. */
+const NOTICE_ATTACHMENT = "Maestro notice";
 
 export const encodeNotice = (notice: InboxNotice): string => PREFIX + JSON.stringify(notice);
 
@@ -157,8 +159,13 @@ function answer(input: ProviderInput, open: Map<string, { turns: number }>, emit
         return;
       }
       const parts = prompt.input.type === "message" ? prompt.input.content : [];
-      const texts = parts.flatMap((part) => (part.type === "text" ? [part.text] : []));
-      const text = texts.join("\n");
+      // Only Maestro's own attachment carries a notice: what you (or a work's title) typed never does.
+      const attached = parts.flatMap((part) =>
+        part.type === "text" && "mimeType" in part && part.title === NOTICE_ATTACHMENT ? [part.text] : [],
+      );
+      const text = parts
+        .flatMap((part) => (part.type === "text" && !("mimeType" in part) ? [part.text] : []))
+        .join("\n");
       session.turns += 1;
       const turnId = `inbox-${session.turns}`;
       const sessionId = input.sessionId;
@@ -170,7 +177,7 @@ function answer(input: ProviderInput, open: Map<string, { turns: number }>, emit
       });
       emit({ type: "session.turn", sessionId, turnId, state: "started" });
       // The notice rides as an attachment (Inbox.send), so your side of the inbox shows its title, not its code.
-      const notice = texts.map(decodeNotice).find((found) => found !== null) ?? null;
+      const notice = attached.map(decodeNotice).find((found) => found !== null) ?? null;
       if (notice) {
         emit({
           type: "timeline.item",
@@ -235,7 +242,12 @@ export const inboxPath = (env: NodeJS.ProcessEnv = process.env): string =>
 /** How long an unread inbox takes more notices without a push of their own (Inbox.session). */
 export const BURST_MS = 10 * 60_000;
 
-/** How long one notice may take before it is dropped, so a daemon that never answers jams no later notice. */
+/**
+ * How long the inbox waits on one notice before it stops waiting and goes on
+ * to the next, so a daemon that never answers jams nothing. A send cannot be
+ * recalled: one Paseo answers late may still arrive, after a newer notice.
+ * Its card reads the work live, so it shows the work as it stands.
+ */
 export const NOTICE_MS = 30_000;
 
 export class Inbox {
@@ -243,6 +255,8 @@ export class Inbox {
   private chain: Promise<unknown> = Promise.resolve();
   /** The inbox session in use, once known: a failed write of inbox.json never opens another. */
   private kept: string | null = null;
+  /** The inbox being opened, if one is. */
+  private creating: Promise<string> | null = null;
   /** Per work id, the latest landing this process has told, as GateCards keeps it: a repeated report pushes once. */
   private readonly told = new Map<string, number>();
 
@@ -257,8 +271,8 @@ export class Inbox {
 
   /**
    * Tells the inbox about a landing. Always settles and never rejects: a
-   * notice that fails, or takes longer than the limit, is logged and dropped,
-   * and the next one goes on.
+   * notice that fails is logged and dropped; one Paseo is slow to take is
+   * logged and no longer waited on (NOTICE_MS), and the next one goes on.
    */
   landed(before: Pick<StoredWork, "events">, after: StoredWork): Promise<void> {
     const notice = noticeOf(before, after, this.now());
@@ -267,15 +281,17 @@ export class Inbox {
     this.told.set(notice.card.workId, notice.card.landing);
     const sent = this.chain.then(() => this.bounded(this.send(notice)));
     this.chain = sent.catch(() => undefined);
-    return sent.catch((error) =>
-      this.log(`inbox notice for ${notice.card.workId} not sent: ${(error as Error).message}`),
-    );
+    return sent.catch((error) => this.log(`inbox notice for ${notice.card.workId}: ${(error as Error).message}`));
   }
 
   private bounded(work: Promise<void>): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const late = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`Paseo did not answer within ${this.limitMs / 1000} s`)), this.limitMs);
+      timer = setTimeout(
+        () =>
+          reject(new Error(`Paseo has not answered in ${this.limitMs / 1000} s; not waiting (it may still arrive)`)),
+        this.limitMs,
+      );
     });
     return Promise.race([work, late]).finally(() => clearTimeout(timer));
   }
@@ -286,7 +302,7 @@ export class Inbox {
     const id = await this.session(paseo);
     // Paseo records the prompt's text as your message; an attachment it keeps out of it (and the provider reads).
     await paseo.agents.ref(id).send(notice.title, {
-      attachments: [{ type: "text", mimeType: "text/plain", title: "Maestro notice", text: encodeNotice(notice) }],
+      attachments: [{ type: "text", mimeType: "text/plain", title: NOTICE_ATTACHMENT, text: encodeNotice(notice) }],
     });
   }
 
@@ -306,11 +322,21 @@ export class Inbox {
         .then((text) => z.object({ agentId: z.string() }).parse(JSON.parse(text)).agentId)
         .catch(() => null));
     if (kept) {
-      const found = await paseo.agents.ref(kept).refresh();
+      // Paseo says "not found" for a session it no longer has (deleted, or a reset home): that one is gone.
+      // Any other failure cannot say whether it is there, so the notice is dropped rather than a twin opened.
+      const found = await paseo.agents
+        .ref(kept)
+        .refresh()
+        .catch((error: Error) => {
+          if (/not found/i.test(error.message)) return null;
+          throw error;
+        });
       const agent = found?.agent;
-      // Unread since a push within the burst window: this notice joins it, so a burst of landings is one push.
-      const unread = agent?.requiresAttention ? Date.parse(agent.attentionTimestamp ?? "") : null;
-      const fresh = unread === null || this.now() - unread < BURST_MS;
+      // Unread since its own push within the burst window: this notice joins it, so a burst is one push.
+      // Attention of another kind (an error, say, from a reload) pushed nothing and would swallow this push.
+      const pushed = agent?.requiresAttention && agent.attentionReason === "finished";
+      const quiet = !agent?.requiresAttention;
+      const fresh = quiet || (pushed && this.now() - Date.parse(agent?.attentionTimestamp ?? "") < BURST_MS);
       if (agent && !agent.archivedAt && fresh) {
         this.kept = kept;
         return kept;
@@ -322,6 +348,14 @@ export class Inbox {
           .catch((error) => this.log(`unread inbox ${kept} not archived: ${(error as Error).message}`));
       }
     }
+    // One creation at a time, even past a notice the inbox stopped waiting on: a second never races it.
+    this.creating ??= this.open(paseo).finally(() => {
+      this.creating = null;
+    });
+    return this.creating;
+  }
+
+  private async open(paseo: Paseo): Promise<string> {
     const created = await paseo.agents.create({
       config: { provider: `${INBOX_PROVIDER}/${MODEL}` },
       cwd: await this.cwd(),
