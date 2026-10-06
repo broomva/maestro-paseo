@@ -237,7 +237,7 @@ describe("landing the answers batch", () => {
   });
 
   test("a planted conflict: the batch is kept, its ledger named, answers to main refused; settled by hand, it lands", async () => {
-    const { repo, answersPath, asks, lander, answer, onMain } = await workspace();
+    const { repo, other, answersPath, asks, lander, answer, onMain } = await workspace();
     await answer("A1");
     const kept = run(answersPath, "rev-parse", "HEAD");
     // main rewrites the line the answer was written beside, while the ask stays open there.
@@ -286,6 +286,15 @@ describe("landing the answers batch", () => {
     expect(run(repo, "rev-parse", "origin/main")).not.toBe(run(answersPath, "rev-parse", "HEAD"));
     const settled = await lander.land();
     expect([settled.stage, settled.pending, settled.conflict, settled.pr?.number]).toEqual(["waiting", 1, null, 915]);
+    // The settled batch squash-merges: it levels, the hand-settled merge no bar to it.
+    run(other, "pull", "--quiet", "--ff-only");
+    run(other, "merge", "--quiet", "--squash", `origin/${ANSWERS_BRANCH}`);
+    run(other, "commit", "--quiet", "-m", "answers (#915)");
+    run(other, "push", "--quiet", "origin", "main");
+    run(repo, "fetch", "--quiet", "origin");
+    const landed = await lander.land();
+    expect([landed.stage, landed.error]).toEqual(["none", null]);
+    expect(run(answersPath, "rev-parse", "HEAD")).toBe(run(repo, "rev-parse", "origin/main"));
   });
 
   test("origin's batch holding an answer this one lacks (another daemon's push) is never pushed over", async () => {
@@ -357,6 +366,34 @@ describe("landing the answers batch", () => {
     expect(landing.stage).toBe("failed");
     expect(landing.error).toContain(`holds changes that are not answers (.control/asks/${LEDGER}, notes.md)`);
     expect(run(answersPath, "rev-parse", "HEAD")).toBe(kept);
+  });
+
+  test("an open ask's status changed on the branch is not an answer: levelling refuses it", async () => {
+    const { repo, other, answersPath, lander, answer } = await workspace();
+    await answer("A1");
+    const ledger = join(answersPath, ".control", "asks", LEDGER);
+    await writeFile(
+      ledger,
+      (await readFile(ledger, "utf8")).replace("  - id: A2\n", "  - id: A2\n    status: blocked\n"),
+    );
+    run(answersPath, "commit", "--quiet", "-am", "A2 blocked by hand");
+    run(other, "pull", "--quiet", "--ff-only");
+    const theirs = join(other, ".control", "asks", LEDGER);
+    await writeFile(
+      theirs,
+      (await readFile(theirs, "utf8")).replace(
+        "  - id: A1\n",
+        '  - id: A1\n    answer: "Ship"\n    answered_at: "2026-10-06T12:00:00Z"\n',
+      ),
+    );
+    run(other, "commit", "--quiet", "-am", "A1 by hand");
+    run(other, "push", "--quiet", "origin", "main");
+    run(repo, "fetch", "--quiet", "origin");
+    const landing = await lander.land();
+    expect([
+      landing.stage,
+      landing.error?.includes(`holds changes that are not answers (.control/asks/${LEDGER})`),
+    ]).toEqual(["failed", true]);
   });
 
   test("a merge that leaves no answer to land (main merged the PR, then dropped the ask) levels; no empty PR", async () => {

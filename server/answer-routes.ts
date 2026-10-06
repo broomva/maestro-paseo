@@ -324,7 +324,7 @@ export class AnswerRouter {
               work: null,
               reason: "A later answer to this ask replaced it.",
             })
-          : await this.one(receipt, ask, agentId).catch((error) =>
+          : await this.one(receipt, ask, agentId, read).catch((error) =>
               this.wait(receipt, "failed", `${(error as Error).message}`),
             );
       outcomes.push(outcome);
@@ -332,16 +332,31 @@ export class AnswerRouter {
     return outcomes;
   }
 
-  private async one(receipt: AnsweredReceipt, ask: DecisionAsk | null, agentId: string | null): Promise<RouteOutcome> {
+  private async one(
+    receipt: AnsweredReceipt,
+    ask: DecisionAsk | null,
+    agentId: string | null,
+    read: WorkspaceRead,
+  ): Promise<RouteOutcome> {
     const key = answerKey(receipt);
-    if (receipt.homeKind === "main" && (!ask || ask.batched)) {
-      return this.wait(
-        receipt,
-        "unlanded",
-        ask
-          ? "It waits to land on origin/main."
-          : "No ledger holds the ask now; Maestro looks again at its next check.",
-      );
+    if (receipt.homeKind === "main" && !ask) {
+      // A ledger that could not be read is no evidence: look again. One read whole without the ask: it was removed.
+      if (read.warnings.some((warning) => warning.includes(receipt.ledger))) {
+        return this.wait(
+          receipt,
+          "unlanded",
+          `${receipt.ledger} could not be read; Maestro looks again at its next check.`,
+        );
+      }
+      return this.routed(receipt, {
+        route: "superseded",
+        agentId,
+        work: null,
+        reason: `No ledger holds the ask now: it was removed from ${receipt.ledger}, and that stands; yours is kept in its receipt.`,
+      });
+    }
+    if (receipt.homeKind === "main" && ask?.batched) {
+      return this.wait(receipt, "unlanded", "It waits to land on origin/main.");
     }
     // Open where it lives now (a checkout's local copy, a batch reset by hand): your answer is not there yet.
     if (ask?.state === "open") {

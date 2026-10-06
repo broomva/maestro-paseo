@@ -118,12 +118,28 @@ const ANSWER_WRITES = new Set([
   "wake",
 ]);
 
-/** A ledger with every key an answer writes taken out: two that read alike here differ only in answers. Pure. */
-export function withoutAnswers(source: string): string {
+/** The handles of the entries a ledger records closed (answered, or otherwise): the ones an answer may have written. Pure. */
+export function closedHandles(source: string): Set<string> {
+  const closed = new Set<string>();
+  for (const row of rowsOf(parsed(source))) {
+    const handle = row ? handleOf(row) : null;
+    if (row && handle && stateOf(row) !== "open") closed.add(handle);
+  }
+  return closed;
+}
+
+/**
+ * A ledger with the keys an answer writes taken out of the entries `answered`
+ * names, and only those: two that read alike here differ only in answers. An
+ * open entry keeps every key, so an edit to its `status` still counts. Pure.
+ */
+export function withoutAnswers(source: string, answered: ReadonlySet<string>): string {
   const data = parsed(source);
-  const rows = rowsOf(data).map((row) =>
-    row ? Object.fromEntries(Object.entries(row).filter(([key]) => !ANSWER_WRITES.has(key))) : row,
-  );
+  const rows = rowsOf(data).map((row) => {
+    const handle = row ? handleOf(row) : null;
+    if (!row || !handle || !answered.has(handle)) return row;
+    return Object.fromEntries(Object.entries(row).filter(([key]) => !ANSWER_WRITES.has(key)));
+  });
   const rest = Object.fromEntries(Object.entries(data).filter(([key]) => key !== "asks" && key !== "open_asks"));
   return JSON.stringify(canonical({ ...rest, asks: rows }));
 }
@@ -350,7 +366,9 @@ export class AnswersLander {
       const after = blobs.get(`HEAD:${file}`);
       if (!before || !after) return true;
       try {
-        return withoutAnswers(before.toString("utf8")) !== withoutAnswers(after.toString("utf8"));
+        // The entries the branch closes are where an answer was written; in them alone the answer's keys differ.
+        const answered = closedHandles(after.toString("utf8"));
+        return withoutAnswers(before.toString("utf8"), answered) !== withoutAnswers(after.toString("utf8"), answered);
       } catch {
         return true;
       }

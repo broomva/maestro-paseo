@@ -425,6 +425,29 @@ describe("round 1, Strata B (P20)", () => {
     ]);
   });
 
+  test("an ask removed from main after it landed is superseded; one in a ledger that could not be read waits", async () => {
+    const answered = receipt("A1", "main", { answerOption: "ship", answer: "Ship." });
+    const removed = await setup({
+      home: "main",
+      after: [answered],
+      asksAre: (asks) => asks.filter((ask) => ask.id !== "A1"),
+    });
+    const [gone] = await removed.router.route();
+    expect([gone?.route, removed.created.length]).toEqual(["superseded", 0]);
+    expect((await removed.log()).routed.get(answerKey(answered as never))?.reason).toBe(
+      `No ledger holds the ask now: it was removed from ${LEDGER}, and that stands; yours is kept in its receipt.`,
+    );
+    const unread = await setup({ home: "main", after: [answered], asksAre: () => [] });
+    const reads = unread.router as unknown as { options: { asks: { read: () => Promise<unknown> } } };
+    const original = reads.options.asks.read;
+    reads.options.asks.read = async () => ({
+      ...((await original()) as object),
+      warnings: [`The ask ledger ${LEDGER} on origin/main could not be read: bad`],
+    });
+    const [waits] = await unread.router.route();
+    expect([waits?.status, (await unread.log()).routed.size]).toEqual(["unlanded", 0]);
+  });
+
   test("the ask a receipt answered is the one at its own home, not another of its handle", () => {
     const [mine] = decisionsOf(SOURCE, LEDGER);
     const main = {
