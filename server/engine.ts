@@ -132,9 +132,13 @@ export function outcomeOf(timeline: readonly AgentTimelineItem[]): Outcome {
  * stretch (since the last move to running): the same provider turn id, or an
  * end with no turn start after it. A late hook after a recovered end is the
  * case this catches. Turn ids repeat after a session reopens, so an id only
- * counts within the stretch.
+ * counts within the stretch. Without two ids to compare, `summary` decides
+ * when it says anything: a repeat reports the same turn, so the same last
+ * words, and an end that says something else is a new turn whose start was
+ * missed (an adopted arc between turns writes no state event to start a new
+ * stretch).
  */
-export function isDuplicateEnd(events: readonly WorkEvent[], turnId: string | null): boolean {
+export function isDuplicateEnd(events: readonly WorkEvent[], turnId: string | null, summary?: string): boolean {
   let lastRun = -1;
   events.forEach((event, index) => {
     if (event.type === "state" && event.to === "running") lastRun = index;
@@ -154,7 +158,8 @@ export function isDuplicateEnd(events: readonly WorkEvent[], turnId: string | nu
   if (!lastEnd || lastEndIndex < lastStart) return false;
   // Both carry ids and they differ: a new turn whose start hook was missed, not a repeat.
   if (turnId && lastEnd.turnId) return false;
-  return true;
+  // Empty last words are no evidence of a new turn (a hook may carry no timeline): only different words are.
+  return !summary || summary === lastEnd.summary;
 }
 
 const QUEUE_MS = 120_000;
@@ -1681,7 +1686,9 @@ export class Engine {
         if (workerOf(fresh.events)?.agentId !== agentId) return null;
         // Without a turn id a repeat cannot be told from a new turn; a failure is never hidden as a repeat.
         const unidentifiedFailure = !options.turnId && outcome.kind !== "completed";
-        if (!unidentifiedFailure && isDuplicateEnd(fresh.events, options.turnId ?? null)) return null;
+        if (!unidentifiedFailure && isDuplicateEnd(fresh.events, options.turnId ?? null, latestOutputText(timeline))) {
+          return null;
+        }
         const at = options.endedAt ?? this.stamp();
         const ended: WorkEvent = {
           ts: at,

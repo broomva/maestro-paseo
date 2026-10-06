@@ -3050,6 +3050,21 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
     });
   });
 
+  test("with no turn ids at all, a later turn that says something else is new: its handback lands", async () => {
+    const { engine, item } = await adopted();
+    const said = (text: string) => [{ type: "assistant_message" as const, text }];
+    await engine.onTurnEnded({ id: "arc" }, { kind: "completed" }, said("Typechecking the touched packages."), null);
+    expect((await engine.get(item.id)).item.state).toBe("running");
+    // Its start hook was missed and the end carries no id: only its words tell it from a repeat.
+    await engine.onTurnEnded({ id: "arc" }, { kind: "completed" }, said("Typechecking the touched packages."), null);
+    expect((await engine.get(item.id)).events.filter((e) => e.type === "turn.ended")).toHaveLength(1);
+    await engine.onTurnEnded({ id: "arc" }, { kind: "completed" }, said("PR open.\n\nARC-STATUS: HANDBACK 1"), null);
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "review",
+      look: { arc: { status: "HANDBACK", line: "ARC-STATUS: HANDBACK 1" } },
+    });
+  });
+
   test("your Send back is a task: the session's answer to your note lands, whatever it says", async () => {
     const { engine, item, end, decide } = await adopted();
     await end("## Ask\n- Keep the 100-company bound?");
