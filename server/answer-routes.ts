@@ -146,6 +146,22 @@ export function readLog(source: string): Log {
   return log;
 }
 
+/** An ask's handle across receipts: its ledger and its uid, else its id. */
+const handleKey = (ref: { ledger: string; uid: string | null; id: string }) => `${ref.ledger}#${ref.uid ?? ref.id}`;
+
+/**
+ * The ask a receipt answered, as it reads now: of the asks by its handle, the
+ * one at the receipt's own kind of home (its checkout, by path, for a
+ * checkout's), else main's, else the first. Pure.
+ */
+export function askFor(all: readonly DecisionAsk[], receipt: AnsweredReceipt): DecisionAsk | null {
+  const named = all.filter((ask) => !ask.scope && sameAsk(ask, receipt));
+  const inCheckout = (ask: DecisionAsk) =>
+    ask.home.kind === "checkout" && receipt.home.startsWith(`${ask.home.path.replace(/[\\/]+$/, "")}/`);
+  const own = receipt.homeKind === "checkout" ? named.find(inCheckout) : named.find((ask) => ask.home.kind === "main");
+  return own ?? named.find((ask) => ask.home.kind === "main") ?? named[0] ?? null;
+}
+
 const sameAsk = (
   ask: Pick<DecisionAsk, "ledger" | "uid" | "id">,
   ref: { ledger: string; uid: string | null; id: string },
@@ -244,7 +260,7 @@ export class AnswerRouter {
   private running: Promise<unknown> = Promise.resolve();
   private cached: { stamp: string; log: Log } | null = null;
   /** Why an answer still waits, as the last pass found it: Decisions says it. */
-  private readonly waits = new Map<string, string>();
+  private readonly waits = new Map<string, { status: "unlanded" | "queued" | "failed"; words: string }>();
 
   constructor(options: RouterOptions) {
     this.options = options;
@@ -293,14 +309,24 @@ export class AnswerRouter {
       return [];
     }
     const outcomes: RouteOutcome[] = [];
-    // The latest answer to an ask is the one routed; an earlier one it replaced is routed too, in order.
+    // Only the latest answer to an ask is acted on: an earlier one a later replaced is recorded as superseded.
+    const latest = new Map<string, AnsweredReceipt>();
+    for (const receipt of log.answered) latest.set(handleKey(receipt), receipt);
     for (const receipt of due) {
-      const ask = read.all.find((entry) => sameAsk(entry, receipt) && entry.state === "answered") ?? null;
+      const ask = askFor(read.all, receipt);
       const agentId = receipt.originAgentId ?? ask?.origin?.agentId ?? null;
       if (only.agentId && agentId !== only.agentId) continue;
-      const outcome = await this.one(receipt, ask, agentId).catch((error) =>
-        this.wait(receipt, "failed", `${(error as Error).message}`),
-      );
+      const outcome =
+        latest.get(handleKey(receipt)) !== receipt
+          ? await this.routed(receipt, {
+              route: "superseded",
+              agentId,
+              work: null,
+              reason: "A later answer to this ask replaced it.",
+            })
+          : await this.one(receipt, ask, agentId).catch((error) =>
+              this.wait(receipt, "failed", `${(error as Error).message}`),
+            );
       outcomes.push(outcome);
     }
     return outcomes;
@@ -308,13 +334,31 @@ export class AnswerRouter {
 
   private async one(receipt: AnsweredReceipt, ask: DecisionAsk | null, agentId: string | null): Promise<RouteOutcome> {
     const key = answerKey(receipt);
-    if (receipt.homeKind === "main") {
-      const landed = ask !== null && ask.home.kind === "main" && !ask.batched;
-      if (!landed) return this.wait(receipt, "unlanded", "It waits to land on origin/main.");
+    if (receipt.homeKind === "main" && (!ask || ask.batched)) {
+      return this.wait(
+        receipt,
+        "unlanded",
+        ask
+          ? "It waits to land on origin/main."
+          : "No ledger holds the ask now; Maestro looks again at its next check.",
+      );
     }
-    // Where the ask lives now it records another outcome: that one wins, and yours is never acted on.
+    // Open where it lives now (a checkout's local copy, a batch reset by hand): your answer is not there yet.
+    if (ask?.state === "open") {
+      return this.wait(
+        receipt,
+        "unlanded",
+        `It reads open in ${homeWords(ask.home)} now; Maestro acts on your answer once it is there.`,
+      );
+    }
+    // Where the ask lives now it records another outcome, or was archived: that stands, and yours is never acted on.
     if (ask && !records(ask, receipt)) {
-      const theirs = ask.answer ? `: "${clip(ask.answer.split("\n")[0] ?? "", 120)}"` : "";
+      const theirs =
+        ask.state === "archived"
+          ? " (archived)"
+          : ask.answer
+            ? `: "${clip(ask.answer.split("\n")[0] ?? "", 120)}"`
+            : "";
       return this.routed(receipt, {
         route: "superseded",
         agentId,
@@ -413,7 +457,9 @@ export class AnswerRouter {
     const snapshot = await within(() => paseo.agents.ref(agentId).refresh(), this.options.sessionMs ?? SESSION_MS);
     const agent = snapshot?.agent;
     if (!agent || agent.archivedAt || agent.status === "closed") return "gone";
-    if (agent.status === "idle" && !agent.activeTurn && agent.pendingPermissions.length === 0) return "idle";
+    // Not mid-turn: idle, or stopped on an error (its next turn is the answer). Starting, or asking a permission, waits.
+    const between = agent.status === "idle" || agent.status === "error";
+    if (between && !agent.activeTurn && agent.pendingPermissions.length === 0) return "idle";
     return "busy";
   }
 
@@ -448,7 +494,7 @@ export class AnswerRouter {
     const key = answerKey(receipt);
     const said =
       status === "failed" ? `Maestro could not act on it yet (${words}); it tries again at its next check.` : words;
-    this.waits.set(key, said);
+    this.waits.set(key, { status, words: said });
     if (status === "failed") this.options.log?.(`answers: routing ${receipt.ledger} ${receipt.id}: ${words}`);
     return { key, ledger: receipt.ledger, id: receipt.id, status, route: null, words: said };
   }
@@ -503,13 +549,6 @@ export class AnswerRouter {
         agentId: routed.agentId,
       };
     }
-    if (!afterBegan(receipt, log.began)) {
-      return {
-        ...blank,
-        stage: "before",
-        words: "Answered before Maestro acted on answers, so nothing here acted on it.",
-      };
-    }
     if (ask.batched) {
       const pr = landing?.pr ?? null;
       const words =
@@ -520,18 +559,29 @@ export class AnswerRouter {
             : pr
               ? `Waits to land: PR #${pr.number}.`
               : "Waits to land: Maestro opens its PR at its next check.";
-      return { ...blank, stage: "unlanded", words, pr };
+      // Given before routing began: it lands like any other, and nothing acts on it after.
+      const after = afterBegan(receipt, log.began)
+        ? ""
+        : " Answered before Maestro acted on answers, so nothing here acts on it once it lands.";
+      return { ...blank, stage: "unlanded", words: `${words}${after}`, pr };
+    }
+    if (!afterBegan(receipt, log.began)) {
+      return {
+        ...blank,
+        stage: "before",
+        words: "Answered before Maestro acted on answers, so nothing here acted on it.",
+      };
     }
     const waiting = this.waits.get(key);
     const where = receipt.homeKind === "main" ? "Landed on origin/main" : `Written in ${homeWords(ask.home)}`;
-    return {
-      ...blank,
-      stage: "unrouted",
-      words:
-        waiting && !waiting.startsWith("It waits to land")
-          ? `${where}. ${waiting}`
-          : `${where}; Maestro acts on it at its next check.`,
-    };
+    // Not where it belongs yet (open where it lives now): its own words; else where it is, and why it still waits.
+    const words =
+      waiting?.status === "unlanded"
+        ? waiting.words
+        : waiting
+          ? `${where}. ${waiting.words}`
+          : `${where}; Maestro acts on it at its next check.`;
+    return { ...blank, stage: "unrouted", words };
   }
 }
 

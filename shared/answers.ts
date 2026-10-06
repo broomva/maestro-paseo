@@ -93,9 +93,14 @@ export function landingWords(landing: AnswersLanding): string | null {
   return null;
 }
 
-/** The notice the batch puts in Needs you, or none when nothing waits. */
+/**
+ * The notice the batch puts in Needs you, or none when nothing waits: a step
+ * that failed with no answer waiting (an offline fetch, say) is the wake
+ * log's to say, not yours to act on.
+ */
 export function answersNotice(landing: AnswersLanding | null): AnswersNotice | null {
   if (!landing || landing.stage === "none") return null;
+  if (landing.stage === "failed" && landing.pending === 0) return null;
   const words = landingWords(landing);
   if (!words) return null;
   return { kind: landing.stage, pending: landing.pending, pr: landing.pr, words };

@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AnswersLanding } from "../shared/answers";
+import { type AnswersLanding, answersNotice } from "../shared/answers";
 import type { MaestroConfig, WakeEntry } from "../shared/contracts";
 import type { RouteOutcome } from "./answer-routes";
 import { attentionOf } from "./attention";
@@ -1237,6 +1237,29 @@ describe("step 5: your answers, landed and routed", () => {
     );
     expect([entry.answers?.routed, entry.answers?.waiting]).toEqual([[], 0]);
     expect(logs).toContain("the loop could not route the answers: receipts unreadable");
+  });
+
+  test("a step that failed with nothing waiting is a note, never Needs you", async () => {
+    const { engine, client, wakeLog, timers } = await setup();
+    const offline = new Loop({
+      engine,
+      client: () => client.paseo,
+      now: () => new Date(clock),
+      timer: timers.timer,
+      wakeLog,
+      log: () => {},
+      answers: {
+        land: async () => landing({ stage: "failed", pending: 0, pr: null, error: "origin/main could not be fetched" }),
+        route: async () => [],
+      },
+    });
+    const entry = await offline.wake("manual");
+    expect(entry.narrative).toEqual([
+      "Woke because you asked.",
+      "Could not check the answers batch: origin/main could not be fetched",
+      "Did nothing new this tick.",
+    ]);
+    expect(answersNotice(entry.answers?.landing ?? null)).toBeNull();
   });
 
   test("without a control repo there is no step 5, and the entry keeps its old shape", async () => {

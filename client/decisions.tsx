@@ -33,8 +33,8 @@ import {
 } from "./decisions-model";
 import { plural } from "./format";
 import { useAttention } from "./hooks";
-import { useOpenUrl } from "./initiatives";
 import { requestIntent } from "./intent";
+import { useOpenUrl } from "./open-url";
 import { Button, Notice, Section, space, useText } from "./ui";
 
 export { DecisionCard } from "./decision-card";

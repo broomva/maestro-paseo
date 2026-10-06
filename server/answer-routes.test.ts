@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AnswersLanding } from "../shared/answers";
 import type { DecisionAsk } from "../shared/fleet";
-import { AnswerRouter, afterBegan, answerKey, deliveryText, readLog } from "./answer-routes";
+import { AnswerRouter, afterBegan, answerKey, askFor, deliveryText, readLog } from "./answer-routes";
 import { decisionsOf } from "./control-asks";
 import type { Paseo } from "./runs";
 
@@ -66,7 +66,7 @@ const receipt = (id: string, homeKind: "main" | "checkout", extra: Record<string
 });
 
 /** A session double: each agent's status, what was sent, and how often it was asked. */
-function sessions(initial: Record<string, "idle" | "running" | "closed" | "archived">) {
+function sessions(initial: Record<string, "idle" | "running" | "closed" | "archived" | "error">) {
   const status = new Map(Object.entries(initial));
   const sent: { agentId: string; text: string }[] = [];
   const paseo = {
@@ -97,9 +97,11 @@ function sessions(initial: Record<string, "idle" | "running" | "closed" | "archi
 async function setup(options: {
   home?: "main" | "checkout";
   batched?: boolean;
-  agents?: Record<string, "idle" | "running" | "closed" | "archived">;
+  agents?: Record<string, "idle" | "running" | "closed" | "archived" | "error">;
   before?: object[];
   after?: object[];
+  /** The asks as the workspace reads them, changed for one test. */
+  asksAre?: (asks: DecisionAsk[]) => DecisionAsk[];
 }) {
   const root = await mkdtemp(join(tmpdir(), "maestro-routes-"));
   roots.push(root);
@@ -111,12 +113,13 @@ async function setup(options: {
   lines.push(...(options.after ?? []));
   await writeFile(receipts, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
   const home = options.home ?? "checkout";
-  const asks: DecisionAsk[] = decisionsOf(SOURCE, LEDGER).map((ask) => ({
+  const read: DecisionAsk[] = decisionsOf(SOURCE, LEDGER).map((ask) => ({
     ...ask,
     home:
       home === "main" ? { kind: "main", path: "/repo", branch: null } : { kind: "checkout", path: "/w", branch: "w" },
     batched: options.batched ?? false,
   }));
+  const asks = options.asksAre ? options.asksAre(read) : read;
   let reads = 0;
   const created: Record<string, unknown>[] = [];
   const filed = new Map<string, { id: string; title: string; path: string }>();
@@ -354,6 +357,118 @@ describe("round 1 (P20)", () => {
       null,
     );
     expect([fated?.fate?.stage, fated?.fate?.route]).toEqual(["superseded", "superseded"]);
+  });
+});
+
+describe("round 1, Strata B (P20)", () => {
+  test("an answer still in the batch says it waits to land, even one given before routing began", async () => {
+    const early = receipt("A1", "main", { at: "2026-10-06T11:00:00Z", answerOption: "ship", answer: "Ship." });
+    const { router, asks } = await setup({ home: "main", batched: true, before: [early], after: [] });
+    const landing: AnswersLanding = {
+      stage: "waiting",
+      pending: 1,
+      asks: [],
+      pr: { number: 914, url: "u" },
+      conflict: null,
+      error: null,
+      landed: null,
+      checkedAt: "x",
+    };
+    const [fated] = await router.fates(
+      asks.filter((ask) => ask.id === "A1"),
+      landing,
+    );
+    expect([fated?.fate?.stage, fated?.fate?.words]).toEqual([
+      "unlanded",
+      "Waits to land: PR #914. Answered before Maestro acted on answers, so nothing here acts on it once it lands.",
+    ]);
+  });
+
+  test("a session stopped on an error is not mid-turn: it is told", async () => {
+    const answered = receipt("A1", "checkout", { originAgentId: "agent-1", answerOption: "ship", answer: "Ship." });
+    const { router, sent } = await setup({ after: [answered], agents: { "agent-1": "error" } });
+    const [outcome] = await router.route();
+    expect([outcome?.route, sent.length]).toEqual(["delivered", 1]);
+  });
+
+  test("an ask archived where it lives is superseded; one open there again waits, never superseded", async () => {
+    const answered = receipt("A1", "main", { answerOption: "ship", answer: "Ship." });
+    const archived = await setup({
+      home: "main",
+      after: [answered],
+      asksAre: (asks) => asks.map((ask) => (ask.id === "A1" ? { ...ask, state: "archived" as const } : ask)),
+    });
+    const [gone] = await archived.router.route();
+    expect([gone?.route, archived.created.length]).toEqual(["superseded", 0]);
+    expect((await archived.log()).routed.get(answerKey(answered as never))?.reason).toContain("(archived)");
+    const reopened = await setup({
+      home: "main",
+      after: [answered],
+      asksAre: (asks) =>
+        asks.map((ask) =>
+          ask.id === "A1"
+            ? {
+                ...ask,
+                state: "open" as const,
+                answer: null,
+                answerOption: null,
+                home: { kind: "checkout" as const, path: "/w", branch: "w" },
+              }
+            : ask,
+        ),
+    });
+    const [waits] = await reopened.router.route();
+    expect([waits?.status, waits?.words, (await reopened.log()).routed.size]).toEqual([
+      "unlanded",
+      "It reads open in /w (w) now; Maestro acts on your answer once it is there.",
+      0,
+    ]);
+  });
+
+  test("the ask a receipt answered is the one at its own home, not another of its handle", () => {
+    const [mine] = decisionsOf(SOURCE, LEDGER);
+    const main = {
+      ...(mine as DecisionAsk),
+      headline: "main's",
+      home: { kind: "main" as const, path: "/repo", branch: null },
+    };
+    const checkout = {
+      ...(mine as DecisionAsk),
+      headline: "the checkout's",
+      home: { kind: "checkout" as const, path: "/w", branch: "w" },
+    };
+    const other = {
+      ...(mine as DecisionAsk),
+      headline: "another checkout's",
+      home: { kind: "checkout" as const, path: "/x", branch: "x" },
+    };
+    const all = [main, other, checkout];
+    expect(askFor(all, receipt("A1", "checkout") as never)?.headline).toBe("the checkout's");
+    expect(askFor(all, receipt("A1", "main") as never)?.headline).toBe("main's");
+    // A checkout gone since: main's copy stands in.
+    expect(askFor(all, { ...receipt("A1", "checkout"), home: "/gone/.control/asks/x" } as never)?.headline).toBe(
+      "main's",
+    );
+  });
+
+  test("an ask answered twice: only the latest answer is acted on; the earlier is superseded", async () => {
+    const first = receipt("A1", "checkout", { at: "2026-10-06T12:00:01Z", answerOption: "ship", answer: "Ship." });
+    const second = receipt("A1", "checkout", {
+      at: "2026-10-06T12:00:09Z",
+      answerOption: "ship",
+      answer: "Ship: It ships.\nAnd tell me when it lands.",
+    });
+    const { router, created } = await setup({ after: [first, second] });
+    const outcomes = await router.route();
+    expect(outcomes.map((outcome) => outcome.route)).toEqual(["superseded", "work"]);
+    expect(created.length).toBe(1);
+  });
+
+  test("two passes at once (a wake, a turn's end, an answer) route an answer once", async () => {
+    const answered = receipt("A1", "checkout", { originAgentId: "agent-1", answerOption: "ship", answer: "Ship." });
+    const { router, sent, log } = await setup({ after: [answered], agents: { "agent-1": "idle" } });
+    await Promise.all([router.route(), router.route({ agentId: "agent-1" }), router.route()]);
+    expect([sent.length, (await log()).routed.size]).toEqual([1, 1]);
   });
 });
 

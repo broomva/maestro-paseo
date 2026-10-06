@@ -895,7 +895,7 @@ describe("the workspace's asks, in a scratch control repo", () => {
       option: "hold",
       note: "",
     });
-    expect(run(answers, "log", "--no-merges", "-2", "--format=%s").split("\n")).toEqual([
+    expect(run(answers, "log", "--first-parent", "--no-merges", "-2", "--format=%s").split("\n")).toEqual([
       "answer(fourth.yaml): D1 -> hold",
       "answer(bro-2795-canvas.yaml): product-name -> name-now",
     ]);

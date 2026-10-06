@@ -17,7 +17,7 @@ import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-import { ActivityIndicator, Linking, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { ANSWER_NOTE_CHARS, answerAsk, type DecisionAsk, homeKey } from "../shared/fleet";
 import {
   fileIdeaWork,
@@ -27,7 +27,7 @@ import {
   ideaRef,
 } from "../shared/initiatives";
 import { sameAsk } from "./decisions";
-import { homeText } from "./decisions-model";
+import { fateLine, homeText } from "./decisions-model";
 import { errorText } from "./format";
 import { useAttention, useRefresh } from "./hooks";
 import {
@@ -47,6 +47,7 @@ import {
   waitingText,
   wakeProblem,
 } from "./initiatives-model";
+import { useOpenUrl } from "./open-url";
 import { Button, Card, Notice, radius, Section, space, useText } from "./ui";
 
 /** Files change when a session lands a PR: a read every 60 s is plenty. */
@@ -58,14 +59,6 @@ type Navigation = PluginSurfaceProps["navigation"];
 export function useInitiatives() {
   const get = useRpc(getInitiatives);
   return useQuery({ queryKey: QUERY_KEY, queryFn: () => get({}), refetchInterval: POLL_MS });
-}
-
-/** Opens a link outside Maestro; one the host cannot open is said. */
-export function useOpenUrl() {
-  const toast = useToast();
-  return (url: string) => {
-    Linking.openURL(url).catch((error: unknown) => toast.error(`Could not open ${url}: ${errorText(error)}`));
-  };
 }
 
 /**
@@ -126,6 +119,7 @@ export function IdeaCard({
   const [note, setNote] = useState("");
   const [wake, setWake] = useState(() => defaultWake(ask.idea?.wake ?? null, today));
   const open = ask.state === "open";
+  const fate = fateLine(ask);
   const option = ask.options.find((entry) => entry.id === chosen) ?? null;
   const parking = chosen === "park";
   const problem = parking ? wakeProblem(wake, today) : null;
@@ -217,10 +211,23 @@ export function IdeaCard({
       ) : null}
       {!open ? (
         <View style={{ gap: 2 }}>
-          <Text style={[text.small, { color: theme.colors.statusSuccess }]}>{ideaOutcome(ask, work !== null)}</Text>
+          <Text
+            style={[
+              text.small,
+              { color: fate?.tone === "waiting" ? theme.colors.statusWarning : theme.colors.statusSuccess },
+            ]}
+          >
+            {ideaOutcome(ask, work !== null)}
+          </Text>
           {ask.answer ? (
             <Text style={text.small} selectable>
               {ask.answer}
+            </Text>
+          ) : null}
+          {/* An answer still on its way (in the batch) never reads as done here either (decisions-model fateLine). */}
+          {fate ? (
+            <Text style={[text.small, fate.tone === "waiting" ? { color: theme.colors.statusWarning } : null]}>
+              {fate.words}
             </Text>
           ) : null}
           {work ? (

@@ -26,7 +26,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { type AnswersLanding, AnswersLandingSchema, type AskRef, answersWord, type PrRef } from "../shared/answers";
-import { parsed, type Row, rowsOf, stateOf, text } from "./control-asks";
+import { canonical, parsed, type Row, rowsOf, stateOf, text } from "./control-asks";
 import {
   ANSWERS_BRANCH,
   ASKS_DIR,
@@ -104,6 +104,66 @@ export function unlandedAnswers(ledger: string, batch: string, main: string | nu
   }
   return out;
 }
+
+/** The keys an answer writes (control-asks.ts withAnswer, an idea's park its `wake`). */
+const ANSWER_WRITES = new Set([
+  "answer",
+  "answered",
+  "resolution",
+  "outcome",
+  "answer_option",
+  "answered_at",
+  "answered_by",
+  "status",
+  "wake",
+]);
+
+/** A ledger with every key an answer writes taken out: two that read alike here differ only in answers. Pure. */
+export function withoutAnswers(source: string): string {
+  const data = parsed(source);
+  const rows = rowsOf(data).map((row) =>
+    row ? Object.fromEntries(Object.entries(row).filter(([key]) => !ANSWER_WRITES.has(key))) : row,
+  );
+  const rest = Object.fromEntries(Object.entries(data).filter(([key]) => key !== "asks" && key !== "open_asks"));
+  return JSON.stringify(canonical({ ...rest, asks: rows }));
+}
+
+/**
+ * The answers one ledger's copy on origin's branch records that would be lost
+ * by pushing over it: each answered entry whose handle `here` does not answer
+ * the same (option and words) and `main` does not close. Pure.
+ */
+export function unkeptAnswers(ledger: string, theirs: string, here: string | null, main: string | null): AskRef[] {
+  const index = (source: string | null) => {
+    const map = new Map<string, Row>();
+    for (const row of source ? rowsOf(parsed(source)) : []) {
+      const handle = row ? handleOf(row) : null;
+      if (row && handle && !map.has(handle)) map.set(handle, row);
+    }
+    return map;
+  };
+  const mine = index(here);
+  const onMain = index(main);
+  const out: AskRef[] = [];
+  for (const row of rowsOf(parsed(theirs))) {
+    const handle = row ? handleOf(row) : null;
+    if (!row || !handle || stateOf(row) === "open") continue;
+    const kept = mine.get(handle);
+    if (
+      kept &&
+      stateOf(kept) !== "open" &&
+      same(kept.answer_option, row.answer_option) &&
+      same(kept.answer, row.answer)
+    )
+      continue;
+    const closed = onMain.get(handle);
+    if (closed && stateOf(closed) !== "open") continue;
+    out.push({ ledger, uid: text(row.uid), id: text(row.id) ?? "" });
+  }
+  return out;
+}
+
+const same = (a: unknown, b: unknown) => JSON.stringify(canonical(a ?? null)) === JSON.stringify(canonical(b ?? null));
 
 /** The batch PR's title and body: the asks it carries, by ledger and id, and how it lands. */
 export function batchPr(asks: readonly AskRef[]): { title: string; body: string } {
@@ -187,21 +247,9 @@ export class AnswersLander {
       }
       const mainSha = (await git(repo, ["rev-parse", "--verify", "--quiet", `${MAIN_REF}^{commit}`])).trim();
       const waiting = await this.unlanded(path, mainSha);
-      if (waiting.length === 0) {
-        // Every answer the batch records is on main (Maestro's PR merged, squashed or not, or main closed the
-        // ask itself, whose outcome wins, §5.2 step 1): level the branch with main. Only answers live on it; a
-        // change of any other kind there is refused, never dropped.
-        const own = (await git(path, ["diff", "--name-only", `${mainSha}...HEAD`])).split("\n").filter(Boolean);
-        const foreign = own.filter((file) => !file.startsWith(`${ASKS_DIR}/`));
-        if (foreign.length > 0) {
-          throw new Error(
-            `${ANSWERS_BRANCH} holds changes that are not answers (${foreign.join(", ")}), so it was not brought level with main; remove them in ${path}`,
-          );
-        }
-        const head = (await git(path, ["rev-parse", "HEAD"])).trim();
-        if (head !== mainSha) await git(path, ["reset", "--quiet", "--hard", mainSha]);
-        return { kind: "level" as const, mainSha };
-      }
+      // Every answer the batch records is on main (Maestro's PR merged, squashed or not, or main closed the ask
+      // itself, whose outcome wins, §5.2 step 1): level the branch with main.
+      if (waiting.length === 0) return this.level(path, mainSha);
       const current = await git(path, ["merge-base", "--is-ancestor", mainSha, "HEAD"]).then(
         () => true,
         () => false,
@@ -226,6 +274,8 @@ export class AnswersLander {
         if (conflicted) return { kind: "conflict" as const, ledgers: conflicted, refs: waiting };
       }
       const refs = await this.unlanded(path, mainSha);
+      // The merge can leave none (main closed or dropped the last of them meanwhile): level, never an empty PR.
+      if (refs.length === 0) return this.level(path, mainSha);
       // Pushed from inside the queue: no answer commits between the count and the push.
       await this.push(path, mainSha);
       return { kind: "pending" as const, refs };
@@ -279,6 +329,42 @@ export class AnswersLander {
     };
   }
 
+  /**
+   * The branch brought level with main, once every answer it records is
+   * there. Only answers live on it: a file outside the ledgers, or a ledger
+   * the branch changed in anything but the keys an answer writes (a new ask, a
+   * reworded one, an edit made while settling a conflict by hand), is refused
+   * in words, never dropped. Run inside the answers' queue.
+   */
+  private async level(path: string, mainSha: string): Promise<{ kind: "level"; mainSha: string }> {
+    const base = (await git(path, ["merge-base", mainSha, "HEAD"])).trim();
+    const own = (await git(path, ["diff", "--name-only", base, "HEAD"])).split("\n").filter(Boolean);
+    const ledgers = own.filter((file) => file.startsWith(`${ASKS_DIR}/`));
+    const blobs = await catFiles(
+      path,
+      ledgers.flatMap((file) => [`${base}:${file}`, `HEAD:${file}`]),
+    );
+    const foreign = own.filter((file) => {
+      if (!file.startsWith(`${ASKS_DIR}/`)) return true;
+      const before = blobs.get(`${base}:${file}`);
+      const after = blobs.get(`HEAD:${file}`);
+      if (!before || !after) return true;
+      try {
+        return withoutAnswers(before.toString("utf8")) !== withoutAnswers(after.toString("utf8"));
+      } catch {
+        return true;
+      }
+    });
+    if (foreign.length > 0) {
+      throw new Error(
+        `${ANSWERS_BRANCH} holds changes that are not answers (${foreign.join(", ")}), so it was not brought level with main; land or remove them in ${path}`,
+      );
+    }
+    const head = (await git(path, ["rev-parse", "HEAD"])).trim();
+    if (head !== mainSha) await git(path, ["reset", "--quiet", "--hard", mainSha]);
+    return { kind: "level", mainSha };
+  }
+
   /** The answers HEAD records that main does not, over the ledgers the two hold differently. */
   private async unlanded(path: string, mainSha: string, rev = "HEAD"): Promise<AskRef[]> {
     const changed = (await git(path, ["diff", "--name-only", mainSha, rev, "--", `${ASKS_DIR}/`]))
@@ -298,6 +384,24 @@ export class AnswersLander {
       } catch (error) {
         throw new Error(`${name} on ${ANSWERS_BRANCH} could not be read (${(error as Error).message})`);
       }
+    });
+  }
+
+  /** The answers `rev` records that neither `head` records the same nor `mainSha` closes. */
+  private async unkept(path: string, rev: string, head: string, mainSha: string): Promise<AskRef[]> {
+    const changed = (await git(path, ["diff", "--name-only", head, rev, "--", `${ASKS_DIR}/`]))
+      .split("\n")
+      .filter(Boolean);
+    const blobs = await catFiles(
+      path,
+      changed.flatMap((file) => [`${rev}:${file}`, `${head}:${file}`, `${mainSha}:${file}`]),
+    );
+    const textOf = (spec: string) => blobs.get(spec)?.toString("utf8") ?? null;
+    return changed.flatMap((file) => {
+      const theirs = textOf(`${rev}:${file}`);
+      if (theirs === null) return [];
+      const name = file.split("/").pop() ?? file;
+      return unkeptAnswers(name, theirs, textOf(`${head}:${file}`), textOf(`${mainSha}:${file}`));
     });
   }
 
@@ -321,11 +425,12 @@ export class AnswersLander {
         () => false,
       );
       if (!behind) {
-        // Not a fast-forward: only over a batch every answer of which main records (one that landed).
-        const theirs = await this.unlanded(path, mainSha, remote);
+        // Not a fast-forward (GitHub's Update branch, an old batch that landed, another's push): only over a
+        // batch every answer of which this one records the same, or main closed.
+        const theirs = await this.unkept(path, remote, head, mainSha);
         if (theirs.length > 0) {
           throw new Error(
-            `origin's ${ANSWERS_BRANCH} (${remote.slice(0, 9)}) holds ${answersWord(theirs.length)} main does not record, in commits this batch lacks (${theirs.map((ask) => `${ask.ledger} ${ask.id}`).join(", ")}); Maestro never pushes over them. Merge it into ${path}, or remove it on origin`,
+            `origin's ${ANSWERS_BRANCH} (${remote.slice(0, 9)}) holds ${answersWord(theirs.length)} this batch does not record and main does not close (${theirs.map((ask) => `${ask.ledger} ${ask.id}`).join(", ")}); Maestro never pushes over them. Merge it into ${path}, or remove it on origin`,
           );
         }
       }

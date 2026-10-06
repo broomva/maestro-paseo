@@ -194,7 +194,7 @@ describe("landing the answers batch", () => {
   });
 
   test("after the PR squash-merges, the branch is brought level with main and the ask reads from main", async () => {
-    const { repo, other, answersPath, asks, lander, prs, answer } = await workspace();
+    const { repo, origin, other, answersPath, asks, lander, prs, answer } = await workspace();
     await answer("A1");
     await lander.land();
     // GitHub's squash merge, in the other clone.
@@ -207,6 +207,8 @@ describe("landing the answers batch", () => {
     const landing = await lander.land();
     expect([landing.stage, landing.pending, landing.pr, landing.landed?.pr?.number]).toEqual(["none", 0, null, 915]);
     expect(run(answersPath, "rev-parse", "HEAD")).toBe(run(repo, "rev-parse", "origin/main"));
+    // Origin's old batch is levelled too: nothing on it is lost, all of it is on main.
+    expect(run(origin, "rev-parse", ANSWERS_BRANCH)).toBe(run(repo, "rev-parse", "origin/main"));
     const ask = (await asks.read(true)).all.find((entry) => entry.id === "A1");
     expect([ask?.state, ask?.batched, ask?.home.kind, ask?.answerOption]).toEqual(["answered", false, "main", "ship"]);
     // The next answer starts a new batch from main, and a new PR.
@@ -309,11 +311,70 @@ describe("landing the answers batch", () => {
     await answer("A2", "ship");
     const landing = await lander.land();
     expect(landing.stage).toBe("failed");
-    expect(landing.error).toContain(
-      `holds 2 answers main does not record, in commits this batch lacks (${LEDGER} A1, ${LEDGER} A2)`,
-    );
+    expect(landing.error).toContain(`holds 1 answer this batch does not record and main does not close (${LEDGER} A2)`);
     expect(run(origin, "rev-parse", ANSWERS_BRANCH)).toBe(theirs);
     expect(run(answersPath, "rev-parse", "HEAD")).not.toBe(theirs);
+  });
+
+  test("GitHub's Update branch on the PR (main merged into origin's batch) is no reason to stop pushing", async () => {
+    const { origin, other, answersPath, lander, answer, onMain, prs } = await workspace();
+    await answer("A1");
+    await lander.land();
+    await onMain((text) => `${text}  - id: A3\n    headline: "Later?"\n`, "a new ask on main");
+    run(other, "fetch", "--quiet", "origin");
+    run(other, "switch", "--quiet", "-c", "update", `origin/${ANSWERS_BRANCH}`);
+    run(other, "merge", "--quiet", "--no-edit", "origin/main");
+    run(other, "push", "--quiet", "origin", `HEAD:${ANSWERS_BRANCH}`);
+    await answer("A2");
+    const landing = await lander.land();
+    expect([landing.stage, landing.pending, prs.length]).toEqual(["waiting", 2, 1]);
+    expect(run(origin, "rev-parse", ANSWERS_BRANCH)).toBe(run(answersPath, "rev-parse", "HEAD"));
+  });
+
+  test("a batch carrying more than answers is never levelled: a new ask or a file is named, and kept", async () => {
+    const { repo, other, answersPath, lander, answer } = await workspace();
+    await answer("A1");
+    const ledger = join(answersPath, ".control", "asks", LEDGER);
+    await writeFile(ledger, `${await readFile(ledger, "utf8")}  - id: A9\n    headline: "Added by hand?"\n`);
+    await writeFile(join(answersPath, "notes.md"), "a hand note\n");
+    run(answersPath, "add", ".");
+    run(answersPath, "commit", "--quiet", "-m", "hand edits");
+    const kept = run(answersPath, "rev-parse", "HEAD");
+    // main records A1 by hand, so the batch has no answer left to land.
+    run(other, "pull", "--quiet", "--ff-only");
+    const theirs = join(other, ".control", "asks", LEDGER);
+    await writeFile(
+      theirs,
+      (await readFile(theirs, "utf8")).replace(
+        "  - id: A1\n",
+        '  - id: A1\n    answer: "Ship"\n    answered_at: "2026-10-06T12:00:00Z"\n',
+      ),
+    );
+    run(other, "commit", "--quiet", "-am", "A1 by hand");
+    run(other, "push", "--quiet", "origin", "main");
+    run(repo, "fetch", "--quiet", "origin");
+    const landing = await lander.land();
+    expect(landing.stage).toBe("failed");
+    expect(landing.error).toContain(`holds changes that are not answers (.control/asks/${LEDGER}, notes.md)`);
+    expect(run(answersPath, "rev-parse", "HEAD")).toBe(kept);
+  });
+
+  test("a merge that leaves no answer to land (main merged the PR, then dropped the ask) levels; no empty PR", async () => {
+    const { repo, other, answersPath, lander, answer, prs } = await workspace();
+    await answer("A1");
+    await lander.land();
+    run(other, "fetch", "--quiet", "origin");
+    run(other, "merge", "--quiet", "--no-ff", "--no-edit", `origin/${ANSWERS_BRANCH}`);
+    const path = join(other, ".control", "asks", LEDGER);
+    const text = await readFile(path, "utf8");
+    await writeFile(path, `arc: bro-9000\nasks:\n${text.slice(text.indexOf("  - id: A2"))}`);
+    run(other, "commit", "--quiet", "-am", "drop A1");
+    run(other, "push", "--quiet", "origin", "main");
+    run(repo, "fetch", "--quiet", "origin");
+    (prs[0] as { state: string }).state = "MERGED";
+    const landing = await lander.land();
+    expect([landing.stage, landing.pr, prs.length]).toEqual(["none", null, 1]);
+    expect(run(answersPath, "rev-parse", "HEAD")).toBe(run(repo, "rev-parse", "origin/main"));
   });
 
   test("changes not committed in the answers worktree: the step fails in words, and the batch is untouched", async () => {

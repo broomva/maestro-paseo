@@ -48,7 +48,7 @@
 // while the wake is still running.
 
 import { randomUUID } from "node:crypto";
-import { type AnswersLanding, landingWords } from "../shared/answers";
+import { type AnswersLanding, answersNotice } from "../shared/answers";
 import type { FlagKind, WakeEntry, WorkItem } from "../shared/contracts";
 import { isDispatchable } from "../shared/states";
 import type { RouteOutcome } from "./answer-routes";
@@ -140,8 +140,12 @@ export function narrate(entry: Omit<WakeEntry, "narrative" | "tickId" | "wokeAt"
     ...(stuck > 0 ? [`${stuck} stuck.`] : []),
     ...entry.quiet.map((run) => `${run.title} has been quiet ${minutesWords(run.minutes)}, worth a look.`),
   ];
-  const landing = entry.answers?.landing ? landingWords(entry.answers.landing) : null;
-  if (landing) needs.push(landing);
+  // The batch in Needs you exactly when Needs you shows it (answersNotice); a failed step with nothing waiting is a note.
+  const batch = entry.answers?.landing ?? null;
+  const notice = answersNotice(batch);
+  if (notice) needs.push(notice.words);
+  else if (batch?.stage === "failed")
+    lines.push(`Could not check the answers batch: ${batch.error ?? "no reason given"}`);
   if (needs.length > 0) lines.push("Needs you:", ...needs.map((line) => `  ${line}`));
   if (entry.unasked.length > 0) {
     lines.push(
