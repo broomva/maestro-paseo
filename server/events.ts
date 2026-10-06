@@ -452,10 +452,29 @@ export const closedItself = (line: string) => `Its arc reported “${line}” an
  * your gate; any other turn end is the arc between steps (engine.ts endTurn).
  */
 export const handsBack = (text: string): boolean =>
-  ANY_ARC.test(text) || section(text, "Ask") !== null || blockedOnYou(text) !== null;
+  verdictLine(text) !== null || section(text, "Ask") !== null || blockedOnYou(text) !== null;
 
-/** An arc verdict line however it is dressed (`**ARC-STATUS:** …`): whether one was meant, not its word (arcStatus). */
-const ANY_ARC = /^[\s>*_`-]*ARC-STATUS\b/m;
+/** A line that starts an arc verdict however it is dressed (`**ARC-STATUS:** …`). */
+const ANY_ARC = /^[\s>*_`-]*ARC-STATUS\b/;
+
+/**
+ * The arc verdict a text ends with, as the gate reads it: ctx-core's grammar
+ * exactly when it holds (arcStatus, whose word alone can close work:
+ * finishedArc), else the last line that only means one (`**ARC-STATUS:** done
+ * with handback.`), in plain words and with no word read from it. Null when no
+ * line starts a verdict. Landing (handsBack) and the card (lookOf) both read
+ * this, so work never lands on a verdict its card cannot show.
+ */
+export function verdictLine(text: string): { status: string; line: string; at: number } | null {
+  const strict = arcStatus(text);
+  if (strict) return strict;
+  const lines = text.split("\n");
+  for (let at = lines.length - 1; at >= 0; at--) {
+    const line = lines[at] ?? "";
+    if (ANY_ARC.test(line)) return { status: "", line: inlinePlain(line).trim(), at };
+  }
+  return null;
+}
 const BLOCKED_HEADING = /^ {0,3}#{1,6}\s*(?:⛔\s*)?Blocked on you\b.*$/i;
 
 /**
@@ -501,7 +520,7 @@ export function lookOf(state: OrchState, events: readonly WorkEvent[], now: numb
     };
   }
   const summary = lastOf(events, "turn.ended")?.summary ?? "";
-  const arc = arcStatus(summary);
+  const arc = verdictLine(summary);
   // The sections are read above the verdict line, so a last `## Ask` never takes the verdict in.
   const body = arc ? summary.split("\n").slice(0, arc.at).join("\n") : summary;
   const decided = section(body, "Decided");

@@ -2988,17 +2988,36 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
     expect(fake.appended).toEqual([]);
   });
 
-  test("a verdict lands it, in ctx-core's grammar or only meaning one, and so does an ask", async () => {
-    for (const text of [
-      "Merged #2134.\n\nARC-STATUS: CLOSED",
-      "Checks 1–6 are complete.\n\n**ARC-STATUS:** done with handback.",
-      "Built it.\n\n## Ask\n- Merge #12 or hold it for the release?",
-      "## ⛔ Blocked on you — 1 item, ~2 min\n\n| # | ask |\n|---|---|\n| 1 | Merge #12 |",
-    ]) {
+  test("a verdict lands it, in ctx-core's grammar or only meaning one, and so does an ask; the card shows each", async () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      [
+        "Merged #2134.\n\nARC-STATUS: CLOSED",
+        { arc: { status: "CLOSED", line: "ARC-STATUS: CLOSED" }, closing: "Merged #2134." },
+      ],
+      [
+        "Checks 1–6 are complete.\n\n**ARC-STATUS:** done with handback.",
+        {
+          ask: "It ended with “ARC-STATUS: done with handback.”. Approve to close the work, or send it back with a note.",
+          arc: { status: "", line: "ARC-STATUS: done with handback." },
+          closing: "Checks 1–6 are complete.",
+        },
+      ],
+      [
+        "Built it.\n\n## Ask\n- Merge #12 or hold it for the release?",
+        { ask: "Merge #12 or hold it for the release?" },
+      ],
+      [
+        "## ⛔ Blocked on you — 1 item, ~2 min\n\n| # | ask |\n|---|---|\n| 1 | Merge #12 |",
+        { ask: "⛔ Blocked on you — 1 item, ~2 min", handed: "| # | ask |\n|---|---|\n| 1 | Merge #12 |" },
+      ],
+    ];
+    for (const [text, look] of cases) {
       const { engine, item, end } = await adopted();
       tick(5);
       await end(text);
-      expect((await engine.get(item.id)).item.state).toBe("review");
+      const { item: landed } = await engine.get(item.id);
+      expect(landed.state).toBe("review");
+      expect(landed.look).toMatchObject(look);
     }
   });
 
@@ -3044,6 +3063,7 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
       },
     ]);
     fake.timelineEnd.set("arc", stopped);
+    fake.timelineTurn.set("arc", "turn-before-reload");
     tick(1);
     await engine.list(fake.paseo);
     const read = await engine.get(item.id);
@@ -3056,6 +3076,22 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
     expect(fake.refetched).toEqual(["arc"]);
     expect((await engine.get(item.id)).events).toHaveLength(read.events.length);
     expect(fake.appended).toEqual([]);
+    // It works again, and its hooks are missed once more: the daemon's word that it changed reads it again, and
+    // the turn that hands you something lands, as it would have live.
+    tick(20);
+    fake.setLastActivityAt("arc", new Date(clock).toISOString());
+    fake.timelines.set("arc", [
+      { type: "assistant_message", text: "PR #2134 is open.\n\n## Ask\n- Merge #2134 once its checks pass?" },
+    ]);
+    fake.timelineTurn.set("arc", "turn-after-restart");
+    fake.timelineEnd.set("arc", new Date(clock).toISOString());
+    tick(2);
+    await engine.list(fake.paseo);
+    expect(fake.refetched).toEqual(["arc", "arc"]);
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "review",
+      look: { ask: "Merge #2134 once its checks pass?" },
+    });
   });
 
   test("dispatched work keeps its contract: one task, so a run that asks nothing still lands, with its last words", async () => {

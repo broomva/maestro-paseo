@@ -345,6 +345,8 @@ export class Engine {
   private readonly chains = new Map<string, Promise<void>>();
   private readonly abort = new AbortController();
   private lastReconcile = 0;
+  /** Per agent, the daemon's `updatedAt` when reconcile last read its timeline for a missed end. */
+  private readonly readAt = new Map<string, string>();
   private readonly client: () => Paseo | null;
   private readonly timer: Timer;
   private readonly claimWaitMs: number;
@@ -1961,16 +1963,10 @@ export class Engine {
     const last = lastOf(item.events, "dispatched", "adopted", "state", "turn.started");
     const since = last ? this.now().getTime() - Date.parse(last.ts) : Number.POSITIVE_INFINITY;
     if (since <= MISSED_END_MS) return false;
-    // Its end is on record and its session has done nothing since, by the daemon's word: an adopted arc between
-    // turns (endTurn kept it running), not a missed end. Reading its timeline again would change nothing.
-    const recorded = lastOf(item.events, "turn.ended");
-    if (
-      recorded &&
-      isDuplicateEnd(item.events, null) &&
-      Date.parse(agent.updatedAt) <= Date.parse(recorded.ts) + MISSED_END_MS
-    ) {
-      return false;
-    }
+    // Its end is on record and the daemon reports nothing new of its session since this process last read
+    // it: an adopted arc between turns (endTurn kept it running), not a missed end. Reading again would
+    // change nothing; any change of the session's (a turn whose hooks were missed too) reads it again.
+    if (isDuplicateEnd(item.events, null) && this.readAt.get(agent.id) === agent.updatedAt) return false;
     // The end was missed. Read what happened instead of assuming it went well; if it cannot be read, try later.
     const page = await paseo.agents
       .ref(agent.id)
@@ -1983,6 +1979,7 @@ export class Engine {
     const lastSeen = last ? Date.parse(last.ts) : 0;
     const endedAt =
       tail?.timestamp && Date.parse(tail.timestamp) >= lastSeen ? new Date(tail.timestamp).toISOString() : undefined;
+    this.readAt.set(agent.id, agent.updatedAt);
     await this.endTurn(store, item, agent.id, outcomeOf(timeline), timeline, {
       recovered: true,
       seen,

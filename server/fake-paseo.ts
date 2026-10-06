@@ -38,6 +38,8 @@ export function fakePaseo(options: FakePaseoOptions = {}) {
   const archivedWorkspaces: string[] = [];
   const timelines = new Map<string, unknown[]>();
   const timelineEnd = new Map<string, string>();
+  /** The provider turn id the timeline's entries carry, as Paseo stamps them; none when unset. */
+  const timelineTurn = new Map<string, string>();
   const appended: Array<{ agentId: string; item: Record<string, unknown> }> = [];
   const refreshed: string[] = [];
   /** Every timeline.refetch call, by agent id: reading a session's timeline is what a recovered end costs. */
@@ -115,7 +117,11 @@ export function fakePaseo(options: FakePaseoOptions = {}) {
           refetch: async () => {
             refetched.push(id);
             return {
-              entries: (timelines.get(id) ?? []).map((item) => ({ item, timestamp: timelineEnd.get(id) ?? "" })),
+              entries: (timelines.get(id) ?? []).map((item) => ({
+                item,
+                timestamp: timelineEnd.get(id) ?? "",
+                turnId: timelineTurn.get(id),
+              })),
             };
           },
           append: (item: Record<string, unknown>) => {
@@ -138,6 +144,7 @@ export function fakePaseo(options: FakePaseoOptions = {}) {
     archivedWorkspaces,
     timelines,
     timelineEnd,
+    timelineTurn,
     /** Every timeline.append call, recorded before it resolves, rejects or hangs. */
     appended,
     /** Every agents.ref(id).refresh() call, by agent id: the reconcile's round trips. */
