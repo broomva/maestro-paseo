@@ -311,7 +311,10 @@ export class Inbox {
       // Unread since a push within the burst window: this notice joins it, so a burst of landings is one push.
       const unread = agent?.requiresAttention ? Date.parse(agent.attentionTimestamp ?? "") : null;
       const fresh = unread === null || this.now() - unread < BURST_MS;
-      if (agent && !agent.archivedAt && fresh) return (this.kept = kept);
+      if (agent && !agent.archivedAt && fresh) {
+        this.kept = kept;
+        return kept;
+      }
       if (agent && !agent.archivedAt) {
         await paseo.agents
           .ref(kept)
