@@ -27,7 +27,14 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { isMap, isSeq, parseDocument, type YAMLMap } from "yaml";
-import { type AskHome, type DecisionAsk, type DecisionOption, type Idea, isWaiting } from "../shared/fleet";
+import {
+  type AskAudit,
+  type AskHome,
+  type DecisionAsk,
+  type DecisionOption,
+  type Idea,
+  isWaiting,
+} from "../shared/fleet";
 import { UserError } from "./engine";
 
 /** A ledger is read up to this size; past it it is refused, not cut. */
@@ -93,6 +100,41 @@ export function ideaOf(row: Row): Idea | null {
     evidence: text(row.evidence),
     wake: dayOf(row.wake),
   };
+}
+
+/** The strings of a list a ledger writes (`gates: [a, b]`); a lone string is a list of one. */
+function textsOf(value: unknown): string[] {
+  const list = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
+  return list.flatMap((entry) => {
+    const one = text(entry);
+    return one ? [one] : [];
+  });
+}
+
+/** The audit layer's ids that go to a client: at most this many per list. */
+export const AUDIT_LINES = 8;
+/** An audit id as a ledger writes one (`authority`, `lane-ticket-sync`): anything else is free text and stays home. */
+const AUDIT_ID = /^[a-z0-9][a-z0-9._-]{0,47}$/i;
+
+/** The ids of a list that look like ids, at most AUDIT_LINES of them. */
+function auditIds(values: readonly string[]): string[] {
+  return values.filter((value) => AUDIT_ID.test(value)).slice(0, AUDIT_LINES);
+}
+
+/**
+ * An ask's audit layer as the wire carries it: its class and the lanes it
+ * gates, each only when it is an id (AUDIT_ID). What the agent tried before
+ * asking (`exhausted`) is free text and never leaves the ledger. Null when
+ * neither is written.
+ */
+export function auditOf(row: Row): AskAudit | null {
+  const kind = text(row.class);
+  const written = textsOf(row.gates);
+  const gates = auditIds(written);
+  // Only free text is withheld; ids past the AUDIT_LINES cap are not "free text".
+  const withheld = written.filter((value) => !AUDIT_ID.test(value)).length + (kind && !AUDIT_ID.test(kind) ? 1 : 0);
+  const audit = { class: kind && AUDIT_ID.test(kind) ? kind : null, gates, withheld };
+  return audit.class || audit.gates.length > 0 || withheld > 0 ? audit : null;
 }
 
 export function stateOf(row: Row): DecisionAsk["state"] {
@@ -208,6 +250,7 @@ export function decisionOf(
     batched: false,
     waiting: isWaiting({ state, blocking, options }),
     idea: ideaOf(row),
+    audit: auditOf(row),
   };
 }
 

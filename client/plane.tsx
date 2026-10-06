@@ -8,15 +8,18 @@
 // Fleet, as the header count counts it; so does any other scheduled run that
 // failed or was missed, above every view but the Timeline (client/timeline.tsx);
 // so does an initiative past its date, above every view but Initiatives
-// (client/initiatives.tsx), where an ask it waits on opens in the Fleet view's
-// Decisions.
+// (client/initiatives.tsx), where an ask it waits on opens in Decisions; and so
+// does a decision ask that waits on you, above every view but Decisions
+// (client/decisions.tsx), the workspace's asks one at a time. The views come in
+// two labelled groups, Work and System; a phone picks one from a single menu.
 
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { ChangeScope } from "./changed";
-import { AskNotices } from "./decisions";
+import { type DecisionsFocus, DecisionsView } from "./decision-triage";
+import { AskNotices, useDecisionCounts } from "./decisions";
 import { WorkDetail } from "./detail";
 import { FleetNotices, FleetView } from "./fleet";
 import { errorText, plural } from "./format";
@@ -26,16 +29,18 @@ import { InitiativeNotices, InitiativesView } from "./initiatives";
 import { useIntent } from "./intent";
 import { LoopControl, LoopPanel } from "./loop";
 import { NewWork } from "./new-work";
-import { FilterRow, ScopeRow, ViewSwitch } from "./plane-controls";
+import { FilterRow, ScopeRow, ViewPicker, ViewSwitch } from "./plane-controls";
 import {
   applyFilter,
   countFilters,
+  decisionsBadge,
   emptyText,
   type Filter,
   initiatives,
   inScope,
   type PlaneView,
   resolveScope,
+  SYSTEM_VIEWS,
   summaryText,
   viewFor,
   viewsFor,
@@ -59,29 +64,32 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const [loopOpen, setLoopOpen] = useState(false);
   const [fleetScope, setFleetScope] = useState<string | null>(null);
   const [fleetTick, setFleetTick] = useState<number | null>(null);
-  const [focus, setFocus] = useState<string | null>(null);
-  const openFleet = (scope: string | null, tick: number | null = null, ledger: string | null = null) => {
+  const [decisionsFocus, setDecisionsFocus] = useState<DecisionsFocus | null>(null);
+  const openFleet = (scope: string | null, tick: number | null = null) => {
     setFleetScope(scope);
     setFleetTick(tick);
-    setFocus(ledger);
     setView("fleet");
   };
+  // The workspace's asks open in Decisions, at the ask named; a fleet scope's stay in its Fleet view.
+  const openDecisions = (ledger: string | null, ask: DecisionsFocus["ask"]) => {
+    setDecisionsFocus({ ledger, ask, at: Date.now() });
+    setView("decisions");
+  };
+  const decisionCounts = useDecisionCounts();
   useIntent((intent) => {
     if (intent.kind === "select") setSelected(intent.id);
     else if (intent.kind === "new") setCreating(true);
     else if (intent.kind === "fleet") openFleet(intent.scope);
+    else if (intent.kind === "decisions")
+      openDecisions(intent.ledger ?? null, intent.id ? { ledger: intent.ledger ?? null, id: intent.id } : null);
     else if (intent.kind === "timeline") setView("timeline");
     else if (intent.kind === "initiatives") setView("initiatives");
     else {
       // A filter opened from elsewhere means that group across all work, where its chips show.
       setFilter(intent.group);
       setScope(null);
-      // The Board splits by state, History lists receipts, and the Fleet, the Timeline and Initiatives are not work: none applies the chips.
-      setView((view) =>
-        view === "board" || view === "history" || view === "fleet" || view === "timeline" || view === "initiatives"
-          ? "feed"
-          : view,
-      );
+      // The Board splits by state, History lists receipts, and the system views are not work: none applies the chips.
+      setView((view) => (view === "board" || view === "history" || SYSTEM_VIEWS.includes(view) ? "feed" : view));
     }
   });
   const compact = layout.compact;
@@ -105,10 +113,12 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const chooseView = (next: PlaneView) => {
     setView(next);
     if (next === "board") setFilter("all");
-    // A tick opened from a timeline run is that visit's: the Fleet tab chosen later opens on none. So is a ledger an initiative opened.
+    // A tick opened from a timeline run is that visit's: the Fleet tab chosen later opens on none. So is an ask an initiative opened.
     setFleetTick(null);
-    setFocus(null);
+    setDecisionsFocus(null);
   };
+
+  const badges = { decisions: decisionsBadge(decisionCounts.open, decisionCounts.waiting) };
 
   const newWork = (
     <NewWork theme={theme} open={creating} onOpenChange={setCreating} onCreated={setSelected} compact={compact} />
@@ -157,7 +167,17 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
       {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
 
       {view === "fleet" ? null : <FleetNotices theme={theme} compact={compact} onOpen={openFleet} />}
-      {view === "fleet" ? null : <AskNotices theme={theme} compact={compact} onOpen={(scope) => openFleet(scope)} />}
+      {view === "decisions" ? null : (
+        <AskNotices
+          theme={theme}
+          compact={compact}
+          onOpen={(notice) =>
+            notice.scope === null
+              ? openDecisions(null, { ledger: notice.ledger, uid: notice.uid, id: notice.id })
+              : openFleet(notice.scope)
+          }
+        />
+      )}
       {view === "timeline" ? null : (
         <TimelineNotices theme={theme} compact={compact} onOpen={() => setView("timeline")} />
       )}
@@ -165,7 +185,11 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
         <InitiativeNotices theme={theme} compact={compact} onOpen={() => chooseView("initiatives")} />
       )}
 
-      <ViewSwitch theme={theme} view={view} onView={chooseView} views={viewsFor(compact)} />
+      {compact ? (
+        <ViewPicker theme={theme} view={view} onView={chooseView} views={viewsFor(true)} badges={badges} />
+      ) : (
+        <ViewSwitch theme={theme} view={view} onView={chooseView} views={viewsFor(false)} badges={badges} />
+      )}
 
       {view === "fleet" ? (
         <FleetView
@@ -176,14 +200,15 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
           navigation={navigation}
           onScope={(scope) => openFleet(scope)}
           onSelect={setSelected}
-          focus={focus}
         />
+      ) : view === "decisions" ? (
+        <DecisionsView theme={theme} compact={compact} navigation={navigation} focus={decisionsFocus} />
       ) : view === "initiatives" ? (
         <InitiativesView
           theme={theme}
           compact={compact}
           navigation={navigation}
-          onOpenDecision={(ledger) => openFleet(null, null, ledger)}
+          onOpenDecision={(ledger, id) => openDecisions(ledger, id ? { ledger, id } : null)}
           onOpenWork={setSelected}
         />
       ) : view === "timeline" ? (
@@ -275,7 +300,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     );
   }
 
-  // The board, the list, History, the Fleet and the Timeline want the width: the item opens beside them only when one is picked.
+  // The board, the list, History and the system views want the width: the item opens beside them only when one is picked.
   const wide = view !== "feed";
   return (
     <ChangeScope>

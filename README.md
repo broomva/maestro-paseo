@@ -32,7 +32,14 @@ those, and nothing Paseo already does.
   the unsupervised-hours scoreboard, and a detail pane with the verb each item needs. The chips
   follow the sections: each counts exactly what it shows, Stuck narrows Needs you to its stuck
   work, and Needs you, Running, Queued and Done add up to All.
-- **Fleet**, a view beside History: fleet-reconcile's hourly runs per scope, with your verdict on
+- **Two groups of views.** *Work*: Feed, Board, List, History. *System*: Fleet, Decisions, Timeline,
+  Initiatives. A wide window shows them as tabs under their group's label; Decisions carries its open
+  count, in the warning color (and the words "wait on you" for a screen reader) when an ask waits on
+  you. A phone shows one button naming the view you are on, which opens every view, grouped, as a
+  menu of 44 pt rows.
+- **Decisions**: your workspace's decision asks one at a time, with keys on the web (see
+  [Decisions](#decisions)).
+- **Fleet**, a system view: fleet-reconcile's hourly runs per scope, with your verdict on
   what its dry run would do (see [The Fleet](#the-fleet)).
 - **Timeline**, a view beside the Fleet: every scheduled session and loop on one time axis, the past
   24 hours and the next 24, with a failed or missed run in Needs you (see [The Timeline](#the-timeline)).
@@ -236,6 +243,78 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
 |---|---|
 | ![The loop's panel](docs/loop-panel.png) | ![Needs you with flagged work](docs/loop-needs-you-feed.png) |
 
+## Decisions
+
+The **Decisions** view holds your workspace's decision asks: every `.control/asks/*.yaml` ledger of
+the control repo (`~/broomva`, or `MAESTRO_PASEO_CONTROL_REPO`), each ask read where it lives (see
+[Which copy](#answering-a-decision-ask)). Ideas are answered in [Initiatives](#initiatives), not here.
+
+- **One at a time.** *Decision N of M* counts this visit: M is every ask the queue has held since
+  you opened the tab (new arrivals add to it), N the ones answered (here or elsewhere) plus the
+  one on screen while it is open, and the bar is what is answered. Skips are not done: they are
+  counted apart (*N skipped*). With a ledger chosen, the line under the count says how many are
+  open in it and in all. The order is a choice of
+  *Blocking first* (blocking asks, then the rest that wait on you, then the oldest), *Oldest* (by
+  `asked_at`, undated last) or *By ledger* (a ledger at a time, in the rail's order); a new order
+  starts at its first decision. *Up next* lists the following three; pressing one goes to it.
+- **The card stays the card.** The ask on screen is pinned to its full identity (its home, ledger,
+  uid and id) the moment it shows. A poll, another client or a newer ask never swaps it. An ask
+  answered elsewhere stays on screen, read-only, saying *This was answered elsewhere* and with what,
+  with *Next decision*; nothing moves on by itself. An answered copy anywhere always reads as
+  answered. An ask still open whose home moved (a checkout's copy landed) stays on screen at its new
+  home, your choice and words with it, but only when it has a uid to say it is the same ask;
+  without one it says *This was answered or moved* and waits for *Next decision*. Your
+  choice and words are kept per ask while you move between asks. A focus from elsewhere opens the
+  ask that matches every field it gives; with only a ledger and an id that two homes share, the one
+  that waits on you, else the first, saying so. A focus that matches nothing waits for one more
+  read, then says *That decision isn't in the list yet*.
+- **An answer in flight.** The answer lives in the plugin's mutation cache, keyed by the ask's full
+  identity, not in the view: leaving the tab and coming back finds it still in flight, and its
+  result lands either way (the list learns the answer; a failure is said, and shows on the card).
+  Until its reply lands, nothing moves off the card: J/K, Skip, the rail, the order, *Up next*, a
+  focus from elsewhere and the options wait, and no second answer is sent.
+- **A failed refresh** keeps what was read, with a quiet note, and tries again on its own; only a
+  first read that fails shows the error and *Try again*.
+- **The ledger rail.** Each ledger with an open ask and its count, *All* first, names cut at a word.
+  A dot marks a ledger only when an ask in it waits on you (open and blocking, or recommending an
+  option that cannot be undone, §5.4); the rail's heading says so (*● waits on you*), and *Up next*
+  marks such an ask in words. A ledger you chose stays chosen when its last ask is answered: it
+  says *Nothing open in* it, with a way back to all. Past eight ledgers the rest fold under *+ N more*, which
+  counts their open asks and those that wait on you. On a phone the rail is a *Ledger* picker.
+- **The card.** A muted line (the ledger, age, blocking or not, and undo: *reversible*, *an option
+  cannot be undone*, or *undo: not stated*), then the question as its headline. An ask without a
+  `headline` leads with its question's first sentence, cut at a word past 120 characters, and *Full
+  question* holds only what the headline leaves out. *What waiting costs* and *Why you* sit side by
+  side (stacked on a phone). Each option is a radio card: its label, what it does, *Recommended*,
+  and *Cannot be undone* when `reversible: false`. Nothing is chosen for you, the recommendation
+  included. *If you say nothing* is its own row. When the ledger's `default` is exactly an option's id,
+  it shows that option's label with *same as recommended* or *differs from the recommendation*;
+  any other default is shown as the ledger wrote it, with no claim about the options.
+  The verb reads *Answer with <option>* and waits until you choose (an ask with no options says so
+  and takes your words); one answer is sent however fast you press. An option that cannot be
+  undone takes a second, deliberate press: the first turns the verb into *Confirm — cannot be
+  undone*; Esc or another option calls it off, and a held key (its repeats) never confirms. *Skip* leaves it open and moves
+  it to the end of the queue, for this visit. *Details* holds the ask's id, the full question, its class and
+  the lanes it gates, the ledger, where the answer is written (short: never a machine path on the
+  main surface), and the session that asked. The plugin sends class and gates only when each is an
+  id (letters, digits, `.`, `_`, `-`, at most 48; at most eight gates) and drops anything else;
+  what the agent tried before asking (`exhausted`) is free text and never leaves the ledger.
+- **Keys, on the web.** The tab takes focus when it opens and after each answer. Inside it, 1–4
+  choose an option, Enter answers, S skips (only where Skip is offered), J and K go to the next and
+  the previous, Esc calls off a confirm (and is left alone when none is armed), each hinted beside what it drives. On a focused option
+  card (Tab reaches every option, a fifth too), Enter and Space select that option and never
+  answer. A key outside the tab is never taken. None acts
+  while you type in a field or with a modifier held, and Enter on a focused button presses that
+  button. Controls are 40 pt tall (44 on a phone) and show a focus ring for the keyboard only.
+- **After an answer.** The card you answered leaves as it read (opacity to 0 and up 6 px in 160 ms;
+  at once under reduced motion; a refetch landing meanwhile does not change it) and the next comes
+  up. The line under the count says what you answered. There is no undo: `ask.answer` has none, so
+  none is offered. *Recently answered* lists the latest answered asks, folded, each with where it
+  was written.
+- **Getting there.** A decision that waits on you shows above every other view with *Open
+  Decisions*, which opens the tab at that ask. When only workspace asks wait, the header count opens
+  the tab, blocking first. An initiative's *Open in Decisions* opens it at that ledger and ask.
+
 ## The Fleet
 
 fleet-reconcile (`skills/orchestration/fleet-reconcile` in broomva/skills) ticks hourly per scope
@@ -297,23 +376,21 @@ A brief with no ask line in `## For you` (or, in an older brief, in any fence) s
   - An ask about a session (a `prompt:<session>:…` key) names it, and *Open session* opens it in
     Paseo when it is a Paseo agent. *Details* shows the ask's key and batch, and the tick that raised
     it, opened as a tick row opens.
-- **Decisions.** At the top of the Fleet view, whether or not this Mac runs a fleet: your
-  workspace's decision asks, every `.control/asks/*.yaml` ledger of the control repo (`~/broomva`),
-  each read where it lives (see [Which copy](#answering-a-decision-ask)). Then, per scope, *The
-  fleet's decisions*: those in the fleet's own ask ledger, `<state dir>/.control/asks/*.yaml` (its
-  registered root, workspace#861 §5.6), shown only when that folder holds one.
-  - Asks are listed a ledger at a time, the ledgers with an ask that waits on you first. Every
+- **Decisions.** Your workspace's decision asks are in the [Decisions](#decisions) view; the Fleet
+  view shows a short *Workspace decisions* summary that opens it. Per scope, *The fleet's decisions*
+  are those in the fleet's own ask ledger, `<state dir>/.control/asks/*.yaml` (its registered root,
+  workspace#861 §5.6), shown only when that folder holds one.
+  - The fleet's asks are listed a ledger at a time, the ledgers with an ask that waits on you first. Every
     ledger starts open while there are ten open asks or fewer; past that, only those with an ask
     that waits on you. A ledger's heading folds and opens it. Its answered asks stay folded under
     *Show N answered*; one you just answered stays in place, saying so.
-  - Each card shows the headline and question, what waiting costs, why it is yours, every option
-    with its consequence (recommended, or cannot be undone), what happens if you say nothing, and
-    where your answer will be written. Choose an option, add words if you like, and *Answer*. See
+  - Each card is the Decisions card (see [Decisions](#decisions)), without Skip or keys. Choose an
+    option, add words if you like, and *Answer*. See
     [Answering a decision ask](#answering-a-decision-ask).
   - An ask *waits on you* when it is open and blocking, or recommends an option that cannot be
     undone (§5.4), default or not: a default says the arc may go on in silence, not that it did.
     Those count in the header's "N need you", and show above every other view with *Open
-    Decisions*.
+    Decisions* (a fleet scope's open its Fleet view).
 - **Would do.** These are proposals: each in-scope session whose "would do" in the newest report is
   something other than nothing, plus any verb the coordinator logged under dry run.
   - Proposals that read the same and stand the same with you are one card, and one verdict covers
@@ -567,7 +644,7 @@ shown beside it, never instead of it. A file that cannot be read is an error row
 - **A card per initiative.** Title; the owner's intent quoted, or *Intent not stated* when the file
   says it was never written down; status; `review_by` (or `wake` for a parked one) with an
   *Overdue* or *Wake date passed* badge; the next action and its driver; what it waits on, an ask
-  opening its ledger in the Fleet view's Decisions; links to Linear, each PR (with its state when
+  opening Decisions at that ask, its ledger chosen; links to Linear, each PR (with its state when
   GitHub says it in one cached query) and each session (opened in Paseo when one agent has that id);
   and its open and triaged ideas.
 - **Ideas.** Each idea is an idea-triage ask (`class: idea`) in `.control/asks/ideas-<initiative>.yaml`,

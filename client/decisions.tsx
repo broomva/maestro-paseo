@@ -1,10 +1,10 @@
 // Decisions: the asks in `.control/asks` ledgers, each with what a person needs
 // to decide it, answered in place. Two kinds of ledger feed it: the
 // workspace's own (the control repo's, each ask read at its home by the
-// control interface spec's §5.2 rule, server/control-home.ts), and a fleet
-// scope's own root (server/fleet.ts). Both are listed a ledger at a time, the
-// ledgers with asks that wait on you first, open, and the rest folded; the
-// answered asks of a ledger stay folded under it.
+// control interface spec's §5.2 rule, server/control-home.ts), shown one at a
+// time in the Decisions tab (DecisionsView), and a fleet scope's own root
+// (server/fleet.ts), listed a ledger at a time in the Fleet view
+// (DecisionGroups). Both use the same card and the same ask.answer.
 //
 // Ideas (idea-triage asks) are not listed here: they are answered in the
 // Initiatives tab, under their initiative (client/initiatives.tsx).
@@ -15,243 +15,35 @@
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
-import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { attentionWork } from "../shared/contracts";
+import { type AnswerWhere, type AskNotice, type DecisionAsk, getWorkspaceAsks } from "../shared/fleet";
+import { DecisionCard } from "./decision-card";
 import {
-  ANSWER_NOTE_CHARS,
-  type AnswerWhere,
-  answerAsk,
-  type DecisionAsk,
-  getWorkspaceAsks,
-  homeKey,
-  type WorkspaceAsksView,
-} from "../shared/fleet";
-import {
+  askKey,
   askNoticeText,
-  BATCHED_TEXT,
   type DecisionGroup,
   groupDecisions,
   groupMeta,
-  homeText,
+  isTriaged,
+  ledgerRail,
 } from "./decisions-model";
-import { decisionAnswered, decisionMeta } from "./fleet-model";
-import { errorText } from "./format";
-import { useRefresh } from "./hooks";
-import { Button, Card, Notice, radius, Section, space, useText } from "./ui";
+import { plural } from "./format";
+import { requestIntent } from "./intent";
+import { Button, Notice, Section, space, useText } from "./ui";
+
+export { DecisionCard } from "./decision-card";
+/** Whether two reads name the same ask at the same home. */
+export { sameAsk } from "./decisions-model";
 
 /** Ledgers change when someone answers or an arc commits: a read every 30 s is plenty. */
 const POLL_MS = 30_000;
 /** Up to this many open asks in all, every ledger opens; past it, only those with an ask that waits on you. */
-const ALL_OPEN_UP_TO = 10;
+export const ALL_OPEN_UP_TO = 10;
 
 type Navigation = PluginSurfaceProps["navigation"];
-
-/** Whether two reads name the same ask at the same home. */
-export function sameAsk(a: DecisionAsk, b: DecisionAsk): boolean {
-  return a.ledger === b.ledger && a.id === b.id && a.uid === b.uid && homeKey(a.home) === homeKey(b.home);
-}
-
-/**
- * A decision ask, with everything a person needs to decide it: what waiting
- * costs, why it is theirs, each option and what it does, and what happens if
- * they say nothing. Choose an option (or write an answer), then Answer: it is
- * written into the ledger at the ask's home, under its lock.
- */
-export function DecisionCard({
-  theme,
-  ask,
-  where,
-  compact,
-  navigation,
-  onAnswered,
-}: {
-  theme: PluginTheme;
-  ask: DecisionAsk;
-  /** Where the answer goes, as the ask was read. */
-  where: AnswerWhere;
-  compact: boolean;
-  navigation: Navigation;
-  /** Puts the answered ask into the reads held, so the card says so at once. */
-  onAnswered: (answered: DecisionAsk) => void;
-}) {
-  const text = useText(theme);
-  const toast = useToast();
-  const refresh = useRefresh();
-  const send = useRpc(answerAsk);
-  const answer = useMutation({
-    mutationFn: send,
-    onSuccess: ({ ask: answered }) => onAnswered(answered),
-    onSettled: () => {
-      void refresh();
-    },
-  });
-  const [chosen, setChosen] = useState<string | null>(null);
-  const [note, setNote] = useState("");
-  const open = ask.state === "open";
-  const option = ask.options.find((entry) => entry.id === chosen) ?? null;
-  const title = ask.headline ?? ask.question ?? ask.id;
-  const origin = ask.origin;
-  const submit = () =>
-    answer.mutate(
-      { where, ledger: ask.ledger, uid: ask.uid, id: ask.id, hash: ask.hash, option: chosen, note },
-      {
-        onSuccess: ({ warning }) => {
-          setChosen(null);
-          setNote("");
-          if (warning) toast.error(warning);
-        },
-        onError: (error) => toast.error(errorText(error)),
-      },
-    );
-  return (
-    <Card theme={theme} style={{ gap: space[2] }}>
-      <Text style={[text.body, { fontWeight: "600" }]}>{title}</Text>
-      <Text style={text.small}>{decisionMeta(ask)}</Text>
-      {open && ask.waiting ? (
-        <Text style={[text.small, { color: theme.colors.statusWarning, fontWeight: "600" }]}>
-          {ask.blocking
-            ? "Waits on you: it blocks until you answer."
-            : "Waits on you: what it recommends cannot be undone."}
-        </Text>
-      ) : null}
-      {ask.headline && ask.question ? <Text style={text.muted}>{ask.question}</Text> : null}
-      {ask.stakes ? (
-        <Text style={text.small}>
-          <Text style={{ fontWeight: "600", color: theme.colors.foreground }}>What waiting costs: </Text>
-          {ask.stakes}
-        </Text>
-      ) : null}
-      {ask.whyYou ? (
-        <Text style={text.small}>
-          <Text style={{ fontWeight: "600", color: theme.colors.foreground }}>Why you: </Text>
-          {ask.whyYou}
-        </Text>
-      ) : null}
-      {ask.options.length > 0 ? (
-        <View accessibilityRole="radiogroup" accessibilityLabel={`Options for ${ask.id}`} style={{ gap: space[2] }}>
-          {ask.options.map((entry) => {
-            const picked = open ? chosen === entry.id : ask.answerOption === entry.id;
-            const badges = [
-              entry.recommended ? "Recommended" : null,
-              entry.reversible === false ? "Cannot be undone" : null,
-              !open && picked ? "Your answer" : null,
-            ].filter(Boolean);
-            return (
-              <Pressable
-                key={entry.id}
-                accessibilityRole="radio"
-                accessibilityState={{ checked: picked, disabled: !open || answer.isPending }}
-                aria-checked={picked}
-                accessibilityLabel={`${entry.label}${entry.recommended ? ", recommended" : ""}`}
-                disabled={!open || answer.isPending}
-                onPress={() => setChosen((current) => (current === entry.id ? null : entry.id))}
-                style={({ pressed }) => ({
-                  gap: 2,
-                  padding: space[3],
-                  borderRadius: radius.control,
-                  borderWidth: picked ? 2 : 1,
-                  borderColor: picked ? theme.colors.accent : theme.colors.border,
-                  opacity: pressed ? 0.85 : 1,
-                })}
-              >
-                <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[2], flexWrap: "wrap" }}>
-                  <Text style={[text.body, { flex: 1, minWidth: 140, fontWeight: picked ? "600" : "400" }]}>
-                    {entry.label}
-                  </Text>
-                  {badges.length > 0 ? (
-                    <Text
-                      style={[
-                        text.small,
-                        { color: entry.reversible === false ? theme.colors.statusWarning : theme.colors.accent },
-                      ]}
-                    >
-                      {badges.join(" · ")}
-                    </Text>
-                  ) : null}
-                </View>
-                {entry.consequence ? <Text style={text.small}>{entry.consequence}</Text> : null}
-              </Pressable>
-            );
-          })}
-        </View>
-      ) : null}
-      {ask.fallback ? (
-        <Text style={text.small}>
-          <Text style={{ fontWeight: "600", color: theme.colors.foreground }}>If you say nothing: </Text>
-          {ask.fallback}
-        </Text>
-      ) : null}
-      {!open ? (
-        <View style={{ gap: 2 }}>
-          <Text style={[text.small, { color: theme.colors.statusSuccess }]}>{decisionAnswered(ask)}</Text>
-          {ask.answer ? (
-            <Text style={text.small} selectable>
-              {ask.answer}
-            </Text>
-          ) : null}
-          {ask.batched ? <Text style={text.small}>{BATCHED_TEXT}</Text> : null}
-        </View>
-      ) : ask.refusal ? (
-        <Notice theme={theme} tone="warn">
-          {ask.refusal}
-        </Notice>
-      ) : (
-        <View style={{ gap: space[2] }}>
-          <TextInput
-            value={note}
-            onChangeText={setNote}
-            multiline
-            maxLength={ANSWER_NOTE_CHARS}
-            placeholder={ask.options.length > 0 ? "Add words (optional)" : "Your answer"}
-            placeholderTextColor={theme.colors.foregroundMuted}
-            accessibilityLabel={`Your words for ${ask.id}`}
-            style={{
-              minHeight: 48,
-              padding: space[3],
-              borderRadius: radius.control,
-              borderWidth: 1,
-              borderColor: theme.colors.border,
-              backgroundColor: theme.colors.surface2,
-              color: theme.colors.foreground,
-              fontSize: 14,
-              textAlignVertical: "top",
-            }}
-          />
-          <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap", alignItems: "center" }}>
-            <Button
-              theme={theme}
-              variant="primary"
-              icon="Check"
-              label={option ? `Answer: ${option.label}` : "Answer"}
-              compact={compact}
-              busy={answer.isPending}
-              disabled={!option && note.trim().length === 0}
-              accessibilityLabel={`Answer ${ask.id}${option ? `: ${option.label}` : ""}`}
-              onPress={submit}
-            />
-            <Text style={[text.small, { flex: 1, minWidth: 160 }]}>{homeText(ask)}</Text>
-          </View>
-        </View>
-      )}
-      {origin && navigation ? (
-        <View style={{ flexDirection: "row" }}>
-          <Button
-            theme={theme}
-            variant="quiet"
-            icon="ArrowUpRight"
-            label="Open the session that asked"
-            compact={compact}
-            accessibilityLabel={`Open the session that asked ${ask.id}`}
-            onPress={() => navigation.openAgent({ agentId: origin.agentId })}
-          />
-        </View>
-      ) : null}
-    </Card>
-  );
-}
 
 /** One ledger's asks: its heading (press to fold or open), its open asks, and its answered ones folded under them. */
 function LedgerGroup({
@@ -279,18 +71,17 @@ function LedgerGroup({
   // Asks you answered here stay where you answered them, saying so, rather than folding away at once.
   const [answeredHere, setAnsweredHere] = useState<ReadonlySet<string>>(() => new Set());
   const meta = groupMeta(group);
-  const keyOf = (ask: DecisionAsk) => `${homeKey(ask.home)}:${ask.uid ?? ask.id}`;
   const answered = (ask: DecisionAsk) => {
-    setAnsweredHere((now) => new Set([...now, keyOf(ask)]));
+    setAnsweredHere((now) => new Set([...now, askKey(ask)]));
     // Its last open ask answered, a ledger would fold under you: it stays as you had it, open.
     setChosen((now) => now ?? true);
     onAnswered(ask);
   };
-  const stay = group.answered.filter((ask) => answeredHere.has(keyOf(ask)));
-  const folded = group.answered.filter((ask) => !answeredHere.has(keyOf(ask)));
+  const stay = group.answered.filter((ask) => answeredHere.has(askKey(ask)));
+  const folded = group.answered.filter((ask) => !answeredHere.has(askKey(ask)));
   const card = (ask: DecisionAsk) => (
     <DecisionCard
-      key={keyOf(ask)}
+      key={askKey(ask)}
       theme={theme}
       ask={ask}
       where={where(ask)}
@@ -345,7 +136,7 @@ function LedgerGroup({
   );
 }
 
-/** Asks a ledger at a time: ledgers with an ask that waits on you first and open, the rest folded once there are many. */
+/** A fleet scope's asks, a ledger at a time: ledgers with an ask that waits on you first and open, the rest folded once there are many. */
 export function DecisionGroups({
   theme,
   asks,
@@ -353,7 +144,6 @@ export function DecisionGroups({
   compact,
   navigation,
   onAnswered,
-  focus = null,
 }: {
   theme: PluginTheme;
   asks: readonly DecisionAsk[];
@@ -361,8 +151,6 @@ export function DecisionGroups({
   compact: boolean;
   navigation: Navigation;
   onAnswered: (answered: DecisionAsk) => void;
-  /** A ledger to open whatever else is folded: one an initiative's waiting_on named. */
-  focus?: string | null;
 }) {
   const groups = groupDecisions(asks);
   // Judged once, as you open the view: a count crossing ten as you answer or as asks arrive never folds or opens it all.
@@ -374,7 +162,7 @@ export function DecisionGroups({
           key={group.ledger}
           theme={theme}
           group={group}
-          startOpen={group.ledger === focus || group.waiting > 0 || (group.open.length > 0 && !many)}
+          startOpen={group.waiting > 0 || (group.open.length > 0 && !many)}
           where={where}
           compact={compact}
           navigation={navigation}
@@ -390,67 +178,57 @@ export function useWorkspaceAsks() {
   return useQuery({ queryKey: ["maestro", "workspace-asks"], queryFn: () => get({}), refetchInterval: POLL_MS });
 }
 
-const workspaceWhere = (ask: DecisionAsk): AnswerWhere => ({ kind: "workspace", home: homeKey(ask.home) });
+/** The workspace's open decisions (ideas aside) and how many wait on you: the Decisions tab's badge. */
+export function useDecisionCounts(): { open: number; waiting: number } {
+  const read = useWorkspaceAsks();
+  const open = (read.data?.decisions ?? []).filter(isTriaged);
+  return { open: open.length, waiting: open.filter((ask) => ask.waiting).length };
+}
 
-/** The workspace's own asks, in the Fleet view: every ledger of the control repo, each ask at its home; ideas aside. */
+/**
+ * The workspace's decisions in a few lines, for a view that is not Decisions:
+ * how many are open across how many ledgers, how many wait on you, and a way
+ * to the Decisions tab, where they are answered one at a time.
+ */
 export function WorkspaceDecisions({
   theme,
   compact,
-  navigation,
   focus = null,
 }: {
   theme: PluginTheme;
   compact: boolean;
-  navigation: Navigation;
-  /** A ledger to open, from an initiative's waiting_on. */
+  navigation?: Navigation;
+  /** A ledger to open the tab at. */
   focus?: string | null;
 }) {
   const text = useText(theme);
-  const client = useQueryClient();
   const read = useWorkspaceAsks();
-  const onAnswered = (answered: DecisionAsk) =>
-    client.setQueriesData<WorkspaceAsksView>({ queryKey: ["maestro", "workspace-asks"] }, (view) =>
-      view ? { ...view, decisions: view.decisions.map((ask) => (sameAsk(ask, answered) ? answered : ask)) } : view,
-    );
-  if (read.isPending) return <ActivityIndicator color={theme.colors.foregroundMuted} />;
-  if (read.isError) {
-    return (
-      <Notice theme={theme} tone="warn">
-        {`Your workspace's asks could not be read: ${errorText(read.error)}`}
-      </Notice>
-    );
-  }
-  const { controlRepo, warnings } = read.data;
-  // Ideas are answered under their initiative, in the Initiatives tab.
-  const decisions = read.data.decisions.filter((ask) => !ask.idea);
-  if (decisions.length === 0 && warnings.length === 0) return null;
-  const open = decisions.filter((ask) => ask.state === "open");
-  const waiting = open.filter((ask) => ask.waiting).length;
+  if (!read.data) return null;
+  const rail = ledgerRail(read.data.decisions);
+  const open = rail.reduce((sum, entry) => sum + entry.open, 0);
+  if (open === 0) return null;
+  const waiting = rail.reduce((sum, entry) => sum + entry.waiting, 0);
   return (
     <Section
       theme={theme}
-      title="Decisions"
-      meta={[`${open.length} open`, waiting > 0 ? `${waiting} ${waiting === 1 ? "waits" : "wait"} on you` : null]
+      title="Workspace decisions"
+      meta={[
+        `${open} open across ${plural(rail.length, "ledger")}`,
+        waiting > 0 ? `${waiting} ${waiting === 1 ? "waits" : "wait"} on you` : null,
+      ]
         .filter(Boolean)
         .join(" · ")}
     >
-      <Text style={text.small}>
-        {`Your workspace's asks, from every ledger in ${controlRepo}. Each is read where it lives: closed once origin/main records an answer, else at the one checkout whose copy has not landed, else on origin/main. Your answer is written there, under Maestro's ledger lock (§5.5); agent edits, ask_ledger.py and the Asks plugin do not take it yet.`}
-      </Text>
-      {warnings.slice(0, 3).map((warning) => (
-        <Notice key={warning} theme={theme} tone="warn">
-          {warning}
-        </Notice>
-      ))}
-      <DecisionGroups
-        theme={theme}
-        asks={decisions}
-        where={workspaceWhere}
-        compact={compact}
-        navigation={navigation}
-        onAnswered={onAnswered}
-        focus={focus}
-      />
+      <Text style={text.small}>They are not the fleet's: they have their own tab, one decision at a time.</Text>
+      <View style={{ flexDirection: "row" }}>
+        <Button
+          theme={theme}
+          icon="ArrowRight"
+          label="Triage decisions"
+          compact={compact}
+          onPress={() => requestIntent({ kind: "decisions", ledger: focus, id: null })}
+        />
+      </View>
     </Section>
   );
 }
@@ -458,7 +236,8 @@ export function WorkspaceDecisions({
 /**
  * The decision asks that wait on you, where Maestro shows what needs you, from
  * work.attention: exactly what the header count counts for them. Open
- * Decisions goes to the Fleet view, where they are answered.
+ * Decisions goes to the Decisions tab for the workspace's, at the first one,
+ * and to the Fleet view for a fleet scope's.
  */
 export function AskNotices({
   theme,
@@ -467,7 +246,7 @@ export function AskNotices({
 }: {
   theme: PluginTheme;
   compact: boolean;
-  onOpen: (scope: string | null) => void;
+  onOpen: (notice: AskNotice) => void;
 }) {
   const read = useRpc(attentionWork);
   const attention = useQuery({
@@ -489,7 +268,7 @@ export function AskNotices({
           label="Open Decisions"
           compact={compact}
           accessibilityLabel={`Open Decisions, ${asks.length} waiting`}
-          onPress={() => onOpen(first.scope)}
+          onPress={() => onOpen(first)}
         />
       }
     >

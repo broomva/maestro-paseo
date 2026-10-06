@@ -46,9 +46,10 @@ export function needsYouCount(
  * included, so the filter it opens lists everything the count counted; the
  * fleet's notices sit above every view but the Fleet view, and the
  * timeline's above every view but the Timeline, and the asks' above every
- * view but the Fleet view, whose Decisions hold them. With only fleet notices,
- * it opens the Fleet view at the first; with only asks, the Fleet view (at the
- * first ask's scope, for a fleet root's); with only timeline notices, the Timeline;
+ * view but Decisions, which holds the workspace's. With only fleet notices,
+ * it opens the Fleet view at the first; with only asks, Decisions (blocking
+ * first) for the workspace's, the Fleet view at its scope for a fleet root's;
+ * with only timeline notices, the Timeline;
  * with only stale or overdue initiatives, Initiatives, whose notices sit above
  * every other view.
  */
@@ -65,7 +66,8 @@ export function needsYouTarget(
   const [ask] = asks;
   const notices = fleet.length + timeline.length + asks.length + initiatives.length;
   if (waiting.length === 0 && notice) return { kind: "fleet", scope: notice.scope };
-  if (waiting.length === 0 && ask) return { kind: "fleet", scope: ask.scope };
+  if (waiting.length === 0 && ask)
+    return ask.scope === null ? { kind: "decisions" } : { kind: "fleet", scope: ask.scope };
   if (waiting.length === 0 && timeline.length > 0) return { kind: "timeline" };
   if (waiting.length === 0 && initiatives.length > 0) return { kind: "initiatives" };
   if (waiting.length === 1 && only && notices === 0) return { kind: "select", id: only.id };

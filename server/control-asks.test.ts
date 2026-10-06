@@ -7,6 +7,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type AnswerInput,
+  AUDIT_LINES,
   acquireLock,
   answerDecision,
   decisionsOf,
@@ -110,6 +111,41 @@ const answered = (source: string, extra: Partial<AnswerInput>) =>
   withAnswer(source, "test-arc.yaml", input(extra), AT).out;
 
 describe("reading decision asks", () => {
+  test("the audit layer carries ids only: class and gates allowlisted, free text dropped, what was tried never sent", () => {
+    const ledger = (fields: string) => `arc: a\nasks:\n  - id: X1\n    ask: "Go?"\n${fields}`;
+    expect(decisionsOf(ledger(""), "a.yaml")[0]?.audit).toBeNull();
+    // A lone string is a list of one; normal ids pass.
+    expect(decisionsOf(ledger("    class: authority\n    gates: lane-x\n"), "a.yaml")[0]?.audit).toEqual({
+      class: "authority",
+      gates: ["lane-x"],
+      withheld: 0,
+    });
+    expect(decisionsOf(ledger("    gates: [lane-a, 2, p20, required_checks]\n"), "a.yaml")[0]?.audit).toEqual({
+      class: null,
+      gates: ["lane-a", "2", "p20", "required_checks"],
+      withheld: 0,
+    });
+    // Free text or anything secret-looking in class or gates is dropped; exhausted is never on the wire.
+    const p = (...parts: string[]) => parts.join("");
+    const loud = ledger(
+      `    class: "${p("api_", "key=AbC123")}"\n    gates: ["needs the owner's call", "${p("Bearer ", "eyJhbGciOiJ9")}", ok-lane]\n    exhausted: ["read: ${p("sk", "-live-abcdef123456")}"]\n`,
+    );
+    // What is left home is counted, so the card can say the list is partial.
+    expect(decisionsOf(loud, "a.yaml")[0]?.audit).toEqual({ class: null, gates: ["ok-lane"], withheld: 3 });
+    expect(JSON.stringify(decisionsOf(loud, "a.yaml"))).not.toContain("live-abcdef");
+    // Capped at AUDIT_LINES, each id at 48 characters.
+    const many = Array.from({ length: 12 }, (_, at) => `lane-${at}`).join(", ");
+    expect(decisionsOf(ledger(`    gates: [${many}]\n`), "a.yaml")[0]?.audit?.gates).toHaveLength(AUDIT_LINES);
+    // Ids past the cap are not free text: nothing is said to be withheld.
+    expect(decisionsOf(ledger(`    gates: [${many}]\n`), "a.yaml")[0]?.audit?.withheld).toBe(0);
+    // A class too long to be an id is left home, and counted.
+    expect(decisionsOf(ledger(`    class: ${"x".repeat(49)}\n`), "a.yaml")[0]?.audit).toEqual({
+      class: null,
+      gates: [],
+      withheld: 1,
+    });
+  });
+
   test("each ask's decision layer: stakes, why you, the options with consequences, recommended and the default", () => {
     const [open, answer] = decisionsOf(LEDGER, "test-arc.yaml");
     expect(open).toEqual({
@@ -151,6 +187,7 @@ describe("reading decision asks", () => {
       batched: false,
       waiting: false,
       idea: null,
+      audit: { class: "decision", gates: [], withheld: 0 },
     });
     expect([answer?.uid, answer?.state, answer?.answer]).toEqual([
       "7d1e0c2a-5b8f-4e1a-9c4d-2f6b8a0e3c91",
