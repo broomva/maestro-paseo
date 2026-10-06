@@ -2258,9 +2258,9 @@ describe("drilling in", () => {
     expect(text).toContain("Why youScheduling is yours.");
     expect(text).toContain("File all fourRecommendedEach becomes a Linear issue.");
     expect(text).toContain("Drop all fourCannot be undoneThey stay in this ledger.");
-    expect(text).toContain(
-      "If you say nothing: File all foursame as recommendedThe ledger says: “file all four once Linear is signed in”",
-    );
+    // The default names no option id: it is said as the ledger wrote it, with no claim.
+    expect(text).toContain("If you say nothing: file all four once Linear is signed in");
+    expect(text).not.toContain("same as recommended");
     // Nothing chosen and no words: Answer waits.
     expect(view.byLabel("Answer A10")?.getAttribute("aria-disabled")).toBe("true");
     await view.press(view.byLabel("File all four, recommended"));
@@ -2451,11 +2451,16 @@ describe("the Decisions tab", () => {
   };
   /** A key pressed on the page (or in a field), as the browser sends it. */
   /** A key pressed in the tab (its root, unless a target is given), as the browser sends it; says whether it was taken. */
-  const key = async (view: Awaited<ReturnType<typeof mount>>, name: string, target?: unknown) => {
+  const key = async (
+    view: Awaited<ReturnType<typeof mount>>,
+    name: string,
+    target?: unknown,
+    init: { repeat?: boolean } = {},
+  ) => {
     let taken = false;
     await step(generation, () => {
       const at = (target ?? view.all("#maestro-decisions")[0]) as unknown as { dispatchEvent(event: unknown): boolean };
-      const event = new win.KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true });
+      const event = new win.KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init });
       at.dispatchEvent(event);
       taken = event.defaultPrevented;
     });
@@ -2643,7 +2648,7 @@ describe("the Decisions tab", () => {
         whyYou: null,
         options: [],
         fallback: "continue as stoic-bedbug-9e",
-        audit: { class: "external", gates: [], exhausted: ["read: ListAgents shows stoic-bedbug-9e"] },
+        audit: { class: "external", gates: ["lane-rename"] },
       }),
     ];
     const view = await open(true);
@@ -2656,7 +2661,8 @@ describe("the Decisions tab", () => {
     expect(view.text()).toContain("The name is set only by --name.");
     await view.press(view.byLabel("Show the details of A1"));
     expect(view.text()).toContain("Class: external");
-    expect(view.text()).toContain("· read: ListAgents shows stoic-bedbug-9e");
+    expect(view.text()).toContain("Gates: lane-rename");
+    expect(view.text()).not.toContain("Tried before asking");
     expect(view.byLabel("Answer A1")?.getAttribute("aria-disabled")).toBe("true");
     await view.type(view.byLabel("Your words for A1"), "Keep the name.");
     await view.press(view.byLabel("Answer A1"));
@@ -2977,12 +2983,15 @@ describe("the Decisions tab", () => {
     expect(sent("ask.answer")).toEqual([expect.objectContaining({ id: "q1", option: "drop" })]);
   });
 
-  test("an open ask that moves home stays on screen at its new identity, with your choice and words", async () => {
-    workspaceNow = [merge(), canvas("q1")];
+  test("an open ask that moves home stays on screen at its new identity, with your choice and words (by its uid)", async () => {
+    workspaceNow = [{ ...merge(), uid: "u-merge" }, canvas("q1")];
     const view = await open();
     await view.press(view.byLabel("Hold PR #863"));
     await view.type(view.byLabel("Your words for A1"), "After the release.");
-    workspaceNow = [{ ...merge(), home: { kind: "main", path: "/Users/me/broomva", branch: null } }, canvas("q1")];
+    workspaceNow = [
+      { ...merge(), uid: "u-merge", home: { kind: "main", path: "/Users/me/broomva", branch: null } },
+      canvas("q1"),
+    ];
     await view.refetch();
     expect(view.text()).not.toContain("no longer open");
     expect(view.byLabel("Hold PR #863")?.getAttribute("aria-checked")).toBe("true");
@@ -2991,6 +3000,136 @@ describe("the Decisions tab", () => {
     expect(sent("ask.answer")).toEqual([
       expect.objectContaining({ where: { kind: "workspace", home: "origin/main" }, id: "A1", option: "hold" }),
     ]);
+  });
+
+  test("an answered copy wins over a moved one; without a uid nothing is re-pinned, it says answered or moved", async () => {
+    workspaceNow = [{ ...merge(), uid: "u-merge" }, canvas("q1")];
+    const view = await open();
+    // Answered at one home, still open at another: answered elsewhere, never "moved".
+    workspaceNow = [
+      {
+        ...merge(),
+        uid: "u-merge",
+        state: "answered",
+        answerOption: "hold",
+        home: { kind: "main", path: "/m", branch: null },
+      },
+      { ...merge(), uid: "u-merge", home: { kind: "checkout", path: "/other", branch: "feat/y" } },
+      canvas("q1"),
+    ];
+    await view.refetch();
+    expect(view.text()).toContain("This was answered elsewhere: “Hold PR #863”");
+    // With no uid, ledger and id alone never re-pin: it says so and waits for Next.
+    workspaceNow = [merge(), canvas("q1")];
+    const other = await open();
+    workspaceNow = [{ ...merge(), home: { kind: "main", path: "/Users/me/broomva", branch: null } }, canvas("q1")];
+    await other.refetch();
+    expect(other.text()).toContain("This was answered or moved: it is no longer open here.");
+    expect(other.byLabel("Answer A1")).toBeNull();
+    await other.press(other.byLabel("Next decision"));
+    expect(sent("ask.answer")).toEqual([]);
+  });
+
+  test("an answer in flight outlives the tab: leave and come back, it is still in flight, a focus waits, the result lands", async () => {
+    workspaceNow = [merge(), canvas("q1")];
+    const view = await open();
+    let release = () => {};
+    answerHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    answerFail = "the ledger moved under you";
+    await key(view, "1");
+    await key(view, "Enter");
+    await view.goto("Feed");
+    await view.goto("Decisions");
+    await until(view, "Decision ");
+    // Still in flight: the verb is busy (a spinner, and disabled), and nothing can answer again.
+    const verb = view.all('[aria-label^="Answer A1"]')[0];
+    expect(verb?.getAttribute("aria-disabled")).toBe("true");
+    expect(verb?.querySelector('[role="progressbar"]')).not.toBeNull();
+    // The options hold still too: the in-flight answer is read from the mutation cache, not this new card.
+    expect(view.byLabel("Hold PR #863")?.getAttribute("aria-disabled")).toBe("true");
+    await key(view, "Enter");
+    expect(sent("ask.answer")).toHaveLength(1);
+    release();
+    // The failure lands on the card that came back, which unlocks and stays answerable.
+    await until(view, "Not answered");
+    expect(view.text()).toContain("Not answered: the ledger moved under you");
+    expect(view.all('[aria-label^="Answer A1"]')[0]?.getAttribute("aria-disabled")).not.toBe("true");
+    // In flight again, a focus fired meanwhile waits for the reply, then is taken.
+    answerHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    answerFail = null;
+    await key(view, "Enter");
+    expect(sent("ask.answer")).toHaveLength(2);
+    await step(generation, () => requestIntent({ kind: "decisions", ledger: null, id: "q1" }));
+    await settle(50);
+    expect(view.text()).toContain("Approve merge of PR #863 touching");
+    release();
+    await untilGone(view, "Approve merge of PR #863 touching");
+    expect(view.text()).toContain("Canvas ask q1");
+  });
+
+  test("back on the tab with an answer in flight, that ask is the card, wherever the order puts it", async () => {
+    workspaceNow = [merge(), canvas("q1")];
+    const view = await open();
+    let release = () => {};
+    answerHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await key(view, "j");
+    await key(view, "1");
+    await key(view, "Enter");
+    await view.goto("Feed");
+    await view.goto("Decisions");
+    await until(view, "Decision ");
+    expect(view.text()).toContain("Canvas ask q1");
+    expect(view.all('[aria-label^="Answer q1"]')[0]?.querySelector('[role="progressbar"]')).not.toBeNull();
+    release();
+    await until(view, "You answered this");
+    expect(view.text()).toContain("You answered this: “File all four”. Answers are not undone here.");
+    expect(view.text()).not.toContain("answered elsewhere");
+  });
+
+  test("an answer that lands after you left is in the list when you come back, never 'answered elsewhere'", async () => {
+    workspaceNow = [merge(), canvas("q1")];
+    const view = await open();
+    let release = () => {};
+    answerHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await key(view, "1");
+    await key(view, "Enter");
+    await view.goto("Feed");
+    release();
+    await settle(60);
+    await view.goto("Decisions");
+    await until(view, "Canvas ask q1");
+    // The reply landed with no card on screen: the list learned it (one open, the answer under Recently answered).
+    expect(view.text()).toContain("1 open");
+    expect(view.text()).not.toContain("answered elsewhere");
+    await view.press(view.byLabel("Recently answered · 1"));
+    expect(view.text()).toContain("Answered just now: “Merge PR #863”");
+    expect(sent("ask.answer")).toHaveLength(1);
+  });
+
+  test("a held Enter never sends a confirm; Escape is taken only while a confirm is armed", async () => {
+    workspaceNow = [canvas("q1")];
+    const view = await open();
+    // Nothing armed: Escape is left to the host.
+    expect(await key(view, "Escape")).toBe(false);
+    await key(view, "2");
+    await key(view, "Enter");
+    expect(view.text()).toContain("Confirm — cannot be undone");
+    await settle(450);
+    // The same key, held down: repeats, never a second deliberate press.
+    await key(view, "Enter", undefined, { repeat: true });
+    await key(view, "Enter", undefined, { repeat: true });
+    expect(sent("ask.answer")).toEqual([]);
+    expect(await key(view, "Escape")).toBe(true);
+    expect(view.text()).not.toContain("Confirm — cannot be undone");
+    expect(await key(view, "Escape")).toBe(false);
   });
 
   test("a focus on an ask newer than the list waits for one more read; one never found says so", async () => {

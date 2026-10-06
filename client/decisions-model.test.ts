@@ -6,16 +6,13 @@ import {
   answerVerb,
   askKey,
   askNoticeText,
-  contentWords,
   cutAtWord,
   fallbackOption,
   groupDecisions,
   groupMeta,
   headlineOf,
   homeText,
-  keyedLines,
   ledgerRail,
-  matchFocus,
   metaLine,
   nextAfter,
   progressOf,
@@ -193,17 +190,16 @@ describe("the Decisions tab's queue", () => {
     expect(sameAsk(a, { ...a })).toBe(true);
   });
 
-  test("a focus names one ask by every field it gives; two matches pick none", () => {
+  test("a focus names the ask that matches every field it gives", () => {
     const queue = [
       ask("l.yaml", "A1", { uid: "u-1" }),
       ask("l.yaml", "A1", { uid: "u-2", home: { kind: "checkout", path: "/w", branch: null } }),
       ask("m.yaml", "B1"),
     ];
-    expect(matchFocus(queue, { ledger: "l.yaml", id: "A1" })).toBeNull();
-    expect(matchFocus(queue, { ledger: "l.yaml", id: "A1", uid: "u-2" })?.home.kind).toBe("checkout");
-    expect(matchFocus(queue, { ledger: "l.yaml", id: "A1", home: "origin/main" })?.uid).toBe("u-1");
-    expect(matchFocus(queue, { ledger: null, id: "B1" })?.ledger).toBe("m.yaml");
-    expect(matchFocus(queue, { ledger: "m.yaml", id: "B1", uid: "nope" })).toBeNull();
+    expect(resolveFocus(queue, { ledger: "l.yaml", id: "A1", uid: "u-2" })?.ask.home.kind).toBe("checkout");
+    expect(resolveFocus(queue, { ledger: "l.yaml", id: "A1", home: "origin/main" })?.ask.uid).toBe("u-1");
+    expect(resolveFocus(queue, { ledger: null, id: "B1" })).toEqual({ ask: queue[2], note: null });
+    expect(resolveFocus(queue, { ledger: "m.yaml", id: "B1", uid: "nope" })).toBeNull();
   });
 
   test("leaving an ask goes to the one at its place, the one on screen excluded; none when nothing else is open", () => {
@@ -312,25 +308,21 @@ describe("the card's words", () => {
     expect(reversibility([])).toBeNull();
   });
 
-  test("the default names an option only whole or as its first words; a short id inside a sentence never matches", () => {
+  test("the default names an option only when it is exactly that option's id", () => {
     const merge = option("merge", { label: "Merge PR #863", recommended: true });
     const hold = option("hold", { label: "Hold PR #863" });
     expect(fallbackOption(ask("l.yaml", "A1", { fallback: "hold", options: [merge, hold] }))?.id).toBe("hold");
-    expect(
-      fallbackOption(ask("l.yaml", "A1", { fallback: "merge PR #863 once green", options: [merge, hold] }))?.id,
-    ).toBe("merge");
-    // "no" and "a" are inside the sentence, not its name.
-    const short = [option("no", { label: "No" }), option("a", { label: "A" })];
-    expect(
-      fallbackOption(ask("l.yaml", "A1", { fallback: "proceed; no lane waits on a reviewer", options: short })),
-    ).toBeNull();
-    expect(fallbackOption(ask("l.yaml", "A1", { fallback: "No", options: short }))?.id).toBe("no");
-    expect(fallbackOption(ask("l.yaml", "A1", { fallback: "no lane waits on a reviewer", options: short }))).toBeNull();
-    // A word that only starts like an option is not it.
-    expect(fallbackOption(ask("l.yaml", "A1", { fallback: "holding pattern", options: [merge, hold] }))).toBeNull();
+    expect(fallbackOption(ask("l.yaml", "A1", { fallback: " hold ", options: [merge, hold] }))?.id).toBe("hold");
+    // A label, a prefix, other words, another case: none is the id, so none is claimed.
+    for (const fallback of ["Hold PR #863", "merge PR #863 once green", "Hold", "holding pattern", "leave them open"]) {
+      expect([fallback, fallbackOption(ask("l.yaml", "A1", { fallback, options: [merge, hold] }))]).toEqual([
+        fallback,
+        null,
+      ]);
+    }
   });
 
-  test("if you say nothing: the option it names and whether that is the recommendation; else the words, not an option", () => {
+  test("if you say nothing: an option's id says its label and whether it is the recommendation; else the words, no claim", () => {
     const options = [
       option("merge", { label: "Merge PR #863", recommended: true }),
       option("hold", { label: "Hold PR #863" }),
@@ -338,36 +330,19 @@ describe("the card's words", () => {
     expect(silenceOf(ask("l.yaml", "A1", { fallback: "hold", options }))).toEqual({
       text: "If you say nothing: Hold PR #863",
       tag: "differs",
-      words: null,
     });
-    // The ledger's wording says more than the label: it is kept, under the line.
+    expect(silenceOf(ask("l.yaml", "A1", { fallback: "merge", options }))).toEqual({
+      text: "If you say nothing: Merge PR #863",
+      tag: "same",
+    });
     expect(silenceOf(ask("l.yaml", "A1", { fallback: "merge PR #863 once green", options }))).toEqual({
-      text: "If you say nothing: Merge PR #863",
-      tag: "same",
-      words: "merge PR #863 once green",
+      text: "If you say nothing: merge PR #863 once green",
+      tag: null,
     });
-    expect(silenceOf(ask("l.yaml", "A1", { fallback: "Merge PR #863", options }))).toEqual({
-      text: "If you say nothing: Merge PR #863",
-      tag: "same",
-      words: null,
-    });
-    // "Hold" is a way of carrying on: a default in other words may be it, so nothing is claimed.
-    expect(silenceOf(ask("l.yaml", "A1", { fallback: "continue as is", options }))).toEqual({
+    expect(silenceOf(ask("l.yaml", "A1", { fallback: "continue as is", options: [] }))).toEqual({
       text: "If you say nothing: continue as is",
       tag: null,
-      words: null,
     });
-    // Surely none: no option shares half its words, and none is a way of carrying on.
-    const build = [
-      option("publish", { label: "Publish the beta now", recommended: true }),
-      option("rewrite", { label: "Rewrite the parser" }),
-    ];
-    expect(silenceOf(ask("l.yaml", "A1", { fallback: "ask the owner on Monday", options: build }))?.text).toBe(
-      "If you say nothing: ask the owner on Monday (not one of the options above)",
-    );
-    expect(silenceOf(ask("l.yaml", "A1", { fallback: "continue as is", options: [] }))?.text).toBe(
-      "If you say nothing: continue as is",
-    );
     expect(silenceOf(ask("l.yaml", "A1", { fallback: null, options }))).toBeNull();
   });
 
@@ -407,10 +382,6 @@ describe("the card's words", () => {
         ]),
       ),
     ).toEqual(["A2", "A1"]);
-  });
-
-  test("lines that read the same still get keys of their own", () => {
-    expect(keyedLines(["read: x", "read: x", "y"]).map((entry) => entry.key)).toEqual(["read: x", "read: x#2", "y"]);
   });
 });
 
@@ -453,7 +424,7 @@ describe("round 3", () => {
     expect(lead.rest).toBe("…plugin-provided agent tools, client state on plugin surfaces)?");
   });
 
-  test("the default in other words: holon's 'leave the PRs open…' is 'Leave them open'; Codex's 'proceed with…' claims nothing", () => {
+  test("the real defaults are said verbatim, with no claim: holon's and Codex's name no option id", () => {
     const holon = ask("holon-acp-paseo.yaml", "merge-holon-prs", {
       fallback: "leave the PRs open with their P20 verdicts recorded; never merge around the gate",
       options: [
@@ -462,23 +433,21 @@ describe("round 3", () => {
         option("hold", { label: "Leave them open" }),
       ],
     });
-    expect(fallbackOption(holon)?.id).toBe("hold");
-    expect(silenceOf(holon)?.tag).toBe("differs");
+    expect(silenceOf(holon)).toEqual({
+      text: "If you say nothing: leave the PRs open with their P20 verdicts recorded; never merge around the gate",
+      tag: null,
+    });
     const codex = ask("claude-direct-sidecar-exec.yaml", "A2", {
       fallback: "proceed with Strata B on Opus and Strata C on Sonnet; say so in the PR; no lane waits on Codex",
       options: [
         option("sign-in", { label: "Sign in now", recommended: true }),
         option("carry-on", { label: "Carry on without it" }),
-        option("later", { label: "Sign in later and re-run it on the merged code" }),
       ],
     });
-    expect(fallbackOption(codex)).toBeNull();
     expect(silenceOf(codex)).toEqual({
       text: "If you say nothing: proceed with Strata B on Opus and Strata C on Sonnet; say so in the PR; no lane waits on Codex",
       tag: null,
-      words: null,
     });
-    expect(contentWords("Leave them open")).toEqual(["leave", "open"]);
   });
 
   test("answered elsewhere says with what: its option, else its words", () => {

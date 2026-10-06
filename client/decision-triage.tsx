@@ -8,11 +8,20 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { useIsMutating, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Easing, Platform, Pressable, Text, View } from "react-native";
-import { type AnswerWhere, type DecisionAsk, homeKey, type WorkspaceAsksView } from "../shared/fleet";
-import { type CardKeys, DecisionCard, type Draft, EMPTY_DRAFT, mono, Verb } from "./decision-card";
+import { type AnswerWhere, type DecisionAsk, homeKey } from "../shared/fleet";
+import {
+  ANSWER_KEY,
+  answerInFlight,
+  type CardKeys,
+  DecisionCard,
+  type Draft,
+  EMPTY_DRAFT,
+  mono,
+  Verb,
+} from "./decision-card";
 import { useWorkspaceAsks } from "./decisions";
 import {
   answeredElsewhere,
@@ -33,7 +42,6 @@ import {
   railOverflow,
   recentlyAnswered,
   resolveFocus,
-  sameAsk,
   type TriageKey,
   triageKey,
   triageQueue,
@@ -56,6 +64,10 @@ import {
 } from "./ui";
 
 type Navigation = PluginSurfaceProps["navigation"];
+
+type Drafts = Readonly<Record<string, Draft>>;
+/** Where drafts are kept: outside ["maestro"], so a refresh of every read leaves them be. */
+const DRAFTS_KEY = ["decision-drafts"];
 
 /** The rail lists this many ledgers before "more". */
 const RAIL_SHOWN = 8;
@@ -155,6 +167,7 @@ type KeyEvent = {
   metaKey: boolean;
   ctrlKey: boolean;
   altKey: boolean;
+  repeat?: boolean;
   preventDefault(): void;
 };
 type KeyTarget = {
@@ -274,7 +287,18 @@ export function DecisionsView({
   const [pinned, setPinned] = useState<{ key: string; ask: DecisionAsk } | null>(null);
   const [lastIndex, setLastIndex] = useState(0);
   const [skipped, setSkipped] = useState<ReadonlySet<string>>(() => new Set());
-  const [drafts, setDrafts] = useState<Readonly<Record<string, Draft>>>({});
+  // Your choice and words per ask, kept in the query cache (not this view), so leaving the tab and coming back keeps them.
+  const drafts =
+    useQuery({
+      queryKey: DRAFTS_KEY,
+      queryFn: () => client.getQueryData<Drafts>(DRAFTS_KEY) ?? {},
+      initialData: {},
+      staleTime: Number.POSITIVE_INFINITY,
+    }).data ?? {};
+  const setDrafts = useCallback(
+    (update: (now: Drafts) => Drafts) => client.setQueryData<Drafts>(DRAFTS_KEY, (now) => update(now ?? {})),
+    [client],
+  );
   const [leaving, setLeaving] = useState<{ key: string; ask: DecisionAsk; at: number } | null>(null);
   const [seen, setSeen] = useState<ReadonlySet<string>>(() => new Set());
   const [status, setStatus] = useState<Status>(null);
@@ -282,13 +306,15 @@ export function DecisionsView({
     focus ? { focus, retriedAt: null } : null,
   );
   const [focusNote, setFocusNote] = useState<string | null>(null);
-  // An answer in flight: set at once (the ref, for keys in the same frame) and for the render.
-  const [busy, setBusyState] = useState(false);
-  const busyRef = useRef(false);
-  const setBusy = (now: boolean) => {
-    busyRef.current = now;
-    setBusyState(now);
-  };
+  // Any answer in flight, as the mutation cache has it: it outlives this view, so a remount still holds still.
+  const busy = useIsMutating({ mutationKey: [...ANSWER_KEY] }) > 0;
+  // Which asks this client answered, or is answering: by their full key, from the same cache.
+  const answers = useMutationState({
+    filters: { mutationKey: [...ANSWER_KEY] },
+    select: (mutation) => ({ key: String(mutation.options.mutationKey?.[2] ?? ""), status: mutation.state.status }),
+  });
+  const answeredHere = new Set(answers.filter((one) => one.status === "success").map((one) => one.key));
+  const answeringHere = new Set(answers.filter((one) => one.status === "pending").map((one) => one.key));
   const [railAll, setRailAll] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [answeredOpen, setAnsweredOpen] = useState(false);
@@ -308,20 +334,29 @@ export function DecisionsView({
   const focusTarget = pending?.focus.ask && read.data ? (resolveFocus(queue, pending.focus.ask)?.ask ?? null) : null;
   const shownKey = leaving?.key ?? pinned?.key ?? (focusTarget ? askKey(focusTarget) : null) ?? null;
   const live = shownKey ? (queue.find((ask) => askKey(ask) === shownKey) ?? null) : null;
-  const fallbackFirst = !shownKey && !pending ? (queue[0] ?? null) : null;
+  // Back on the tab with an answer still in flight: that ask is the card, wherever the order puts it.
+  const inFlightAsk = !shownKey ? (all.find((ask) => answeringHere.has(askKey(ask))) ?? null) : null;
+  const fallbackFirst = !shownKey && !pending ? (inFlightAsk ?? queue[0] ?? null) : null;
   const current = leaving?.ask ?? live ?? pinned?.ask ?? focusTarget ?? fallbackFirst;
   const currentKey = current ? askKey(current) : null;
   const index = currentKey ? queue.findIndex((ask) => askKey(ask) === currentKey) : -1;
-  // The same ask by ledger, uid and id: its home may move (a checkout's copy lands; an answer is read on origin/main).
+  // The card's ask, gone from the open queue: answered (here, or elsewhere: an answered copy wins), moved
+  // home (only with a uid to say so, and no answered copy), or gone.
+  // An ask whose answer is still on its way is not gone: the list may learn the answer a moment before the card does.
+  const gone = current !== null && !leaving && index < 0 && !(currentKey !== null && answeringHere.has(currentKey));
   const sameIdentity = (ask: DecisionAsk) =>
     current !== null && ask.ledger === current.ledger && ask.uid === current.uid && ask.id === current.id;
-  const moved = current && !leaving && index < 0 ? (queue.find(sameIdentity) ?? null) : null;
-  const elsewhere = current ? all.find((ask) => sameIdentity(ask) && ask.state !== "open") : undefined;
+  const answeredCopy = gone ? all.find((ask) => sameIdentity(ask) && ask.state !== "open") : undefined;
+  const moved = gone && !answeredCopy && current?.uid != null ? (queue.find(sameIdentity) ?? null) : null;
   const frozen =
-    current && !leaving && index < 0 && !moved
-      ? elsewhere
-        ? answeredElsewhere(elsewhere)
-        : "This ask is no longer open here: it left its ledger or moved. Nothing was sent from here."
+    gone && !moved && current
+      ? currentKey && answeredHere.has(currentKey)
+        ? `You answered this${answeredCopy ? `: ${answeredLine(answeredCopy).replace(/^Answered[^:]*: /, "")}` : ""}. Answers are not undone here.`
+        : answeredCopy
+          ? answeredElsewhere(answeredCopy)
+          : current.uid === null
+            ? "This was answered or moved: it is no longer open here. Nothing was sent from here."
+            : "This ask is no longer open here: it left its ledger. Nothing was sent from here."
       : null;
 
   // Pin what shows, the moment it shows: first open, a focus, and after any change of ask.
@@ -330,7 +365,8 @@ export function DecisionsView({
   const refetch = read.refetch;
   useEffect(() => {
     if (!read.data || leaving) return;
-    if (pending) {
+    // A focus waits while an answer is in flight; pinning the card already on screen does not.
+    if (pending && !busy) {
       const want = pending.focus.ask;
       const found = want ? resolveFocus(queueRef.current, want) : null;
       if (want && !found && pending.retriedAt === null) {
@@ -349,7 +385,7 @@ export function DecisionsView({
       return;
     }
     if (!pinned && current && !frozen) setPinned({ key: askKey(current), ask: current });
-  }, [read.data, readAt, refetch, pending, pinned, current, frozen, leaving]);
+  }, [read.data, readAt, refetch, pending, pinned, current, frozen, leaving, busy]);
   // Keep the pinned snapshot fresh while its ask is open, so a frozen card shows the last words read.
   useEffect(() => {
     if (pinned && live && live !== pinned.ask && askKey(live) === pinned.key) setPinned({ key: pinned.key, ask: live });
@@ -357,7 +393,7 @@ export function DecisionsView({
   }, [pinned, live, index, lastIndex]);
   // Still open, at a new home: the same ask, pinned at its new identity, your choice and words with it.
   useEffect(() => {
-    if (!moved || !pinned) return;
+    if (!moved || !pinned || busy) return;
     const from = pinned.key;
     const to = askKey(moved);
     setDrafts((now) => {
@@ -367,20 +403,23 @@ export function DecisionsView({
       return { ...rest, [to]: draft };
     });
     setPinned({ key: to, ask: moved });
-  }, [moved, pinned]);
+  }, [moved, pinned, busy, setDrafts]);
   // A new focus while open: its ledger, and its ask once read.
   const focusAt = focus?.at ?? null;
   const focusRef = useRef(focus);
   focusRef.current = focus;
+  // Taken once, and not while an answer is in flight: it waits until the reply lands.
+  const focusTaken = useRef<number | null>(null);
   useEffect(() => {
     const next = focusRef.current;
-    if (focusAt === null || !next) return;
+    if (focusAt === null || !next || busy || focusTaken.current === focusAt) return;
+    focusTaken.current = focusAt;
     setLedger(next.ledger);
     setPending({ focus: next, retriedAt: null });
     setFocusNote(null);
     setLeaving(null);
     setSeen(new Set());
-  }, [focusAt]);
+  }, [focusAt, busy]);
   // Every ask this visit has queued counts toward M; skips of asks no longer open are dropped.
   const queueKeys = queue.map(askKey).join("\n");
   useEffect(() => {
@@ -408,7 +447,7 @@ export function DecisionsView({
   }, [showing, stale]);
 
   const pin = (ask: DecisionAsk | null, at = 0) => {
-    if (busyRef.current) return;
+    if (answerInFlight(client)) return;
     setPinned(ask ? { key: askKey(ask), ask } : null);
     setLastIndex(at);
   };
@@ -418,7 +457,7 @@ export function DecisionsView({
   };
   const leave = () => pin(nextAfter(queue, currentKey, index < 0 ? lastIndex : index), index < 0 ? lastIndex : index);
   const skip = () => {
-    if (!current || !currentKey || busyRef.current) return;
+    if (!current || !currentKey || answerInFlight(client)) return;
     setSkipped((now) => new Set([...now, currentKey]));
     setStatus({ kind: "skipped", ask: current });
     leave();
@@ -428,9 +467,6 @@ export function DecisionsView({
     const at = index < 0 ? lastIndex : index;
     setStatus({ kind: "answered", ask: answered, warning });
     setDrafts(({ [currentKey]: _gone, ...rest }) => rest);
-    client.setQueriesData<WorkspaceAsksView>({ queryKey: ["maestro", "workspace-asks"] }, (view) =>
-      view ? { ...view, decisions: view.decisions.map((ask) => (sameAsk(ask, answered) ? answered : ask)) } : view,
-    );
     // The card that leaves is the one you answered, as it read: a refetch landing mid-exit does not change it.
     setLeaving({ key: currentKey, ask: current, at });
   };
@@ -442,12 +478,12 @@ export function DecisionsView({
     (root.current as unknown as DomNode | null)?.focus?.({ preventScroll: true });
   };
   const reorder = (next: Ordering) => {
-    if (busyRef.current) return;
+    if (answerInFlight(client)) return;
     setOrdering(next);
     pin(triageQueue(all, { ordering: next, ledger: ledgerShown, skipped })[0] ?? null);
   };
   const choose = (entry: string | null) => {
-    if (busyRef.current) return;
+    if (answerInFlight(client)) return;
     setLedger(entry);
     setSeen(new Set());
     setPickerOpen(false);
@@ -483,7 +519,10 @@ export function DecisionsView({
         onOption: optionAt(event.target),
       });
       if (!key) return;
+      // Escape is the card's only while a confirm is armed; a held Enter (key repeat) never answers.
+      if (key.kind === "cancel" && !keys.current?.armed()) return;
       event.preventDefault();
+      if (key.kind === "answer" && event.repeat) return;
       act.current(key);
     };
     // In the capture phase, before a focused option takes Enter or Space as a press of itself (it selects that same option).
@@ -834,7 +873,6 @@ export function DecisionsView({
             onDraft={(draft) => setDrafts((now) => ({ ...now, [currentKey]: draft }))}
             frozen={frozen}
             onNext={frozen ? leave : undefined}
-            onBusy={setBusy}
           />
         </ExitCard>
       ) : (

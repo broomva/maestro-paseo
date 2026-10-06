@@ -260,14 +260,19 @@ the control repo (`~/broomva`, or `MAESTRO_PASEO_CONTROL_REPO`), each ask read w
 - **The card stays the card.** The ask on screen is pinned to its full identity (its home, ledger,
   uid and id) the moment it shows. A poll, another client or a newer ask never swaps it. An ask
   answered elsewhere stays on screen, read-only, saying *This was answered elsewhere* and with what,
-  with *Next decision*; nothing moves on by itself. An ask still open whose home moved (a
-  checkout's copy landed) stays on screen at its new home, your choice and words with it. Your
+  with *Next decision*; nothing moves on by itself. An answered copy anywhere always reads as
+  answered. An ask still open whose home moved (a checkout's copy landed) stays on screen at its new
+  home, your choice and words with it, but only when it has a uid to say it is the same ask;
+  without one it says *This was answered or moved* and waits for *Next decision*. Your
   choice and words are kept per ask while you move between asks. A focus from elsewhere opens the
   ask that matches every field it gives; with only a ledger and an id that two homes share, the one
   that waits on you, else the first, saying so. A focus that matches nothing waits for one more
   read, then says *That decision isn't in the list yet*.
-- **An answer in flight.** Until its reply lands, nothing moves off the card: J/K, Skip, the rail,
-  the order and *Up next* wait. A failure shows on the card, which stays answerable.
+- **An answer in flight.** The answer lives in the plugin's mutation cache, keyed by the ask's full
+  identity, not in the view: leaving the tab and coming back finds it still in flight, and its
+  result lands either way (the list learns the answer; a failure is said, and shows on the card).
+  Until its reply lands, nothing moves off the card: J/K, Skip, the rail, the order, *Up next*, a
+  focus from elsewhere and the options wait, and no second answer is sent.
 - **A failed refresh** keeps what was read, with a quiet note, and tries again on its own; only a
   first read that fails shows the error and *Try again*.
 - **The ledger rail.** Each ledger with an open ask and its count, *All* first, names cut at a word.
@@ -282,26 +287,21 @@ the control repo (`~/broomva`, or `MAESTRO_PASEO_CONTROL_REPO`), each ask read w
   question* holds only what the headline leaves out. *What waiting costs* and *Why you* sit side by
   side (stacked on a phone). Each option is a radio card: its label, what it does, *Recommended*,
   and *Cannot be undone* when `reversible: false`. Nothing is chosen for you, the recommendation
-  included. *If you say nothing* is its own row: the option the default names (it is that option's
-  id or label, or begins with one of four characters or more, or its first clause says two thirds
-  of the label's words: "leave the PRs open…" is *Leave them open*) with *same as recommended* or
-  *differs from the recommendation*. Otherwise the ledger's words; *(not one of the options
-  above)* only when no option shares half its words with them and none is a way of carrying on.
+  included. *If you say nothing* is its own row. When the ledger's `default` is exactly an option's id,
+  it shows that option's label with *same as recommended* or *differs from the recommendation*;
+  any other default is shown as the ledger wrote it, with no claim about the options.
   The verb reads *Answer with <option>* and waits until you choose (an ask with no options says so
   and takes your words); one answer is sent however fast you press. An option that cannot be
   undone takes a second, deliberate press: the first turns the verb into *Confirm — cannot be
-  undone*; Esc or another option calls it off. *Skip* leaves it open and moves
-  it to the end of the queue, for this visit. *Details* holds the ask's id, the full question, the
-  audit layer (class, gates, what was tried before asking), the ledger, where the answer is written
-  (short: never a machine path on the main surface), and the session that asked. The audit layer
-  (class, gates, what was tried) is redacted by the plugin before it leaves it: the value of any
-  secret-named key (`token=`, `password:`, `api_key = `…), a Bearer or Basic credential, a known
-  key prefix (`sk-`, `ghp_`, `glpat-`, `xox?-`, `AIza`, `npm_`, `AKIA`, `eyJ`…), a private key block
-  and any long random-looking token read `•••`, the rest of the line kept; at most eight lines,
-  each at most 240 characters.
+  undone*; Esc or another option calls it off, and a held key (its repeats) never confirms. *Skip* leaves it open and moves
+  it to the end of the queue, for this visit. *Details* holds the ask's id, the full question, its class and
+  the lanes it gates, the ledger, where the answer is written (short: never a machine path on the
+  main surface), and the session that asked. The plugin sends class and gates only when each is an
+  id (letters, digits, `.`, `_`, `-`, at most 48; at most eight gates) and drops anything else;
+  what the agent tried before asking (`exhausted`) is free text and never leaves the ledger.
 - **Keys, on the web.** The tab takes focus when it opens and after each answer. Inside it, 1–4
   choose an option, Enter answers, S skips (only where Skip is offered), J and K go to the next and
-  the previous, Esc calls off a confirm, each hinted beside what it drives. On a focused option
+  the previous, Esc calls off a confirm (and is left alone when none is armed), each hinted beside what it drives. On a focused option
   card (Tab reaches every option, a fifth too), Enter and Space select that option and never
   answer. A key outside the tab is never taken. None acts
   while you type in a field or with a modifier held, and Enter on a focused button presses that

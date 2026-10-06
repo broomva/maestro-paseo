@@ -216,25 +216,6 @@ export function upNext(queue: readonly DecisionAsk[], index: number, count = 3):
 }
 
 /**
- * What a focus names: a ledger, an id, and the uid and home when it knows
- * them. The one open ask that matches every field it gives; null when none
- * does, or more than one (then nothing is guessed).
- */
-export function matchFocus(
-  queue: readonly DecisionAsk[],
-  want: { ledger: string | null; id: string; uid?: string | null; home?: string | null },
-): DecisionAsk | null {
-  const found = queue.filter(
-    (ask) =>
-      ask.id === want.id &&
-      (want.ledger == null || ask.ledger === want.ledger) &&
-      (want.uid == null || ask.uid === want.uid) &&
-      (want.home == null || homeKey(ask.home) === want.home),
-  );
-  return found.length === 1 ? (found[0] ?? null) : null;
-}
-
-/**
  * A focus resolved: the one ask it names; with only a ledger and an id that
  * two homes share, the one that waits on you, else the first with a note
  * saying there are more; null with no match.
@@ -384,98 +365,35 @@ export function metaLine(ask: DecisionAsk, now: number = Date.now()): string {
     .join(" · ");
 }
 
-const plain = (value: string) =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-
-/** Shorter names than this match a default only whole, never as its first word. */
-const NAME_PREFIX_CHARS = 4;
-
-/** Words that carry no meaning of their own when an option is compared with a default. */
-const STOP_WORDS = new Set(
-  "a an the them it its this that these those their there to of and or for on in with as at by be is are was me my you your our we us so now all any".split(
-    " ",
-  ),
-);
-
-/** A text's content words: lowercase, punctuation gone, stop words dropped. */
-export function contentWords(value: string): string[] {
-  return plain(value)
-    .split(" ")
-    .filter((word) => word.length > 0 && !STOP_WORDS.has(word));
-}
-
-/** How many of a label's content words the given words say, as a share of the label's. */
-function overlap(label: string, words: readonly string[]): number {
-  const own = contentWords(label);
-  if (own.length === 0) return 0;
-  return own.filter((word) => words.includes(word)).length / own.length;
-}
-
-/** Labels that keep going as things are: a default is often one of these in other words, so it is never said to be none. */
-const CARRY_ON = /^(carry on|continue|proceed|keep|leave|stay|ship|wait|hold|defer|do nothing|skip)\b/;
-
 /**
- * The option the default names: the default is an option's id or label, or
- * begins with one (four characters or more, as a whole word); else its
- * leading clause says at least two thirds of one label's content words (two
- * at least): "leave the PRs open with…" is "Leave them open". Only when it
- * names exactly one; a short id inside a sentence is never a match.
+ * The option the ledger's default names: only when the default is exactly an
+ * option's id. Anything else is the ledger's own words, and no option is
+ * claimed for it.
  */
 export function fallbackOption(ask: Pick<DecisionAsk, "fallback" | "options">): DecisionOption | null {
-  if (!ask.fallback) return null;
-  const said = plain(ask.fallback);
-  const named = ask.options.filter((option) =>
-    [option.id, option.label].some((raw) => {
-      const name = plain(raw);
-      if (!name) return false;
-      return said === name || (name.length >= NAME_PREFIX_CHARS && said.startsWith(`${name} `));
-    }),
-  );
-  if (named.length === 1) return named[0] ?? null;
-  if (named.length > 1) return null;
-  const clause = contentWords(ask.fallback.split(/[;,—–(]/)[0] ?? "");
-  const close = ask.options.filter(
-    (option) => contentWords(option.label).length >= 2 && overlap(option.label, clause) >= 2 / 3,
-  );
-  return close.length === 1 ? (close[0] ?? null) : null;
+  const said = ask.fallback?.trim();
+  if (!said) return null;
+  return ask.options.find((option) => option.id === said) ?? null;
 }
 
 /**
- * Whether the default is surely none of the options: no option shares half
- * its content words with it, and no option is a way of carrying on (which a
- * default often is, in other words). When unsure, nothing is claimed.
- */
-function surelyNoOption(ask: Pick<DecisionAsk, "fallback" | "options">): boolean {
-  if (!ask.fallback || ask.options.length === 0) return false;
-  const words = contentWords(ask.fallback);
-  return ask.options.every((option) => overlap(option.label, words) < 1 / 2 && !CARRY_ON.test(plain(option.label)));
-}
-
-/**
- * What happens if you say nothing, on its own row. A default that names an
- * option says that option's label, and whether it is the recommendation; one
- * that surely names none says the ledger's words and that they are not one of
- * the options; otherwise the ledger's words, with no claim. `words` is the
- * ledger's own wording when it says more than the option's label.
+ * What happens if you say nothing, on its own row. A default that is an
+ * option's id says that option's label, and whether it is the
+ * recommendation; any other default is the ledger's words, verbatim, with no
+ * claim about the options.
  */
 export function silenceOf(ask: Pick<DecisionAsk, "fallback" | "options">): {
   text: string;
   tag: "same" | "differs" | null;
-  words: string | null;
 } | null {
   if (!ask.fallback) return null;
   const named = fallbackOption(ask);
-  if (!named) {
-    const outside = surelyNoOption(ask) ? " (not one of the options above)" : "";
-    return { text: `If you say nothing: ${ask.fallback}${outside}`, tag: null, words: null };
-  }
+  if (!named) return { text: `If you say nothing: ${ask.fallback}`, tag: null };
   const recommended = ask.options.find((option) => option.recommended) ?? null;
-  const tag = recommended ? (recommended.id === named.id ? "same" : "differs") : null;
-  const extra = plain(ask.fallback) !== plain(named.label) && plain(ask.fallback) !== plain(named.id);
-  return { text: `If you say nothing: ${named.label}`, tag, words: extra ? ask.fallback : null };
+  return {
+    text: `If you say nothing: ${named.label}`,
+    tag: recommended ? (recommended.id === named.id ? "same" : "differs") : null,
+  };
 }
 
 /** The silence tag's words. */
@@ -516,16 +434,6 @@ export function recentlyAnswered(asks: readonly DecisionAsk[]): DecisionAsk[] {
   return asks
     .filter((ask) => ask.state !== "open" && !ask.idea)
     .sort((a, b) => (b.answeredAt ?? "").localeCompare(a.answeredAt ?? ""));
-}
-
-/** Lines with a key each, unique even when two lines read the same (the second is `line#2`). */
-export function keyedLines(lines: readonly string[]): { key: string; line: string }[] {
-  const seen = new Map<string, number>();
-  return lines.map((line) => {
-    const count = (seen.get(line) ?? 0) + 1;
-    seen.set(line, count);
-    return { key: count === 1 ? line : `${line}#${count}`, line };
-  });
 }
 
 /** What an ask answered elsewhere was answered with: its option's label, else its words, cut short. */

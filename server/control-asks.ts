@@ -111,66 +111,26 @@ function textsOf(value: unknown): string[] {
   });
 }
 
-/** The audit layer as it goes to a client: at most this many lines, each at most this long. */
+/** The audit layer's ids that go to a client: at most this many per list. */
 export const AUDIT_LINES = 8;
-export const AUDIT_LINE_CHARS = 240;
-/** What a redacted value reads as. */
-export const MASK = "•••";
+/** An audit id as a ledger writes one (`authority`, `lane-ticket-sync`): anything else is free text and stays home. */
+const AUDIT_ID = /^[a-z0-9][a-z0-9._-]{0,47}$/i;
 
-/** Known credential prefixes (OpenAI/Anthropic, Stripe, GitHub, GitLab, Slack, Google, npm, AWS, JWTs), with 8 or more characters after: "Asian" is a word. */
-const KNOWN_PREFIX =
-  /\b(?:sk-|sk_(?:live|test)_|rk_(?:live|test)_|gh[pousr]_|github_pat_|glpat-|xox[a-z]-|xapp-|AIza|npm_|AKIA|ASIA|eyJ)[A-Za-z0-9._~+/=-]{8,}/gi;
-/** A word that names a secret, as a key: token, secret, password, api key, auth, credential, cookie, session... */
-const SECRET_KEY =
-  "(?:[A-Za-z_-]*(?:token|secret|passw(?:or)?d|pwd|api[_-]?key|access[_-]?key|auth(?:orization)?|credential|cookie|session[_-]?id|private[_-]?key)[A-Za-z_-]*)";
-/** `key=value`, `key: value`, `key = value`: the value is masked, the key kept. `token= in the handler` has no value. */
-const KEY_VALUE = new RegExp(
-  `\\b(${SECRET_KEY})(=|:|\\s+=\\s+|\\s*:\\s+)(?!${MASK})(?!(?:Bearer|Basic)\\b)(["']?)([^\\s"',;]+)\\3`,
-  "gi",
-);
-/** An HTTP credential: `Bearer x`, `Basic x`. */
-const SCHEME = /\b(Bearer|Basic)\s+(?!•)[A-Za-z0-9._~+/=-]+/gi;
-/** A private key block's armour. */
-const KEY_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gi;
-/** A long token: 24 or more of [A-Za-z0-9_-], with upper case, lower case and a digit (a slug or a hex SHA is not one). */
-const LONG_TOKEN = /\b[A-Za-z0-9_-]{24,}\b/g;
-const looksRandom = (word: string) =>
-  /[A-Z]/.test(word) && /[a-z]/.test(word) && /[0-9]/.test(word) && (word.match(/-/g) ?? []).length <= 3;
+/** The ids of a list that look like ids, at most AUDIT_LINES of them. */
+function auditIds(values: readonly string[]): string[] {
+  return values.filter((value) => AUDIT_ID.test(value)).slice(0, AUDIT_LINES);
+}
 
 /**
- * A line with every value that could be a secret masked (MASK), and the rest
- * kept: known key prefixes, the value of a secret-named key, a Bearer or Basic
- * credential, a private key block, and any long random-looking token. Then cut
- * to AUDIT_LINE_CHARS. The audit layer justifies an ask; it never needs the
- * secret itself.
+ * An ask's audit layer as the wire carries it: its class and the lanes it
+ * gates, each only when it is an id (AUDIT_ID). What the agent tried before
+ * asking (`exhausted`) is free text and never leaves the ledger. Null when
+ * neither is written.
  */
-export function redact(line: string): string {
-  const masked = line
-    .replace(KEY_BLOCK, MASK)
-    .replace(SCHEME, (_, scheme: string) => `${scheme} ${MASK}`)
-    .replace(KNOWN_PREFIX, MASK)
-    .replace(
-      KEY_VALUE,
-      (_, key: string, separator: string, quote: string) => `${key}${separator}${quote}${MASK}${quote}`,
-    )
-    .replace(LONG_TOKEN, (word) => (looksRandom(word) ? MASK : word));
-  return masked.length > AUDIT_LINE_CHARS ? `${masked.slice(0, AUDIT_LINE_CHARS - 1)}…` : masked;
-}
-
-/** Lines as a client may see them: at most AUDIT_LINES, each redacted and cut short. */
-export function safeAuditLines(lines: readonly string[]): string[] {
-  return lines.slice(0, AUDIT_LINES).map(redact);
-}
-
-/** An ask's audit layer (class, gates, exhausted, each redacted for the wire); null when it writes none of them. */
 export function auditOf(row: Row): AskAudit | null {
   const kind = text(row.class);
-  const audit = {
-    class: kind ? redact(kind) : null,
-    gates: safeAuditLines(textsOf(row.gates)),
-    exhausted: safeAuditLines(textsOf(row.exhausted)),
-  };
-  return audit.class || audit.gates.length > 0 || audit.exhausted.length > 0 ? audit : null;
+  const audit = { class: kind && AUDIT_ID.test(kind) ? kind : null, gates: auditIds(textsOf(row.gates)) };
+  return audit.class || audit.gates.length > 0 ? audit : null;
 }
 
 export function stateOf(row: Row): DecisionAsk["state"] {

@@ -5,18 +5,25 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
 import { Icon, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
-import { useMutation } from "@tanstack/react-query";
+import { type QueryClient, useIsMutating, useMutation, useMutationState, useQueryClient } from "@tanstack/react-query";
 import { type MutableRefObject, type ReactNode, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Platform, Pressable, Text, View } from "react-native";
-import { ANSWER_NOTE_CHARS, type AnswerWhere, answerAsk, type DecisionAsk } from "../shared/fleet";
+import {
+  ANSWER_NOTE_CHARS,
+  type AnswerWhere,
+  answerAsk,
+  type DecisionAsk,
+  type WorkspaceAsksView,
+} from "../shared/fleet";
 import {
   answeredLine,
   answerVerb,
+  askKey,
   BATCHED_TEXT,
   headlineOf,
-  keyedLines,
   metaLine,
   SILENCE_TAG,
+  sameAsk,
   silenceOf,
   writtenTo,
 } from "./decisions-model";
@@ -32,8 +39,24 @@ export const mono = Platform.select({ ios: "Menlo", android: "monospace", defaul
 export type Draft = { chosen: string | null; note: string };
 export const EMPTY_DRAFT: Draft = { chosen: null, note: "" };
 
-/** What the keyboard drives on the card on screen: choose an option, answer. */
-export type CardKeys = { choose: (index: number) => void; answer: () => void; cancel: () => void; options: number };
+/** What the keyboard drives on the card on screen: choose an option, answer, call off an armed confirm. */
+export type CardKeys = {
+  choose: (index: number) => void;
+  answer: () => void;
+  cancel: () => void;
+  /** Whether a confirm is armed: only then is Escape the card's. */
+  armed: () => boolean;
+  options: number;
+};
+
+/** Every answer in flight carries this key's head; one ask's adds its full identity (askKey). */
+export const ANSWER_KEY = ["maestro", "answer"] as const;
+const answerKeyOf = (ask: DecisionAsk) => [...ANSWER_KEY, askKey(ask)];
+
+/** Whether any answer is in flight, read from the mutation cache at once: a second press in the same frame sees the first. */
+export function answerInFlight(client: QueryClient): boolean {
+  return client.isMutating({ mutationKey: [...ANSWER_KEY] }) > 0;
+}
 
 /** A confirm is taken this long after it is armed, at the soonest: a second Enter in the same breath is not deliberate. */
 export const CONFIRM_MS = 400;
@@ -248,7 +271,6 @@ export function DecisionCard({
   onDraft,
   frozen = null,
   onNext,
-  onBusy,
 }: {
   theme: PluginTheme;
   ask: DecisionAsk;
@@ -271,19 +293,37 @@ export function DecisionCard({
   frozen?: string | null;
   /** Offered with `frozen`: go on to the next decision. */
   onNext?: () => void;
-  /** Told when an answer leaves and when its reply lands, so the view holds still meanwhile. */
-  onBusy?: (busy: boolean) => void;
 }) {
   const text = useText(theme);
   const toast = useToast();
   const refresh = useRefresh();
   const send = useRpc(answerAsk);
+  const client = useQueryClient();
+  // These run from the mutation cache, whether or not this card is still on screen when the reply lands:
+  // the list learns the answer, and a failure is said.
   const answer = useMutation({
+    mutationKey: answerKeyOf(ask),
     mutationFn: send,
+    onSuccess: ({ ask: answered, warning }) => {
+      client.setQueriesData<WorkspaceAsksView>({ queryKey: ["maestro", "workspace-asks"] }, (view) =>
+        view ? { ...view, decisions: view.decisions.map((one) => (sameAsk(one, answered) ? answered : one)) } : view,
+      );
+      if (warning) toast.error(warning);
+    },
+    onError: (error) => toast.error(errorText(error)),
     onSettled: () => {
       void refresh();
     },
   });
+  // Any answer in flight holds every card still; this ask's own, as the mutation cache has it, survives a remount.
+  const anyInFlight = useIsMutating({ mutationKey: [...ANSWER_KEY] }) > 0;
+  const mine = useMutationState({
+    filters: { mutationKey: answerKeyOf(ask) },
+    select: (mutation) => ({ status: mutation.state.status, error: mutation.state.error }),
+  });
+  const last = mine[mine.length - 1] ?? null;
+  const pendingHere = last?.status === "pending";
+  const failure = last?.status === "error" ? last.error : null;
   const [own, setOwn] = useState<Draft>(EMPTY_DRAFT);
   const current = draft ?? own;
   const setDraft = (next: Draft) => (onDraft ? onDraft(next) : setOwn(next));
@@ -300,19 +340,17 @@ export function DecisionCard({
     setDraft({ ...current, chosen: id });
   };
   const setNote = (value: string) => setDraft({ ...current, note: value });
-  // Set before the request leaves, read before the next: a second Enter in the same frame finds it.
-  const inFlight = useRef(false);
   const [fullOpen, setFullOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const open = ask.state === "open" && !frozen;
   const option = ask.options.find((entry) => entry.id === chosen) ?? null;
   const hasOptions = ask.options.length > 0;
   const lead = headlineOf(ask);
-  const canAnswer = open && !ask.refusal && !answer.isPending && (option !== null || note.trim().length > 0);
+  const canAnswer = open && !ask.refusal && !anyInFlight && (option !== null || note.trim().length > 0);
   const silence = silenceOf(ask);
   const origin = ask.origin;
   const submit = () => {
-    if (inFlight.current || !canAnswer) return;
+    if (answerInFlight(client) || !canAnswer) return;
     if (option?.reversible === false) {
       const armed = armedAt.current;
       if (armed === null) {
@@ -323,20 +361,13 @@ export function DecisionCard({
       if (Date.now() - armed < CONFIRM_MS) return;
     }
     disarm();
-    inFlight.current = true;
-    onBusy?.(true);
+    // What follows is this card's own, while it is on screen; what must outlive it is in the hook's callbacks.
     answer.mutate(
       { where, ledger: ask.ledger, uid: ask.uid, id: ask.id, hash: ask.hash, option: chosen, note },
       {
         onSuccess: ({ ask: answered, warning }) => {
           setDraft(EMPTY_DRAFT);
-          if (warning) toast.error(warning);
           onAnswered(answered, warning);
-        },
-        onError: (error) => toast.error(errorText(error)),
-        onSettled: () => {
-          inFlight.current = false;
-          onBusy?.(false);
         },
       },
     );
@@ -347,10 +378,11 @@ export function DecisionCard({
         options: ask.options.length,
         choose: (index) => {
           const entry = ask.options[index];
-          if (entry && !inFlight.current) setChosen(entry.id);
+          if (entry && !answerInFlight(client)) setChosen(entry.id);
         },
         answer: submit,
         cancel: disarm,
+        armed: () => armedAt.current !== null,
       }
     : null;
   useEffect(() => {
@@ -428,7 +460,7 @@ export function DecisionCard({
           {ask.options.map((entry, at) => {
             const picked = open ? chosen === entry.id : ask.answerOption === entry.id;
             const irreversible = entry.reversible === false;
-            const inactive = !open || answer.isPending || Boolean(ask.refusal);
+            const inactive = !open || anyInFlight || Boolean(ask.refusal);
             return (
               <Pressable
                 key={entry.id}
@@ -516,7 +548,6 @@ export function DecisionCard({
                 </Tag>
               ) : null}
             </View>
-            {silence.words ? <Text style={text.small}>{`The ledger says: “${silence.words}”`}</Text> : null}
           </View>
         </View>
       ) : null}
@@ -605,9 +636,9 @@ export function DecisionCard({
               {`“${option?.label ?? ""}” cannot be undone. Press again to send it, or Esc (or another option) to stop.`}
             </Text>
           ) : null}
-          {answer.isError ? (
+          {failure ? (
             <Notice theme={theme} tone="danger">
-              {`Not answered: ${errorText(answer.error)}`}
+              {`Not answered: ${errorText(failure)}`}
             </Notice>
           ) : null}
           <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap", alignItems: "center" }}>
@@ -618,7 +649,7 @@ export function DecisionCard({
               label={confirming ? "Confirm — cannot be undone" : answerVerb(option, hasOptions, note)}
               compact={compact}
               grow={compact}
-              busy={answer.isPending}
+              busy={pendingHere}
               disabled={!canAnswer}
               accessibilityLabel={
                 confirming
@@ -674,18 +705,6 @@ export function DecisionCard({
               <Fact theme={theme} label="Gates">
                 {ask.audit.gates.join(", ")}
               </Fact>
-            ) : null}
-            {ask.audit && ask.audit.exhausted.length > 0 ? (
-              <View style={{ gap: 2 }}>
-                <Text style={[text.small, { fontWeight: "600", color: theme.colors.foreground }]}>
-                  Tried before asking
-                </Text>
-                {keyedLines(ask.audit.exhausted).map(({ key, line }) => (
-                  <Text key={key} style={text.small} selectable>
-                    {`· ${line}`}
-                  </Text>
-                ))}
-              </View>
             ) : null}
             <Fact theme={theme} label="Ledger">
               {`${ask.ledger}${ask.arc ? ` (arc ${ask.arc})` : ""}${ask.uid ? ` · uid ${ask.uid}` : ""}`}

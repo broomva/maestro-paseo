@@ -7,7 +7,6 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type AnswerInput,
-  AUDIT_LINE_CHARS,
   AUDIT_LINES,
   acquireLock,
   answerDecision,
@@ -17,9 +16,7 @@ import {
   LOCK_STALE_MS,
   lockKey,
   readDecisions,
-  redact,
   releaseLock,
-  safeAuditLines,
   withAnswer,
 } from "./control-asks";
 
@@ -114,63 +111,29 @@ const answered = (source: string, extra: Partial<AnswerInput>) =>
   withAnswer(source, "test-arc.yaml", input(extra), AT).out;
 
 describe("reading decision asks", () => {
-  test("the audit layer is redacted: every secret's value masked, the line kept, capped in count and length", () => {
-    // Built from parts, so the test file itself carries no key-shaped string for a scanner to flag.
-    const p = (...parts: string[]) => parts.join("");
-    const probes: [string, string][] = [
-      [p("curl -d access_", "token=abc123def"), "curl -d access_token=•••"],
-      [p("refresh_", "token=zzz999"), "refresh_token=•••"],
-      [p("tok", "en = x"), "token = •••"],
-      [p("pass", "word=hunter2"), "password=•••"],
-      [p("api_", "key=AbC123"), "api_key=•••"],
-      [p("Authorization: Bearer ", "eyJhbGciOiJIUzI1NiJ9.e30.abc"), "Authorization: Bearer •••"],
-      [p("found gl", "pat-ABCdef123456 in env"), "found ••• in env"],
-      [p("key AI", "zaSy", "A1234567", "890abcdefg"), "key •••"],
-      [p("npm_", "AbCdEf1234567890"), "•••"],
-      [p("sk_", "live_51Habc123"), "•••"],
-      [p("xa", "pp-1-A111-222"), "•••"],
-      [p("AS", "IAABCDEFGHIJKLMNOP"), "•••"],
-      [p("read: the key is ", "sk", "-ant-api03-AbCdEf123456 in the log"), "read: the key is ••• in the log"],
-      [p("GitHub ", "ghp", "_abcdefghijklmnop1234"), "GitHub •••"],
-      [p("slack ", "xoxb", "-1234-5678-abcdef found"), "slack ••• found"],
-      [p("-----BEGIN OPENSSH ", "PRIVATE", " KEY----- abc"), "•••"],
-      [p("random ", "Q2xhdWRlQ29kZTEyMzQ1Njc4OWFiY2Q"), "random •••"],
-    ];
-    for (const [line, masked] of probes) expect([line, redact(line)]).toEqual([line, masked]);
-    // Harmless lines are kept as written.
-    for (const line of [
-      "checked token= in the URL handler",
-      "read: task-list and risk-free default",
-      "stoic-bedbug-bro-2670-maestro-gaps",
-      "P20 score=9 recorded on rebased commit 1b281776efd2",
-      "the Asian market",
-      "read: nothing on disk",
-    ]) {
-      expect(redact(line)).toBe(line);
-    }
-    const lines = Array.from({ length: 12 }, (_, at) => `default: available ${at}`);
-    expect(safeAuditLines(lines)).toHaveLength(AUDIT_LINES);
-    expect(redact(`long: ${"x ".repeat(200)}`).length).toBe(AUDIT_LINE_CHARS);
-    // Through the reader: class, gates and exhausted are all redacted before the wire.
-    const source = `arc: a\nasks:\n  - id: X1\n    ask: "Go?"\n    class: ${p("api_", "key=AbC123")}\n    gates: [${p("tok", "en=zz9")}]\n    exhausted: ["read: ${p("sk", "-live-abcdef123456")} in x", "read: fine"]\n`;
-    expect(decisionsOf(source, "a.yaml")[0]?.audit).toEqual({
-      class: "api_key=•••",
-      gates: ["token=•••"],
-      exhausted: ["read: ••• in x", "read: fine"],
-    });
-  });
-
-  test("the audit layer: class, gates as a list (a lone string is one), exhausted; none written is null", () => {
+  test("the audit layer carries ids only: class and gates allowlisted, free text dropped, what was tried never sent", () => {
     const ledger = (fields: string) => `arc: a\nasks:\n  - id: X1\n    ask: "Go?"\n${fields}`;
     expect(decisionsOf(ledger(""), "a.yaml")[0]?.audit).toBeNull();
+    // A lone string is a list of one; normal ids pass.
     expect(decisionsOf(ledger("    class: authority\n    gates: lane-x\n"), "a.yaml")[0]?.audit).toEqual({
       class: "authority",
       gates: ["lane-x"],
-      exhausted: [],
     });
-    expect(decisionsOf(ledger('    gates: [lane-a, 2]\n    exhausted: ["read: x", {}]\n'), "a.yaml")[0]?.audit).toEqual(
-      { class: null, gates: ["lane-a", "2"], exhausted: ["read: x"] },
+    expect(decisionsOf(ledger("    gates: [lane-a, 2, p20, required_checks]\n"), "a.yaml")[0]?.audit).toEqual({
+      class: null,
+      gates: ["lane-a", "2", "p20", "required_checks"],
+    });
+    // Free text or anything secret-looking in class or gates is dropped; exhausted is never on the wire.
+    const p = (...parts: string[]) => parts.join("");
+    const loud = ledger(
+      `    class: "${p("api_", "key=AbC123")}"\n    gates: ["needs the owner's call", "${p("Bearer ", "eyJhbGciOiJ9")}", ok-lane]\n    exhausted: ["read: ${p("sk", "-live-abcdef123456")}"]\n`,
     );
+    expect(decisionsOf(loud, "a.yaml")[0]?.audit).toEqual({ class: null, gates: ["ok-lane"] });
+    expect(JSON.stringify(decisionsOf(loud, "a.yaml"))).not.toContain("live-abcdef");
+    // Capped at AUDIT_LINES, each id at 48 characters.
+    const many = Array.from({ length: 12 }, (_, at) => `lane-${at}`).join(", ");
+    expect(decisionsOf(ledger(`    gates: [${many}]\n`), "a.yaml")[0]?.audit?.gates).toHaveLength(AUDIT_LINES);
+    expect(decisionsOf(ledger(`    class: ${"x".repeat(49)}\n`), "a.yaml")[0]?.audit).toBeNull();
   });
 
   test("each ask's decision layer: stakes, why you, the options with consequences, recommended and the default", () => {
@@ -214,11 +177,7 @@ describe("reading decision asks", () => {
       batched: false,
       waiting: false,
       idea: null,
-      audit: {
-        class: "decision",
-        gates: [],
-        exhausted: ["read: the PR comments hold no decision", "default: available: none blocks a lane"],
-      },
+      audit: { class: "decision", gates: [] },
     });
     expect([answer?.uid, answer?.state, answer?.answer]).toEqual([
       "7d1e0c2a-5b8f-4e1a-9c4d-2f6b8a0e3c91",
