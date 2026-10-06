@@ -37,6 +37,27 @@ export const mono = Platform.select({ ios: "Menlo", android: "monospace", defaul
 
 /** Your choice and your words on one ask, before you answer. */
 export type Draft = { chosen: string | null; note: string };
+/** Your choice and words per ask (askKey), in the query cache so they outlive this card and its view. */
+export type Drafts = Readonly<Record<string, Draft>>;
+export const DRAFTS_KEY = ["decision-drafts"];
+/**
+ * How long an answer may go without a reply before this card stops waiting.
+ * The server gives up on a held ledger lock in 5 s; past this the reply is
+ * lost, and holding every card still would leave no way out.
+ */
+export const ANSWER_TIMEOUT_MS = 20_000;
+
+/** The answer, or a refusal once `ms` (ANSWER_TIMEOUT_MS) passes with no reply. */
+export function withinTimeout<T>(reply: Promise<T>, ms: number = ANSWER_TIMEOUT_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("No reply in 20 s. The answer may still land: refresh before answering again.")),
+      ms,
+    );
+  });
+  return Promise.race([reply, late]).finally(() => clearTimeout(timer));
+}
 export const EMPTY_DRAFT: Draft = { chosen: null, note: "" };
 
 /** What the keyboard drives on the card on screen: choose an option, answer, call off an armed confirm. */
@@ -303,8 +324,14 @@ export function DecisionCard({
   // the list learns the answer, and a failure is said.
   const answer = useMutation({
     mutationKey: answerKeyOf(ask),
-    mutationFn: send,
+    mutationFn: (input: Parameters<typeof send>[0]) => withinTimeout(send(input)),
     onSuccess: ({ ask: answered, warning }) => {
+      // The draft is spent, whether or not this card is still on screen.
+      client.setQueryData<Drafts>(DRAFTS_KEY, (now) => {
+        if (!now) return now;
+        const { [askKey(ask)]: _spent, ...rest } = now;
+        return rest;
+      });
       client.setQueriesData<WorkspaceAsksView>({ queryKey: ["maestro", "workspace-asks"] }, (view) =>
         view ? { ...view, decisions: view.decisions.map((one) => (sameAsk(one, answered) ? answered : one)) } : view,
       );
@@ -701,9 +728,14 @@ export function DecisionCard({
                 {ask.audit.class}
               </Fact>
             ) : null}
-            {ask.audit && ask.audit.gates.length > 0 ? (
+            {ask.audit && (ask.audit.gates.length > 0 || (ask.audit.withheld ?? 0) > 0) ? (
               <Fact theme={theme} label="Gates">
-                {ask.audit.gates.join(", ")}
+                {[
+                  ask.audit.gates.join(", "),
+                  (ask.audit.withheld ?? 0) > 0 ? `+${ask.audit.withheld} not shown (free text; see the ledger)` : "",
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
               </Fact>
             ) : null}
             <Fact theme={theme} label="Ledger">

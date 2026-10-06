@@ -232,6 +232,8 @@ export type Idea = z.infer<typeof IdeaSchema>;
 export const AskAuditSchema = z.object({
   class: z.string().nullable(),
   gates: z.array(z.string()),
+  /** Gates (and a class) the ledger writes as free text, left home: counted so the card can say so. */
+  withheld: z.number().int().min(0).optional(),
 });
 export type AskAudit = z.infer<typeof AskAuditSchema>;
 

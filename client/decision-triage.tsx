@@ -17,7 +17,8 @@ import {
   answerInFlight,
   type CardKeys,
   DecisionCard,
-  type Draft,
+  DRAFTS_KEY,
+  type Drafts,
   EMPTY_DRAFT,
   mono,
   Verb,
@@ -65,9 +66,7 @@ import {
 
 type Navigation = PluginSurfaceProps["navigation"];
 
-type Drafts = Readonly<Record<string, Draft>>;
 /** Where drafts are kept: outside ["maestro"], so a refresh of every read leaves them be. */
-const DRAFTS_KEY = ["decision-drafts"];
 
 /** The rail lists this many ledgers before "more". */
 const RAIL_SHOWN = 8;
@@ -294,6 +293,8 @@ export function DecisionsView({
       queryFn: () => client.getQueryData<Drafts>(DRAFTS_KEY) ?? {},
       initialData: {},
       staleTime: Number.POSITIVE_INFINITY,
+      // Kept while no view watches it: a draft must outlive a long visit to another tab.
+      gcTime: Number.POSITIVE_INFINITY,
     }).data ?? {};
   const setDrafts = useCallback(
     (update: (now: Drafts) => Drafts) => client.setQueryData<Drafts>(DRAFTS_KEY, (now) => update(now ?? {})),

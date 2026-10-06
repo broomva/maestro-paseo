@@ -129,8 +129,11 @@ function auditIds(values: readonly string[]): string[] {
  */
 export function auditOf(row: Row): AskAudit | null {
   const kind = text(row.class);
-  const audit = { class: kind && AUDIT_ID.test(kind) ? kind : null, gates: auditIds(textsOf(row.gates)) };
-  return audit.class || audit.gates.length > 0 ? audit : null;
+  const written = textsOf(row.gates);
+  const gates = auditIds(written);
+  const withheld = written.length - gates.length + (kind && !AUDIT_ID.test(kind) ? 1 : 0);
+  const audit = { class: kind && AUDIT_ID.test(kind) ? kind : null, gates, withheld };
+  return audit.class || audit.gates.length > 0 || withheld > 0 ? audit : null;
 }
 
 export function stateOf(row: Row): DecisionAsk["state"] {
