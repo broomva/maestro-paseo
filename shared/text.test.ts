@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { clipWords, inlinePlain, linksAndBold, plainMarkdown, tailWords } from "./text";
+import { clipWords, inlinePlain, linksAndBold, noFlagBreaks, plainMarkdown, tailWords } from "./text";
 
 describe("clipWords", () => {
   test("text that fits is flattened and kept whole", () => {
@@ -134,6 +134,19 @@ describe("plainMarkdown", () => {
     const words = "edit src/*.ts and lib/*.js, __init__ and __main__, max_tokens_per_run, 2*3*4, _private_";
     expect(inlinePlain(words)).toBe(words);
     expect(plainMarkdown(words)).toBe(words);
+  });
+
+  test("a link can keep where it points, as text (host)", () => {
+    expect(inlinePlain("see [BRO-1](https://www.linear.app/b/BRO-1) and [x](relative.md)", { hosts: true })).toBe(
+      "see BRO-1 (linear.app) and x",
+    );
+    expect(inlinePlain("see [BRO-1](https://linear.app/b/BRO-1)")).toBe("see BRO-1");
+  });
+
+  test("flag hyphens do not break a line; other hyphens are left alone", () => {
+    expect(noFlagBreaks("ctx doctor --compare (-v) on ctx-core")).toBe(
+      "ctx doctor \u2011\u2011compare (\u2011v) on ctx-core",
+    );
   });
 
   test("a gate bullet keeps code ticks and globs; only links and bold change", () => {

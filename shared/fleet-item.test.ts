@@ -2,12 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  ALERT_TITLE_MAX,
   ASK_TITLE_MAX,
   askTitle,
   fleetDetail,
   fleetHeading,
   fleetMarker,
   fleetMeta,
+  leadRestates,
   parseFleetBrief,
   withoutMarker,
 } from "./fleet-item";
@@ -70,7 +72,27 @@ describe("the producer's own brief (contract)", () => {
     expect(brief?.asks).toEqual([{ id: "alert", kind: PRODUCER.alert.kind, question: PRODUCER.alert.message }]);
     expect(brief?.verbs).toContain("a note sent back isn't read");
     expect(brief?.verbs).not.toContain("Send back answers");
-    expect(fleetHeading(PRODUCER.alert.title, PRODUCER.alert.brief)?.origin.what).toBe("alert tick-observe");
+    expect(PRODUCER.alert.brief).toContain("the fleet doesn't read notes on alerts");
+  });
+
+  test("an alert's title is its message alone; its meta says fleet, scope and alert; its kind is the detail's line", () => {
+    const heading = fleetHeading(PRODUCER.alert.title, PRODUCER.alert.brief);
+    expect(heading?.title).toBe(PRODUCER.alert.message);
+    expect(heading?.title).not.toContain("fleet sri:");
+    expect(heading?.origin.what).toBe("alert tick-observe");
+    if (!heading) throw new Error("no heading");
+    expect(fleetMeta(heading.origin)).toBe("fleet · sri · alert");
+    expect(fleetDetail(heading.origin)).toBe("tick-observe");
+    // A long message is cut at a word; with no readable brief, the title's own words lose the prefix.
+    const long = PRODUCER.alert.brief.replace(PRODUCER.alert.message, "word ".repeat(60).trim());
+    expect(fleetHeading(PRODUCER.alert.title, long)?.title.length).toBeLessThanOrEqual(ALERT_TITLE_MAX);
+    expect(fleetHeading(PRODUCER.alert.title, "")?.title).toBe(
+      "tick 11 observe failed: ctx doctor --compare exited 2\u2026",
+    );
+  });
+
+  test("the fixture is the producer's committed HEAD's", () => {
+    expect(PRODUCER.generatedBy).toContain("1aa4a51");
   });
 });
 
@@ -91,9 +113,9 @@ describe("the fleet's marker", () => {
   });
 
   test("the place reads fleet · scope; the tick is the detail's own line", () => {
-    expect(fleetMeta({ scope: "sri" })).toBe("fleet · sri");
+    expect(fleetMeta({ scope: "sri", what: "batch 7-3" })).toBe("fleet · sri");
     expect(fleetDetail({ scope: "sri", what: "batch 7-3", tick: "7" })).toBe("tick 7 · batch 7-3");
-    expect(fleetDetail({ scope: "sri", what: "alert tick-observe", tick: null })).toBe("alert tick-observe");
+    expect(fleetDetail({ scope: "sri", what: "alert tick-observe", tick: null })).toBe("tick-observe");
   });
 });
 
@@ -246,6 +268,19 @@ describe("a fleet item's heading", () => {
     expect(fleetHeading(three, OLD_BRIEF)?.title.endsWith("(+2 more)")).toBe(true);
     expect(askTitle([{ id: "a1", kind: null, question: "Short?" }])).toBe("Short?");
     expect(askTitle([])).toBeNull();
+  });
+
+  test("the tick is the batch id's, never one quoted in an ask's words", () => {
+    const title = "Rerun what failed at (tick 5)? [fleet-reconcile sri batch 7-3]";
+    const brief = "## For you\n\nThe fleet has a question (tick 5).\n\n- [a1] () Rerun what failed at (tick 5)?";
+    expect(fleetHeading(title, brief)?.origin.tick).toBe("7");
+  });
+
+  test("a lead that restates the scope or tick is not shown; one that says more is", () => {
+    const origin = { scope: "sri", tick: "7" };
+    expect(leadRestates("The fleet has 2 questions for you from scope sri (tick 7).", origin)).toBe(true);
+    expect(leadRestates("The fleet's tick for scope sri raised an alert (tick-observe).", origin)).toBe(true);
+    expect(leadRestates("Two sessions disagree on who owns the branch.", origin)).toBe(false);
   });
 
   test("the tick falls back to the batch id", () => {

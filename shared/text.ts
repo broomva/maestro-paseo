@@ -128,22 +128,43 @@ function isTableRow(line: string): boolean {
   return t.startsWith("|") && t.length > 1 && (t.match(/\|/g)?.length ?? 0) >= 2;
 }
 
+/** A link's host for reading beside its text: `linear.app`, without `www.`; null when it has none. */
+function hostOf(url: string): string | null {
+  return /^[a-z][a-z0-9+.-]{0,20}:\/\/(?:www\.)?([^/\s?#:]{1,200})/i.exec(url)?.[1] ?? null;
+}
+
 /**
- * Links as their text and **bold** without its markers, nothing else: what a
- * Decided or Ask bullet at the gate needs, where code ticks, globs and
- * underscores are the agent's own words.
+ * Links as their text and **bold** without its markers, nothing else, so
+ * globs and names (`src/*.ts`, `__init__`) stay. `hosts`: a link keeps where
+ * it points as "text (host)", for words a person decides on.
  */
-export function linksAndBold(line: string): string {
+export function linksAndBold(line: string, options: { hosts?: boolean } = {}): string {
   const capped = line.length > LINE_CAP ? headUnits(line, LINE_CAP) : line;
+  const link = (_: string, text: string, url: string) => {
+    const host = options.hosts ? hostOf(url) : null;
+    return host && host !== text ? `${text} (${host})` : text;
+  };
   return capped
     .replace(/!\[([^\]\n]{0,500})\]\([^)\n]{0,2000}\)/g, "$1")
-    .replace(/\[([^\]\n]{1,500})\]\((?:[^()\n]|\([^()\n]{0,500}\)){0,2000}\)/g, "$1")
+    .replace(/\[([^\]\n]{1,500})\]\(((?:[^()\n]|\([^()\n]{0,500}\)){0,2000})\)/g, link)
     .replace(/\[([^\]\n]{1,500})\]\[[^\]\n]{0,200}\]/g, "$1")
     .replace(/<(https?:\/\/[^>\s]{1,2000})>/g, "$1")
     .replace(/\*\*(\S(?:[^*\n]{0,2000}?\S)?)\*\*/g, "$1");
 }
 
 /** One line of Markdown without its inline markers: links and bold (linksAndBold), and code ticks. */
-export function inlinePlain(line: string): string {
-  return linksAndBold(line).replace(/`([^`\n]{1,2000})`/g, "$1");
+export function inlinePlain(line: string, options: { hosts?: boolean } = {}): string {
+  return linksAndBold(line, options).replace(/`([^`\n]{1,2000})`/g, "$1");
+}
+
+/**
+ * Hyphens that open a command-line flag (`--compare`, `-v`) as non-breaking
+ * (U+2011), so a line never wraps between them. Display text only: copy the
+ * command from its source, not from this.
+ */
+export function noFlagBreaks(text: string): string {
+  return text.replace(
+    /(^|[\s(])(-{1,2})(?=[A-Za-z0-9])/g,
+    (_, lead: string, dashes: string) => `${lead}${"\u2011".repeat(dashes.length)}`,
+  );
 }

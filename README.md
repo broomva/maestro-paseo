@@ -243,10 +243,11 @@ and writes everything to files. Its asks and alerts already reach Maestro as wor
 
 Those items read by what they ask (`shared/fleet-item.ts`). The title's marker
 (`[fleet-reconcile <scope> <what>]`, which the fleet finds its items by) is not shown anywhere (cards, detail,
-History, composer pills), and stays in the data. The place reads `fleet · <scope>`; the detail adds the tick and
-batch on its own line. An old count title (`1 ask (tick 7)`) shows its first ask's question, cut at a word, with
+History, composer pills, the Fleet tab), and stays in the data. The place reads `fleet · <scope>` (`fleet · <scope> ·
+alert` for an alert); the detail adds the tick and batch (an alert's kind) on its own line. The tick is the batch
+id's, never one quoted in an ask. An alert's title is its message alone. An old count title (`1 ask (tick 7)`) shows its first ask's question, cut at a word, with
 "(+N more)". The detail lists the asks, each with its class, shows the producer's own verbs line once (an
-alert's says a note sent back is not read), and folds the words addressed to the run agent under
+alert's says a note sent back is not read), leaves out a lead that only restates the scope or tick, and folds the words addressed to the run agent under
 *Instructions to the run*.
 
 The brief contract, the same as fleet-reconcile's SKILL.md (BRO-2840):

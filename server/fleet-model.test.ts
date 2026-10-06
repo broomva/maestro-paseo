@@ -10,6 +10,7 @@ import {
   awakeAsWall,
   coverOf,
   failedStepOf,
+  fleetItem,
   foldLedger,
   foldReviews,
   healthOf,
@@ -468,6 +469,15 @@ describe("the fleet's work in Maestro", () => {
     });
     expect(markerOf("[fleet-reconcile broomva batch 2-1] then more")).toBeNull();
     expect(markerOf("Persist transcripts")).toBeNull();
+    // One grammar with shared/fleet-item.ts: what it is not a batch or an alert is not the fleet's work here.
+    expect(markerOf("x [fleet-reconcile sri other 1]")).toBeNull();
+  });
+
+  test("the Fleet tab lists the fleet's work by the title a person reads, never its marker (BRO-2839)", () => {
+    const raw = "1 ask (tick 7) [fleet-reconcile sri batch 7-3]";
+    const shown = { ...work("w1", raw, "review"), display: { title: "The core comparison…", fleet: null } };
+    expect(fleetItem(shown).title).toBe("The core comparison…");
+    expect(fleetItem(work("w2", raw, "review")).title).toBe("1 ask (tick 7)");
   });
 
   test("a failing tick is covered by the fleet's own open alert for that step, and only by that", () => {

@@ -1685,7 +1685,8 @@ describe("work the fleet raised (BRO-2839)", () => {
     const view = await mount(<WorkDetail id="fleet-1" theme={theme} compact={false} navigation={undefined} />);
     await settle(50);
     const text = view.text();
-    expect(text).toContain("The core comparison (ctx doctor --compare) is not run in scope sri…");
+    // Flag hyphens do not break across lines (U+2011).
+    expect(text).toContain("The core comparison (ctx doctor \u2011\u2011compare) is not run in scope sri…");
     expect(text).not.toContain("[fleet-reconcile");
     expect(text).toContain("fleet · sri");
     expect(text).toContain("tick 7 · batch 7-3");
@@ -1693,11 +1694,12 @@ describe("work the fleet raised (BRO-2839)", () => {
     expect(text).toContain("The fleet asks you");
     expect(text).toContain("observe");
     expect(text).toContain("move it aside, then register.");
+    expect(text.split("The fleet asks you").length - 1).toBe(1);
     expect(text).not.toContain("```");
     // The producer's own verbs line, once.
     expect(text.split("Approve acknowledges them").length - 1).toBe(1);
-    expect(text).not.toContain("fleet asks --scope sri` lists");
-    expect(text).toContain("fleet asks --scope sri lists them too.");
+    // The lead only restates the scope and tick shown under the title: left out, once said is enough.
+    expect(text).not.toContain("The fleet has 1 question for you from scope sri");
     // The run's instructions are folded until asked for.
     const fold = view.byLabel("Instructions to the run");
     expect(fold?.getAttribute("aria-expanded")).toBe("false");

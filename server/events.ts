@@ -16,7 +16,7 @@ import type {
 } from "../shared/contracts";
 import { describeRun } from "../shared/run";
 import type { OrchState, Verdict } from "../shared/states";
-import { clipWords, linksAndBold, plainMarkdown, tailWords } from "../shared/text";
+import { clipWords, inlinePlain, plainMarkdown, tailWords } from "../shared/text";
 
 export type Actor = "human" | "agent" | "maestro";
 
@@ -339,8 +339,9 @@ export function bullets(text: string): string[] {
   return (
     text
       .split("\n")
-      // Links as their text and **bold** dropped, nothing more: globs (`src/*.ts`) and names (`__init__`) stay.
-      .map((line) => linksAndBold(line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "")).trim())
+      // Plain words as the lead reads: code ticks and **bold** dropped, a link as "text (host)". Globs
+      // (`src/*.ts`) and names (`__init__`) stay: single `*` and `_` are never read as emphasis.
+      .map((line) => inlinePlain(line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, ""), { hosts: true }).trim())
       .filter((line) => line.length > 0)
       .slice(0, 5)
   );

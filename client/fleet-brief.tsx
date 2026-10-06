@@ -5,33 +5,61 @@
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Text, View } from "react-native";
-import type { FleetBrief } from "../shared/fleet-item";
+import { alertKind, type FleetBrief, type FleetOrigin, leadRestates } from "../shared/fleet-item";
+import { noFlagBreaks } from "../shared/text";
 import { Disclosure, radius, size, space, useText } from "./ui";
 
-export function FleetBriefView({ theme, brief }: { theme: PluginTheme; brief: FleetBrief }) {
+/**
+ * Says each thing once. The lead is left out when it restates the scope or
+ * tick shown under the title; an alert's message is its title, so it is not
+ * listed again (unless the title had to cut it), and its kind is the
+ * detail's own line, not a tag.
+ */
+export function FleetBriefView({
+  theme,
+  brief,
+  origin,
+  title,
+}: {
+  theme: PluginTheme;
+  brief: FleetBrief;
+  origin: FleetOrigin;
+  /** The title the detail shows above this. */
+  title: string;
+}) {
   const text = useText(theme);
-  const many = brief.asks.length > 1;
+  const alert = alertKind(origin) !== null;
+  const asks = alert ? brief.asks.filter((ask) => ask.question !== title) : brief.asks;
+  const many = asks.length > 1;
+  const lead = brief.lead && !leadRestates(brief.lead, origin) ? brief.lead : null;
   return (
     <View style={{ gap: space[3] }}>
-      <Text style={text.label} accessibilityRole="header">
-        {many ? `The fleet asks you ${brief.asks.length} things` : "The fleet asks you"}
-      </Text>
-      {brief.lead ? <Text style={text.muted}>{brief.lead}</Text> : null}
-      <View style={{ gap: space[3] }}>
-        {brief.asks.map((ask) => (
-          <View key={`${ask.id ?? ""}:${ask.question}`} style={{ gap: space[1] }}>
-            {ask.kind || (many && ask.id) ? (
-              <View style={{ flexDirection: "row", alignItems: "center", gap: space[2] }}>
-                {many && ask.id ? <Text style={[text.small, text.tabular]}>{ask.id}</Text> : null}
-                {ask.kind ? <Tag theme={theme} label={ask.kind} /> : null}
+      {asks.length > 0 ? (
+        <Text style={text.label} accessibilityRole="header">
+          {alert ? "The alert" : many ? `The fleet asks you ${asks.length} things` : "The fleet asks you"}
+        </Text>
+      ) : null}
+      {lead ? <Text style={text.muted}>{lead}</Text> : null}
+      {asks.length > 0 ? (
+        <View style={{ gap: space[3] }}>
+          {asks.map((ask) => {
+            const tag = alert ? null : ask.kind;
+            return (
+              <View key={`${ask.id}:${ask.question}`} style={{ gap: space[1] }}>
+                {tag || (many && !alert) ? (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: space[2] }}>
+                    {many && !alert ? <Text style={[text.small, text.tabular]}>{ask.id}</Text> : null}
+                    {tag ? <Tag theme={theme} label={tag} /> : null}
+                  </View>
+                ) : null}
+                <Text style={text.body} selectable>
+                  {noFlagBreaks(ask.question)}
+                </Text>
               </View>
-            ) : null}
-            <Text style={text.body} selectable>
-              {ask.question}
-            </Text>
-          </View>
-        ))}
-      </View>
+            );
+          })}
+        </View>
+      ) : null}
       {brief.verbs ? <Text style={text.small}>{brief.verbs}</Text> : null}
       {brief.instructions ? (
         <Disclosure theme={theme} label="Instructions to the run">

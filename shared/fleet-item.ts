@@ -99,14 +99,27 @@ export function withoutMarker(title: string): string {
   return mark?.rest ? mark.rest : title;
 }
 
-/** The place a card or the detail shows for fleet work: `fleet · sri`. */
-export function fleetMeta(origin: Pick<FleetOrigin, "scope">): string {
-  return `fleet · ${origin.scope}`;
+/** The kind of an alert item (`tick-observe`), or null for any other fleet item. */
+export function alertKind(origin: Pick<FleetOrigin, "what">): string | null {
+  return /^alert (.+)$/.exec(origin.what)?.[1] ?? null;
 }
 
-/** The detail's secondary line: `tick 7 · batch 7-3`, or `alert tick-observe`. */
+/** The place a card or the detail shows for fleet work: `fleet · sri`, `fleet · sri · alert`. */
+export function fleetMeta(origin: Pick<FleetOrigin, "scope" | "what">): string {
+  return `fleet · ${origin.scope}${alertKind(origin) !== null ? " · alert" : ""}`;
+}
+
+/** The detail's secondary line: `tick 7 · batch 7-3`, or an alert's kind (`tick-observe`). */
 export function fleetDetail(origin: FleetOrigin): string {
-  return [origin.tick ? `tick ${origin.tick}` : null, origin.what].filter(Boolean).join(" · ");
+  return alertKind(origin) ?? [origin.tick ? `tick ${origin.tick}` : null, origin.what].filter(Boolean).join(" · ");
+}
+
+/**
+ * Whether a brief's lead only restates what the detail shows above it (the
+ * scope or the tick, which sit under the title): such a lead is not shown.
+ */
+export function leadRestates(lead: string, origin: Pick<FleetOrigin, "scope" | "tick">): boolean {
+  return lead.includes(`scope ${origin.scope}`) || (origin.tick !== null && lead.includes(`(tick ${origin.tick})`));
 }
 
 /** The brief's lines, at most BRIEF_CAP characters, each at most LINE_CAP. */
@@ -267,6 +280,9 @@ export function parseFleetBrief(brief: unknown): FleetBrief | null {
   }
 }
 
+/** The most of an alert's message a title shows. */
+export const ALERT_TITLE_MAX = 160;
+
 /** A title from the asks: the first question cut at a word, and how many more there are. */
 export function askTitle(asks: readonly FleetAsk[], total = asks.length): string | null {
   const first = asks[0]?.question;
@@ -278,21 +294,29 @@ export function askTitle(asks: readonly FleetAsk[], total = asks.length): string
 /**
  * How a fleet item's title reads, and where it came from; null for a title
  * with no fleet marker. An old count title (`1 ask (tick 7)`) becomes its
- * first ask's question; any other keeps its words without the marker.
+ * first ask's question; an alert, its message alone (the scope and kind are
+ * its meta); any other keeps its words without the marker. The tick is the
+ * fleet's own: the old title's or the batch id's, never one quoted in an
+ * ask's words.
  */
 export function fleetHeading(title: unknown, brief: unknown): FleetHeading | null {
   const mark = fleetMarker(title);
   if (!mark) return null;
   const old = OLD_TITLE.exec(mark.rest);
-  const parsed = old ? parseFleetBrief(brief) : null;
-  const lead = typeof brief === "string" ? brief.slice(0, LINE_CAP * 2) : "";
-  const tick =
-    old?.[2] ??
-    TICK.exec(mark.rest)?.[1] ??
-    TICK.exec(lead)?.[1] ??
-    /^batch\s+(\d{1,9})-\d{1,9}$/i.exec(mark.what)?.[1] ??
-    null;
-  const shown = old && parsed ? askTitle(parsed.asks, Number(old[1])) : null;
+  const kind = alertKind(mark);
+  const parsed = old || kind !== null ? parseFleetBrief(brief) : null;
+  const firstLine = typeof brief === "string" ? (/^[^\n]{0,400}/.exec(brief.trimStart())?.[0] ?? "") : "";
+  const tick = old?.[2] ?? /^batch\s+(\d{1,9})-\d{1,9}$/i.exec(mark.what)?.[1] ?? TICK.exec(firstLine)?.[1] ?? null;
+  const message = kind !== null ? parsed?.asks.find((ask) => ask.id === "alert")?.question : undefined;
+  const prefix = `fleet ${mark.scope}: ${kind} \u2014 `;
+  const shown =
+    old && parsed
+      ? askTitle(parsed.asks, Number(old[1]))
+      : message
+        ? clipWords(message, ALERT_TITLE_MAX)
+        : kind !== null && mark.rest.startsWith(prefix)
+          ? mark.rest.slice(prefix.length)
+          : null;
   return {
     title: shown || mark.rest || (title as string).slice(-TITLE_CAP),
     origin: { scope: mark.scope, what: mark.what, tick },

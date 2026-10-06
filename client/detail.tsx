@@ -11,6 +11,7 @@ import { type CheckResult, NOT_STOPPED, type Pending, type WorkEventWire, type W
 import { fleetDetail, parseFleetBrief } from "../shared/fleet-item";
 import { nextRunCopy } from "../shared/run";
 import { PLAIN_VOICE } from "../shared/states";
+import { noFlagBreaks } from "../shared/text";
 import { ChangeText, WithChange } from "./changed";
 import { FilesSection } from "./files";
 import { FleetBriefView } from "./fleet-brief";
@@ -62,6 +63,7 @@ export function WorkDetail({
   // Work the fleet raised reads by where it came from; its run folder says nothing to a person.
   const fleet = fleetOriginOf(item);
   const fleetBrief = fleet ? parseFleetBrief(brief) : null;
+  const shownTitle = titleText(item);
   const where = fleet
     ? placeText(item)
     : [item.initiative && item.project ? `${item.initiative} / ${item.project}` : item.initiative, basename(item.repo)]
@@ -78,7 +80,7 @@ export function WorkDetail({
           <Text style={text.small}>{item.gate === "human" ? "You approve" : "Checks decide"}</Text>
         </View>
         <Text style={text.heading} accessibilityRole="header">
-          {titleText(item)}
+          {noFlagBreaks(shownTitle)}
         </Text>
         {where ? <Text style={text.muted}>{where}</Text> : null}
         {fleet ? <Text style={[text.small, text.tabular]}>{fleetDetail(fleet)}</Text> : null}
@@ -119,8 +121,8 @@ export function WorkDetail({
 
       {item.checks.length > 0 ? <Checks theme={theme} item={item} results={checkResults} /> : null}
 
-      {fleetBrief ? (
-        <FleetBriefView theme={theme} brief={fleetBrief} />
+      {fleet && fleetBrief ? (
+        <FleetBriefView theme={theme} brief={fleetBrief} origin={fleet} title={shownTitle} />
       ) : brief ? (
         <View style={{ gap: space[2] }}>
           <Text style={text.label} accessibilityRole="header">

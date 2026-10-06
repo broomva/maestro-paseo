@@ -301,11 +301,12 @@ describe("receipts a person reads", () => {
     );
   });
 
-  test("the look's bullets read links as their text and drop bold, nothing else: globs and names stay", () => {
+  test("the look's bullets read as plain words, a link as text (host); globs and names stay", () => {
     expect(bullets("- Closed **all 6** in [BRO-2830](https://x.y/z)\n- `ctx` _registered_")).toEqual([
-      "Closed all 6 in BRO-2830",
-      "`ctx` _registered_",
+      "Closed all 6 in BRO-2830 (x.y)",
+      "ctx _registered_",
     ]);
+    expect(bullets("- Edited `src/*.ts` and `__init__.py`")).toEqual(["Edited src/*.ts and __init__.py"]);
     expect(bullets("- Edited src/*.ts and lib/*.js\n- Renamed __init__ to __main__")).toEqual([
       "Edited src/*.ts and lib/*.js",
       "Renamed __init__ to __main__",
