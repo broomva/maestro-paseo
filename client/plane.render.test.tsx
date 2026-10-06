@@ -2570,6 +2570,40 @@ describe("the Fleet view", () => {
     expect(view.text()).toContain("sti-2139-asvs-dast-conflicts is waiting on you");
     // The body is the fleet's question as written: no stripping, no capitalising.
     expect(view.all("div").some((node) => node.textContent === source)).toBe(true);
+    // Short enough to fit: shown whole, with no disclosure that would open nothing.
+    expect(view.all("*").some((node) => node.getAttribute?.("aria-label") === "Show all of ask a1")).toBe(false);
+  });
+
+  test("a long ask is clamped and has Show all, and its text is still the fleet's, byte for byte", async () => {
+    const source =
+      `Session sti-2139-asvs-dast-conflicts (bf1ee1b8) is blocked on you: ${"job file: blocked on a question to its user (allocate disk space; rerun). ".repeat(5)}`.trim();
+    rosterExtra = [
+      {
+        id: "bf1ee1b8-11be-4544-9f7e-143a990c3e10",
+        short: "bf1ee1b8",
+        name: "sti-2139-asvs-dast-conflicts",
+        kind: "background",
+        state: "blocked",
+        cwd: "~/work/sri",
+        branch: null,
+        agentId: null,
+        classId: "7",
+        className: "blocked on the owner",
+        action: "carry the ask forward",
+        evidence: "job file: blocked on a question",
+        activeAt: null,
+        scope: "broomva",
+        placement: "cwd",
+        inScope: true,
+        history: [],
+      },
+    ];
+    askSessionNow = { id: "bf1ee1b8-11be", short: "bf1ee1b8", name: null, agentId: null };
+    askOverride = { class: "7", className: "blocked on the owner", question: source, item: null, batch: "2-1" };
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await settle(30);
+    expect(view.all("div").some((node) => node.textContent === source)).toBe(true);
     await view.press(view.byLabel("Show all of ask a1"));
     expect(view.all("div").some((node) => node.textContent === source)).toBe(true);
   });
@@ -3184,6 +3218,47 @@ describe("the Decisions tab", () => {
     expect(view.text()).toContain("Waits on you: it blocks until you answer.");
     // In Decisions the notice is not shown twice.
     expect(view.text()).not.toContain("A decision waits on you");
+  });
+
+  test("with a non-blocking ask listed first, the notice names and opens the blocking one (BRO-2852)", async () => {
+    workspaceNow = [
+      merge(),
+      {
+        ...merge(),
+        ledger: "other.yaml",
+        id: "A2",
+        hash: "cccccccccccccccc",
+        headline: "Other ask?",
+        askedAt: days(9),
+      },
+    ];
+    askNoticesNow = [
+      {
+        scope: null,
+        ledger: "other.yaml",
+        uid: null,
+        id: "A2",
+        headline: "Other ask?",
+        blocking: false,
+        askedAt: null,
+      },
+      {
+        scope: null,
+        ledger: "2026-10-01-auth-preflight-hook-stderr.yaml",
+        uid: null,
+        id: "A1",
+        headline: "Approve merge of PR #863 touching scripts/auth-preflight-hook.sh?",
+        blocking: true,
+        askedAt: null,
+      },
+    ];
+    const view = await mount(surface(false));
+    await until(view, "2 decisions wait on you");
+    expect(view.text()).toContain("2 decisions wait on you, 1 blocking: Approve merge of PR #863");
+    await view.press(view.byLabel("Open Decisions, 2 waiting"));
+    await until(view, "Decision ");
+    // It opens the ask it named, not the first one listed.
+    expect(view.text()).toContain("2026-10-01-auth-preflight-hook-stderr · asked 2h ago · blocking");
   });
 
   test("an intent opens Decisions at a ledger; with nothing open it says so", async () => {

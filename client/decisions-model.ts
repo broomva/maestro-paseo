@@ -74,13 +74,22 @@ export function homeText(ask: DecisionAsk): string {
 /** An answered ask that waits in the answers batch, in words. */
 export const BATCHED_TEXT = "In the answers batch on maestro/answers: not on origin/main until it lands.";
 
+/**
+ * The ask a Needs you notice names and opens: one that blocks when any does,
+ * else the first. The line's words and its "Open Decisions" both use this, so
+ * the button never opens a different ask than the one named.
+ */
+export function noticeAsk(asks: readonly AskNotice[]): AskNotice | null {
+  return asks.find((ask) => ask.blocking) ?? asks[0] ?? null;
+}
+
 /** The Needs you line for decision asks that wait on you. */
 export function askNoticeText(asks: readonly AskNotice[]): string {
-  const [first] = asks;
+  const first = noticeAsk(asks);
   if (!first) return "";
   if (asks.length === 1) return `A decision waits on you: ${first.headline}`;
   const blocking = asks.filter((ask) => ask.blocking).length;
-  return `${plural(asks.length, "decision")} wait on you${blocking > 0 ? `, ${blocking} blocking` : ""}: ${first.headline}, and more.`;
+  return `${plural(asks.length, "decision")} wait on you${blocking > 0 ? `, ${blocking} blocking` : ""}: ${first.headline} (+${asks.length - 1} more)`;
 }
 
 // ── The Decisions tab: one decision at a time ────────────────────────────────
