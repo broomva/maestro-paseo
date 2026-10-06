@@ -22,7 +22,7 @@ those, and nothing Paseo already does.
 | Run lifecycle | Paseo lifecycle hooks: turn started or ended, permission asked or answered, archived |
 | Verifier | `done.check` commands, run in the run's worktree when a turn ends |
 | The gate | Approve, send back with a note, or cancel |
-| Receipts | The event log, rendered newest first: a turn's text as plain prose cut at a word, identical neighbours said once with a count (×3) |
+| Receipts | The event log, rendered newest first: a turn's text as plain prose cut at a word, identical neighbours (kind, words, detail, actor) said once with a count and their time range (×3 · 3h–1h) |
 | Unsupervised hours | Time spent running today, with a mark for every time you stepped in |
 
 ## What you get in Paseo
@@ -242,20 +242,25 @@ fleet-reconcile (`skills/orchestration/fleet-reconcile` in broomva/skills) ticks
 and writes everything to files. Its asks and alerts already reach Maestro as work at Needs you.
 
 Those items read by what they ask (`shared/fleet-item.ts`). The title's marker
-(`[fleet-reconcile <scope> <what>]`, which the fleet finds its items by) is not shown, and stays in the data.
-An old count title (`1 ask (tick 7)`) shows its first ask's question, cut at a word, with "(+N more)"; an
-old alert (`fleet sri: <kind>`) shows its message. The card's place reads `fleet · sri · tick 7` instead of the
-run folder. The detail lists the asks, each with its class, says what each verb does (Approve acknowledges,
-Send back answers with your note, Cancel dismisses), and folds the words addressed to the run agent under
-*Instructions to the run*. Two brief shapes are read:
+(`[fleet-reconcile <scope> <what>]`, which the fleet finds its items by) is not shown anywhere (cards, detail,
+History, composer pills), and stays in the data. The place reads `fleet · <scope>`; the detail adds the tick and
+batch on its own line. An old count title (`1 ask (tick 7)`) shows its first ask's question, cut at a word, with
+"(+N more)". The detail lists the asks, each with its class, shows the producer's own verbs line once (an
+alert's says a note sent back is not read), and folds the words addressed to the run agent under
+*Instructions to the run*.
 
-- **old**: a lead paragraph, then the asks as `[a1] (class) question` lines in a fenced block, then the run's
-  instructions.
-- **new**: `## For you` (any prose, and the asks as `[a1] (class) question` lines, bulleted or fenced; a
-  bullet may wrap onto indented lines), then `## For the run` (everything for the agent). The title is the
-  first ask's question with ` (+N more)` before the marker, shown as written.
+The brief contract, the same as fleet-reconcile's SKILL.md (BRO-2840):
 
-A brief of neither shape shows as written. The **Fleet** view shows the rest, per scope, read from those files:
+- `## For you` at column 0: a lead line; the asks one per line as `- [<id>] (<class>) <question>` (the id a1,
+  a12, or `alert` for an alert; the class may be empty, `()`), optionally inside a fenced `text` block; then
+  exactly one verbs line. An indented line continues the ask above it.
+- `## For the run` at column 0: everything for the agent. Asks are never read from it.
+- The title: the first ask's question cut at a word, ` (+N more)`, then the marker. It is shown as written,
+  without the marker.
+- Older briefs (a lead paragraph, a fenced block of `[a1] (class) question` lines, then the run's instructions)
+  read the same, from the fence that holds ask lines.
+
+A brief with no ask line in `## For you` (or, in an older brief, in any fence) shows as written. The **Fleet** view shows the rest, per scope, read from those files:
 
 - **Health.** On time, failing (the newest tick exited 1, or started and never finished), missed,
   off (the fleet's kill switch), or not scheduled (no LaunchAgent runs it).

@@ -8,16 +8,16 @@ import { ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-n
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { type CheckResult, NOT_STOPPED, type Pending, type WorkEventWire, type WorkItem } from "../shared/contracts";
-import { fleetMarker, parseFleetBrief } from "../shared/fleet-item";
+import { fleetDetail, parseFleetBrief } from "../shared/fleet-item";
 import { nextRunCopy } from "../shared/run";
 import { PLAIN_VOICE } from "../shared/states";
 import { ChangeText, WithChange } from "./changed";
 import { FilesSection } from "./files";
 import { FleetBriefView } from "./fleet-brief";
-import { ago, basename, errorText } from "./format";
+import { ago, agoWords, basename, errorText } from "./format";
 import { useRefresh, useVerbs, useWorkDetail } from "./hooks";
 import { changedVisible } from "./plane-model";
-import { collapseRepeats, placeText, repeatText, titleText } from "./records-text";
+import { collapseRepeats, fleetOriginOf, placeText, repeatText, repeatWords, titleText } from "./records-text";
 import { Button, Card, IconButton, Notice, radius, StateLabel, space, useText } from "./ui";
 
 type Navigation = PluginSurfaceProps["navigation"];
@@ -60,7 +60,7 @@ export function WorkDetail({
 
   const { item, brief, events, checkResults } = detail.data;
   // Work the fleet raised reads by where it came from; its run folder says nothing to a person.
-  const fleet = item.display?.fleet ?? fleetMarker(item.title);
+  const fleet = fleetOriginOf(item);
   const fleetBrief = fleet ? parseFleetBrief(brief) : null;
   const where = fleet
     ? placeText(item)
@@ -81,6 +81,7 @@ export function WorkDetail({
           {titleText(item)}
         </Text>
         {where ? <Text style={text.muted}>{where}</Text> : null}
+        {fleet ? <Text style={[text.small, text.tabular]}>{fleetDetail(fleet)}</Text> : null}
         {item.worker ? (
           <Text style={text.mono}>
             {[item.worker.branch, item.worker.startedWith ?? item.worker.provider].filter(Boolean).join(" · ")}
@@ -708,6 +709,11 @@ function Checks({ theme, item, results }: { theme: PluginTheme; item: WorkItem; 
   );
 }
 
+/** An age in words for a range: "3 hours ago", "just now" (agoWords without its "updated"). */
+function spokenAge(ts: string): string {
+  return agoWords(ts).replace(/^updated /, "");
+}
+
 function Receipts({ theme, events }: { theme: PluginTheme; events: WorkEventWire[] }) {
   const text = useText(theme);
   // Newest first, a run of identical receipts said once with its count.
@@ -718,26 +724,29 @@ function Receipts({ theme, events }: { theme: PluginTheme; events: WorkEventWire
         Receipts
       </Text>
       <View style={{ gap: space[3] }}>
-        {newest.map(({ event, count }) => (
-          <View
-            key={`${event.ts}-${event.type}-${event.text}-${event.detail ?? ""}`}
-            style={{ flexDirection: "row", gap: space[3] }}
-            accessibilityLabel={count > 1 ? `${event.text}, ${count} times in a row` : undefined}
-          >
-            <Text style={[text.small, text.tabular, { width: 40 }]}>{ago(event.ts)}</Text>
-            <View style={{ flex: 1, gap: 2 }}>
-              <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[2] }}>
-                <Text style={text.body}>{event.text}</Text>
-                {count > 1 ? <Text style={[text.small, text.tabular]}>{repeatText(count)}</Text> : null}
+        {newest.map((run) => {
+          const { event, count } = run;
+          return (
+            <View
+              key={`${event.ts}-${event.type}-${event.text}-${event.detail ?? ""}`}
+              style={{ flexDirection: "row", gap: space[3] }}
+              accessibilityLabel={count > 1 ? `${event.text}, ${repeatWords(run, spokenAge)}` : undefined}
+            >
+              <Text style={[text.small, text.tabular, { width: 40 }]}>{ago(event.ts)}</Text>
+              <View style={{ flex: 1, gap: 2 }}>
+                <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[2], flexWrap: "wrap" }}>
+                  <Text style={text.body}>{event.text}</Text>
+                  {count > 1 ? <Text style={[text.small, text.tabular]}>{repeatText(run, ago)}</Text> : null}
+                </View>
+                {event.detail ? (
+                  <Text style={text.small} numberOfLines={3}>
+                    {event.detail}
+                  </Text>
+                ) : null}
               </View>
-              {event.detail ? (
-                <Text style={text.small} numberOfLines={3}>
-                  {event.detail}
-                </Text>
-              ) : null}
             </View>
-          </View>
-        ))}
+          );
+        })}
       </View>
     </View>
   );

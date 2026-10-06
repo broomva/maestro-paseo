@@ -1,14 +1,12 @@
 // The brief of work fleet-reconcile raised, read for the owner: what the fleet
-// asks, one short paragraph per ask, what each verb means here, and the words
+// asks, one short paragraph per ask, the producer's own line on what each verb
+// does (an alert's differs: a note sent back is not read), and the words
 // addressed to the run agent folded away (shared/fleet-item.ts reads them).
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Text, View } from "react-native";
 import type { FleetBrief } from "../shared/fleet-item";
 import { Disclosure, radius, size, space, useText } from "./ui";
-
-/** What each verb at the gate does to a fleet item (fleetlib/paseo_ask.py: the fleet reads them back). */
-export const FLEET_VERBS = "Approve acknowledges · Send back answers with your note · Cancel dismisses";
 
 export function FleetBriefView({ theme, brief }: { theme: PluginTheme; brief: FleetBrief }) {
   const text = useText(theme);
@@ -34,7 +32,7 @@ export function FleetBriefView({ theme, brief }: { theme: PluginTheme; brief: Fl
           </View>
         ))}
       </View>
-      <Text style={text.small}>{FLEET_VERBS}</Text>
+      {brief.verbs ? <Text style={text.small}>{brief.verbs}</Text> : null}
       {brief.instructions ? (
         <Disclosure theme={theme} label="Instructions to the run">
           <Text style={[text.small, { color: theme.colors.foregroundMuted }]} selectable>

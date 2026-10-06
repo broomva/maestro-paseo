@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { clipWords, inlinePlain, plainMarkdown, tailWords } from "./text";
+import { clipWords, inlinePlain, linksAndBold, plainMarkdown, tailWords } from "./text";
 
 describe("clipWords", () => {
   test("text that fits is flattened and kept whole", () => {
@@ -17,6 +17,13 @@ describe("clipWords", () => {
   test("a dangling comma or colon is dropped before the ellipsis", () => {
     expect(clipWords("Scope sri: the comparison is not run", 12)).toBe("Scope sri…");
     expect(clipWords("alpha, beta, gamma, delta", 13)).toBe("alpha, beta…");
+  });
+
+  test("a surrogate pair is never split", () => {
+    const emoji = "\u{1F600}";
+    const cut = clipWords(`${"a".repeat(8)}${emoji.repeat(10)}`, 10);
+    expect(cut).toBe(`${"a".repeat(8)}\u2026`);
+    expect(/[\ud800-\udbff](?![\udc00-\udfff])/.test(cut)).toBe(false);
   });
 
   test("one long word is cut where it must be", () => {
@@ -50,6 +57,35 @@ describe("tailWords", () => {
     expect(live).toMatch(new RegExp(`(^|\\s)${first}\\s`));
   });
 
+  test("a cut that already lands at a line start keeps that line", () => {
+    const text = `${"x".repeat(30)}\n## Decided\n- kept it small`;
+    const tail = tailWords(text, "## Decided\n- kept it small".length + 2);
+    expect(tail).toBe("\u2026\n## Decided\n- kept it small");
+    const word = tailWords(`${"x".repeat(30)} words follow here`, "words follow here".length + 2);
+    expect(word).toBe("\u2026 words follow here");
+  });
+
+  test("a tail never starts with half a surrogate pair", () => {
+    const tail = tailWords(`${"\u{1F600}".repeat(20)}`, 9);
+    expect(/^\u2026[\udc00-\udfff]/.test(tail)).toBe(false);
+  });
+
+  test("100k characters cost under 50ms a call", () => {
+    const huge = "word ".repeat(20_000);
+    for (const run of [
+      () => clipWords(huge, 280),
+      () => tailWords(huge, 8000),
+      () => plainMarkdown(`${"[a](".repeat(25_000)}`),
+      () => plainMarkdown(`${"**a ".repeat(25_000)}`),
+      () => inlinePlain(`${"[x](".repeat(25_000)}`),
+      () => plainMarkdown(`| a |\n${"| b ".repeat(25_000)}`),
+    ]) {
+      const start = performance.now();
+      run();
+      expect(performance.now() - start).toBeLessThan(50);
+    }
+  });
+
   test("a tail with no break anywhere near its start keeps its characters, marked", () => {
     expect(tailWords("y".repeat(100), 20)).toBe(`…${"y".repeat(18)}`);
   });
@@ -72,10 +108,10 @@ describe("plainMarkdown", () => {
     );
   });
 
-  test("headings, emphasis, code, quotes, lists and rules lose their markers; links read as their text", () => {
+  test("headings, bold, code, quotes, lists and rules lose their markers; links read as their text", () => {
     const md = [
       "## Shipped",
-      "> **Note** _this_ is ~~old~~ new",
+      "> **Note** this is new",
       "- Upgrades tracked in [BRO-2830](https://linear.app/broomva/issue/BRO-2830/x_(y))",
       "1. Run `ctx doctor` and *then* register",
       "- [x] done item",
@@ -85,18 +121,24 @@ describe("plainMarkdown", () => {
     expect(plainMarkdown(md)).toBe(
       [
         "Shipped",
-        "Note this is old new",
+        "Note this is new",
         "Upgrades tracked in BRO-2830",
-        "Run ctx doctor and then register",
+        "Run ctx doctor and *then* register",
         "done item",
         "chart see https://example.com",
       ].join("\n"),
     );
   });
 
-  test("snake_case, a*b and file paths are left alone", () => {
-    expect(inlinePlain("set max_tokens_per_run and 2*3*4 in src/a_b/c.ts")).toBe(
-      "set max_tokens_per_run and 2*3*4 in src/a_b/c.ts",
+  test("globs, dunder names, snake_case and a*b are the agent's words: left alone", () => {
+    const words = "edit src/*.ts and lib/*.js, __init__ and __main__, max_tokens_per_run, 2*3*4, _private_";
+    expect(inlinePlain(words)).toBe(words);
+    expect(plainMarkdown(words)).toBe(words);
+  });
+
+  test("a gate bullet keeps code ticks and globs; only links and bold change", () => {
+    expect(linksAndBold("**Kept** `src/*.ts` and `__init__` per [BRO-1](https://x.y/1)")).toBe(
+      "Kept `src/*.ts` and `__init__` per BRO-1",
     );
   });
 

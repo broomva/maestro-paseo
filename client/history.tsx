@@ -28,7 +28,7 @@ import {
   type Who,
 } from "./history-model";
 import { Chip } from "./plane-controls";
-import { collapseRepeats, eventTitle, repeatText } from "./records-text";
+import { type Collapsed, collapseRepeats, eventTitle, repeatText, repeatWords } from "./records-text";
 import { Button, Notice, radius, size, space, useText, webAria } from "./ui";
 
 const POLL_MS = 10_000;
@@ -131,12 +131,11 @@ export function HistoryView({
               <Text style={[text.small, text.tabular]}>{group.events.length}</Text>
               {group.hint ? <Text style={text.small}>{group.hint}</Text> : null}
             </View>
-            {collapseRepeats(group.events).map(({ event, count }) => (
+            {collapseRepeats(group.events).map((run) => (
               <HistoryRow
-                key={keyOf(event)}
+                key={keyOf(run.event)}
                 theme={theme}
-                event={event}
-                count={count}
+                run={run}
                 grouping={grouping}
                 selected={selected}
                 onSelect={onSelect}
@@ -156,21 +155,20 @@ export function HistoryView({
 
 function HistoryRow({
   theme,
-  event,
-  count,
+  run,
   grouping,
   selected,
   onSelect,
 }: {
   theme: PluginTheme;
-  event: HistoryEvent;
-  /** How many identical receipts in a row this one stands for. */
-  count: number;
+  /** The receipt, and the identical ones in a row it stands for. */
+  run: Collapsed<HistoryEvent>;
   grouping: HistoryGrouping;
   selected: string | null;
   onSelect: (id: string) => void;
 }) {
   const text = useText(theme);
+  const { event, count } = run;
   const isSelected = event.itemId === selected;
   const crumb = eventCrumb(event);
   const when = grouping === "day" ? timeText(event.ts) : `${shortDay(dayKey(event.ts))} ${timeText(event.ts)}`;
@@ -179,7 +177,7 @@ function HistoryRow({
       accessibilityRole="button"
       accessibilityState={{ selected: isSelected }}
       {...webAria({ "aria-current": isSelected })}
-      accessibilityLabel={count > 1 ? `${rowLabel(event)}, ${count} times in a row` : rowLabel(event)}
+      accessibilityLabel={count > 1 ? `${rowLabel(event)}, ${repeatWords(run, timeText)}` : rowLabel(event)}
       onPress={() => onSelect(event.itemId)}
       style={({ pressed }) => ({
         flexDirection: "row",
@@ -197,7 +195,7 @@ function HistoryRow({
           <Text style={[text.body, { flexShrink: 1 }]} numberOfLines={1}>
             {event.text}
           </Text>
-          {count > 1 ? <Text style={[text.small, text.tabular]}>{repeatText(count)}</Text> : null}
+          {count > 1 ? <Text style={[text.small, text.tabular]}>{repeatText(run, timeText)}</Text> : null}
         </View>
         {event.detail ? (
           <Text style={text.small} numberOfLines={2}>

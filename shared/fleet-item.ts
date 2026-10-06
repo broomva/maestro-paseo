@@ -1,34 +1,45 @@
 // Work that fleet-reconcile raised, read for a person. Its title ends with a
 // marker the fleet finds it by (`[fleet-reconcile <scope> <what>]`, skills
-// fleet-reconcile fleetlib/paseo_ask.py marker()), and its brief is written for
-// the run agent first. This reads both so the surfaces can show what is asked:
-// the title without its marker, the asks as a list, and the run's instructions
-// apart. Data is never changed: the raw title stays, since the fleet matches it
-// with endswith(marker).
+// fleet-reconcile fleetlib/paseo_ask.py marker()), and its brief is written
+// for the run agent as well as the owner. This reads both so the surfaces can
+// show what is asked: the title without its marker, the asks as a list, the
+// producer's own verbs line, and the run's instructions apart. Data is never
+// changed: the raw title stays, since the fleet matches it with
+// endswith(marker).
 //
-// Two brief shapes are read (paseo_ask.py brief()):
+// The contract (BRO-2839/BRO-2840, the same words as fleet-reconcile's SKILL.md):
 //
-//   old  <lead paragraph>, <a line for the agent>, a ```text fenced block of
-//        asks as `[a1] (observe) <question>` lines, then the run's instructions.
-//   new  `## For you` (prose, and the asks as `[a1] (class) question` lines,
-//        bulleted or in a fenced block), then `## For the run` (everything for
-//        the agent, which may repeat the asks as data).
+//   new  `## For you` (column 0, outside any fence): a lead line, the asks one
+//        per line as `- [<id>] (<class>) <question>` (id like a1 or a12, or
+//        `alert`; the class may be empty, `()`), optionally inside a ```text fence, then
+//        exactly one verbs line. Then `## For the run`: everything for the
+//        agent, never read for asks.
+//   old  a lead paragraph, a line for the agent, a fenced block of
+//        `[a1] (class) question` lines, then the run's instructions.
 //
-// Old titles read `1 ask (tick 7) [marker]`; new ones `<first question…>
-// (+N more) [marker]`. Every function here is pure, total, and never throws: a
-// shape it does not know falls back to the raw title and brief.
+// A brief that has `## For you` but no ask line in it, or an old brief with
+// no fence holding an ask line, reads as null: the surface shows it as written.
+// Every function here is pure, total, never throws, and bounded in cost: the
+// title and each line are capped before any regex runs.
 
-import { clipWords, flat, inlinePlain } from "./text";
+import { clipWords, flat, inlinePlain, LINE_CAP, plainMarkdown } from "./text";
 
 /** How long a title built from an ask's question may be, before "(+N more)". */
 export const ASK_TITLE_MAX = 90;
+/** The most of a title or brief read; past it, a title's start or a brief's end is left out. */
+export const TITLE_CAP = 2000;
+export const BRIEF_CAP = 64 * 1024;
 
-const MARKER = /\s*\[fleet-reconcile\s+([^\s\]]+)\s+([^\]]+?)\s*\]\s*$/;
-const OLD_TITLE = /^(\d+)\s+asks?\s+\(tick\s+([^)\s]+)\)$/i;
-const ASK_LINE = /^\s*(?:[-*+]\s+)?\[([A-Za-z0-9][\w.-]{0,15})\]\s*(?:\(([^()\n]{1,32})\)\s*)?(.*)$/;
-const FENCE = /^\s*(```|~~~)/;
-const FOR_YOU = /^#{1,3}\s+For you\s*:?\s*$/im;
-const FOR_RUN = /^#{1,3}\s+For the run\s*:?\s*$/im;
+const MARKER_HEAD = "[fleet-reconcile ";
+const MARKER = /^\[fleet-reconcile ([^\s\]]{1,80}) ([^\]\n]{1,200})\]\s*$/;
+const OLD_TITLE = /^(\d{1,4})\s+asks?\s+\(tick\s+([^)\s]{1,20})\)$/i;
+// An id is a few letters and a number (a1, a12), or `alert` (paseo_ask.alert): never `x` (a checkbox) or a word (a link).
+const ASK_LINE = /^\s{0,3}(?:[-*+]\s+)?\[([A-Za-z]{0,3}\d{1,4}|alert)\]\s+\(([^()\n]{0,40})\)(?:\s+(.*))?$/;
+// A fence opens or closes only at column 0: an indented one inside an ask is the ask's words.
+const FENCE = /^(`{3,}|~{3,})/;
+const FOR_YOU = /^#{1,3} For you\s*:?\s*$/;
+const FOR_RUN = /^#{1,3} For the run\s*:?\s*$/;
+const TICK = /\(tick\s+([^)\s]{1,20})\)/i;
 
 export interface FleetMarker {
   scope: string;
@@ -38,24 +49,26 @@ export interface FleetMarker {
   rest: string;
 }
 
-/** One ask quoted in the brief: its id (`a1`), its class (`observe`), and the question. */
+/** One ask quoted in the brief: its id (`a1`), its class (`observe`, or null when empty), and the question. */
 export interface FleetAsk {
-  id: string | null;
+  id: string;
   kind: string | null;
   question: string;
 }
 
 export interface FleetBrief {
-  /** The words for the owner that are not asks: the old brief's lead paragraph, or `## For you` prose. */
+  /** The words for the owner before the asks, as plain prose. */
   lead: string;
   asks: FleetAsk[];
+  /** The producer's own line on what the verbs do, as plain prose; null when it wrote none (old briefs). */
+  verbs: string | null;
   /** What the run agent is told, shown apart: null when the brief has none. */
   instructions: string | null;
   /** Which shape was read. */
   shape: "old" | "new";
 }
 
-/** Where a fleet item comes from, for its meta line. */
+/** Where a fleet item comes from: its scope, what it carries, and the tick that raised it when known. */
 export interface FleetOrigin {
   scope: string;
   what: string;
@@ -70,9 +83,14 @@ export interface FleetHeading {
 
 export function fleetMarker(title: unknown): FleetMarker | null {
   if (typeof title !== "string") return null;
-  const match = MARKER.exec(title);
+  // The marker is at the end: only the last TITLE_CAP characters are searched, from its last opening.
+  const offset = Math.max(0, title.length - TITLE_CAP);
+  const at = title.lastIndexOf(MARKER_HEAD);
+  if (at < offset) return null;
+  const match = MARKER.exec(title.slice(at));
   if (!match?.[1] || !match[2]) return null;
-  return { scope: match[1], what: flat(match[2]), rest: flat(title.slice(0, match.index)) };
+  const rest = title.slice(Math.max(0, at - TITLE_CAP), at);
+  return { scope: match[1], what: flat(match[2]), rest: flat(rest) };
 }
 
 /** The title without a trailing fleet marker; any other title as it is. */
@@ -81,106 +99,169 @@ export function withoutMarker(title: string): string {
   return mark?.rest ? mark.rest : title;
 }
 
-/** `fleet · sri · tick 7`, `fleet · sri · alert tick-observe`, or `fleet · sri`. */
-export function fleetMeta(origin: FleetOrigin): string {
-  const extra = origin.tick ? `tick ${origin.tick}` : origin.what.startsWith("alert ") ? origin.what : null;
-  return ["fleet", origin.scope, extra].filter(Boolean).join(" · ");
+/** The place a card or the detail shows for fleet work: `fleet · sri`. */
+export function fleetMeta(origin: Pick<FleetOrigin, "scope">): string {
+  return `fleet · ${origin.scope}`;
 }
 
-/** The asks quoted in `text`: `[id] (class) question` lines, a following line that is not one continuing it. */
-function asksIn(text: string): FleetAsk[] {
+/** The detail's secondary line: `tick 7 · batch 7-3`, or `alert tick-observe`. */
+export function fleetDetail(origin: FleetOrigin): string {
+  return [origin.tick ? `tick ${origin.tick}` : null, origin.what].filter(Boolean).join(" · ");
+}
+
+/** The brief's lines, at most BRIEF_CAP characters, each at most LINE_CAP. */
+function linesOf(brief: string): string[] {
+  return brief
+    .slice(0, BRIEF_CAP)
+    .split(/\r?\n/)
+    .map((line) => (line.length > LINE_CAP ? line.slice(0, LINE_CAP) : line));
+}
+
+/** A fence that opens or closes: its marker run (```` ``` ````, `~~~`). */
+function fenceMark(line: string): string | null {
+  return FENCE.exec(line)?.[1] ?? null;
+}
+
+/** Whether `mark` closes a fence opened with `open`: the same character, at least as long. */
+function closes(open: string, mark: string): boolean {
+  return mark[0] === open[0] && mark.length >= open.length;
+}
+
+function askOf(line: string): FleetAsk | null {
+  const match = ASK_LINE.exec(line);
+  if (!match?.[1]) return null;
+  const kind = flat(match[2] ?? "");
+  return { id: match[1], kind: kind || null, question: flat(match[3] ?? "") };
+}
+
+/**
+ * Reads the lines of one region: ask lines (inside or outside a fence), an
+ * indented line continuing the ask above it, and the prose outside fences
+ * before the first ask and after it.
+ */
+function readRegion(lines: readonly string[]): { asks: FleetAsk[]; before: string[]; after: string[] } {
   const asks: FleetAsk[] = [];
+  const before: string[] = [];
+  const after: string[] = [];
+  let fence: string | null = null;
   let open: FleetAsk | null = null;
-  for (const line of text.split(/\r?\n/)) {
-    if (FENCE.test(line) || !line.trim()) {
+  for (const line of lines) {
+    const mark = fenceMark(line);
+    if (mark && (fence === null || closes(fence, mark))) {
+      fence = fence === null ? mark : null;
       open = null;
       continue;
     }
-    const match = ASK_LINE.exec(line);
-    if (match?.[1]) {
-      open = { id: match[1], kind: match[2] ? flat(match[2]) : null, question: flat(match[3] ?? "") };
-      asks.push(open);
-    } else if (open && !/^\s*#/.test(line)) {
-      open.question = flat(`${open.question} ${line}`);
-    } else {
-      open = null;
+    const ask = askOf(line);
+    if (ask) {
+      asks.push(ask);
+      open = ask;
+      continue;
     }
+    if (open && /^\s{2,}\S/.test(line)) {
+      open.question = flat(`${open.question} ${line}`);
+      continue;
+    }
+    open = null;
+    if (fence !== null) continue;
+    (asks.length === 0 ? before : after).push(line);
   }
-  return asks.map((ask) => ({ ...ask, question: inlinePlain(ask.question) })).filter((ask) => ask.question);
+  // Code ticks and links read as words; an ask with no question left is dropped.
+  const read = asks.map((ask) => ({ ...ask, question: flat(inlinePlain(ask.question)) }));
+  return { asks: read.filter((ask) => ask.question), before, after };
 }
 
-/** The first fenced block: its body and where it starts and ends (line indexes), or null. */
-function firstFence(lines: string[]): { from: number; to: number; body: string } | null {
-  const from = lines.findIndex((line) => FENCE.test(line));
-  if (from < 0) return null;
-  let to = lines.findIndex((line, index) => index > from && FENCE.test(line));
-  if (to < 0) to = lines.length;
-  return { from, to, body: lines.slice(from + 1, to).join("\n") };
+/** Paragraphs as plain prose, joined with a blank line; empty when there are none. */
+function prose(lines: readonly string[]): string {
+  return plainMarkdown(lines.join("\n"))
+    .split(/\n\s*\n/)
+    .map(flat)
+    .filter(Boolean)
+    .join("\n\n");
 }
 
-/** Paragraphs of `text`, blank-line separated and trimmed, the empty ones dropped. */
-function paragraphs(text: string): string[] {
-  return text
+/** Where `## For you` and `## For the run` start, at column 0 outside any fence; -1 when absent. */
+function sections(lines: readonly string[]): { you: number; run: number } {
+  let fence: string | null = null;
+  let you = -1;
+  let run = -1;
+  lines.forEach((line, index) => {
+    const mark = fenceMark(line);
+    if (mark && (fence === null || closes(fence, mark))) {
+      fence = fence === null ? mark : null;
+      return;
+    }
+    if (fence !== null) return;
+    if (you < 0 && FOR_YOU.test(line)) you = index;
+    else if (you >= 0 && run < 0 && FOR_RUN.test(line)) run = index;
+  });
+  return { you, run };
+}
+
+function readNew(lines: readonly string[], you: number, run: number): FleetBrief | null {
+  const region = readRegion(lines.slice(you + 1, run < 0 ? lines.length : run));
+  if (region.asks.length === 0) return null;
+  const instructions =
+    run < 0
+      ? ""
+      : lines
+          .slice(run + 1)
+          .join("\n")
+          .trim();
+  return {
+    lead: prose([...lines.slice(0, you), "", ...region.before]),
+    asks: region.asks,
+    verbs: prose(region.after) || null,
+    instructions: instructions || null,
+    shape: "new",
+  };
+}
+
+function readOld(lines: readonly string[]): FleetBrief | null {
+  // The fence that holds ask lines, not merely the first one.
+  let fence: string | null = null;
+  let start = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const mark = fenceMark(lines[index] ?? "");
+    if (!mark || (fence !== null && !closes(fence, mark))) continue;
+    if (fence === null) {
+      fence = mark;
+      start = index;
+      continue;
+    }
+    fence = null;
+    const asks = readRegion(lines.slice(start + 1, index)).asks;
+    if (asks.length > 0) return oldParts(lines, start, index, asks);
+  }
+  if (fence !== null) {
+    const asks = readRegion(lines.slice(start + 1)).asks;
+    if (asks.length > 0) return oldParts(lines, start, lines.length, asks);
+  }
+  return null;
+}
+
+function oldParts(lines: readonly string[], from: number, to: number, asks: FleetAsk[]): FleetBrief {
+  const paragraphs = lines
+    .slice(0, from)
+    .join("\n")
     .split(/\n\s*\n/)
     .map((part) => part.trim())
     .filter(Boolean);
-}
-
-function readNew(brief: string): FleetBrief | null {
-  const you = FOR_YOU.exec(brief);
-  if (!you) return null;
-  const start = you.index + you[0].length;
-  const runHead = FOR_RUN.exec(brief.slice(start));
-  const youText = runHead ? brief.slice(start, start + runHead.index) : brief.slice(start);
-  const runText = runHead ? brief.slice(start + runHead.index + runHead[0].length).trim() : "";
-  let asks = asksIn(youText);
-  if (asks.length === 0 && runText) asks = asksIn(firstFence(runText.split(/\r?\n/))?.body ?? "");
-  // The prose: what is left of For you once the ask lines and fences are out, with anything above it.
-  const kept: string[] = [];
-  let inFence = false;
-  let inAsk = false;
-  for (const line of youText.split(/\r?\n/)) {
-    if (FENCE.test(line)) {
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence) continue;
-    if (ASK_LINE.test(line)) {
-      inAsk = true;
-      continue;
-    }
-    if (!line.trim()) inAsk = false;
-    else if (inAsk) continue;
-    kept.push(line);
-  }
-  const above = brief.slice(0, you.index).trim();
-  const lead = [above, kept.join("\n").trim()].filter(Boolean).join("\n\n");
-  return { lead, asks, instructions: runText || null, shape: "new" };
-}
-
-function readOld(brief: string): FleetBrief | null {
-  const lines = brief.split(/\r?\n/);
-  const fence = firstFence(lines);
-  if (!fence) return null;
-  let asks = asksIn(fence.body);
-  // An alert quotes one message, not `[id]` lines: the block is the one ask.
-  if (asks.length === 0 && fence.body.trim()) asks = [{ id: null, kind: null, question: flat(fence.body) }];
-  if (asks.length === 0) return null;
-  const before = paragraphs(lines.slice(0, fence.from).join("\n"));
   const after = lines
-    .slice(fence.to + 1)
+    .slice(to + 1)
     .join("\n")
     .trim();
-  const lead = before[0] ?? "";
-  const instructions = [...before.slice(1), after].filter(Boolean).join("\n\n");
-  return { lead, asks, instructions: instructions || null, shape: "old" };
+  const instructions = [...paragraphs.slice(1), after].filter(Boolean).join("\n\n");
+  return { lead: prose([paragraphs[0] ?? ""]), asks, verbs: null, instructions: instructions || null, shape: "old" };
 }
 
-/** The brief of a fleet item, in parts; null when it is neither shape. */
+/** The brief of a fleet item, in parts; null when it is neither shape or quotes no ask. */
 export function parseFleetBrief(brief: unknown): FleetBrief | null {
   if (typeof brief !== "string" || !brief.trim()) return null;
   try {
-    return readNew(brief) ?? readOld(brief);
+    const lines = linesOf(brief);
+    const { you, run } = sections(lines);
+    return you >= 0 ? readNew(lines, you, run) : readOld(lines);
   } catch {
     return null;
   }
@@ -197,28 +278,23 @@ export function askTitle(asks: readonly FleetAsk[], total = asks.length): string
 /**
  * How a fleet item's title reads, and where it came from; null for a title
  * with no fleet marker. An old count title (`1 ask (tick 7)`) becomes its
- * first ask's question; an old alert title (`fleet sri: kind`) its message; a
- * new title keeps its words without the marker.
+ * first ask's question; any other keeps its words without the marker.
  */
 export function fleetHeading(title: unknown, brief: unknown): FleetHeading | null {
   const mark = fleetMarker(title);
   if (!mark) return null;
-  const parsed = parseFleetBrief(brief);
   const old = OLD_TITLE.exec(mark.rest);
-  const lead = parsed?.lead ?? "";
+  const parsed = old ? parseFleetBrief(brief) : null;
+  const lead = typeof brief === "string" ? brief.slice(0, LINE_CAP * 2) : "";
   const tick =
     old?.[2] ??
-    /\(tick\s+([^)\s]+)\)/i.exec(mark.rest)?.[1] ??
-    /\(tick\s+([^)\s]+)\)/i.exec(lead)?.[1] ??
-    /^batch\s+(\d+)-\d+$/i.exec(mark.what)?.[1] ??
+    TICK.exec(mark.rest)?.[1] ??
+    TICK.exec(lead)?.[1] ??
+    /^batch\s+(\d{1,9})-\d{1,9}$/i.exec(mark.what)?.[1] ??
     null;
-  let shown: string | null = null;
-  if (old && parsed) shown = askTitle(parsed.asks, Number(old[1]));
-  else if (mark.what.startsWith("alert ") && /^fleet\s+\S+:/.test(mark.rest) && parsed?.asks[0]) {
-    shown = clipWords(parsed.asks[0].question, ASK_TITLE_MAX);
-  }
+  const shown = old && parsed ? askTitle(parsed.asks, Number(old[1])) : null;
   return {
-    title: shown || mark.rest || (title as string),
+    title: shown || mark.rest || (title as string).slice(-TITLE_CAP),
     origin: { scope: mark.scope, what: mark.what, tick },
   };
 }

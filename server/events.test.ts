@@ -301,11 +301,24 @@ describe("receipts a person reads", () => {
     );
   });
 
-  test("the look's bullets read links as their text and drop emphasis", () => {
+  test("the look's bullets read links as their text and drop bold, nothing else: globs and names stay", () => {
     expect(bullets("- Closed **all 6** in [BRO-2830](https://x.y/z)\n- `ctx` _registered_")).toEqual([
       "Closed all 6 in BRO-2830",
-      "ctx registered",
+      "`ctx` _registered_",
     ]);
+    expect(bullets("- Edited src/*.ts and lib/*.js\n- Renamed __init__ to __main__")).toEqual([
+      "Edited src/*.ts and lib/*.js",
+      "Renamed __init__ to __main__",
+    ]);
+  });
+
+  test("a summary that was not cut is shown whole, whatever its length", async () => {
+    const { plainSummary, SUMMARY_MAX } = await import("./events");
+    const longer = `t starts lowercase and runs on. ${"More words. ".repeat(800)}`;
+    expect(longer.length).toBeGreaterThan(SUMMARY_MAX);
+    expect(plainSummary(longer).startsWith("t starts lowercase")).toBe(true);
+    const exact = `The message starts as a sentence. ${"More words. ".repeat(800)}`.slice(0, SUMMARY_MAX);
+    expect(plainSummary(exact).startsWith("The message starts")).toBe(true);
   });
 });
 

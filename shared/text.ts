@@ -1,40 +1,65 @@
-// Cutting text a person reads: never mid-word, and an ellipsis wherever text
-// was left out. Pure; compiled into both bundles.
+// Cutting text a person reads: never mid-word or mid-character, and an
+// ellipsis wherever text was left out. Pure; compiled into both bundles.
+// Every regex here runs on input already capped (LINE_CAP), so its cost is
+// bounded whatever an agent wrote.
 
 const ELLIPSIS = "…";
+
+/** The longest line any inline regex here sees; the rest of a longer line is left out. */
+export const LINE_CAP = 2000;
 
 /** Whitespace runs as one space, trimmed. */
 export function flat(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function isHigh(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLow(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
+/** `text` cut to at most `max` UTF-16 units without leaving half a surrogate pair at the end. */
+function headUnits(text: string, max: number): string {
+  const cut = text.slice(0, max);
+  return cut.length > 0 && isHigh(cut.charCodeAt(cut.length - 1)) ? cut.slice(0, -1) : cut;
+}
+
 /**
- * The start of `text` on one line, at most `max` characters: cut at the last
- * space before the limit (when that keeps at least half of it) with a
- * trailing "…", and a dangling comma, colon or stop dropped before the ellipsis.
+ * The start of `text` on one line, at most `max` characters: a cut that ends
+ * a word keeps it, else back to the last space before the limit (when that
+ * keeps at least half of it), with a trailing "…", and a dangling comma,
+ * colon or stop dropped before the ellipsis. A surrogate pair is never split.
  */
 export function clipWords(text: string, max: number): string {
   const one = flat(text);
   if (one.length <= max) return one;
   const room = Math.max(1, max - 1);
-  const cut = one.slice(0, room);
-  // A cut that ends a word keeps it; otherwise back to the last space, when that keeps at least half.
-  const space = one.charAt(room) === " " ? room : cut.lastIndexOf(" ");
+  const cut = headUnits(one, room);
+  const space = one.charAt(room) === " " ? cut.length : cut.lastIndexOf(" ");
   const kept = space >= room / 2 ? cut.slice(0, space) : cut;
   return `${kept.replace(/[\s,;:.([{-]+$/, "")}${ELLIPSIS}`;
 }
 
 /**
  * The end of `text`, at most `max` characters, starting where a reader can:
- * the first line break, else the first sentence end, else the first space in
- * the opening fifth of the tail, with "…" in front. Line breaks are kept, so
- * a `## Decided` heading near the end still parses. Text that fits is
- * returned as it is.
+ * where the cut already lands at a line or word start, there; else the first
+ * line break, else the first sentence end, else the first space in the
+ * opening fifth of the tail, with "…" in front. Line breaks are kept, so a
+ * `## Decided` heading near the end still parses. Text that fits is returned
+ * as it is. A surrogate pair is never split.
  */
 export function tailWords(text: string, max: number): string {
   if (text.length <= max) return text;
   const room = Math.max(1, max - 2);
-  const tail = text.slice(text.length - room);
+  let from = text.length - room;
+  if (isLow(text.charCodeAt(from))) from += 1;
+  const tail = text.slice(from);
+  const before = text.charAt(from - 1);
+  if (before === "\n") return `${ELLIPSIS}\n${tail}`;
+  if (/\s/.test(before) && !/^\s/.test(tail)) return `${ELLIPSIS} ${tail}`;
   const reach = Math.max(1, Math.floor(room / 5));
   const head = tail.slice(0, reach);
   const line = head.indexOf("\n");
@@ -46,24 +71,30 @@ export function tailWords(text: string, max: number): string {
   return `${ELLIPSIS}${tail}`;
 }
 
+const FENCE_OPEN = /^\s{0,3}(`{3,}|~{3,})/;
+
 /**
- * Markdown as plain prose for a one-paragraph excerpt: headings, emphasis,
- * code ticks, blockquote and list markers dropped, links read as their text,
+ * Markdown as plain prose for a one-paragraph excerpt: headings, quote and
+ * list markers, code ticks and **bold** dropped, links read as their text,
  * images as their alt text, and a table summarised by its header cells
- * ("(table: Orchestrator, Scope)") instead of pipe rows. Line breaks stay;
- * the caller flattens. Never throws.
+ * ("(table: Orchestrator, Scope)") instead of pipe rows. Single `*` and `_`
+ * are left alone: in agent text they are globs and names (`src/*.ts`,
+ * `__init__`) far more often than emphasis. Line breaks stay; the caller
+ * flattens. Never throws.
  */
 export function plainMarkdown(markdown: string): string {
   const lines = String(markdown ?? "").split(/\r?\n/);
   const out: string[] = [];
-  let fence = false;
+  let fence: string | null = null;
   let table = false;
-  for (const raw of lines) {
-    if (/^\s*(```|~~~)/.test(raw)) {
-      fence = !fence;
+  for (const whole of lines) {
+    const raw = whole.length > LINE_CAP ? headUnits(whole, LINE_CAP) : whole;
+    const mark = FENCE_OPEN.exec(raw)?.[1];
+    if (mark && (fence === null || (mark[0] === fence[0] && mark.length >= fence.length))) {
+      fence = fence === null ? mark : null;
       continue;
     }
-    if (fence) {
+    if (fence !== null) {
       out.push(raw);
       continue;
     }
@@ -81,12 +112,12 @@ export function plainMarkdown(markdown: string): string {
       continue;
     }
     table = false;
-    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(raw)) continue; // a horizontal rule
+    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(raw)) continue; // a horizontal rule
     const line = raw
       .replace(/^\s{0,3}#{1,6}\s+/, "")
       .replace(/\s+#+\s*$/, "")
-      .replace(/^\s*>\s?/, "")
-      .replace(/^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/, "");
+      .replace(/^\s{0,3}>\s?/, "")
+      .replace(/^\s*(?:[-*+]|\d{1,9}[.)])\s+(?:\[[ xX]\]\s+)?/, "");
     out.push(inlinePlain(line));
   }
   return out.join("\n").trim();
@@ -97,16 +128,22 @@ function isTableRow(line: string): boolean {
   return t.startsWith("|") && t.length > 1 && (t.match(/\|/g)?.length ?? 0) >= 2;
 }
 
-/** One line of Markdown without its inline markers. */
+/**
+ * Links as their text and **bold** without its markers, nothing else: what a
+ * Decided or Ask bullet at the gate needs, where code ticks, globs and
+ * underscores are the agent's own words.
+ */
+export function linksAndBold(line: string): string {
+  const capped = line.length > LINE_CAP ? headUnits(line, LINE_CAP) : line;
+  return capped
+    .replace(/!\[([^\]\n]{0,500})\]\([^)\n]{0,2000}\)/g, "$1")
+    .replace(/\[([^\]\n]{1,500})\]\((?:[^()\n]|\([^()\n]{0,500}\)){0,2000}\)/g, "$1")
+    .replace(/\[([^\]\n]{1,500})\]\[[^\]\n]{0,200}\]/g, "$1")
+    .replace(/<(https?:\/\/[^>\s]{1,2000})>/g, "$1")
+    .replace(/\*\*(\S(?:[^*\n]{0,2000}?\S)?)\*\*/g, "$1");
+}
+
+/** One line of Markdown without its inline markers: links and bold (linksAndBold), and code ticks. */
 export function inlinePlain(line: string): string {
-  return line
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\((?:[^()]|\([^)]*\))*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1")
-    .replace(/<(https?:\/\/[^>\s]+)>/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/(\*\*|__)(\S(?:.*?\S)?)\1/g, "$2")
-    .replace(/(^|[^\w*])\*(\S(?:[^*]*?\S)?)\*(?!\w)/g, "$1$2")
-    .replace(/(^|[^\w_])_(\S(?:[^_]*?\S)?)_(?!\w)/g, "$1$2")
-    .replace(/~~(\S(?:.*?\S)?)~~/g, "$1");
+  return linksAndBold(line).replace(/`([^`\n]{1,2000})`/g, "$1");
 }

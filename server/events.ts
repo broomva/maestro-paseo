@@ -16,7 +16,7 @@ import type {
 } from "../shared/contracts";
 import { describeRun } from "../shared/run";
 import type { OrchState, Verdict } from "../shared/states";
-import { clipWords, inlinePlain, plainMarkdown, tailWords } from "../shared/text";
+import { clipWords, linksAndBold, plainMarkdown, tailWords } from "../shared/text";
 
 export type Actor = "human" | "agent" | "maestro";
 
@@ -336,11 +336,14 @@ export function section(text: string, heading: string): string | null {
 }
 
 export function bullets(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) => inlinePlain(line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "")).trim())
-    .filter((line) => line.length > 0)
-    .slice(0, 5);
+  return (
+    text
+      .split("\n")
+      // Links as their text and **bold** dropped, nothing more: globs (`src/*.ts`) and names (`__init__`) stay.
+      .map((line) => linksAndBold(line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "")).trim())
+      .filter((line) => line.length > 0)
+      .slice(0, 5)
+  );
 }
 
 export function lookOf(state: OrchState, events: readonly WorkEvent[], now: number): Look | null {
@@ -401,13 +404,23 @@ export function keptSummary(text: string): string {
 }
 
 /**
+ * Whether an older daemon cut this summary mid-word: it kept `slice(-8000)`,
+ * so such a summary is exactly SUMMARY_MAX long, and a cut mid-word starts
+ * with a lowercase letter or digit. A summary of any other length, or one
+ * that starts as a sentence does, is whole and shown as written.
+ */
+function cutByOlderDaemon(text: string): boolean {
+  return text.length === SUMMARY_MAX && /^[a-z0-9]/.test(text);
+}
+
+/**
  * The message before its Decided/Ask sections as plain prose: Markdown markers
  * dropped, links as their text, a table as its header cells. A summary an
- * older daemon cut at SUMMARY_MAX mid-word starts at its first whole word, with "…".
+ * older daemon cut mid-word (cutByOlderDaemon) starts at its first whole word, with "…".
  */
 export function plainSummary(summary: string): string {
   let text = summary;
-  if (text.length >= SUMMARY_MAX && !text.startsWith("\u2026")) {
+  if (cutByOlderDaemon(text)) {
     const space = text.slice(0, 200).search(/\s/);
     text = `\u2026 ${space >= 0 ? text.slice(space).trimStart() : text}`;
   }

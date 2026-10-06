@@ -415,7 +415,8 @@ export function Disclosure({
           alignItems: "center",
           alignSelf: "flex-start",
           gap: space[2],
-          minHeight: 40,
+          // 44: a touch target on a phone, where this row is most often tapped.
+          minHeight: 44,
           paddingHorizontal: space[2],
           marginLeft: -space[2],
           borderRadius: radius.control,

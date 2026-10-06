@@ -95,12 +95,12 @@ export function actorText(actor: HistoryEvent["actor"]): string {
   return actor === "human" ? "You" : actor === "agent" ? "Agent" : "Maestro";
 }
 
-/** "initiative › project", the fleet's words for fleet work (`fleet · sri · tick 7`), or null for work outside any initiative. */
+/** "initiative · project", the fleet's words for fleet work (`fleet · sri`), or null for work outside any initiative. */
 export function eventCrumb(event: Pick<HistoryEvent, "initiative" | "project"> & { title?: string }): string | null {
   const fleet = event.title ? eventFleetPlace({ title: event.title }) : null;
   if (fleet) return fleet;
   const parts = [event.initiative, event.project === event.initiative ? null : event.project].filter(Boolean);
-  return parts.length > 0 ? parts.join(" › ") : null;
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 export interface EventGroup {
