@@ -36,11 +36,14 @@ import { runChecks } from "./checks";
 import { loadConfig } from "./config";
 import {
   ARCHIVED_NOTE,
+  archivedSince,
   BY_HUMAN,
   checkOutcome,
+  closedItself,
   decisionApplied,
   eventsSince,
   type FlaggedEvent,
+  finishedArc,
   flagOf,
   keptSummary,
   lastOf,
@@ -1021,13 +1024,19 @@ export class Engine {
   }
 
   /**
-   * After an approval applies: archive the run's workspace, so its worktree
-   * goes and its branch stays as the receipt. Best effort: a failure is a
-   * receipt and never undoes the approval. Only a workspace a dispatch
+   * After an approval applies, or work closed itself (finishedArc): archive
+   * the run's workspace, so its worktree goes and its branch stays as the
+   * receipt. Best effort: a failure is a receipt and never undoes the close;
+   * `stands` says what stands, in the receipt's words. Only a workspace a dispatch
    * created is Maestro's; a tracked session's, or the repository itself in
    * directory mode, is yours and stays.
    */
-  private async archiveWorkspace(paseo: Paseo | null, store: WorkStore, item: StoredWork): Promise<void> {
+  private async archiveWorkspace(
+    paseo: Paseo | null,
+    store: WorkStore,
+    item: StoredWork,
+    stands = "The approval stands.",
+  ): Promise<void> {
     const worker = workerOf(item.events);
     if (!worker) return;
     const record = (text: string) =>
@@ -1039,10 +1048,12 @@ export class Engine {
         );
     const { workspaceId, branch } = worker;
     if (!branch || !workspaceId) return record("Kept the workspace: Maestro did not create it.");
-    if (!paseo) return record(`Could not archive the workspace: ${NO_HANDLE} The approval stands.`);
+    if (!paseo) return record(`Could not archive the workspace: ${NO_HANDLE} ${stands}`);
     // The claim is the item's lock, the one every mutation of it takes, so the receipt is written after it is released.
     return record(
-      await withLock(item.contract.id, () => this.archiveClaimed(paseo, item, { ...worker, workspaceId, branch })),
+      await withLock(item.contract.id, () =>
+        this.archiveClaimed(paseo, item, { ...worker, workspaceId, branch }, stands),
+      ),
     );
   }
 
@@ -1073,6 +1084,7 @@ export class Engine {
     paseo: Paseo,
     item: StoredWork,
     { agentId, workspaceId, branch, cwd }: { agentId: string; workspaceId: string; branch: string; cwd: string | null },
+    stands: string,
   ): Promise<string> {
     const repo = item.contract.repo;
     const cannot = (why: string) => `Kept the worktree: could not check it for uncommitted changes (${why}).`;
@@ -1107,7 +1119,7 @@ export class Engine {
       (error) => (error instanceof Error ? error.message : String(error)),
     );
     return failure
-      ? `Could not archive the workspace: ${failure}. The approval stands.`
+      ? `Could not archive the workspace: ${failure}. ${stands}`
       : `Archived the workspace. The branch ${branch} stays.`;
   }
 
@@ -1595,7 +1607,12 @@ export class Engine {
     await this.route(agent.id, (store, item) => this.resolvePermission(store, item, agent.id, requestId));
   }
 
-  async onArchived(agent: HookAgent): Promise<void> {
+  /**
+   * The session was archived: the work notes it (or stops, if it was mid-run
+   * or asking). With the daemon's client, the item is reconciled at once, so
+   * a finished arc closes now (finishedArc), not on whoever lists next.
+   */
+  async onArchived(agent: HookAgent, paseo: Paseo | null = null): Promise<void> {
     await this.route(agent.id, async (store, item) => {
       await store.mutate(
         item.contract.id,
@@ -1607,10 +1624,12 @@ export class Engine {
             return { to: "blocked", reason: "The session was archived while it was asking" };
           }
           if (isTerminal(state)) return null;
+          // A finished arc at your gate closes in the reconcile below (finishedArc), which can follow through.
           return { events: [this.note(ARCHIVED_NOTE)] };
         },
         item.dir,
       );
+      if (paseo) await this.reconcileOne(paseo, store, await store.findById(item.contract.id));
     });
   }
 
@@ -1887,6 +1906,27 @@ export class Engine {
     if (!agent || agent.archivedAt || agent.status === "closed") {
       if (state === "running") return guarded({ to: "blocked", reason: "The session ended before the run finished" });
       if (permission) return guarded({ to: "blocked", reason: "The session ended while it was asking" });
+      // A finished arc at your gate closes itself here, and only here (finishedArc): archived, by its hook's
+      // note or as the daemon now says (a missed hook, whose note is written with it).
+      if (state === "review") {
+        const archived = agent?.archivedAt && !archivedSince(item.events) ? [this.note(ARCHIVED_NOTE)] : [];
+        const line = finishedArc([...item.events, ...archived]);
+        if (line) {
+          const closed = await guarded({
+            to: "done",
+            actor: "maestro",
+            ctx: { arcFinished: true },
+            reason: closedItself(line),
+            events: archived,
+          });
+          // As an approval would: the workspace a run created goes when Settings says archive on approve.
+          const { config } = await this.store();
+          if (closed && config.archiveOnApprove) {
+            await this.archiveWorkspace(paseo, store, await store.findById(item.contract.id), "It stays done.");
+          }
+          return closed;
+        }
+      }
       return false;
     }
     if (state === "review") {

@@ -332,7 +332,7 @@ export default function contribute(host: PluginServerContext) {
   );
   server.on("agent.permission_requested", (event) => engine.onPermissionRequested(event.agent, event.request));
   server.on("agent.permission_resolved", (event) => engine.onPermissionResolved(event.agent, event.requestId));
-  server.on("agent.archived", (event) => engine.onArchived(event.agent));
+  server.on("agent.archived", (event, { paseo }) => engine.onArchived(event.agent, paseo));
   // Heard only for its client: the socket can then start runs as soon as any session exists.
   server.on("agent.created", () => undefined);
 
