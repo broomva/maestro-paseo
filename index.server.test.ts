@@ -663,3 +663,41 @@ test("asks.workspace carries each fleet scope's root asks, tagged; a fleet answe
     }
   }
 });
+
+test("the archive hook hands the engine the daemon's client, so a finished arc closes at once (BRO-2861)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
+  roots.push(root);
+  const config = join(root, "config.json");
+  await writeFile(
+    config,
+    JSON.stringify({ workRoot: join(root, "work"), provider: "claude/test-model", modeId: null }),
+  );
+  const keys = ["MAESTRO_PASEO_CONFIG", "MAESTRO_PASEO_SOCKET", "MAESTRO_PASEO_CONTROL_REPO"] as const;
+  const saved = keys.map((key) => [key, process.env[key]] as const);
+  Object.assign(process.env, {
+    MAESTRO_PASEO_CONFIG: config,
+    MAESTRO_PASEO_SOCKET: join(root, "m.sock"),
+    MAESTRO_PASEO_CONTROL_REPO: "off",
+  });
+  const seen: unknown[][] = [];
+  const original = Engine.prototype.onArchived;
+  Engine.prototype.onArchived = async function (this: Engine, ...args: Parameters<Engine["onArchived"]>) {
+    seen.push(args);
+  };
+  const { host, hooks } = fakeHost();
+  const cleanup = contribute(host);
+  try {
+    const archived = hooks.get("agent.archived");
+    if (!archived) throw new Error("agent.archived is not subscribed");
+    const fake = fakePaseo();
+    await archived({ agent: { id: "someone" } }, { paseo: fake.paseo, signal: new AbortController().signal });
+    expect(seen).toEqual([[{ id: "someone" }, fake.paseo]]);
+  } finally {
+    Engine.prototype.onArchived = original;
+    await cleanup();
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});

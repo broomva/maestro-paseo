@@ -1024,13 +1024,19 @@ export class Engine {
   }
 
   /**
-   * After an approval applies: archive the run's workspace, so its worktree
-   * goes and its branch stays as the receipt. Best effort: a failure is a
-   * receipt and never undoes the approval. Only a workspace a dispatch
+   * After an approval applies, or work closed itself (finishedArc): archive
+   * the run's workspace, so its worktree goes and its branch stays as the
+   * receipt. Best effort: a failure is a receipt and never undoes the close;
+   * `stands` says what stands, in the receipt's words. Only a workspace a dispatch
    * created is Maestro's; a tracked session's, or the repository itself in
    * directory mode, is yours and stays.
    */
-  private async archiveWorkspace(paseo: Paseo | null, store: WorkStore, item: StoredWork): Promise<void> {
+  private async archiveWorkspace(
+    paseo: Paseo | null,
+    store: WorkStore,
+    item: StoredWork,
+    stands = "The approval stands.",
+  ): Promise<void> {
     const worker = workerOf(item.events);
     if (!worker) return;
     const record = (text: string) =>
@@ -1042,10 +1048,12 @@ export class Engine {
         );
     const { workspaceId, branch } = worker;
     if (!branch || !workspaceId) return record("Kept the workspace: Maestro did not create it.");
-    if (!paseo) return record(`Could not archive the workspace: ${NO_HANDLE} The approval stands.`);
+    if (!paseo) return record(`Could not archive the workspace: ${NO_HANDLE} ${stands}`);
     // The claim is the item's lock, the one every mutation of it takes, so the receipt is written after it is released.
     return record(
-      await withLock(item.contract.id, () => this.archiveClaimed(paseo, item, { ...worker, workspaceId, branch })),
+      await withLock(item.contract.id, () =>
+        this.archiveClaimed(paseo, item, { ...worker, workspaceId, branch }, stands),
+      ),
     );
   }
 
@@ -1076,6 +1084,7 @@ export class Engine {
     paseo: Paseo,
     item: StoredWork,
     { agentId, workspaceId, branch, cwd }: { agentId: string; workspaceId: string; branch: string; cwd: string | null },
+    stands: string,
   ): Promise<string> {
     const repo = item.contract.repo;
     const cannot = (why: string) => `Kept the worktree: could not check it for uncommitted changes (${why}).`;
@@ -1110,7 +1119,7 @@ export class Engine {
       (error) => (error instanceof Error ? error.message : String(error)),
     );
     return failure
-      ? `Could not archive the workspace: ${failure}. The approval stands.`
+      ? `Could not archive the workspace: ${failure}. ${stands}`
       : `Archived the workspace. The branch ${branch} stays.`;
   }
 
@@ -1598,7 +1607,12 @@ export class Engine {
     await this.route(agent.id, (store, item) => this.resolvePermission(store, item, agent.id, requestId));
   }
 
-  async onArchived(agent: HookAgent): Promise<void> {
+  /**
+   * The session was archived: the work notes it (or stops, if it was mid-run
+   * or asking). With the daemon's client, the item is reconciled at once, so
+   * a finished arc closes now (finishedArc), not on whoever lists next.
+   */
+  async onArchived(agent: HookAgent, paseo: Paseo | null = null): Promise<void> {
     await this.route(agent.id, async (store, item) => {
       await store.mutate(
         item.contract.id,
@@ -1615,6 +1629,7 @@ export class Engine {
         },
         item.dir,
       );
+      if (paseo) await this.reconcileOne(paseo, store, await store.findById(item.contract.id));
     });
   }
 
@@ -1907,7 +1922,7 @@ export class Engine {
           // As an approval would: the workspace a run created goes when Settings says archive on approve.
           const { config } = await this.store();
           if (closed && config.archiveOnApprove) {
-            await this.archiveWorkspace(paseo, store, await store.findById(item.contract.id));
+            await this.archiveWorkspace(paseo, store, await store.findById(item.contract.id), "It stays done.");
           }
           return closed;
         }

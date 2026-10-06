@@ -2829,11 +2829,15 @@ describe("a finished arc closes itself once its session is archived (BRO-2861)",
     { type: "user_message" as const, text: "go" },
     { type: "assistant_message" as const, text },
   ];
-  /** The daemon archives the session: its hook, then the session reads archived. */
-  const archive = async (engine: Engine, fake: ReturnType<typeof fakePaseo>, hook = true) => {
-    if (hook) await engine.onArchived({ id: "agent-1" });
+  /** The daemon archives the session, then its hook fires (here without the daemon's client unless given). */
+  const archive = async (
+    engine: Engine,
+    fake: ReturnType<typeof fakePaseo>,
+    hook: "none" | "bare" | "client" = "bare",
+  ) => {
     const agent = fake.agents.get("agent-1");
     if (agent) agent.archivedAt = new Date(clock).toISOString();
+    if (hook !== "none") await engine.onArchived({ id: "agent-1" }, hook === "client" ? fake.paseo : null);
   };
 
   test("CLOSED, then archived: the next list closes it, receipted as Maestro's, and the card says why", async () => {
@@ -2854,6 +2858,30 @@ describe("a finished arc closes itself once its session is archived (BRO-2861)",
       text: "Done",
       detail: "Its arc reported “ARC-STATUS: CLOSED” and its session was archived",
     });
+  });
+
+  test("its hook carrying the daemon's client closes it at once, with no list", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await endTurn(engine, fake, said("ARC-STATUS: CLOSED"));
+    await archive(engine, fake, "client");
+    expect((await engine.get(item.id)).item.state).toBe("done");
+  });
+
+  test("a self-closed run's workspace receipt says it stays done, not that an approval stands", async () => {
+    const { create, engine, fake, repo } = await setup({ archiveOnApprove: true });
+    const item = await create();
+    cleanWorktree(repo, item.worker);
+    await endTurn(engine, fake, said("ARC-STATUS: CLOSED"));
+    fake.paseo.workspaces.archive = (async (workspaceId: string) => ({
+      requestId: "r",
+      workspaceId,
+      archivedAt: null,
+      error: "busy",
+    })) as typeof fake.paseo.workspaces.archive;
+    await archive(engine, fake, "client");
+    const { events } = await engine.get(item.id);
+    expect(events.at(-1)?.text).toBe("Could not archive the workspace: busy. It stays done.");
   });
 
   test("HANDBACK, or no verdict, waits on you after the archive, as before", async () => {
@@ -2881,7 +2909,7 @@ describe("a finished arc closes itself once its session is archived (BRO-2861)",
     const { create, engine, fake } = await setup();
     const item = await create();
     await endTurn(engine, fake, said("ARC-STATUS: MERGED"));
-    await archive(engine, fake, false);
+    await archive(engine, fake, "none");
     tick(1);
     await engine.list(fake.paseo);
     const { item: closed, events } = await engine.get(item.id);
