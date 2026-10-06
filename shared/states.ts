@@ -134,6 +134,12 @@ export interface TransitionContext {
   verdict?: Verdict;
   /** True when every required done check passed on this run. */
   checksPassed?: boolean;
+  /**
+   * True when the work's own arc reported itself finished (its last turn's
+   * `ARC-STATUS: CLOSED|DONE|MERGED`) and its session was archived since
+   * (server/events.ts finishedArc): it closes itself, receipted as Maestro's.
+   */
+  arcFinished?: boolean;
 }
 
 /** Validate one transition. Returns the target state or throws. */
@@ -141,8 +147,12 @@ export function transition(from: OrchState, to: OrchState, ctx: TransitionContex
   if (!LEGAL[from].includes(to)) {
     throw new IllegalTransitionError(from, to);
   }
-  if (from === "review" && to === "done" && ctx.verdict !== "approve") {
-    throw new IllegalTransitionError(from, to, "only an approve verdict closes gated work");
+  if (from === "review" && to === "done" && ctx.verdict !== "approve" && ctx.arcFinished !== true) {
+    throw new IllegalTransitionError(
+      from,
+      to,
+      "only an approve verdict, or an arc that reported itself finished and was archived, closes gated work",
+    );
   }
   if (from === "running" && to === "done" && !(ctx.gate === "auto" && ctx.checksPassed === true)) {
     throw new IllegalTransitionError(

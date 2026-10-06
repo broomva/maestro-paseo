@@ -38,9 +38,11 @@ import {
   ARCHIVED_NOTE,
   BY_HUMAN,
   checkOutcome,
+  closedItself,
   decisionApplied,
   eventsSince,
   type FlaggedEvent,
+  finishedArc,
   flagOf,
   keptSummary,
   lastOf,
@@ -1607,7 +1609,18 @@ export class Engine {
             return { to: "blocked", reason: "The session was archived while it was asking" };
           }
           if (isTerminal(state)) return null;
-          return { events: [this.note(ARCHIVED_NOTE)] };
+          const archived = this.note(ARCHIVED_NOTE);
+          // A finished arc at your gate closes itself once its session is archived (finishedArc).
+          const line = state === "review" ? finishedArc([...fresh.events, archived]) : null;
+          if (line)
+            return {
+              to: "done",
+              actor: "maestro",
+              ctx: { arcFinished: true },
+              reason: closedItself(line),
+              events: [archived],
+            };
+          return { events: [archived] };
         },
         item.dir,
       );
@@ -1887,6 +1900,10 @@ export class Engine {
     if (!agent || agent.archivedAt || agent.status === "closed") {
       if (state === "running") return guarded({ to: "blocked", reason: "The session ended before the run finished" });
       if (permission) return guarded({ to: "blocked", reason: "The session ended while it was asking" });
+      // Archived before this rule, or its hook missed: a finished arc closes itself here (finishedArc).
+      const line = state === "review" ? finishedArc(item.events) : null;
+      if (line)
+        return guarded({ to: "done", actor: "maestro", ctx: { arcFinished: true }, reason: closedItself(line) });
       return false;
     }
     if (state === "review") {

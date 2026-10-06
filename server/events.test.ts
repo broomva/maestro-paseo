@@ -5,6 +5,7 @@ import {
   bullets,
   closingAbove,
   type FlaggedEvent,
+  finishedArc,
   flagOf,
   formatDuration,
   lastActivityOf,
@@ -546,5 +547,38 @@ describe("an arc's own verdict at the gate (BRO-2856)", () => {
       { ts: at(150), type: "state", actor: "maestro", from: "running", to: "review", reason: null },
     ];
     expect(lookOf("review", again, T0)?.archived).toBe(false);
+  });
+});
+
+describe("work that closes itself (BRO-2861)", () => {
+  const ended = (text: string): WorkEvent[] =>
+    toReview.map((e) => (e.type === "turn.ended" ? { ...e, summary: text } : e));
+  const archived: WorkEvent = { ts: at(135), type: "note", actor: "maestro", text: ARCHIVED_NOTE };
+
+  test("a finished arc's verdict and an archive since the turn: the verdict line; anything less, null", () => {
+    for (const word of ["CLOSED", "DONE", "MERGED"]) {
+      expect(finishedArc([...ended(`x\nARC-STATUS: ${word}`), archived])).toBe(`ARC-STATUS: ${word}`);
+    }
+    // Not archived, a handback, a blocked arc, no verdict, a verdict not on its own line.
+    expect(finishedArc(ended("x\nARC-STATUS: CLOSED"))).toBeNull();
+    for (const text of ["x\nARC-STATUS: HANDBACK 1", "x\nARC-STATUS: BLOCKED", "Done.", "**ARC-STATUS:** done"]) {
+      expect(finishedArc([...ended(text), archived])).toBeNull();
+    }
+  });
+
+  test("a question pending, or an archive before the turn that landed it, keeps it waiting", () => {
+    const asking: WorkEvent = {
+      ts: at(134),
+      type: "permission.asked",
+      actor: "agent",
+      agentId: "a1",
+      requestId: "p1",
+      title: "Run a command",
+      detail: null,
+    };
+    expect(finishedArc([...ended("ARC-STATUS: CLOSED"), asking, archived])).toBeNull();
+    const before: WorkEvent = { ...archived, ts: at(100) };
+    const turn = ended("ARC-STATUS: CLOSED");
+    expect(finishedArc([...turn.slice(0, 2), before, ...turn.slice(2)])).toBeNull();
   });
 });

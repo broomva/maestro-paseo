@@ -288,7 +288,10 @@ export function verdictOf(state: OrchState, events: readonly WorkEvent[]): strin
         : `${failed} of ${results.length} ${results.length === 1 ? "check" : "checks"} failed`;
   if (state === "done") {
     const gate = lastOf(events, "gate");
-    return gate?.verdict === "approve" ? (checks ? `${checks} · you approved` : "You approved") : checks;
+    if (gate?.verdict === "approve") return checks ? `${checks} · you approved` : "You approved";
+    // Closed itself (finishedArc): its receipt says why.
+    const closed = lastOf(events, "state");
+    return closed?.actor === "maestro" && closed.from === "review" && closed.reason ? closed.reason : checks;
   }
   if (state === "canceled") return "You canceled it";
   return checks;
@@ -412,6 +415,30 @@ function arcAsk(status: string, line: string): string {
   return `It ended with “${line}”. ${verbs}`;
 }
 
+/** Whether the session was archived since this run was bound and since the turn that landed it: one sent back and run again is not. */
+export function archivedSince(events: readonly WorkEvent[]): boolean {
+  const since = events.findLastIndex((e) => e.type === "turn.ended" || e.type === "dispatched" || e.type === "adopted");
+  return events.slice(since + 1).some((e) => e.type === "note" && e.text === ARCHIVED_NOTE);
+}
+
+/** The arc verdicts that say an arc is finished and leaves nothing to you. */
+export const FINISHED_ARC: ReadonlySet<string> = new Set(["CLOSED", "DONE", "MERGED"]);
+
+/**
+ * Work at your gate that closes itself: its last turn ends with a finished
+ * arc's verdict (FINISHED_ARC, ctx-core's grammar), its session was archived
+ * since (archivedSince), and no question is pending. The verdict line, else
+ * null. HANDBACK, BLOCKED, any other word, or no verdict keeps waiting on you.
+ */
+export function finishedArc(events: readonly WorkEvent[]): string | null {
+  if (pendingPermission(events) || !archivedSince(events)) return null;
+  const arc = arcStatus(lastOf(events, "turn.ended")?.summary ?? "");
+  return arc && FINISHED_ARC.has(arc.status) ? arc.line : null;
+}
+
+/** The receipt of work that closed itself (finishedArc). */
+export const closedItself = (line: string) => `Its arc reported “${line}” and its session was archived`;
+
 export function lookOf(state: OrchState, events: readonly WorkEvent[], now: number): Look | null {
   if (state !== "review") return null;
   const permission = pendingPermission(events);
@@ -439,9 +466,7 @@ export function lookOf(state: OrchState, events: readonly WorkEvent[], now: numb
   const decided = section(body, "Decided");
   const ask = section(body, "Ask");
   const closing = arc ? closingAbove(summary, arc.at) : null;
-  // Archived since this run was bound and since the turn that brought it here: a session sent back and run again is not.
-  const since = events.findLastIndex((e) => e.type === "turn.ended" || e.type === "dispatched" || e.type === "adopted");
-  const archived = events.slice(since + 1).some((e) => e.type === "note" && e.text === ARCHIVED_NOTE);
+  const archived = archivedSince(events);
   return {
     ran,
     decided: decided ? bullets(decided) : [],

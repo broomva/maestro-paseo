@@ -4,6 +4,10 @@ import { groupOf, IllegalTransitionError, landingState, ORCH_STATES, transition,
 describe("transition", () => {
   test("gated work reaches done only through an approve verdict", () => {
     expect(transition("review", "done", { gate: "human", verdict: "approve" })).toBe("done");
+    // An arc that reported itself finished and was archived closes gated work too; nothing else does.
+    expect(transition("review", "done", { gate: "human", arcFinished: true })).toBe("done");
+    expect(() => transition("review", "done", { gate: "human" })).toThrow(IllegalTransitionError);
+    expect(() => transition("review", "done", { gate: "human", verdict: "revise" })).toThrow(IllegalTransitionError);
     expect(() => transition("review", "done", { gate: "human" })).toThrow(IllegalTransitionError);
     expect(() => transition("review", "done", { gate: "human", verdict: "revise" })).toThrow(IllegalTransitionError);
   });

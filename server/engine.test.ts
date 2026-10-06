@@ -19,6 +19,7 @@ import {
   type Timer,
   UNDO_MS,
 } from "./engine";
+import { ARCHIVED_NOTE } from "./events";
 import { fakePaseo } from "./fake-paseo";
 import type { Paseo } from "./runs";
 import { EVENTS_FILE, WORK_FILE, WorkStore } from "./store";
@@ -2820,5 +2821,71 @@ describe("every run passes the folder check, whichever verb starts it", () => {
     await expect(engine.dispatch(fake.paseo, inside.id)).rejects.toThrow("is inside the work folder");
     await expect(engine.dispatch(fake.paseo, holding.id)).rejects.toThrow("holds the work folder");
     expect(attempted).toEqual([]);
+  });
+});
+
+describe("a finished arc closes itself once its session is archived (BRO-2861)", () => {
+  const said = (text: string) => [
+    { type: "user_message" as const, text: "go" },
+    { type: "assistant_message" as const, text },
+  ];
+
+  test("CLOSED, then archived: done, receipted as Maestro's, and the card says why", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await endTurn(engine, fake, said("Merged #12.\n\nARC-STATUS: CLOSED"));
+    expect((await engine.get(item.id)).item.state).toBe("review");
+    await engine.onArchived({ id: "agent-1" });
+    const { item: closed, events } = await engine.get(item.id);
+    expect(closed.state).toBe("done");
+    expect(closed.verdict).toBe("Its arc reported “ARC-STATUS: CLOSED” and its session was archived");
+    const last = events.at(-1);
+    // The receipt: Maestro closed it, and why.
+    expect(last).toMatchObject({
+      type: "state",
+      actor: "maestro",
+      text: "Done",
+      detail: "Its arc reported “ARC-STATUS: CLOSED” and its session was archived",
+    });
+  });
+
+  test("HANDBACK, or no verdict, waits on you after the archive, as before", async () => {
+    for (const text of ["Left you one.\n\nARC-STATUS: HANDBACK 1", "Done, I think.", "**ARC-STATUS:** done"]) {
+      const { create, engine, fake } = await setup();
+      const item = await create();
+      await endTurn(engine, fake, said(text));
+      await engine.onArchived({ id: "agent-1" });
+      expect((await engine.get(item.id)).item.state).toBe("review");
+    }
+  });
+
+  test("not archived, a finished arc still waits: the archive is half of the rule", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await endTurn(engine, fake, said("ARC-STATUS: DONE"));
+    tick(10);
+    await engine.list(fake.paseo);
+    expect((await engine.get(item.id)).item.state).toBe("review");
+  });
+
+  test("archived before this rule (its note already written): the next list closes it", async () => {
+    const { create, engine, fake, store } = await setup();
+    const item = await create();
+    await endTurn(engine, fake, said("ARC-STATUS: MERGED"));
+    // As the hook wrote it before this rule: the note, and the work left at the gate.
+    const stored = await store.findById(item.id);
+    await store.mutate(
+      item.id,
+      () => ({ events: [{ ts: new Date(clock).toISOString(), type: "note", actor: "maestro", text: ARCHIVED_NOTE }] }),
+      stored.dir,
+    );
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.archivedAt = new Date(clock).toISOString();
+    tick(10);
+    await engine.list(fake.paseo);
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "done",
+      verdict: "Its arc reported “ARC-STATUS: MERGED” and its session was archived",
+    });
   });
 });
