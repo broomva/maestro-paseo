@@ -12,17 +12,18 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Easing, Platform, Pressable, Text, View } from "react-native";
 import { type AnswerWhere, type DecisionAsk, homeKey, type WorkspaceAsksView } from "../shared/fleet";
-import { type CardKeys, DecisionCard, type Draft, EMPTY_DRAFT, mono } from "./decision-card";
+import { type CardKeys, DecisionCard, type Draft, EMPTY_DRAFT, mono, Verb } from "./decision-card";
 import { useWorkspaceAsks } from "./decisions";
 import {
+  answeredElsewhere,
   answeredLine,
   askKey,
   BATCHED_TEXT,
   cutAtWord,
   headlineOf,
+  isTriaged,
   ledgerName,
   ledgerRail,
-  matchFocus,
   nextAfter,
   ORDERINGS,
   type Ordering,
@@ -31,6 +32,7 @@ import {
   railName,
   railOverflow,
   recentlyAnswered,
+  resolveFocus,
   sameAsk,
   type TriageKey,
   triageKey,
@@ -40,7 +42,6 @@ import {
 } from "./decisions-model";
 import { errorText } from "./format";
 import {
-  Button,
   Card,
   focusRing,
   Kbd,
@@ -169,6 +170,21 @@ function typingIn(target: unknown): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable === true;
 }
 
+/** The option card a key press comes from, by its place among the card's options; null when it is not one. */
+function optionAt(target: unknown): number | null {
+  type El = {
+    closest?: (selector: string) => El | null;
+    getAttribute?: (name: string) => string | null;
+    querySelectorAll?: (selector: string) => ArrayLike<unknown>;
+  };
+  const el = target as El | null;
+  const radio = el?.closest?.('[role="radio"]');
+  const group = el?.closest?.('[role="radiogroup"]');
+  if (!radio || !group?.getAttribute?.("aria-label")?.startsWith("Options for")) return null;
+  const at = Array.from(group.querySelectorAll?.('[role="radio"]') ?? []).indexOf(radio);
+  return at >= 0 ? at : null;
+}
+
 /** Whether a key press comes from a control where Enter presses that control: any but an option of the card. */
 function onAControl(target: unknown): boolean {
   const el = target as { closest?: (selector: string) => { getAttribute(name: string): string | null } | null } | null;
@@ -227,8 +243,9 @@ type Status =
 
 /**
  * The Decisions tab. "Decision N of M" counts this visit: M is every ask it
- * has had in its queue, N the ones handled (answered or skipped) plus the one
- * on screen, and the bar is what is handled. The order (Blocking first,
+ * has had in its queue, N the ones answered plus the one on screen, and the
+ * bar is what is answered (skips are counted apart). While an answer is in
+ * flight the tab holds still: nothing moves off the card until its reply lands. The order (Blocking first,
  * Oldest, By ledger) and the ledger rail (a warn dot only where an ask waits on
  * you) each start at their first decision. On the web, 1–4 choose, Enter
  * answers, S skips and J/K move, only while focus is in the tab and never
@@ -261,7 +278,17 @@ export function DecisionsView({
   const [leaving, setLeaving] = useState<{ key: string; ask: DecisionAsk; at: number } | null>(null);
   const [seen, setSeen] = useState<ReadonlySet<string>>(() => new Set());
   const [status, setStatus] = useState<Status>(null);
-  const [pending, setPending] = useState<DecisionsFocus | null>(focus);
+  const [pending, setPending] = useState<{ focus: DecisionsFocus; retriedAt: number | null } | null>(
+    focus ? { focus, retriedAt: null } : null,
+  );
+  const [focusNote, setFocusNote] = useState<string | null>(null);
+  // An answer in flight: set at once (the ref, for keys in the same frame) and for the render.
+  const [busy, setBusyState] = useState(false);
+  const busyRef = useRef(false);
+  const setBusy = (now: boolean) => {
+    busyRef.current = now;
+    setBusyState(now);
+  };
   const [railAll, setRailAll] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [answeredOpen, setAnsweredOpen] = useState(false);
@@ -270,52 +297,77 @@ export function DecisionsView({
 
   const all = (read.data?.decisions ?? []).filter((ask) => !ask.idea);
   const rail = ledgerRail(all);
-  // A ledger with nothing open is no filter: all of them.
-  const ledgerShown = ledger !== null && rail.some((entry) => entry.ledger === ledger) ? ledger : null;
+  // A ledger you chose stays chosen when its last ask is answered ("Nothing open in it"); one no read knows is no filter.
+  const ledgerShown = ledger !== null && all.some((ask) => ask.ledger === ledger) ? ledger : null;
+  const openAll = all.filter(isTriaged);
   const queue = triageQueue(all, { ordering, ledger: ledgerShown, skipped });
   const queueRef = useRef(queue);
   queueRef.current = queue;
 
   // The card on screen: the one leaving, else the pinned ask, else (before the pin lands) the focus's or the first.
-  const focusTarget = pending?.ask && read.data ? matchFocus(queue, pending.ask) : null;
+  const focusTarget = pending?.focus.ask && read.data ? (resolveFocus(queue, pending.focus.ask)?.ask ?? null) : null;
   const shownKey = leaving?.key ?? pinned?.key ?? (focusTarget ? askKey(focusTarget) : null) ?? null;
   const live = shownKey ? (queue.find((ask) => askKey(ask) === shownKey) ?? null) : null;
   const fallbackFirst = !shownKey && !pending ? (queue[0] ?? null) : null;
   const current = leaving?.ask ?? live ?? pinned?.ask ?? focusTarget ?? fallbackFirst;
   const currentKey = current ? askKey(current) : null;
   const index = currentKey ? queue.findIndex((ask) => askKey(ask) === currentKey) : -1;
-  // Answered elsewhere, its home may have moved with it (a checkout's answer, now read on origin/main): same ledger, uid and id.
-  const elsewhere = current
-    ? all.find(
-        (ask) =>
-          ask.ledger === current.ledger && ask.uid === current.uid && ask.id === current.id && ask.state !== "open",
-      )
-    : undefined;
+  // The same ask by ledger, uid and id: its home may move (a checkout's copy lands; an answer is read on origin/main).
+  const sameIdentity = (ask: DecisionAsk) =>
+    current !== null && ask.ledger === current.ledger && ask.uid === current.uid && ask.id === current.id;
+  const moved = current && !leaving && index < 0 ? (queue.find(sameIdentity) ?? null) : null;
+  const elsewhere = current ? all.find((ask) => sameIdentity(ask) && ask.state !== "open") : undefined;
   const frozen =
-    current && !leaving && index < 0
+    current && !leaving && index < 0 && !moved
       ? elsewhere
-        ? "This was answered elsewhere: its answer is in the ledger now. Nothing was sent from here."
+        ? answeredElsewhere(elsewhere)
         : "This ask is no longer open here: it left its ledger or moved. Nothing was sent from here."
       : null;
 
   // Pin what shows, the moment it shows: first open, a focus, and after any change of ask.
+  // A focus that names nothing yet waits for one more read (the ask may be newer than the list), then says so.
+  const readAt = read.dataUpdatedAt + read.errorUpdatedAt;
+  const refetch = read.refetch;
   useEffect(() => {
     if (!read.data || leaving) return;
     if (pending) {
+      const want = pending.focus.ask;
+      const found = want ? resolveFocus(queueRef.current, want) : null;
+      if (want && !found && pending.retriedAt === null) {
+        setPending({ ...pending, retriedAt: readAt });
+        void refetch();
+        return;
+      }
+      if (want && !found && pending.retriedAt === readAt) return;
       setPending(null);
-      const target = pending.ask ? matchFocus(queueRef.current, pending.ask) : null;
-      const first = target ?? queueRef.current[0] ?? null;
+      const first = found?.ask ?? queueRef.current[0] ?? null;
+      setFocusNote(
+        want && !found ? "That decision isn't in the list yet: showing the first one." : (found?.note ?? null),
+      );
       setPinned(first ? { key: askKey(first), ask: first } : null);
       setLastIndex(0);
       return;
     }
     if (!pinned && current && !frozen) setPinned({ key: askKey(current), ask: current });
-  }, [read.data, pending, pinned, current, frozen, leaving]);
+  }, [read.data, readAt, refetch, pending, pinned, current, frozen, leaving]);
   // Keep the pinned snapshot fresh while its ask is open, so a frozen card shows the last words read.
   useEffect(() => {
     if (pinned && live && live !== pinned.ask && askKey(live) === pinned.key) setPinned({ key: pinned.key, ask: live });
     if (live && index >= 0 && index !== lastIndex) setLastIndex(index);
   }, [pinned, live, index, lastIndex]);
+  // Still open, at a new home: the same ask, pinned at its new identity, your choice and words with it.
+  useEffect(() => {
+    if (!moved || !pinned) return;
+    const from = pinned.key;
+    const to = askKey(moved);
+    setDrafts((now) => {
+      const draft = now[from];
+      if (!draft) return now;
+      const { [from]: _old, ...rest } = now;
+      return { ...rest, [to]: draft };
+    });
+    setPinned({ key: to, ask: moved });
+  }, [moved, pinned]);
   // A new focus while open: its ledger, and its ask once read.
   const focusAt = focus?.at ?? null;
   const focusRef = useRef(focus);
@@ -324,7 +376,8 @@ export function DecisionsView({
     const next = focusRef.current;
     if (focusAt === null || !next) return;
     setLedger(next.ledger);
-    setPending(next);
+    setPending({ focus: next, retriedAt: null });
+    setFocusNote(null);
     setLeaving(null);
     setSeen(new Set());
   }, [focusAt]);
@@ -333,15 +386,29 @@ export function DecisionsView({
   useEffect(() => {
     const keysNow = queueKeys ? queueKeys.split("\n") : [];
     setSeen((now) => (keysNow.every((key) => now.has(key)) ? now : new Set([...now, ...keysNow])));
-    setSkipped((now) => pruneSkipped(now, queueRef.current));
   }, [queueKeys]);
-
-  // Focus the tab when it opens, so its keys are its own.
+  // A skip stands while its ask is open anywhere, whatever ledger the rail shows.
+  const openAllRef = useRef(openAll);
+  openAllRef.current = openAll;
+  const openKeys = openAll.map(askKey).join("\n");
   useEffect(() => {
-    (root.current as unknown as DomNode | null)?.focus?.({ preventScroll: true });
-  }, []);
+    if (openKeys !== undefined) setSkipped((now) => pruneSkipped(now, openAllRef.current));
+  }, [openKeys]);
+
+  // Focus the tab once it shows (its first read, or a read that recovers), so its keys are its own; never off a field you are in.
+  const showing = Boolean(read.data) && !(read.isError && !read.data);
+  const stale = read.isError && Boolean(read.data);
+  useEffect(() => {
+    if (!showing || stale) return;
+    const doc = (globalThis as { document?: { activeElement?: unknown; body?: unknown } }).document;
+    const node = root.current as unknown as DomNode | null;
+    const active = doc?.activeElement;
+    if (active && active !== doc?.body && node?.contains?.(active)) return;
+    node?.focus?.({ preventScroll: true });
+  }, [showing, stale]);
 
   const pin = (ask: DecisionAsk | null, at = 0) => {
+    if (busyRef.current) return;
     setPinned(ask ? { key: askKey(ask), ask } : null);
     setLastIndex(at);
   };
@@ -351,7 +418,7 @@ export function DecisionsView({
   };
   const leave = () => pin(nextAfter(queue, currentKey, index < 0 ? lastIndex : index), index < 0 ? lastIndex : index);
   const skip = () => {
-    if (!current || !currentKey) return;
+    if (!current || !currentKey || busyRef.current) return;
     setSkipped((now) => new Set([...now, currentKey]));
     setStatus({ kind: "skipped", ask: current });
     leave();
@@ -375,10 +442,12 @@ export function DecisionsView({
     (root.current as unknown as DomNode | null)?.focus?.({ preventScroll: true });
   };
   const reorder = (next: Ordering) => {
+    if (busyRef.current) return;
     setOrdering(next);
     pin(triageQueue(all, { ordering: next, ledger: ledgerShown, skipped })[0] ?? null);
   };
   const choose = (entry: string | null) => {
+    if (busyRef.current) return;
     setLedger(entry);
     setSeen(new Set());
     setPickerOpen(false);
@@ -386,11 +455,12 @@ export function DecisionsView({
   };
 
   // The keys, on the web, only from inside the tab: read through refs, so the listener is added once.
-  const canSkip = queue.length > 1 && !frozen && !leaving;
+  const canSkip = queue.length > 1 && !frozen && !leaving && !busy;
   const act = useRef<(key: TriageKey) => void>(() => undefined);
   act.current = (key) => {
     if (leaving) return;
     if (key.kind === "choose") keys.current?.choose(key.index);
+    else if (key.kind === "cancel") keys.current?.cancel();
     else if (key.kind === "answer") keys.current?.answer();
     else if (key.kind === "skip") skip();
     else if (key.kind === "next") go(Math.min((index < 0 ? lastIndex - 1 : index) + 1, queue.length - 1));
@@ -410,12 +480,13 @@ export function DecisionsView({
         onControl: onAControl(event.target),
         options: keys.current?.options ?? 0,
         canSkip: skipAllowed.current,
+        onOption: optionAt(event.target),
       });
       if (!key) return;
       event.preventDefault();
       act.current(key);
     };
-    // In the capture phase, before a focused option takes Enter as a press of itself (it would only choose it again).
+    // In the capture phase, before a focused option takes Enter or Space as a press of itself (it selects that same option).
     doc.addEventListener("keydown", onKey, true);
     return () => doc.removeEventListener("keydown", onKey, true);
   }, []);
@@ -429,14 +500,14 @@ export function DecisionsView({
   };
 
   if (read.isPending) return <ActivityIndicator color={theme.colors.foregroundMuted} />;
-  if (read.isError) {
+  if (!read.data) {
     return (
       <View style={{ gap: space[3] }}>
         <Notice theme={theme} tone="danger">
           {`Your workspace's asks could not be read: ${errorText(read.error)}`}
         </Notice>
         <View style={{ flexDirection: "row" }}>
-          <Button theme={theme} label="Try again" compact={compact} onPress={() => void read.refetch()} />
+          <Verb theme={theme} label="Try again" compact={compact} onPress={() => void read.refetch()} />
         </View>
       </View>
     );
@@ -446,11 +517,12 @@ export function DecisionsView({
   const totalOpen = rail.reduce((sum, entry) => sum + entry.open, 0);
   const totalWaiting = rail.reduce((sum, entry) => sum + entry.waiting, 0);
   const answeredList = recentlyAnswered(all);
-  // M: every ask queued this visit; handled: those no longer waiting for you here (answered anywhere, or skipped).
+  // M: every ask queued this visit; answered: those of them no longer open (here or elsewhere). Skips stay open.
   const visit = new Set([...seen, ...queue.map(askKey)]);
-  const waitingHere = queue.filter((ask) => !skipped.has(askKey(ask))).map(askKey);
-  const handled = visit.size - waitingHere.length;
-  const progress = progressOf(handled, visit.size);
+  const stillOpen = new Set(queue.map(askKey));
+  const answeredCount = [...visit].filter((key) => !stillOpen.has(key)).length;
+  const progress = progressOf(answeredCount, visit.size, !frozen && Boolean(current));
+  const ledgerOpen = queue.length;
   const next = upNext(queue, index < 0 ? lastIndex - 1 : index);
   const shownRail =
     railAll || rail.length <= RAIL_SHOWN
@@ -467,15 +539,17 @@ export function DecisionsView({
             size={14}
             color={status.kind === "answered" ? theme.colors.statusSuccess : theme.colors.foregroundMuted}
           />
-          <Text numberOfLines={1} style={[text.small, { flex: 1, color: theme.colors.foreground }]}>
+          <Text style={[text.small, { flex: 1, color: theme.colors.foreground }]}>
             {status.kind === "answered"
               ? `${answeredLine(status.ask)} · ${ledgerName(status.ask.ledger)} · answers are not undone here`
               : `Skipped “${cutAtWord(headlineOf(status.ask).headline, 60)}”: it comes back at the end of the queue`}
+            {status.kind === "answered" && status.warning ? (
+              <Text style={{ color: theme.colors.statusWarning }}>{` · ${status.warning}`}</Text>
+            ) : null}
           </Text>
         </View>
-      ) : null}
-      {status?.kind === "answered" && status.warning ? (
-        <Text style={[text.small, { color: theme.colors.statusWarning }]}>{status.warning}</Text>
+      ) : focusNote ? (
+        <Text style={[text.small, { color: theme.colors.foreground }]}>{focusNote}</Text>
       ) : null}
     </View>
   );
@@ -497,7 +571,9 @@ export function DecisionsView({
         </View>
         <Text style={[text.small, text.tabular]}>
           {[
-            `${totalOpen} open`,
+            ledgerShown
+              ? `${ledgerOpen} open in ${ledgerName(ledgerShown)} · ${totalOpen} in all`
+              : `${totalOpen} open`,
             totalWaiting > 0 ? `${totalWaiting} ${totalWaiting === 1 ? "waits" : "wait"} on you` : null,
             skipped.size > 0 ? `${skipped.size} skipped` : null,
           ]
@@ -588,9 +664,23 @@ export function DecisionsView({
 
   const railView = compact ? null : (
     <View style={{ width: 220, gap: 2 }}>
-      <Text style={[text.label, { letterSpacing: 0.6, paddingHorizontal: space[2] + 2, paddingBottom: space[1] }]}>
-        LEDGERS
-      </Text>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: space[1],
+          paddingHorizontal: space[2] + 2,
+          paddingBottom: space[1],
+        }}
+      >
+        <Text style={[text.label, { letterSpacing: 0.6, flex: 1 }]}>LEDGERS</Text>
+        {totalWaiting > 0 ? (
+          <>
+            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.statusWarning }} />
+            <Text style={text.small}>waits on you</Text>
+          </>
+        ) : null}
+      </View>
       <RailRow
         theme={theme}
         label="All"
@@ -666,7 +756,10 @@ export function DecisionsView({
             })}
           >
             <Text numberOfLines={2} style={[text.body, { flex: compact ? undefined : 1, fontSize: 13 }]}>
-              {`${ask.waiting ? "● " : ""}${headlineOf(ask).headline}`}
+              {ask.waiting ? (
+                <Text style={{ color: theme.colors.statusWarning, fontWeight: "600" }}>Waits on you · </Text>
+              ) : null}
+              {headlineOf(ask).headline}
             </Text>
             <Text numberOfLines={1} style={[text.small, { fontFamily: mono }]}>
               {ledgerName(ask.ledger)}
@@ -741,6 +834,7 @@ export function DecisionsView({
             onDraft={(draft) => setDrafts((now) => ({ ...now, [currentKey]: draft }))}
             frozen={frozen}
             onNext={frozen ? leave : undefined}
+            onBusy={setBusy}
           />
         </ExitCard>
       ) : (
@@ -753,6 +847,17 @@ export function DecisionsView({
               ? "Every ask in this ledger is answered."
               : "No open asks in your workspace's ledgers. New ones show here as agents write them."}
           </Text>
+          {ledgerShown && totalOpen > 0 ? (
+            <View style={{ flexDirection: "row" }}>
+              <Verb
+                theme={theme}
+                icon="ArrowLeft"
+                label={`All ledgers · ${totalOpen} open`}
+                compact={compact}
+                onPress={() => choose(null)}
+              />
+            </View>
+          ) : null}
         </Card>
       )}
       {upNextView}
@@ -763,6 +868,14 @@ export function DecisionsView({
   return (
     <View {...rootProps}>
       {header}
+      {stale ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space[2] }} accessibilityRole="alert">
+          <Icon name="CloudOff" size={14} color={theme.colors.foregroundMuted} />
+          <Text style={[text.small, { flex: 1 }]}>
+            {`Could not refresh (${errorText(read.error)}): showing what was read before. It tries again on its own.`}
+          </Text>
+        </View>
+      ) : null}
       {warnings.slice(0, 3).map((warning) => (
         <Notice key={warning} theme={theme} tone="warn">
           {warning}

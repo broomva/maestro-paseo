@@ -22,7 +22,7 @@ import {
 } from "./decisions-model";
 import { errorText } from "./format";
 import { useRefresh } from "./hooks";
-import { Button, Card, focusRing, Kbd, Notice, radius, size, space, usePressScale, useText } from "./ui";
+import { Card, focusRing, Kbd, Notice, radius, size, space, usePressScale, useText } from "./ui";
 
 type Navigation = PluginSurfaceProps["navigation"];
 
@@ -33,7 +33,10 @@ export type Draft = { chosen: string | null; note: string };
 export const EMPTY_DRAFT: Draft = { chosen: null, note: "" };
 
 /** What the keyboard drives on the card on screen: choose an option, answer. */
-export type CardKeys = { choose: (index: number) => void; answer: () => void; options: number };
+export type CardKeys = { choose: (index: number) => void; answer: () => void; cancel: () => void; options: number };
+
+/** A confirm is taken this long after it is armed, at the soonest: a second Enter in the same breath is not deliberate. */
+export const CONFIRM_MS = 400;
 
 /** A verb with press feedback: 0.96 while held (none under reduced motion), 40 pt tall, 44 on a phone. */
 export function Verb({
@@ -51,7 +54,7 @@ export function Verb({
   theme: PluginTheme;
   label: string;
   onPress: () => void;
-  variant?: "primary" | "secondary";
+  variant?: "primary" | "secondary" | "warn";
   icon?: string;
   busy?: boolean;
   disabled?: boolean;
@@ -62,7 +65,8 @@ export function Verb({
   const press = usePressScale();
   const inactive = disabled || busy;
   const primary = variant === "primary";
-  const ink = primary ? theme.colors.accentForeground : theme.colors.foreground;
+  const warn = variant === "warn";
+  const ink = primary ? theme.colors.accentForeground : warn ? theme.colors.surface0 : theme.colors.foreground;
   return (
     <Animated.View style={{ transform: [{ scale: press.scale }], flexGrow: grow ? 1 : 0 }}>
       <Pressable
@@ -78,8 +82,8 @@ export function Verb({
           minHeight: compact ? 44 : 40,
           paddingHorizontal: space[4],
           borderRadius: radius.control,
-          backgroundColor: primary ? theme.colors.accent : theme.colors.surface2,
-          borderWidth: primary ? 0 : 1,
+          backgroundColor: primary ? theme.colors.accent : warn ? theme.colors.statusWarning : theme.colors.surface2,
+          borderWidth: primary || warn ? 0 : 1,
           borderColor: theme.colors.border,
           flexDirection: "row",
           alignItems: "center",
@@ -244,6 +248,7 @@ export function DecisionCard({
   onDraft,
   frozen = null,
   onNext,
+  onBusy,
 }: {
   theme: PluginTheme;
   ask: DecisionAsk;
@@ -266,6 +271,8 @@ export function DecisionCard({
   frozen?: string | null;
   /** Offered with `frozen`: go on to the next decision. */
   onNext?: () => void;
+  /** Told when an answer leaves and when its reply lands, so the view holds still meanwhile. */
+  onBusy?: (busy: boolean) => void;
 }) {
   const text = useText(theme);
   const toast = useToast();
@@ -281,7 +288,17 @@ export function DecisionCard({
   const current = draft ?? own;
   const setDraft = (next: Draft) => (onDraft ? onDraft(next) : setOwn(next));
   const { chosen, note } = current;
-  const setChosen = (id: string) => setDraft({ ...current, chosen: id });
+  // An option that cannot be undone takes a second, deliberate press: the first arms the confirm.
+  const [confirming, setConfirming] = useState(false);
+  const armedAt = useRef<number | null>(null);
+  const disarm = () => {
+    armedAt.current = null;
+    setConfirming(false);
+  };
+  const setChosen = (id: string) => {
+    if (id !== current.chosen) disarm();
+    setDraft({ ...current, chosen: id });
+  };
   const setNote = (value: string) => setDraft({ ...current, note: value });
   // Set before the request leaves, read before the next: a second Enter in the same frame finds it.
   const inFlight = useRef(false);
@@ -296,7 +313,18 @@ export function DecisionCard({
   const origin = ask.origin;
   const submit = () => {
     if (inFlight.current || !canAnswer) return;
+    if (option?.reversible === false) {
+      const armed = armedAt.current;
+      if (armed === null) {
+        armedAt.current = Date.now();
+        setConfirming(true);
+        return;
+      }
+      if (Date.now() - armed < CONFIRM_MS) return;
+    }
+    disarm();
     inFlight.current = true;
+    onBusy?.(true);
     answer.mutate(
       { where, ledger: ask.ledger, uid: ask.uid, id: ask.id, hash: ask.hash, option: chosen, note },
       {
@@ -308,6 +336,7 @@ export function DecisionCard({
         onError: (error) => toast.error(errorText(error)),
         onSettled: () => {
           inFlight.current = false;
+          onBusy?.(false);
         },
       },
     );
@@ -321,6 +350,7 @@ export function DecisionCard({
           if (entry && !inFlight.current) setChosen(entry.id);
         },
         answer: submit,
+        cancel: disarm,
       }
     : null;
   useEffect(() => {
@@ -570,6 +600,11 @@ export function DecisionCard({
               }}
             />
           </View>
+          {confirming ? (
+            <Text style={[text.small, { color: theme.colors.statusWarning }]}>
+              {`“${option?.label ?? ""}” cannot be undone. Press again to send it, or Esc (or another option) to stop.`}
+            </Text>
+          ) : null}
           {answer.isError ? (
             <Notice theme={theme} tone="danger">
               {`Not answered: ${errorText(answer.error)}`}
@@ -578,14 +613,18 @@ export function DecisionCard({
           <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap", alignItems: "center" }}>
             <Verb
               theme={theme}
-              variant="primary"
-              icon="Check"
-              label={answerVerb(option, hasOptions, note)}
+              variant={confirming ? "warn" : "primary"}
+              icon={confirming ? "TriangleAlert" : "Check"}
+              label={confirming ? "Confirm — cannot be undone" : answerVerb(option, hasOptions, note)}
               compact={compact}
               grow={compact}
               busy={answer.isPending}
               disabled={!canAnswer}
-              accessibilityLabel={`Answer ${ask.id}${option ? `: ${option.label}` : ""}`}
+              accessibilityLabel={
+                confirming
+                  ? `Confirm ${ask.id}: ${option?.label ?? ""}, cannot be undone`
+                  : `Answer ${ask.id}${option ? `: ${option.label}` : ""}`
+              }
               onPress={submit}
             />
             {showHints ? <Kbd theme={theme}>Enter</Kbd> : null}
@@ -654,9 +693,8 @@ export function DecisionCard({
             {open ? <Text style={text.small}>{writtenTo(ask)}</Text> : null}
             {origin && navigation ? (
               <View style={{ flexDirection: "row" }}>
-                <Button
+                <Verb
                   theme={theme}
-                  variant="quiet"
                   icon="ArrowUpRight"
                   label="Open the session that asked"
                   compact={compact}

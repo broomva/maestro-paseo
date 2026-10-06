@@ -492,6 +492,12 @@ const decisionFixture = (): DecisionAsk => ({
 let decisionsNow: DecisionAsk[] = [];
 /** The workspace's asks (asks.workspace) now: none unless a test puts some there. */
 let workspaceNow: DecisionAsk[] = [];
+/** While set, asks.workspace fails with it. */
+let workspaceFail: string | null = null;
+/** While set, ask.answer answers only once it resolves: a reply still on its way. */
+let answerHeld: Promise<void> | null = null;
+/** While set, ask.answer fails with it (after any hold). */
+let answerFail: string | null = null;
 /** The asks work.attention says wait on you: none unless a test says. */
 let askNoticesNow: AskNotice[] = [];
 /** The session broomva's ask a1 is about: none unless a test says. */
@@ -849,6 +855,7 @@ const invoke = async (method: string, input: unknown) => {
     };
   }
   if (method === "asks.workspace") {
+    if (workspaceFail) throw new Error(workspaceFail);
     return {
       controlRepo: "/Users/me/broomva",
       main: { sha: "1c7740c5", fetchedAt: null },
@@ -894,6 +901,8 @@ const invoke = async (method: string, input: unknown) => {
     };
   }
   if (method === "ask.answer") {
+    if (answerHeld) await answerHeld;
+    if (answerFail) throw new Error(answerFail);
     const { id, option, note, where } = input as {
       id: string;
       option: string | null;
@@ -1137,6 +1146,9 @@ afterEach(async () => {
   sriProposals = sriFixture();
   decisionsNow = [];
   workspaceNow = [];
+  workspaceFail = null;
+  answerHeld = null;
+  answerFail = null;
   askNoticesNow = [];
   askSessionNow = null;
   opened = [];
@@ -2589,7 +2601,8 @@ describe("the Decisions tab", () => {
       "Skipped “Approve merge of PR #863 touching…”: it comes back at the end of the queue",
     );
     expect(view.text()).toContain("1 skipped");
-    expect(view.text()).toContain("Decision 2 of 3");
+    // A skip is not done: the count holds, and the skip is counted apart.
+    expect(view.text()).toContain("Decision 1 of 3");
     expect(view.text()).toContain("Canvas ask q1");
     await key(view, "2");
     expect(view.byLabel("Drop all four, cannot be undone")?.getAttribute("aria-checked")).toBe("true");
@@ -2600,6 +2613,11 @@ describe("the Decisions tab", () => {
     await key(view, "Enter", note);
     expect(view.byLabel("Drop all four, cannot be undone")?.getAttribute("aria-checked")).toBe("true");
     expect(sent("ask.answer")).toEqual([]);
+    // "Drop all four" cannot be undone: the first Enter arms a confirm, a later one sends.
+    await key(view, "Enter");
+    expect(sent("ask.answer")).toEqual([]);
+    expect(view.text()).toContain("Confirm — cannot be undone");
+    await settle(450);
     await key(view, "Enter");
     expect(sent("ask.answer")).toEqual([
       {
@@ -2874,6 +2892,152 @@ describe("the Decisions tab", () => {
     expect(minHeight("All ledgers: 2 open, 1 waits on you")).toBe("40px");
     expect(minHeight("Answer A1")).toBe("40px");
     expect(minHeight("Show the details of A1")).toBe("40px");
+  });
+  test("Enter or Space on a focused option selects that option, never answers; a fifth option is reachable", async () => {
+    const five = ["a", "b", "c", "d", "e"].map((id) => ({
+      id,
+      label: `Option ${id}`,
+      consequence: null,
+      reversible: true,
+      recommended: false,
+    }));
+    workspaceNow = [canvas("q1", { options: five, fallback: null })];
+    const view = await open();
+    await key(view, "1");
+    expect(view.byLabel("Option a")?.getAttribute("aria-checked")).toBe("true");
+    // Tabbed to option b, Enter: b is chosen, nothing is sent.
+    expect(await key(view, "Enter", view.byLabel("Option b"))).toBe(true);
+    expect(view.byLabel("Option b")?.getAttribute("aria-checked")).toBe("true");
+    expect(sent("ask.answer")).toEqual([]);
+    // Space does the same; the fifth option, past the number keys, is reachable so.
+    await key(view, " ", view.byLabel("Option e"));
+    expect(view.byLabel("Option e")?.getAttribute("aria-checked")).toBe("true");
+    expect(sent("ask.answer")).toEqual([]);
+    expect(view.text()).toContain("Answer with Option e");
+  });
+
+  test("while an answer is in flight the tab holds still; a failure lands on the card, which stays answerable", async () => {
+    workspaceNow = [merge(), canvas("q1")];
+    const view = await open();
+    let release = () => {};
+    answerHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    answerFail = "the ledger moved under you";
+    await key(view, "1");
+    await key(view, "Enter");
+    expect(sent("ask.answer")).toHaveLength(1);
+    // J, Skip and the rail before the reply: nothing moves off the card.
+    await key(view, "j");
+    await key(view, "s");
+    await view.press(view.byLabel("bro-2795-local-first-agentic-canvas.yaml: 1 open"));
+    expect(view.text()).toContain("Approve merge of PR #863 touching");
+    release();
+    await until(view, "Not answered");
+    expect(view.text()).toContain("Not answered: the ledger moved under you");
+    expect(view.byLabel("Answer A1: Merge PR #863")?.getAttribute("aria-disabled")).not.toBe("true");
+    // Answerable again: the second try lands, and says so.
+    answerHeld = null;
+    answerFail = null;
+    await view.press(view.byLabel("Answer A1: Merge PR #863"));
+    await until(view, "Answered just now");
+    expect(sent("ask.answer")).toHaveLength(2);
+  });
+
+  test("a skip stands across ledgers: skipped in one, another chosen, back to all", async () => {
+    workspaceNow = [merge(), canvas("q1"), canvas("q2")];
+    const view = await open();
+    await key(view, "s");
+    expect(view.text()).toContain("1 skipped");
+    await view.press(view.byLabel("bro-2795-local-first-agentic-canvas.yaml: 2 open"));
+    await view.press(view.byLabel("All ledgers: 3 open, 1 waits on you"));
+    expect(view.text()).toContain("1 skipped");
+    expect(view.text()).toContain("Canvas ask q1");
+  });
+
+  test("an option that cannot be undone asks for a deliberate second press; Esc or another option calls it off", async () => {
+    workspaceNow = [canvas("q1")];
+    const view = await open();
+    await view.press(view.byLabel("Drop all four, cannot be undone"));
+    await view.press(view.byLabel("Answer q1: Drop all four"));
+    expect(view.text()).toContain("Confirm — cannot be undone");
+    expect(sent("ask.answer")).toEqual([]);
+    await key(view, "Escape");
+    expect(view.text()).not.toContain("Confirm — cannot be undone");
+    await view.press(view.byLabel("Answer q1: Drop all four"));
+    await view.press(view.byLabel("File all four, recommended"));
+    expect(view.text()).not.toContain("Confirm — cannot be undone");
+    await view.press(view.byLabel("Drop all four, cannot be undone"));
+    await view.press(view.byLabel("Answer q1: Drop all four"));
+    // A second press in the same breath is not deliberate.
+    await view.press(view.byLabel("Confirm q1: Drop all four, cannot be undone"));
+    expect(sent("ask.answer")).toEqual([]);
+    await settle(450);
+    await view.press(view.byLabel("Confirm q1: Drop all four, cannot be undone"));
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ id: "q1", option: "drop" })]);
+  });
+
+  test("an open ask that moves home stays on screen at its new identity, with your choice and words", async () => {
+    workspaceNow = [merge(), canvas("q1")];
+    const view = await open();
+    await view.press(view.byLabel("Hold PR #863"));
+    await view.type(view.byLabel("Your words for A1"), "After the release.");
+    workspaceNow = [{ ...merge(), home: { kind: "main", path: "/Users/me/broomva", branch: null } }, canvas("q1")];
+    await view.refetch();
+    expect(view.text()).not.toContain("no longer open");
+    expect(view.byLabel("Hold PR #863")?.getAttribute("aria-checked")).toBe("true");
+    expect((view.byLabel("Your words for A1") as unknown as { value: string }).value).toBe("After the release.");
+    await view.press(view.byLabel("Answer A1: Hold PR #863"));
+    expect(sent("ask.answer")).toEqual([
+      expect.objectContaining({ where: { kind: "workspace", home: "origin/main" }, id: "A1", option: "hold" }),
+    ]);
+  });
+
+  test("a focus on an ask newer than the list waits for one more read; one never found says so", async () => {
+    workspaceNow = [merge()];
+    const view = await open();
+    workspaceNow = [merge(), canvas("late")];
+    await step(generation, () =>
+      requestIntent({ kind: "decisions", ledger: "bro-2795-local-first-agentic-canvas.yaml", id: "late" }),
+    );
+    await until(view, "Canvas ask late");
+    expect(view.text()).toContain("bro-2795-local-first-agentic-canvas · asked");
+    expect(view.text()).not.toContain("isn't in the list yet");
+    await step(generation, () => requestIntent({ kind: "decisions", ledger: null, id: "nowhere" }));
+    await until(view, "isn't in the list yet");
+    expect(view.text()).toContain("That decision isn't in the list yet: showing the first one.");
+  });
+
+  test("a failed refresh keeps the tab with a quiet note, not the error page", async () => {
+    workspaceNow = [merge()];
+    const view = await open();
+    workspaceFail = "git fetch timed out";
+    await view.refetch();
+    await until(view, "Could not refresh");
+    expect(view.text()).toContain("Could not refresh (git fetch timed out): showing what was read before.");
+    expect(view.text()).toContain("Approve merge of PR #863 touching");
+    expect(view.text()).not.toContain("could not be read");
+  });
+
+  test("answered elsewhere, the card says with what", async () => {
+    workspaceNow = [merge(), canvas("q1")];
+    const view = await open();
+    workspaceNow = [{ ...merge(), state: "answered", answerOption: "hold", answer: "Hold it." }, canvas("q1")];
+    await view.refetch();
+    expect(view.text()).toContain("This was answered elsewhere: “Hold PR #863”. Nothing was sent from here.");
+  });
+
+  test("a chosen ledger whose last ask is answered says so, with a way back to all", async () => {
+    workspaceNow = [merge(), canvas("q1")];
+    const view = await open();
+    await view.press(view.byLabel("bro-2795-local-first-agentic-canvas.yaml: 1 open"));
+    expect(view.text()).toContain("1 open in bro-2795-local-first-agentic-canvas · 2 in all");
+    await view.press(view.byLabel("File all four, recommended"));
+    await view.press(view.byLabel("Answer q1: File all four"));
+    await until(view, "Nothing open in");
+    expect(view.text()).toContain("Nothing open in bro-2795-local-first-agentic-canvas");
+    await view.press(view.byLabel("All ledgers · 1 open"));
+    expect(view.text()).toContain("Approve merge of PR #863 touching");
   });
 });
 

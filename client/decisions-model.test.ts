@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { DecisionAsk } from "../shared/fleet";
 import {
+  answeredElsewhere,
   answeredLine,
   answerVerb,
   askKey,
   askNoticeText,
+  contentWords,
   cutAtWord,
   fallbackOption,
   groupDecisions,
@@ -21,6 +23,7 @@ import {
   railName,
   railOverflow,
   recentlyAnswered,
+  resolveFocus,
   reversibility,
   sameAsk,
   silenceOf,
@@ -304,7 +307,7 @@ describe("the card's words", () => {
         now,
       ),
     ).toBe("l · blocking · an option cannot be undone");
-    expect(metaLine(ask("l.yaml", "A1", { options: [] }), now)).toBe("l · not blocking · Undo: not stated");
+    expect(metaLine(ask("l.yaml", "A1", { options: [] }), now)).toBe("l · not blocking · undo: not stated");
     expect(reversibility([option("a", { reversible: null })])).toBeNull();
     expect(reversibility([])).toBeNull();
   });
@@ -348,11 +351,20 @@ describe("the card's words", () => {
       tag: "same",
       words: null,
     });
+    // "Hold" is a way of carrying on: a default in other words may be it, so nothing is claimed.
     expect(silenceOf(ask("l.yaml", "A1", { fallback: "continue as is", options }))).toEqual({
-      text: "If you say nothing: continue as is (not one of the options above)",
+      text: "If you say nothing: continue as is",
       tag: null,
       words: null,
     });
+    // Surely none: no option shares half its words, and none is a way of carrying on.
+    const build = [
+      option("publish", { label: "Publish the beta now", recommended: true }),
+      option("rewrite", { label: "Rewrite the parser" }),
+    ];
+    expect(silenceOf(ask("l.yaml", "A1", { fallback: "ask the owner on Monday", options: build }))?.text).toBe(
+      "If you say nothing: ask the owner on Monday (not one of the options above)",
+    );
     expect(silenceOf(ask("l.yaml", "A1", { fallback: "continue as is", options: [] }))?.text).toBe(
       "If you say nothing: continue as is",
     );
@@ -399,5 +411,88 @@ describe("the card's words", () => {
 
   test("lines that read the same still get keys of their own", () => {
     expect(keyedLines(["read: x", "read: x", "y"]).map((entry) => entry.key)).toEqual(["read: x", "read: x#2", "y"]);
+  });
+});
+
+describe("round 3", () => {
+  test("a focus with only a ledger and an id two homes share: the one that waits on you, else the first, saying so", () => {
+    const checkout = { kind: "checkout" as const, path: "/w/broomva", branch: "feat/x" };
+    const a = ask("l.yaml", "A1");
+    const b = ask("l.yaml", "A1", { home: checkout, waiting: true, blocking: true });
+    expect(resolveFocus([a, b], { ledger: "l.yaml", id: "A1" })).toEqual({ ask: b, note: null });
+    const both = resolveFocus([a, { ...b, waiting: false }], { ledger: "l.yaml", id: "A1" });
+    expect(both?.ask).toBe(a);
+    expect(both?.note).toBe(
+      "2 asks are named A1 in l: this is the one at Maestro's answers batch, on maestro/answers.",
+    );
+    expect(resolveFocus([a], { ledger: "l.yaml", id: "nope" })).toBeNull();
+  });
+
+  test("progress: N counts answered asks plus an open card; a card answered elsewhere is not counted twice", () => {
+    expect(progressOf(0, 3, true)).toEqual({ text: "Decision 1 of 3", fraction: 0 });
+    expect(progressOf(1, 3, true)).toEqual({ text: "Decision 2 of 3", fraction: 1 / 3 });
+    expect(progressOf(1, 3, false)).toEqual({ text: "Decision 1 of 3", fraction: 1 / 3 });
+    expect(progressOf(3, 3, false)).toEqual({ text: "Decision 3 of 3", fraction: 1 });
+  });
+
+  test("Enter and Space on a focused option select it; Escape cancels, even while typing", () => {
+    const at = { typing: false, onControl: false, options: 6, canSkip: true, onOption: 4 };
+    expect(triageKey({ key: "Enter" }, at)).toEqual({ kind: "choose", index: 4 });
+    expect(triageKey({ key: " " }, at)).toEqual({ kind: "choose", index: 4 });
+    expect(triageKey({ key: " " }, { ...at, onOption: null })).toBeNull();
+    expect(triageKey({ key: "Escape" }, { ...at, typing: true })).toEqual({ kind: "cancel" });
+  });
+
+  test("Full question after a cut never starts with stray punctuation (maestro-paseo-gaps A5)", () => {
+    const question =
+      "Should Paseo add the plugin APIs this arc worked around (notifications, schedules, non-destructive agent stop, plugin-provided agent tools, client state on plugin surfaces)?";
+    const lead = headlineOf(ask("maestro-paseo-gaps.yaml", "A5", { headline: null, question }));
+    expect(lead.headline).toBe(
+      "Should Paseo add the plugin APIs this arc worked around (notifications, schedules, non-destructive agent stop…",
+    );
+    expect(lead.rest).toBe("…plugin-provided agent tools, client state on plugin surfaces)?");
+  });
+
+  test("the default in other words: holon's 'leave the PRs open…' is 'Leave them open'; Codex's 'proceed with…' claims nothing", () => {
+    const holon = ask("holon-acp-paseo.yaml", "merge-holon-prs", {
+      fallback: "leave the PRs open with their P20 verdicts recorded; never merge around the gate",
+      options: [
+        option("merge-in-order", { label: "Merge #17, then #18 (retarget to main), then #19", recommended: true }),
+        option("protect-main", { label: "Require the `check` status on holon's main" }),
+        option("hold", { label: "Leave them open" }),
+      ],
+    });
+    expect(fallbackOption(holon)?.id).toBe("hold");
+    expect(silenceOf(holon)?.tag).toBe("differs");
+    const codex = ask("claude-direct-sidecar-exec.yaml", "A2", {
+      fallback: "proceed with Strata B on Opus and Strata C on Sonnet; say so in the PR; no lane waits on Codex",
+      options: [
+        option("sign-in", { label: "Sign in now", recommended: true }),
+        option("carry-on", { label: "Carry on without it" }),
+        option("later", { label: "Sign in later and re-run it on the merged code" }),
+      ],
+    });
+    expect(fallbackOption(codex)).toBeNull();
+    expect(silenceOf(codex)).toEqual({
+      text: "If you say nothing: proceed with Strata B on Opus and Strata C on Sonnet; say so in the PR; no lane waits on Codex",
+      tag: null,
+      words: null,
+    });
+    expect(contentWords("Leave them open")).toEqual(["leave", "open"]);
+  });
+
+  test("answered elsewhere says with what: its option, else its words", () => {
+    const done = ask("l.yaml", "A1", {
+      state: "answered",
+      options: [option("hold", { label: "Hold PR #863" })],
+      answerOption: "hold",
+    });
+    expect(answeredElsewhere(done)).toBe("This was answered elsewhere: “Hold PR #863”. Nothing was sent from here.");
+    expect(answeredElsewhere({ ...done, answerOption: null, answer: "Merged it\nby hand." })).toBe(
+      "This was answered elsewhere: “Merged it by hand.”. Nothing was sent from here.",
+    );
+    expect(answeredElsewhere({ ...done, answerOption: null, answer: null })).toBe(
+      "This was answered elsewhere: its answer is in the ledger now. Nothing was sent from here.",
+    );
   });
 });

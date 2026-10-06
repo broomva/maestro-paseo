@@ -111,32 +111,63 @@ function textsOf(value: unknown): string[] {
   });
 }
 
-/** The audit layer's lines that go to a client: this many, each cut to AUDIT_LINE_CHARS. */
+/** The audit layer as it goes to a client: at most this many lines, each at most this long. */
 export const AUDIT_LINES = 8;
 export const AUDIT_LINE_CHARS = 240;
-/**
- * A line that looks like it carries a secret or a path to one: an API key's
- * prefix (OpenAI/Anthropic `sk-`, GitHub `ghp_`/`gho_`/`github_pat_`, Slack
- * `xox`, AWS `AKIA`), a private key block, an SSH key path, or `token=`. Such a
- * line is dropped before the wire: the audit layer justifies an ask, it never
- * needs the secret itself.
- */
-const SECRET_LIKE =
-  /\bsk-[A-Za-z0-9_-]{6,}|\bgh[pousr]_[A-Za-z0-9]{6,}|github_pat_|\bxox[abposr]-|\bAKIA[0-9A-Z]{8,}|BEGIN [A-Z ]*PRIVATE KEY|\bid_(rsa|ed25519|ecdsa|dsa)\b|\.ssh\/|\btoken=/i;
+/** What a redacted value reads as. */
+export const MASK = "•••";
 
-/** The exhausted lines a client may see: none that look like a secret, at most AUDIT_LINES, each cut short. */
-export function safeAuditLines(lines: readonly string[]): string[] {
-  return lines
-    .filter((line) => !SECRET_LIKE.test(line))
-    .slice(0, AUDIT_LINES)
-    .map((line) => (line.length > AUDIT_LINE_CHARS ? `${line.slice(0, AUDIT_LINE_CHARS - 1)}…` : line));
+/** Known credential prefixes (OpenAI/Anthropic, Stripe, GitHub, GitLab, Slack, Google, npm, AWS, JWTs), with 8 or more characters after: "Asian" is a word. */
+const KNOWN_PREFIX =
+  /\b(?:sk-|sk_(?:live|test)_|rk_(?:live|test)_|gh[pousr]_|github_pat_|glpat-|xox[a-z]-|xapp-|AIza|npm_|AKIA|ASIA|eyJ)[A-Za-z0-9._~+/=-]{8,}/gi;
+/** A word that names a secret, as a key: token, secret, password, api key, auth, credential, cookie, session... */
+const SECRET_KEY =
+  "(?:[A-Za-z_-]*(?:token|secret|passw(?:or)?d|pwd|api[_-]?key|access[_-]?key|auth(?:orization)?|credential|cookie|session[_-]?id|private[_-]?key)[A-Za-z_-]*)";
+/** `key=value`, `key: value`, `key = value`: the value is masked, the key kept. `token= in the handler` has no value. */
+const KEY_VALUE = new RegExp(
+  `\\b(${SECRET_KEY})(=|:|\\s+=\\s+|\\s*:\\s+)(?!${MASK})(?!(?:Bearer|Basic)\\b)(["']?)([^\\s"',;]+)\\3`,
+  "gi",
+);
+/** An HTTP credential: `Bearer x`, `Basic x`. */
+const SCHEME = /\b(Bearer|Basic)\s+(?!•)[A-Za-z0-9._~+/=-]+/gi;
+/** A private key block's armour. */
+const KEY_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gi;
+/** A long token: 24 or more of [A-Za-z0-9_-], with upper case, lower case and a digit (a slug or a hex SHA is not one). */
+const LONG_TOKEN = /\b[A-Za-z0-9_-]{24,}\b/g;
+const looksRandom = (word: string) =>
+  /[A-Z]/.test(word) && /[a-z]/.test(word) && /[0-9]/.test(word) && (word.match(/-/g) ?? []).length <= 3;
+
+/**
+ * A line with every value that could be a secret masked (MASK), and the rest
+ * kept: known key prefixes, the value of a secret-named key, a Bearer or Basic
+ * credential, a private key block, and any long random-looking token. Then cut
+ * to AUDIT_LINE_CHARS. The audit layer justifies an ask; it never needs the
+ * secret itself.
+ */
+export function redact(line: string): string {
+  const masked = line
+    .replace(KEY_BLOCK, MASK)
+    .replace(SCHEME, (_, scheme: string) => `${scheme} ${MASK}`)
+    .replace(KNOWN_PREFIX, MASK)
+    .replace(
+      KEY_VALUE,
+      (_, key: string, separator: string, quote: string) => `${key}${separator}${quote}${MASK}${quote}`,
+    )
+    .replace(LONG_TOKEN, (word) => (looksRandom(word) ? MASK : word));
+  return masked.length > AUDIT_LINE_CHARS ? `${masked.slice(0, AUDIT_LINE_CHARS - 1)}…` : masked;
 }
 
-/** An ask's audit layer (class, gates, exhausted, made safe for the wire); null when it writes none of them. */
+/** Lines as a client may see them: at most AUDIT_LINES, each redacted and cut short. */
+export function safeAuditLines(lines: readonly string[]): string[] {
+  return lines.slice(0, AUDIT_LINES).map(redact);
+}
+
+/** An ask's audit layer (class, gates, exhausted, each redacted for the wire); null when it writes none of them. */
 export function auditOf(row: Row): AskAudit | null {
+  const kind = text(row.class);
   const audit = {
-    class: text(row.class),
-    gates: textsOf(row.gates).slice(0, AUDIT_LINES),
+    class: kind ? redact(kind) : null,
+    gates: safeAuditLines(textsOf(row.gates)),
     exhausted: safeAuditLines(textsOf(row.exhausted)),
   };
   return audit.class || audit.gates.length > 0 || audit.exhausted.length > 0 ? audit : null;

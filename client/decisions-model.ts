@@ -235,19 +235,53 @@ export function matchFocus(
 }
 
 /**
- * "Decision N of M": M is every ask this visit has had in its queue, N the
- * ones handled (answered or skipped, here or elsewhere) plus the one on screen.
- * The bar is how many are handled.
+ * A focus resolved: the one ask it names; with only a ledger and an id that
+ * two homes share, the one that waits on you, else the first with a note
+ * saying there are more; null with no match.
  */
-export function progressOf(handled: number, total: number): { text: string; fraction: number } {
+export function resolveFocus(
+  queue: readonly DecisionAsk[],
+  want: { ledger: string | null; id: string; uid?: string | null; home?: string | null },
+): { ask: DecisionAsk; note: string | null } | null {
+  const found = queue.filter(
+    (ask) =>
+      ask.id === want.id &&
+      (want.ledger == null || ask.ledger === want.ledger) &&
+      (want.uid == null || ask.uid === want.uid) &&
+      (want.home == null || homeKey(ask.home) === want.home),
+  );
+  const [first] = found;
+  if (!first) return null;
+  if (found.length === 1) return { ask: first, note: null };
+  const waiting = found.filter((ask) => ask.waiting);
+  const [only] = waiting;
+  if (only && waiting.length === 1) return { ask: only, note: null };
+  const pick = waiting[0] ?? first;
+  return {
+    ask: pick,
+    note: `${found.length} asks are named ${want.id} in ${ledgerName(pick.ledger)}: this is the one ${writtenTo(pick)
+      .replace(/^Written to /, "at ")
+      .replace(/^Written into /, "in ")}.`,
+  };
+}
+
+/**
+ * "Decision N of M": M is every ask this visit has had in its queue, N the
+ * ones answered (here or elsewhere) plus the one on screen when it is still
+ * open (a card answered elsewhere is already among the answered). The bar is
+ * answered / M: a skip is not done, and is counted apart.
+ */
+export function progressOf(answered: number, total: number, currentOpen = true): { text: string; fraction: number } {
   if (total <= 0) return { text: "No decisions open", fraction: 0 };
-  const done = Math.min(Math.max(handled, 0), total);
-  return { text: `Decision ${Math.min(done + 1, total)} of ${total}`, fraction: done / total };
+  const done = Math.min(Math.max(answered, 0), total);
+  const at = Math.min(Math.max(done + (currentOpen ? 1 : 0), 1), total);
+  return { text: `Decision ${at} of ${total}`, fraction: done / total };
 }
 
 /** A key the tab acts on. */
 export type TriageKey =
   | { kind: "choose"; index: number }
+  | { kind: "cancel" }
   | { kind: "answer" }
   | { kind: "skip" }
   | { kind: "next" }
@@ -255,17 +289,31 @@ export type TriageKey =
 
 /**
  * What a key press does, on the web: 1–4 choose an option, Enter answers, S
- * skips (only where Skip is offered), J and K go to the next and the previous.
- * Nothing while you type (in the note field or anywhere else), with a modifier
- * held (the browser's and the host's shortcuts stay theirs), or, for Enter,
- * while a control has focus, where Enter presses that control.
+ * skips (only where Skip is offered), J and K go to the next and the previous,
+ * Escape cancels a confirm. On a focused option card, Enter and Space select
+ * that option and never answer. Nothing while you type (in the note field or
+ * anywhere else; Escape aside), with a modifier held (the browser's and the
+ * host's shortcuts stay theirs), or, for Enter, while another control has
+ * focus, where Enter presses that control.
  */
 export function triageKey(
   event: { key: string; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean },
-  context: { typing: boolean; onControl: boolean; options: number; canSkip?: boolean },
+  context: {
+    typing: boolean;
+    onControl: boolean;
+    options: number;
+    canSkip?: boolean;
+    /** The option card that has focus, by its place: Enter or Space selects it, and never answers. */
+    onOption?: number | null;
+  },
 ): TriageKey | null {
-  if (context.typing || event.metaKey || event.ctrlKey || event.altKey) return null;
+  if (event.metaKey || event.ctrlKey || event.altKey) return null;
   const key = event.key;
+  if (key === "Escape") return { kind: "cancel" };
+  if (context.typing) return null;
+  if (context.onOption != null && (key === "Enter" || key === " " || key === "Spacebar")) {
+    return { kind: "choose", index: context.onOption };
+  }
   if (/^[1-9]$/.test(key)) {
     const index = Number(key) - 1;
     return index < Math.min(context.options, 4) ? { kind: "choose", index } : null;
@@ -307,8 +355,9 @@ export function headlineOf(ask: Pick<DecisionAsk, "headline" | "question" | "id"
   const sentence = end >= 0 ? question.slice(0, end + 1) : question;
   const headline = cutAtWord(sentence, HEADLINE_CHARS);
   if (headline !== sentence) {
+    // Where the cut fell in the question (cutAtWord may have dropped a trailing comma): the rest starts at the next word.
     const shown = headline.slice(0, -1).length;
-    return { headline, rest: `…${question.slice(shown).trimStart()}`, derived: true };
+    return { headline, rest: `…${question.slice(shown).replace(/^[\s,;:.]+/, "")}`, derived: true };
   }
   const rest = question.slice(sentence.length).trim();
   return { headline, rest: rest.length > 0 ? rest : null, derived: true };
@@ -329,7 +378,7 @@ export function metaLine(ask: DecisionAsk, now: number = Date.now()): string {
     ledgerName(ask.ledger),
     age ? (age === "now" ? "asked just now" : `asked ${age} ago`) : null,
     ask.blocking ? "blocking" : "not blocking",
-    undo === true ? "reversible" : undo === false ? "an option cannot be undone" : "Undo: not stated",
+    undo === true ? "reversible" : undo === false ? "an option cannot be undone" : "undo: not stated",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -344,9 +393,35 @@ const plain = (value: string) =>
 /** Shorter names than this match a default only whole, never as its first word. */
 const NAME_PREFIX_CHARS = 4;
 
+/** Words that carry no meaning of their own when an option is compared with a default. */
+const STOP_WORDS = new Set(
+  "a an the them it its this that these those their there to of and or for on in with as at by be is are was me my you your our we us so now all any".split(
+    " ",
+  ),
+);
+
+/** A text's content words: lowercase, punctuation gone, stop words dropped. */
+export function contentWords(value: string): string[] {
+  return plain(value)
+    .split(" ")
+    .filter((word) => word.length > 0 && !STOP_WORDS.has(word));
+}
+
+/** How many of a label's content words the given words say, as a share of the label's. */
+function overlap(label: string, words: readonly string[]): number {
+  const own = contentWords(label);
+  if (own.length === 0) return 0;
+  return own.filter((word) => words.includes(word)).length / own.length;
+}
+
+/** Labels that keep going as things are: a default is often one of these in other words, so it is never said to be none. */
+const CARRY_ON = /^(carry on|continue|proceed|keep|leave|stay|ship|wait|hold|defer|do nothing|skip)\b/;
+
 /**
  * The option the default names: the default is an option's id or label, or
- * begins with one (four characters or more, as a whole word). Only when it
+ * begins with one (four characters or more, as a whole word); else its
+ * leading clause says at least two thirds of one label's content words (two
+ * at least): "leave the PRs open with…" is "Leave them open". Only when it
  * names exactly one; a short id inside a sentence is never a match.
  */
 export function fallbackOption(ask: Pick<DecisionAsk, "fallback" | "options">): DecisionOption | null {
@@ -359,15 +434,32 @@ export function fallbackOption(ask: Pick<DecisionAsk, "fallback" | "options">): 
       return said === name || (name.length >= NAME_PREFIX_CHARS && said.startsWith(`${name} `));
     }),
   );
-  return named.length === 1 ? (named[0] ?? null) : null;
+  if (named.length === 1) return named[0] ?? null;
+  if (named.length > 1) return null;
+  const clause = contentWords(ask.fallback.split(/[;,—–(]/)[0] ?? "");
+  const close = ask.options.filter(
+    (option) => contentWords(option.label).length >= 2 && overlap(option.label, clause) >= 2 / 3,
+  );
+  return close.length === 1 ? (close[0] ?? null) : null;
+}
+
+/**
+ * Whether the default is surely none of the options: no option shares half
+ * its content words with it, and no option is a way of carrying on (which a
+ * default often is, in other words). When unsure, nothing is claimed.
+ */
+function surelyNoOption(ask: Pick<DecisionAsk, "fallback" | "options">): boolean {
+  if (!ask.fallback || ask.options.length === 0) return false;
+  const words = contentWords(ask.fallback);
+  return ask.options.every((option) => overlap(option.label, words) < 1 / 2 && !CARRY_ON.test(plain(option.label)));
 }
 
 /**
  * What happens if you say nothing, on its own row. A default that names an
  * option says that option's label, and whether it is the recommendation; one
- * that names none says the ledger's words, and that they are not one of the
- * options (when there are options). `words` is the ledger's own wording when
- * it says more than the option's label.
+ * that surely names none says the ledger's words and that they are not one of
+ * the options; otherwise the ledger's words, with no claim. `words` is the
+ * ledger's own wording when it says more than the option's label.
  */
 export function silenceOf(ask: Pick<DecisionAsk, "fallback" | "options">): {
   text: string;
@@ -377,7 +469,7 @@ export function silenceOf(ask: Pick<DecisionAsk, "fallback" | "options">): {
   if (!ask.fallback) return null;
   const named = fallbackOption(ask);
   if (!named) {
-    const outside = ask.options.length > 0 ? " (not one of the options above)" : "";
+    const outside = surelyNoOption(ask) ? " (not one of the options above)" : "";
     return { text: `If you say nothing: ${ask.fallback}${outside}`, tag: null, words: null };
   }
   const recommended = ask.options.find((option) => option.recommended) ?? null;
@@ -434,4 +526,17 @@ export function keyedLines(lines: readonly string[]): { key: string; line: strin
     seen.set(line, count);
     return { key: count === 1 ? line : `${line}#${count}`, line };
   });
+}
+
+/** What an ask answered elsewhere was answered with: its option's label, else its words, cut short. */
+export function answeredElsewhere(ask: DecisionAsk): string {
+  const option = ask.options.find((entry) => entry.id === ask.answerOption);
+  const said = option
+    ? `“${option.label}”`
+    : ask.answer
+      ? `“${cutAtWord(ask.answer.replace(/\s+/g, " "), 160)}”`
+      : null;
+  return said
+    ? `This was answered elsewhere: ${said}. Nothing was sent from here.`
+    : "This was answered elsewhere: its answer is in the ledger now. Nothing was sent from here.";
 }
