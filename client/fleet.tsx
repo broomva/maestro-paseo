@@ -20,7 +20,6 @@ import { Icon, Modal } from "@getpaseo/plugin/client/react-native";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
-import { attentionWork } from "../shared/contracts";
 import { type FleetView as FleetRead, getFleet } from "../shared/fleet";
 import {
   askAge,
@@ -672,12 +671,8 @@ export function FleetNotices({
   compact: boolean;
   onOpen: (scope: string) => void;
 }) {
-  const read = useRpc(attentionWork);
-  const attention = useQuery({
-    queryKey: ["maestro", "attention"],
-    queryFn: () => read({}),
-    refetchInterval: POLL_MS,
-  });
+  // The one owner of the work.attention read (client/hooks.ts).
+  const attention = useAttention();
   const notices = attention.data?.fleet ?? [];
   if (notices.length === 0) return null;
   return (

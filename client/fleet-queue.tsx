@@ -290,7 +290,13 @@ function AskCard({
   const row = context.link(ask);
   const agentId = row?.agentId ?? session?.agentId ?? null;
   const who = row ? displayName(row.name ?? row.short) : (session?.name ?? session?.short ?? null);
-  const lines = askLines(ask.question);
+  const named = row?.name ? displayName(row.name) : (session?.name ?? null);
+  // A session blocked on you (class 7) with a session to name: the title is structural, from the linked
+  // session, and the body is the fleet's question verbatim. Otherwise the question's own first sentence.
+  const lines =
+    ask.class === "7" && named
+      ? { title: `${cutWords(named, 60)} is waiting on you`, body: ask.question }
+      : askLines(ask.question);
   const resume = row ? resumeCommand(row.id, row.cwd) : null;
   const verbs: { key: string; label: string; icon: string; a11y: string; run: () => void }[] = [];
   // The honest next step for an ask is the session it is about: opened in Paseo, else resumed where it ran.
@@ -340,8 +346,9 @@ function AskCard({
         .filter(Boolean)
         .join(" · ")}
       title={lines.title}
-      body={lines.body && !open ? cutWords(lines.body, phone ? 90 : 180) : lines.body}
-      bodyLines={0}
+      // The fleet's words as written: clamped to a few lines until shown in full, never edited.
+      body={lines.body}
+      bodyLines={open ? 0 : phone ? 3 : 2}
       hint={!phone && agentId ? `Opens ${session?.short ?? ""} in Paseo` : null}
       verbs={
         <>
@@ -369,6 +376,19 @@ function AskCard({
         </>
       }
     >
+      {!open && lines.body && lines.body.length > (phone ? 120 : 200) ? (
+        <View style={{ flexDirection: "row", marginTop: -space[1] }}>
+          <Verb
+            theme={theme}
+            weight="quiet"
+            icon="ChevronDown"
+            label="Show all"
+            phone={phone}
+            accessibilityLabel={`Show all of ask ${ask.id}`}
+            onPress={() => setOpen(true)}
+          />
+        </View>
+      ) : null}
       {more.length > 0 ? (
         <View style={{ gap: 2 }}>
           <Text style={t.meta}>{`and ${plural(more.length, "more ask")} in the same work:`}</Text>

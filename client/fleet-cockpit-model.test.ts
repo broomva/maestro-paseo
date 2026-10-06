@@ -879,17 +879,6 @@ describe("one number for what needs you", () => {
 });
 
 describe("round 3 words", () => {
-  test("a blocked-session preamble becomes '<session> is waiting on you' with the request as the body", () => {
-    expect(
-      askLines(
-        "Session sti-2139-asvs-dast-conflicts (bf1ee1b8) is blocked on you: job file: blocked on a question to its user (allocate disk space to run `bun test`).",
-      ),
-    ).toEqual({
-      title: "sti-2139-asvs-dast-conflicts is waiting on you",
-      body: "Allocate disk space to run `bun test`",
-    });
-  });
-
   test("a long first sentence is cut at a clause that keeps the request, the body going on from it", () => {
     expect(
       askLines(

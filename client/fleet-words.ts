@@ -53,21 +53,6 @@ export function ageWords(iso: string | null, now: number = Date.now()): string |
 /** An ask's question as a one-line title (its first sentence, cut at a word) and the rest as its body. */
 export function askLines(question: string, max = 110): { title: string; body: string | null } {
   const text = question.trim();
-  // The fleet's blocked-session preamble: the session is the subject, the request is the body.
-  const blocked =
-    /^Session (\S+) \(([0-9a-f]{6,})\) is blocked on you:\s*(?:job file:\s*)?(?:blocked on a question to its user\s*)?(.*)$/is.exec(
-      text,
-    );
-  if (blocked?.[1]) {
-    const request = (blocked[3] ?? "")
-      .replace(/^\(\s*/, "")
-      .replace(/\s*\)\.?$/, "")
-      .trim();
-    return {
-      title: `${blocked[1]} is waiting on you`,
-      body: request ? `${request.charAt(0).toUpperCase()}${request.slice(1)}` : null,
-    };
-  }
   const end = /[.?!](\s|$)/.exec(text);
   const first = end ? text.slice(0, end.index + 1) : text;
   const sentence = first.replace(/[.:]$/, "");

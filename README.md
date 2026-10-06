@@ -358,7 +358,8 @@ Top to bottom:
   carries), and a decision ask in the fleet's own root that waits on you (`waiting`: blocking, or
   recommending what cannot be undone). Sessions that want a look are named beside it (*6 sessions
   want a look*), never in it: the header does not count them. The band says how it relates to the
-  header's own count (the subtitle under Maestro's title reads the same Maestro-wide number), from the header's pieces (needsYouCount over work.attention): *2 need you here
+  header's own count (the subtitle under Maestro's title reads the same Maestro-wide number; until
+  that read is in, it says "N work items need you", never a bare number), from the header's pieces (needsYouCount over work.attention): *2 need you here
   · 5 in all (3 in Work)*, each other surface pressable to its view.
 - **The health band.** A verdict that leads with the problem and never overclaims. It is *healthy*
   only when every scope was read, ticks on time, nothing needs you and no session wants a look.
@@ -382,9 +383,9 @@ Top to bottom:
   key's id by a unique prefix of the session's or its Paseo agent's id (never when two match):
   *Open <session>* in Paseo, else *Copy resume command* (`cd '<cwd>' && claude --resume <uuid>`:
   the folder always single-quoted, a leading `~/` as `"$HOME"`, a canonical UUID only). Answering
-  the raised work and *Copy question* follow. A title keeps the request: a blocked-session ask
-  reads *<session> is waiting on you* with the request as its body; the fleet's words are never
-  rewritten: a long first sentence is cut at its last clause before the limit, with "…", and the
+  the raised work and *Copy question* follow. A session blocked on you reads *<session> is
+  waiting on you* (from the linked session), with the fleet's question as its body, verbatim; the
+  fleet's words are never rewritten: a long first sentence is cut at its last clause before the limit, with "…", and the
   body is the rest as written, never an ellipsis fragment. Then, apart and uncounted,
   **Not raised to you yet**: asks the fleet raises as work at its next tick (*~21:18*), with their
   tags and verbs; and **Also open**: alerts at rest and the scope's decisions that do not wait on

@@ -428,6 +428,8 @@ let fleetHeld: Promise<void> | null = null;
 let fleetFails: string | null = null;
 /** Sessions added to broomva's roster by a test. */
 let rosterExtra: FleetSession[] = [];
+/** Fields of broomva's ask a1 a test changes. */
+let askOverride: Record<string, unknown> = {};
 /** sri: one class and one action across three sessions, which is one decision. */
 let sriProposals: FleetProposal[] = [];
 const sriFixture = (): FleetProposal[] =>
@@ -735,6 +737,7 @@ const fleetView = (scope: string | undefined): FleetView => {
                 session: askSessionNow,
                 batch: "2-1",
                 item: { id: "a", title: "Work a", state: "review", group: "review", needsYou: true },
+                ...askOverride,
               },
             ]
           : [],
@@ -1235,6 +1238,7 @@ afterEach(async () => {
   fleetHeld = null;
   fleetFails = null;
   rosterExtra = [];
+  askOverride = {};
   timelineNotices = [];
   proposalsNow = fleetProposals();
   sriProposals = sriFixture();
@@ -2532,6 +2536,42 @@ describe("the Fleet view", () => {
       firstElementChild: { style: { backgroundColor: string } };
     };
     expect(resume.firstElementChild.style.backgroundColor).toContain("84, 128, 199");
+  });
+
+  test("a session blocked on you: a structural title, and the fleet's question as the body, byte for byte", async () => {
+    const source =
+      "Session sti-2139-asvs-dast-conflicts (bf1ee1b8) is blocked on you: job file: blocked on a question to its user (allocate disk space to run `bun test apps/app/test/authenticated-page-inventory.test.ts` (#12). Then rerun.";
+    rosterExtra = [
+      {
+        id: "bf1ee1b8-11be-4544-9f7e-143a990c3e10",
+        short: "bf1ee1b8",
+        name: "sti-2139-asvs-dast-conflicts",
+        kind: "background",
+        state: "blocked",
+        cwd: "~/work/sri",
+        branch: null,
+        agentId: null,
+        classId: "7",
+        className: "blocked on the owner",
+        action: "carry the ask forward",
+        evidence: "job file: blocked on a question",
+        activeAt: null,
+        scope: "broomva",
+        placement: "cwd",
+        inScope: true,
+        history: [],
+      },
+    ];
+    askSessionNow = { id: "bf1ee1b8-11be", short: "bf1ee1b8", name: null, agentId: null };
+    askOverride = { class: "7", className: "blocked on the owner", question: source, item: null, batch: "2-1" };
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await settle(30);
+    expect(view.text()).toContain("sti-2139-asvs-dast-conflicts is waiting on you");
+    // The body is the fleet's question as written: no stripping, no capitalising.
+    expect(view.all("div").some((node) => node.textContent === source)).toBe(true);
+    await view.press(view.byLabel("Show all of ask a1"));
+    expect(view.all("div").some((node) => node.textContent === source)).toBe(true);
   });
 
   test("an ask linked to a Paseo agent by its short id opens that agent", async () => {

@@ -18,7 +18,6 @@ import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { attentionWork } from "../shared/contracts";
 import { type AnswerWhere, type AskNotice, type DecisionAsk, getWorkspaceAsks } from "../shared/fleet";
 import { DecisionCard } from "./decision-card";
 import {
@@ -31,6 +30,7 @@ import {
   ledgerRail,
 } from "./decisions-model";
 import { plural } from "./format";
+import { useAttention } from "./hooks";
 import { requestIntent } from "./intent";
 import { Button, Notice, Section, space, useText } from "./ui";
 
@@ -248,12 +248,8 @@ export function AskNotices({
   compact: boolean;
   onOpen: (notice: AskNotice) => void;
 }) {
-  const read = useRpc(attentionWork);
-  const attention = useQuery({
-    queryKey: ["maestro", "attention"],
-    queryFn: () => read({}),
-    refetchInterval: POLL_MS,
-  });
+  // The one owner of the work.attention read (client/hooks.ts).
+  const attention = useAttention();
   const asks = attention.data?.asks ?? [];
   const [first] = asks;
   if (!first) return null;
