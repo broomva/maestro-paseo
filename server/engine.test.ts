@@ -2971,8 +2971,11 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
     const said = (text: string) => [{ type: "assistant_message" as const, text }];
     // Each end carries its provider turn id, as Paseo's hook does: without one a second end reads as a repeat.
     let turns = 0;
-    const end = (text: string, outcome: Parameters<Engine["onTurnEnded"]>[1] = { kind: "completed" }) =>
-      s.engine.onTurnEnded({ id: "arc" }, outcome, said(text), `turn-${++turns}`);
+    const end = (text: string, outcome: Parameters<Engine["onTurnEnded"]>[1] = { kind: "completed" }) => {
+      const agent = s.fake.agents.get("arc");
+      if (agent) agent.status = "idle";
+      return s.engine.onTurnEnded({ id: "arc" }, outcome, said(text), `turn-${++turns}`);
+    };
     return { ...s, item, end };
   }
 
@@ -3045,6 +3048,17 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
       type: "state",
       detail: "The session kept working on its arc; it handed you nothing to decide",
     });
+  });
+
+  test("your Send back is a task: the session's answer to your note lands, whatever it says", async () => {
+    const { engine, item, end, decide } = await adopted();
+    await end("## Ask\n- Keep the 100-company bound?");
+    expect((await decide(item.id, "revise", "Why 100? explain")).state).toBe("running");
+    tick(2);
+    const answer = "100 matches the upstream page size; lowering it doubles the calls. I kept it.";
+    await end(answer);
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "review", look: { ask: "", closing: answer } });
+    // Its arc goes on after you are answered only if you leave it running: the next task is yours to give.
   });
 
   test("replay of STI-3492: a reload finds the arc idle mid-work, keeps it running, and does not re-read it", async () => {

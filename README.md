@@ -183,7 +183,7 @@ The eight system states are Maestro's; the UI speaks the six plain labels.
   at Needs you only when a turn hands you something: an `ARC-STATUS:` line, an `## Ask` section, or
   the handback skill's `## ⛔ Blocked on you` block. Any other turn end is the arc between steps:
   the work stays Running, and the loop names it if it goes quiet. A dispatched run is one task, so
-  its turn end still lands. The card shows the ask in the session's own words, or its last words
+  its turn end still lands, and so does the turn that answers your Send back or Unblock. The card shows the ask in the session's own words, or its last words
   and what Approve and Send back do; it never invents a question.
 
 Two edges differ from the Maestro runtime because Paseo owns execution: review can return to

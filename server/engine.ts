@@ -46,11 +46,11 @@ import {
   finishedArc,
   flagOf,
   handsBack,
-  isAdopted,
   keptSummary,
   lastOf,
   latestChecks,
   type Origin,
+  onItsOwnArc,
   pendingChecks,
   pendingDecision,
   pendingPermission,
@@ -1696,8 +1696,9 @@ export class Engine {
         const state = fresh.contract.state;
         // A session Maestro adopted runs its own arc over many turns: a turn that hands you nothing (handsBack:
         // no verdict, no ask) is the arc between steps, not work at your gate. It stays running, and the loop
-        // names it if it goes quiet. One that failed still stops it: that is something to look at.
-        const between = isAdopted(fresh.events) && outcome.kind !== "failed" && !handsBack(ended.summary);
+        // names it if it goes quiet. One that failed still stops it: that is something to look at. A turn
+        // answering your note is a task, not the arc (onItsOwnArc), so it lands whatever it says.
+        const between = onItsOwnArc(fresh.events) && outcome.kind !== "failed" && !handsBack(ended.summary);
         if (state !== "running") {
           // The session worked again after landing (its turn start was missed): the gate must show that turn.
           if (state === "review" && !pendingPermission(fresh.events)) {

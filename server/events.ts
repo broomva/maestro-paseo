@@ -499,9 +499,14 @@ export function blockedOnYou(text: string): { heading: string; body: string | nu
   return { heading: (lines[at] ?? "").replace(/^ {0,3}#{1,6}\s*/, "").trim(), body: body || null };
 }
 
-/** Whether the run was adopted (a session running its own arc), not dispatched by Maestro with one task. */
-export const isAdopted = (events: readonly WorkEvent[]): boolean =>
-  lastOf(events, "dispatched", "adopted")?.type === "adopted";
+/**
+ * Whether the session is on its own arc: adopted (running an arc of its own,
+ * not one task from Maestro), and given no task since. A Send back's note or
+ * an Unblock is a task, as a dispatched run is: the turn that answers it lands
+ * at your gate like one (engine.ts endTurn).
+ */
+export const onItsOwnArc = (events: readonly WorkEvent[]): boolean =>
+  lastOf(events, "dispatched", "adopted", "gate", "unblocked")?.type === "adopted";
 
 export function lookOf(state: OrchState, events: readonly WorkEvent[], now: number): Look | null {
   if (state !== "review") return null;
