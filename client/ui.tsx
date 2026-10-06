@@ -459,3 +459,144 @@ export function Unbroken({ children }: { children: string }) {
     </>
   );
 }
+
+/** Press feedback: 0.96 while held, 120 ms each way; none under reduced motion. */
+export function usePressScale(): {
+  scale: Animated.Value;
+  onPressIn: () => void;
+  onPressOut: () => void;
+} {
+  const reduced = useReducedMotion();
+  const scale = useRef(new Animated.Value(1)).current;
+  const to = (value: number) => {
+    if (reduced) {
+      scale.setValue(1);
+      return;
+    }
+    Animated.timing(scale, {
+      toValue: value,
+      duration: 120,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: Platform.OS !== "web",
+    }).start();
+  };
+  return { scale, onPressIn: () => to(0.96), onPressOut: () => to(1) };
+}
+
+/** A key on the keyboard, as a hint beside the control it drives. Web only: a phone has no keys to show. */
+export function Kbd({ theme, children }: { theme: PluginTheme; children: string }) {
+  if (Platform.OS !== "web") return null;
+  return (
+    <View
+      accessible={false}
+      importantForAccessibility="no-hide-descendants"
+      style={{
+        minWidth: 20,
+        height: 20,
+        paddingHorizontal: 5,
+        borderRadius: 5,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        backgroundColor: theme.colors.surface2,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Text
+        aria-hidden
+        style={{
+          color: theme.colors.foregroundMuted,
+          fontSize: 11,
+          fontWeight: "600",
+          fontFamily: Platform.select({ default: "ui-monospace, Menlo, monospace", ios: "Menlo" }),
+        }}
+      >
+        {children}
+      </Text>
+    </View>
+  );
+}
+
+/** A thin bar for how far through something you are, 0 to 1. Decorative: its words sit beside it. */
+export function ProgressBar({ theme, fraction }: { theme: PluginTheme; fraction: number }) {
+  const width = `${Math.round(Math.min(Math.max(fraction, 0), 1) * 100)}%` as const;
+  return (
+    <View
+      accessible={false}
+      style={{ height: 4, borderRadius: radius.pill, backgroundColor: theme.colors.surface2, overflow: "hidden" }}
+    >
+      <View style={{ width, height: 4, borderRadius: radius.pill, backgroundColor: theme.colors.accent }} />
+    </View>
+  );
+}
+
+/**
+ * A segmented control: one choice of a few, each a labelled button. The track
+ * is 10 (the segments' 7 plus its 3 of padding), so the corners nest.
+ */
+export function Segmented<T extends string>({
+  theme,
+  label,
+  options,
+  value,
+  onChange,
+  compact = false,
+}: {
+  theme: PluginTheme;
+  /** The control's name for a screen reader. */
+  label: string;
+  options: readonly { id: T; label: string }[];
+  value: T;
+  onChange: (value: T) => void;
+  compact?: boolean;
+}) {
+  return (
+    <View
+      accessibilityRole="radiogroup"
+      accessibilityLabel={label}
+      style={{
+        flexDirection: "row",
+        alignSelf: compact ? "stretch" : "flex-start",
+        padding: 3,
+        gap: 2,
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        backgroundColor: theme.colors.surface1,
+      }}
+    >
+      {options.map((option) => {
+        const selected = option.id === value;
+        return (
+          <Pressable
+            key={option.id}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: selected }}
+            aria-checked={selected}
+            accessibilityLabel={option.label}
+            onPress={() => onChange(option.id)}
+            style={({ pressed }) => ({
+              flex: compact ? 1 : undefined,
+              minHeight: compact ? 40 : 28,
+              paddingHorizontal: space[3],
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: 7,
+              backgroundColor: selected ? theme.colors.surface2 : pressed ? theme.colors.surface2 : "transparent",
+            })}
+          >
+            <Text
+              style={{
+                color: selected ? theme.colors.foreground : theme.colors.foregroundMuted,
+                fontSize: size.xs,
+                fontWeight: "600",
+              }}
+            >
+              {option.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}

@@ -32,7 +32,14 @@ those, and nothing Paseo already does.
   the unsupervised-hours scoreboard, and a detail pane with the verb each item needs. The chips
   follow the sections: each counts exactly what it shows, Stuck narrows Needs you to its stuck
   work, and Needs you, Running, Queued and Done add up to All.
-- **Fleet**, a view beside History: fleet-reconcile's hourly runs per scope, with your verdict on
+- **Two groups of views.** *Work*: Feed, Board, List, History. *System*: Fleet, Decisions, Timeline,
+  Initiatives. A wide window shows them as tabs under their group's label; Decisions carries its open
+  count, in the warning color (and the words "wait on you" for a screen reader) when an ask waits on
+  you. A phone shows one button naming the view you are on, which opens every view, grouped, as a
+  menu of 44 pt rows.
+- **Decisions**: your workspace's decision asks one at a time, with keys on the web (see
+  [Decisions](#decisions)).
+- **Fleet**, a system view: fleet-reconcile's hourly runs per scope, with your verdict on
   what its dry run would do (see [The Fleet](#the-fleet)).
 - **Timeline**, a view beside the Fleet: every scheduled session and loop on one time axis, the past
   24 hours and the next 24, with a failed or missed run in Needs you (see [The Timeline](#the-timeline)).
@@ -236,6 +243,41 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
 |---|---|
 | ![The loop's panel](docs/loop-panel.png) | ![Needs you with flagged work](docs/loop-needs-you-feed.png) |
 
+## Decisions
+
+The **Decisions** view holds your workspace's decision asks: every `.control/asks/*.yaml` ledger of
+the control repo (`~/broomva`, or `MAESTRO_PASEO_CONTROL_REPO`), each ask read where it lives (see
+[Which copy](#answering-a-decision-ask)). Ideas are answered in [Initiatives](#initiatives), not here.
+
+- **One at a time.** *Decision N of M* and a thin bar say where you are. The order is a choice of
+  *Blocking first* (blocking asks, then the rest that wait on you, then the oldest), *Oldest* (by
+  `asked_at`, undated last) or *By ledger* (a ledger at a time, in the rail's order); a new order
+  starts at its first decision. *Up next* lists the following three; pressing one goes to it.
+- **The ledger rail.** Each ledger with an open ask and its count, *All* first. A dot marks a
+  ledger only when an ask in it waits on you (open and blocking, or recommending an option that
+  cannot be undone, §5.4). Past eight ledgers the rest fold under *+ N more*. On a phone the rail is
+  a *Ledger* picker.
+- **The card.** A muted line (ledger · id, age, blocking or not, reversible), then the question as
+  its headline. An ask without a `headline` leads with its question's first sentence, cut at a word
+  past 120 characters, the rest behind *Full question*. *What waiting costs* and *Why you* sit side
+  by side (stacked on a phone). Each option is a radio card: its label, what it does, *Recommended*,
+  and *Cannot be undone* when `reversible: false`. Nothing is chosen for you, the recommendation
+  included. *If you say nothing* says the default, and says when it names an option other than the
+  recommended one. The verb reads *Answer with <option>* and waits until you choose (an ask with no
+  options says so and takes your words). *Skip* leaves it open and moves it to the end of the queue,
+  for this visit. *Details* holds the full question, the audit layer (class, gates, what was tried
+  before asking), the ledger, where the answer is written, and the session that asked.
+- **Keys, on the web.** 1–4 choose an option, Enter answers, S skips, J and K go to the next and the
+  previous, each hinted beside what it drives. None acts while you type in a field or with a modifier
+  held, and Enter on a focused button presses that button.
+- **After an answer.** The card leaves (opacity to 0 and up 6 px in 160 ms; at once under reduced
+  motion) and the next comes up. A line above it says what you answered and where it was written.
+  There is no undo: `ask.answer` has none, so none is offered. *Recently answered* lists the latest
+  answered asks, folded.
+- **Getting there.** A decision that waits on you shows above every other view with *Open
+  Decisions*, which opens the tab at that ask. When only workspace asks wait, the header count opens
+  the tab, blocking first. An initiative's *Open in Decisions* opens it at that ledger and ask.
+
 ## The Fleet
 
 fleet-reconcile (`skills/orchestration/fleet-reconcile` in broomva/skills) ticks hourly per scope
@@ -297,23 +339,21 @@ A brief with no ask line in `## For you` (or, in an older brief, in any fence) s
   - An ask about a session (a `prompt:<session>:…` key) names it, and *Open session* opens it in
     Paseo when it is a Paseo agent. *Details* shows the ask's key and batch, and the tick that raised
     it, opened as a tick row opens.
-- **Decisions.** At the top of the Fleet view, whether or not this Mac runs a fleet: your
-  workspace's decision asks, every `.control/asks/*.yaml` ledger of the control repo (`~/broomva`),
-  each read where it lives (see [Which copy](#answering-a-decision-ask)). Then, per scope, *The
-  fleet's decisions*: those in the fleet's own ask ledger, `<state dir>/.control/asks/*.yaml` (its
-  registered root, workspace#861 §5.6), shown only when that folder holds one.
-  - Asks are listed a ledger at a time, the ledgers with an ask that waits on you first. Every
+- **Decisions.** Your workspace's decision asks are in the [Decisions](#decisions) view; the Fleet
+  view shows a short *Workspace decisions* summary that opens it. Per scope, *The fleet's decisions*
+  are those in the fleet's own ask ledger, `<state dir>/.control/asks/*.yaml` (its registered root,
+  workspace#861 §5.6), shown only when that folder holds one.
+  - The fleet's asks are listed a ledger at a time, the ledgers with an ask that waits on you first. Every
     ledger starts open while there are ten open asks or fewer; past that, only those with an ask
     that waits on you. A ledger's heading folds and opens it. Its answered asks stay folded under
     *Show N answered*; one you just answered stays in place, saying so.
-  - Each card shows the headline and question, what waiting costs, why it is yours, every option
-    with its consequence (recommended, or cannot be undone), what happens if you say nothing, and
-    where your answer will be written. Choose an option, add words if you like, and *Answer*. See
+  - Each card is the Decisions card (see [Decisions](#decisions)), without Skip or keys. Choose an
+    option, add words if you like, and *Answer*. See
     [Answering a decision ask](#answering-a-decision-ask).
   - An ask *waits on you* when it is open and blocking, or recommends an option that cannot be
     undone (§5.4), default or not: a default says the arc may go on in silence, not that it did.
     Those count in the header's "N need you", and show above every other view with *Open
-    Decisions*.
+    Decisions* (a fleet scope's open its Fleet view).
 - **Would do.** These are proposals: each in-scope session whose "would do" in the newest report is
   something other than nothing, plus any verb the coordinator logged under dry run.
   - Proposals that read the same and stand the same with you are one card, and one verdict covers
@@ -567,7 +607,7 @@ shown beside it, never instead of it. A file that cannot be read is an error row
 - **A card per initiative.** Title; the owner's intent quoted, or *Intent not stated* when the file
   says it was never written down; status; `review_by` (or `wake` for a parked one) with an
   *Overdue* or *Wake date passed* badge; the next action and its driver; what it waits on, an ask
-  opening its ledger in the Fleet view's Decisions; links to Linear, each PR (with its state when
+  opening Decisions at that ask, its ledger chosen; links to Linear, each PR (with its state when
   GitHub says it in one cached query) and each session (opened in Paseo when one agent has that id);
   and its open and triaged ideas.
 - **Ideas.** Each idea is an idea-triage ask (`class: idea`) in `.control/asks/ideas-<initiative>.yaml`,

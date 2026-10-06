@@ -15,6 +15,7 @@ export type MaestroIntent =
   | { kind: "new" }
   | { kind: "filter"; group: Group }
   | { kind: "fleet"; scope: string | null }
+  | { kind: "decisions"; ledger?: string | null; id?: string | null }
   | { kind: "timeline" }
   | { kind: "initiatives" };
 

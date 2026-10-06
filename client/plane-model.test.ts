@@ -11,10 +11,12 @@ import {
   changeText,
   countFilters,
   crumb,
+  decisionsBadge,
   emptyText,
   FILTERS,
   filterLabel,
   flagText,
+  groupedViews,
   groupHint,
   groupsOf,
   inFilter,
@@ -22,6 +24,7 @@ import {
   inScope,
   needsHand,
   resolveScope,
+  SYSTEM_VIEWS,
   scopeLabel,
   stateText,
   stuckText,
@@ -88,20 +91,31 @@ describe("views", () => {
     expect(viewFor("history", false)).toBe("history");
   });
 
-  test("compact offers the feed, History, the Fleet, the Timeline and Initiatives; wide offers all seven", () => {
+  test("compact offers the feed, History and every system view; wide offers all eight, in two groups", () => {
     expect(viewFor("fleet", true)).toBe("fleet");
+    expect(viewFor("decisions", true)).toBe("decisions");
     expect(viewFor("timeline", true)).toBe("timeline");
     expect(viewFor("initiatives", true)).toBe("initiatives");
-    expect(viewsFor(true).map((view) => view.label)).toEqual(["Feed", "History", "Fleet", "Timeline", "Initiatives"]);
-    expect(viewsFor(false).map((view) => view.label)).toEqual([
+    expect(viewsFor(true).map((view) => view.label)).toEqual([
       "Feed",
-      "Board",
-      "List",
       "History",
       "Fleet",
+      "Decisions",
       "Timeline",
       "Initiatives",
     ]);
+    expect(groupedViews(viewsFor(false)).map((group) => [group.label, group.views.map((view) => view.label)])).toEqual([
+      ["Work", ["Feed", "Board", "List", "History"]],
+      ["System", ["Fleet", "Decisions", "Timeline", "Initiatives"]],
+    ]);
+    expect(SYSTEM_VIEWS).toEqual(["fleet", "decisions", "timeline", "initiatives"]);
+  });
+
+  test("the Decisions badge: the open count, warn only when one waits on you, and none when nothing is open", () => {
+    expect(decisionsBadge(0, 0)).toBeNull();
+    expect(decisionsBadge(49, 0)).toEqual({ count: 49, warn: false, label: "49 open" });
+    expect(decisionsBadge(49, 1)).toEqual({ count: 49, warn: true, label: "49 open, 1 waits on you" });
+    expect(decisionsBadge(3, 2)?.label).toBe("3 open, 2 wait on you");
   });
 });
 

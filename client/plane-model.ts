@@ -6,27 +6,58 @@ import { needsHand, needsYouOf, sectionOf } from "../shared/needs-you";
 import { GROUP_COPY, GROUP_ORDER, type Group, PLAIN_VOICE, QUEUED_LOOP_HINT } from "../shared/states";
 import { agoWords, basename, plural } from "./format";
 
+/** The two groups of views: your work, and the system that runs it. */
+export const VIEW_GROUPS = [
+  { id: "work", label: "Work" },
+  { id: "system", label: "System" },
+] as const;
+export type ViewGroup = (typeof VIEW_GROUPS)[number]["id"];
+
 export const VIEWS = [
-  { id: "feed", label: "Feed", icon: "LayoutList" },
-  { id: "board", label: "Board", icon: "Columns3" },
-  { id: "list", label: "List", icon: "List" },
-  { id: "history", label: "History", icon: "History" },
-  { id: "fleet", label: "Fleet", icon: "Activity" },
-  { id: "timeline", label: "Timeline", icon: "CalendarClock" },
-  { id: "initiatives", label: "Initiatives", icon: "Target" },
+  { id: "feed", label: "Feed", icon: "LayoutList", group: "work" },
+  { id: "board", label: "Board", icon: "Columns3", group: "work" },
+  { id: "list", label: "List", icon: "List", group: "work" },
+  { id: "history", label: "History", icon: "History", group: "work" },
+  { id: "fleet", label: "Fleet", icon: "Activity", group: "system" },
+  { id: "decisions", label: "Decisions", icon: "Inbox", group: "system" },
+  { id: "timeline", label: "Timeline", icon: "CalendarClock", group: "system" },
+  { id: "initiatives", label: "Initiatives", icon: "Target", group: "system" },
 ] as const;
 export type PlaneView = (typeof VIEWS)[number]["id"];
+export type ViewOption = (typeof VIEWS)[number];
 
-/** Compact windows have no room for columns or dense rows: they show the feed, History, the Fleet, the Timeline or Initiatives. */
+/** Views that are not work: they take no state chips and no initiative scope. */
+export const SYSTEM_VIEWS: readonly PlaneView[] = VIEWS.filter((option) => option.group === "system").map(
+  (option) => option.id,
+);
+
+/** Compact windows have no room for columns or dense rows: they show the feed, History, or a system view. */
 export function viewFor(view: PlaneView, compact: boolean): PlaneView {
-  return compact && view !== "history" && view !== "fleet" && view !== "timeline" && view !== "initiatives"
-    ? "feed"
-    : view;
+  return compact && view !== "history" && !SYSTEM_VIEWS.includes(view) ? "feed" : view;
 }
 
 /** The views a window offers: compact ones only those viewFor keeps. */
-export function viewsFor(compact: boolean): (typeof VIEWS)[number][] {
+export function viewsFor(compact: boolean): ViewOption[] {
   return VIEWS.filter((option) => viewFor(option.id, compact) === option.id);
+}
+
+/** The offered views in their groups, an empty group left out. */
+export function groupedViews(views: readonly ViewOption[]): { group: ViewGroup; label: string; views: ViewOption[] }[] {
+  return VIEW_GROUPS.map((entry) => ({
+    group: entry.id,
+    label: entry.label,
+    views: views.filter((option) => option.group === entry.id),
+  })).filter((entry) => entry.views.length > 0);
+}
+
+/** The Decisions tab's badge: the open count, warn when any waits on you; none when nothing is open. */
+export function decisionsBadge(open: number, waiting: number): { count: number; warn: boolean; label: string } | null {
+  if (open <= 0) return null;
+  return {
+    count: open,
+    warn: waiting > 0,
+    label: `${open} open${waiting > 0 ? `, ${waiting} ${waiting === 1 ? "waits" : "wait"} on you` : ""}`,
+  };
 }
 
 export type Filter = "all" | Group;

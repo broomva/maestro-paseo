@@ -110,6 +110,19 @@ const answered = (source: string, extra: Partial<AnswerInput>) =>
   withAnswer(source, "test-arc.yaml", input(extra), AT).out;
 
 describe("reading decision asks", () => {
+  test("the audit layer: class, gates as a list (a lone string is one), exhausted; none written is null", () => {
+    const ledger = (fields: string) => `arc: a\nasks:\n  - id: X1\n    ask: "Go?"\n${fields}`;
+    expect(decisionsOf(ledger(""), "a.yaml")[0]?.audit).toBeNull();
+    expect(decisionsOf(ledger("    class: authority\n    gates: lane-x\n"), "a.yaml")[0]?.audit).toEqual({
+      class: "authority",
+      gates: ["lane-x"],
+      exhausted: [],
+    });
+    expect(decisionsOf(ledger('    gates: [lane-a, 2]\n    exhausted: ["read: x", {}]\n'), "a.yaml")[0]?.audit).toEqual(
+      { class: null, gates: ["lane-a", "2"], exhausted: ["read: x"] },
+    );
+  });
+
   test("each ask's decision layer: stakes, why you, the options with consequences, recommended and the default", () => {
     const [open, answer] = decisionsOf(LEDGER, "test-arc.yaml");
     expect(open).toEqual({
@@ -151,6 +164,11 @@ describe("reading decision asks", () => {
       batched: false,
       waiting: false,
       idea: null,
+      audit: {
+        class: "decision",
+        gates: [],
+        exhausted: ["read: the PR comments hold no decision", "default: available: none blocks a lane"],
+      },
     });
     expect([answer?.uid, answer?.state, answer?.answer]).toEqual([
       "7d1e0c2a-5b8f-4e1a-9c4d-2f6b8a0e3c91",

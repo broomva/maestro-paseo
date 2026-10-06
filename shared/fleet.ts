@@ -226,6 +226,17 @@ export const IdeaSchema = z.object({
 export type Idea = z.infer<typeof IdeaSchema>;
 
 /**
+ * An ask's audit layer, as its ledger writes it: its class, the lanes it
+ * gates, and what the agent exhausted before asking a person.
+ */
+export const AskAuditSchema = z.object({
+  class: z.string().nullable(),
+  gates: z.array(z.string()),
+  exhausted: z.array(z.string()),
+});
+export type AskAudit = z.infer<typeof AskAuditSchema>;
+
+/**
  * A decision ask in a `.control/asks` ledger, with its decision layer: what it
  * costs while it waits, why it is yours, the options and what each does, and
  * what happens if you say nothing. From the fleet's own registered root
@@ -264,6 +275,8 @@ export const DecisionAskSchema = z.object({
   waiting: z.boolean(),
   /** An idea-triage ask's fields; null (or absent, from an older daemon) for every other ask. */
   idea: IdeaSchema.nullable().optional(),
+  /** The audit layer (DECISION-LAYER.md): what justifies the ask to a reviewer, not what decides it. Absent from an older daemon. */
+  audit: AskAuditSchema.nullable().optional(),
 });
 export type DecisionAsk = z.infer<typeof DecisionAskSchema>;
 

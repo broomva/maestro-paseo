@@ -137,10 +137,11 @@ describe("the timeline in the header count", () => {
     expect(needsYouTarget([fakeWork("b", "blocked")], [], [notice("a")])).toEqual({ kind: "filter", group: "review" });
   });
 
-  test("each decision ask that waits on you counts once; with only asks, the count opens the Fleet view's Decisions", () => {
+  test("each decision ask that waits on you counts once; with only asks, the count opens Decisions (a fleet root's: its Fleet view)", () => {
     const ask = (scope: string | null) => ({ scope });
     expect(needsYouCount([fakeWork("r", "review")], [], [], [ask(null), ask("broomva")])).toBe(3);
-    expect(needsYouTarget([], [], [], [ask(null)])).toEqual({ kind: "fleet", scope: null });
+    expect(needsYouTarget([], [], [], [ask(null)])).toEqual({ kind: "decisions" });
+    expect(needsYouTarget([], [], [], [ask("sri")])).toEqual({ kind: "fleet", scope: "sri" });
     expect(needsYouTarget([], [], [notice("a")], [ask("broomva")])).toEqual({ kind: "fleet", scope: "broomva" });
     // With work as well: Needs you, where the asks' notice shows above the list.
     expect(needsYouTarget([fakeWork("r", "review")], [], [], [ask(null)])).toEqual({ kind: "filter", group: "review" });
@@ -155,6 +156,6 @@ describe("initiatives past their date", () => {
     // With work waiting, the work wins: the notice sits above every other view.
     expect(needsYouTarget([fakeWork("r", "review")], [], [], [], stale)).toEqual({ kind: "filter", group: "review" });
     // A fleet notice or an ask is opened first, as before.
-    expect(needsYouTarget([], [], [], [{ scope: null }], stale)).toEqual({ kind: "fleet", scope: null });
+    expect(needsYouTarget([], [], [], [{ scope: null }], stale)).toEqual({ kind: "decisions" });
   });
 });

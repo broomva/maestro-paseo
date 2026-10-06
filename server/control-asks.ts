@@ -27,7 +27,14 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { isMap, isSeq, parseDocument, type YAMLMap } from "yaml";
-import { type AskHome, type DecisionAsk, type DecisionOption, type Idea, isWaiting } from "../shared/fleet";
+import {
+  type AskAudit,
+  type AskHome,
+  type DecisionAsk,
+  type DecisionOption,
+  type Idea,
+  isWaiting,
+} from "../shared/fleet";
 import { UserError } from "./engine";
 
 /** A ledger is read up to this size; past it it is refused, not cut. */
@@ -93,6 +100,21 @@ export function ideaOf(row: Row): Idea | null {
     evidence: text(row.evidence),
     wake: dayOf(row.wake),
   };
+}
+
+/** The strings of a list a ledger writes (`gates: [a, b]`); a lone string is a list of one. */
+function textsOf(value: unknown): string[] {
+  const list = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
+  return list.flatMap((entry) => {
+    const one = text(entry);
+    return one ? [one] : [];
+  });
+}
+
+/** An ask's audit layer (class, gates, exhausted); null when it writes none of them. */
+export function auditOf(row: Row): AskAudit | null {
+  const audit = { class: text(row.class), gates: textsOf(row.gates), exhausted: textsOf(row.exhausted) };
+  return audit.class || audit.gates.length > 0 || audit.exhausted.length > 0 ? audit : null;
 }
 
 export function stateOf(row: Row): DecisionAsk["state"] {
@@ -208,6 +230,7 @@ export function decisionOf(
     batched: false,
     waiting: isWaiting({ state, blocking, options }),
     idea: ideaOf(row),
+    audit: auditOf(row),
   };
 }
 
