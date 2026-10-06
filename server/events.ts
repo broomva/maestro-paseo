@@ -454,8 +454,12 @@ export const closedItself = (line: string) => `Its arc reported “${line}” an
 export const handsBack = (text: string): boolean =>
   verdictLine(text) !== null || section(text, "Ask") !== null || blockedOnYou(text) !== null;
 
-/** A line that starts an arc verdict however it is dressed (`**ARC-STATUS:** …`). */
-const ANY_ARC = /^[\s>*_`-]*ARC-STATUS\b/;
+/**
+ * A line that starts an arc verdict dressed in emphasis (`**ARC-STATUS:** …`,
+ * `*ARC-STATUS*: …`), colon required. A code span, a quote or a list item is
+ * how a session mentions the grammar, not how it ends an arc, so none is read.
+ */
+const ANY_ARC = /^\s*[*_]*ARC-STATUS[*_]*\s*:/;
 
 /**
  * The arc verdict a text ends with, as the gate reads it: ctx-core's grammar

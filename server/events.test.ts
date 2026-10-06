@@ -8,6 +8,7 @@ import {
   finishedArc,
   flagOf,
   formatDuration,
+  handsBack,
   lastActivityOf,
   lookOf,
   parseEvents,
@@ -74,6 +75,30 @@ describe("the look at the gate", () => {
     const said = "Ran the suite.\n\nAll 40 pass; the branch is pushed.";
     const events = toReview.map((e) => (e.type === "turn.ended" ? { ...e, summary: said } : e));
     expect(lookOf("review", events, T0)).toMatchObject({ decided: [], ask: "", closing: said, handed: null });
+  });
+
+  test("a turn hands something back by a verdict line, an ask or a ⛔ block; a mention of the grammar is not one", () => {
+    for (const text of [
+      "Merged.\n\nARC-STATUS: CLOSED",
+      "Checks done.\n\n**ARC-STATUS:** done with handback.",
+      "Checks done.\n\n*ARC-STATUS*: DONE",
+      "Built it.\n\n## Ask\n- Merge #12?",
+      "## ⛔ Blocked on you — 1 item\n\n| 1 | Merge #12 |",
+    ]) {
+      expect(handsBack(text)).toBe(true);
+    }
+    for (const text of [
+      "Adding `referrerSample` to the catalog card schema, then the app card.",
+      "The hook reads `ARC-STATUS:` lines; continuing the implementation.",
+      "> ARC-STATUS: CLOSED is what the brief asks for at the end. Continuing.",
+      "- ARC-STATUS: the grammar ctx-core reads. Next, the approval route.",
+      "The ARC-STATUS grammar is ctx-core's; next, the approval route.",
+    ]) {
+      expect(handsBack(text)).toBe(false);
+    }
+    // ctx-core reads a line that starts `ARC-STATUS: WORD` wherever it sits, a fence included (ctx.py
+    // _extract_arc), and the session's own stop hook takes it as its verdict: Maestro reads it the same way.
+    expect(handsBack("Example:\n```\nARC-STATUS: CLOSED\n```")).toBe(true);
   });
 
   test("a handback's ⛔ block is the ask, its table verbatim, and its words are not repeated as last words", () => {
