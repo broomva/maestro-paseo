@@ -16,6 +16,7 @@ import type {
 } from "../shared/contracts";
 import { describeRun } from "../shared/run";
 import type { OrchState, Verdict } from "../shared/states";
+import { clipWords, inlinePlain, plainMarkdown, tailWords } from "../shared/text";
 
 export type Actor = "human" | "agent" | "maestro";
 
@@ -337,12 +338,7 @@ export function section(text: string, heading: string): string | null {
 export function bullets(text: string): string[] {
   return text
     .split("\n")
-    .map((line) =>
-      line
-        .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "")
-        .replace(/\*\*(.+?)\*\*/g, "$1")
-        .trim(),
-    )
+    .map((line) => inlinePlain(line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "")).trim())
     .filter((line) => line.length > 0)
     .slice(0, 5);
 }
@@ -387,19 +383,36 @@ const STATE_WORDS: Partial<Record<OrchState, string>> = {
   canceled: "Canceled",
 };
 
+/** A receipt's excerpt: one line, cut at a word with "…". */
 function shorten(text: string, max = 280): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+  return clipWords(text, max);
 }
 
-/** The message before its Decided/Ask sections, without Markdown markers. */
+/**
+ * The most of a turn's text a `turn.ended` keeps (engine.ts latestOutputText),
+ * its end: a longer message is cut at its start. Summaries written before
+ * BRO-2839 were cut at this length mid-word, with no mark.
+ */
+export const SUMMARY_MAX = 8000;
+
+/** A turn's text as kept: its last SUMMARY_MAX characters, starting at a line, sentence or word, with "…". */
+export function keptSummary(text: string): string {
+  return tailWords(text.trim(), SUMMARY_MAX);
+}
+
+/**
+ * The message before its Decided/Ask sections as plain prose: Markdown markers
+ * dropped, links as their text, a table as its header cells. A summary an
+ * older daemon cut at SUMMARY_MAX mid-word starts at its first whole word, with "…".
+ */
 export function plainSummary(summary: string): string {
-  const cut = summary.search(/^#{1,4}\s*(Decided|Ask)\b/im);
-  return (cut >= 0 ? summary.slice(0, cut) : summary)
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/\*\*(.+?)\*\*/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .trim();
+  let text = summary;
+  if (text.length >= SUMMARY_MAX && !text.startsWith("\u2026")) {
+    const space = text.slice(0, 200).search(/\s/);
+    text = `\u2026 ${space >= 0 ? text.slice(space).trimStart() : text}`;
+  }
+  const cut = text.search(/^#{1,4}\s*(Decided|Ask)\b/im);
+  return plainMarkdown(cut >= 0 ? text.slice(0, cut) : text);
 }
 
 /** Events whose own receipt already says why the state that follows them changed. */

@@ -8,13 +8,16 @@ import { ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-n
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { type CheckResult, NOT_STOPPED, type Pending, type WorkEventWire, type WorkItem } from "../shared/contracts";
+import { fleetMarker, parseFleetBrief } from "../shared/fleet-item";
 import { nextRunCopy } from "../shared/run";
 import { PLAIN_VOICE } from "../shared/states";
 import { ChangeText, WithChange } from "./changed";
 import { FilesSection } from "./files";
+import { FleetBriefView } from "./fleet-brief";
 import { ago, basename, errorText } from "./format";
 import { useRefresh, useVerbs, useWorkDetail } from "./hooks";
 import { changedVisible } from "./plane-model";
+import { collapseRepeats, placeText, repeatText, titleText } from "./records-text";
 import { Button, Card, IconButton, Notice, radius, StateLabel, space, useText } from "./ui";
 
 type Navigation = PluginSurfaceProps["navigation"];
@@ -56,12 +59,14 @@ export function WorkDetail({
   }
 
   const { item, brief, events, checkResults } = detail.data;
-  const where = [
-    item.initiative && item.project ? `${item.initiative} / ${item.project}` : item.initiative,
-    basename(item.repo),
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  // Work the fleet raised reads by where it came from; its run folder says nothing to a person.
+  const fleet = item.display?.fleet ?? fleetMarker(item.title);
+  const fleetBrief = fleet ? parseFleetBrief(brief) : null;
+  const where = fleet
+    ? placeText(item)
+    : [item.initiative && item.project ? `${item.initiative} / ${item.project}` : item.initiative, basename(item.repo)]
+        .filter(Boolean)
+        .join(" · ");
 
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: pad, gap: space[5] }}>
@@ -73,7 +78,7 @@ export function WorkDetail({
           <Text style={text.small}>{item.gate === "human" ? "You approve" : "Checks decide"}</Text>
         </View>
         <Text style={text.heading} accessibilityRole="header">
-          {item.title}
+          {titleText(item)}
         </Text>
         {where ? <Text style={text.muted}>{where}</Text> : null}
         {item.worker ? (
@@ -113,7 +118,9 @@ export function WorkDetail({
 
       {item.checks.length > 0 ? <Checks theme={theme} item={item} results={checkResults} /> : null}
 
-      {brief ? (
+      {fleetBrief ? (
+        <FleetBriefView theme={theme} brief={fleetBrief} />
+      ) : brief ? (
         <View style={{ gap: space[2] }}>
           <Text style={text.label} accessibilityRole="header">
             Brief
@@ -703,21 +710,26 @@ function Checks({ theme, item, results }: { theme: PluginTheme; item: WorkItem; 
 
 function Receipts({ theme, events }: { theme: PluginTheme; events: WorkEventWire[] }) {
   const text = useText(theme);
-  const newest = [...events].reverse();
+  // Newest first, a run of identical receipts said once with its count.
+  const newest = collapseRepeats([...events].reverse());
   return (
     <View style={{ gap: space[2] }}>
       <Text style={text.label} accessibilityRole="header">
         Receipts
       </Text>
       <View style={{ gap: space[3] }}>
-        {newest.map((event) => (
+        {newest.map(({ event, count }) => (
           <View
             key={`${event.ts}-${event.type}-${event.text}-${event.detail ?? ""}`}
             style={{ flexDirection: "row", gap: space[3] }}
+            accessibilityLabel={count > 1 ? `${event.text}, ${count} times in a row` : undefined}
           >
             <Text style={[text.small, text.tabular, { width: 40 }]}>{ago(event.ts)}</Text>
             <View style={{ flex: 1, gap: 2 }}>
-              <Text style={text.body}>{event.text}</Text>
+              <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[2] }}>
+                <Text style={text.body}>{event.text}</Text>
+                {count > 1 ? <Text style={[text.small, text.tabular]}>{repeatText(count)}</Text> : null}
+              </View>
               {event.detail ? (
                 <Text style={text.small} numberOfLines={3}>
                   {event.detail}

@@ -38,6 +38,7 @@ import {
   type SessionLink,
   type WaitingOn,
 } from "../shared/initiatives";
+import { clipWords } from "../shared/text";
 import { canonical, dayOf, isRow, localDay, type Row, text } from "./control-asks";
 import { blobId, catFiles, git, isLocal, MAIN_REF, parseWorktrees, type WorkspaceAsks } from "./control-home";
 import type { Paseo } from "./runs";
@@ -230,10 +231,17 @@ function changedFields(record: Row | null, mine: Row): string[] {
 
 // ── The develop brief (pure) ─────────────────────────────────────────────────
 
-/** The work a develop answer files: titled after the idea, briefed from the initiative file and the idea. */
+/** How long a develop title may be; longer text is cut at a word, with "…". */
+export const IDEA_TITLE_MAX = 100;
+
+/**
+ * The work a develop answer files: titled after the ask's headline (written
+ * for people, at most 100 characters) or else the idea, cut at a word; briefed
+ * from the initiative file and the idea.
+ */
 export function ideaWork(initiative: Initiative | null, ask: DecisionAsk): { title: string; brief: string } {
   const idea = ask.idea;
-  const title = (idea?.idea ?? ask.headline ?? ask.id).slice(0, 80);
+  const title = clipWords(ask.headline?.trim() || idea?.idea || ask.id, IDEA_TITLE_MAX);
   const lines = [
     `Develop an idea filed for the initiative ${idea?.initiative ?? "(none)"}: you chose develop in Maestro (${ask.ledger} ${ask.id}).`,
     "",

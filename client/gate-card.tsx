@@ -17,6 +17,7 @@ import { errorText } from "./format";
 import { answerTarget, cardSettled, cardView, resolution, SUPERSEDED } from "./gate-state";
 import { useVerbs } from "./hooks";
 import type { MaestroIntent } from "./intent";
+import { titleText } from "./records-text";
 import { Button, Card, Notice, radius, StateLabel, space, useText } from "./ui";
 
 type Open = (intent: MaestroIntent) => void;
@@ -110,7 +111,7 @@ function GateBody({
       <View style={{ gap: space[1] }}>
         {view === "superseded" ? null : <StateLabel theme={theme} state={item.state} />}
         <Text style={[text.body, { fontWeight: "600" }]} numberOfLines={2}>
-          {item.title}
+          {titleText(item)}
         </Text>
       </View>
       {view === "asking" && target ? (

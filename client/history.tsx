@@ -28,6 +28,7 @@ import {
   type Who,
 } from "./history-model";
 import { Chip } from "./plane-controls";
+import { collapseRepeats, eventTitle, repeatText } from "./records-text";
 import { Button, Notice, radius, size, space, useText, webAria } from "./ui";
 
 const POLL_MS = 10_000;
@@ -130,11 +131,12 @@ export function HistoryView({
               <Text style={[text.small, text.tabular]}>{group.events.length}</Text>
               {group.hint ? <Text style={text.small}>{group.hint}</Text> : null}
             </View>
-            {group.events.map((event) => (
+            {collapseRepeats(group.events).map(({ event, count }) => (
               <HistoryRow
                 key={keyOf(event)}
                 theme={theme}
                 event={event}
+                count={count}
                 grouping={grouping}
                 selected={selected}
                 onSelect={onSelect}
@@ -155,12 +157,15 @@ export function HistoryView({
 function HistoryRow({
   theme,
   event,
+  count,
   grouping,
   selected,
   onSelect,
 }: {
   theme: PluginTheme;
   event: HistoryEvent;
+  /** How many identical receipts in a row this one stands for. */
+  count: number;
   grouping: HistoryGrouping;
   selected: string | null;
   onSelect: (id: string) => void;
@@ -174,7 +179,7 @@ function HistoryRow({
       accessibilityRole="button"
       accessibilityState={{ selected: isSelected }}
       {...webAria({ "aria-current": isSelected })}
-      accessibilityLabel={rowLabel(event)}
+      accessibilityLabel={count > 1 ? `${rowLabel(event)}, ${count} times in a row` : rowLabel(event)}
       onPress={() => onSelect(event.itemId)}
       style={({ pressed }) => ({
         flexDirection: "row",
@@ -188,9 +193,12 @@ function HistoryRow({
     >
       <Text style={[text.small, text.tabular, { width: grouping === "day" ? 40 : 76 }]}>{when}</Text>
       <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-        <Text style={text.body} numberOfLines={1}>
-          {event.text}
-        </Text>
+        <View style={{ flexDirection: "row", alignItems: "baseline", gap: space[2] }}>
+          <Text style={[text.body, { flexShrink: 1 }]} numberOfLines={1}>
+            {event.text}
+          </Text>
+          {count > 1 ? <Text style={[text.small, text.tabular]}>{repeatText(count)}</Text> : null}
+        </View>
         {event.detail ? (
           <Text style={text.small} numberOfLines={2}>
             {event.detail}
@@ -198,7 +206,7 @@ function HistoryRow({
         ) : null}
         {grouping === "day" ? (
           <Text style={text.small} numberOfLines={1}>
-            {[event.title, crumb].filter(Boolean).join(" · ")}
+            {[eventTitle(event), crumb].filter(Boolean).join(" · ")}
           </Text>
         ) : null}
       </View>

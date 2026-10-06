@@ -232,6 +232,81 @@ describe("receipts a person reads", () => {
       "Created LICENSE.txt with care.",
     );
   });
+
+  // BRO-2839: excerpts as the dogfood saw them, pipe rows, links and a summary cut mid-word.
+  test("a turn's receipt reads as prose: a table as its header, links as their text, cut at a word", async () => {
+    const { toWireEvent } = await import("./events");
+    const summary = [
+      "Yes, there are two now. I checked, and they don't overlap:",
+      "",
+      "| Orchestrator | Scope | What it's driving now |",
+      "|---|---|---|",
+      "| f5307ce7 (me) | every broomva/* repo | [BRO-2830](https://linear.app/x/BRO-2830) |",
+      "",
+      `Upgrades are tracked in **[BRO-2830](https://linear.app/x/BRO-2830)**. ${"More words follow here. ".repeat(20)}`,
+      "## Decided",
+      "- nothing",
+    ].join("\n");
+    const ended: WorkEvent = {
+      ts: at(1),
+      type: "turn.ended",
+      actor: "agent",
+      agentId: "a1",
+      outcome: "completed",
+      error: null,
+      summary,
+      turnId: "t1",
+    };
+    const detail = toWireEvent(ended)?.detail ?? "";
+    expect(
+      detail.startsWith("Yes, there are two now. I checked, and they don't overlap: (table: Orchestrator, Scope,"),
+    ).toBe(true);
+    expect(detail).toContain("Upgrades are tracked in BRO-2830.");
+    expect(detail).not.toMatch(/[|*[\]]/);
+    expect(detail.length).toBeLessThanOrEqual(280);
+    expect(detail.endsWith("\u2026")).toBe(true);
+    expect(detail.slice(0, -1).endsWith(" ")).toBe(false);
+    // The excerpt's last word is whole: in the summary it is followed by a space or a stop.
+    const tail = detail.slice(-12, -1);
+    expect(/[\s.]/.test(summary.charAt(summary.indexOf(tail) + tail.length))).toBe(true);
+  });
+
+  test("a summary an older daemon cut at its limit mid-word starts at its first whole word, marked", async () => {
+    const { plainSummary, SUMMARY_MAX } = await import("./events");
+    const cut = `t ignores major-version bumps from now on. ${"Failing majors closed. ".repeat(400)}`.slice(
+      0,
+      SUMMARY_MAX,
+    );
+    expect(cut.length).toBe(SUMMARY_MAX);
+    expect(plainSummary(cut).startsWith("\u2026 ignores major-version bumps")).toBe(true);
+    // A shorter summary is whole: its first word stays.
+    expect(plainSummary("t is a word here.")).toBe("t is a word here.");
+  });
+
+  test("a turn's kept text is its end, starting at a line or word with …, so its sections still parse", async () => {
+    const { latestOutputText } = await import("./engine");
+    const { section, SUMMARY_MAX } = await import("./events");
+    const long = `${"Dependabot ignores major-version bumps from now on. ".repeat(200)}\n## Decided\n- kept it small\n## Ask\nShip it?`;
+    const kept = latestOutputText([
+      { type: "user_message", text: "go" },
+      { type: "assistant_message", text: long },
+    ]);
+    expect(kept.length).toBeLessThanOrEqual(SUMMARY_MAX);
+    expect(kept.startsWith("\u2026 Dependabot ignores")).toBe(true);
+    expect(section(kept, "Decided")).toBe("- kept it small");
+    expect(section(kept, "Ask")).toBe("Ship it?");
+    // Short text is kept exactly as written.
+    expect(latestOutputText([{ type: "assistant_message", text: " Done.\n## Ask\nShip it " }])).toBe(
+      "Done.\n## Ask\nShip it",
+    );
+  });
+
+  test("the look's bullets read links as their text and drop emphasis", () => {
+    expect(bullets("- Closed **all 6** in [BRO-2830](https://x.y/z)\n- `ctx` _registered_")).toEqual([
+      "Closed all 6 in BRO-2830",
+      "ctx registered",
+    ]);
+  });
 });
 
 describe("a decision inside its undo window", () => {

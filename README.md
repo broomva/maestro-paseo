@@ -22,7 +22,7 @@ those, and nothing Paseo already does.
 | Run lifecycle | Paseo lifecycle hooks: turn started or ended, permission asked or answered, archived |
 | Verifier | `done.check` commands, run in the run's worktree when a turn ends |
 | The gate | Approve, send back with a note, or cancel |
-| Receipts | The event log, rendered newest first |
+| Receipts | The event log, rendered newest first: a turn's text as plain prose cut at a word, identical neighbours said once with a count (×3) |
 | Unsupervised hours | Time spent running today, with a mark for every time you stepped in |
 
 ## What you get in Paseo
@@ -240,7 +240,22 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
 
 fleet-reconcile (`skills/orchestration/fleet-reconcile` in broomva/skills) ticks hourly per scope
 and writes everything to files. Its asks and alerts already reach Maestro as work at Needs you.
-The **Fleet** view shows the rest, per scope, read from those files:
+
+Those items read by what they ask (`shared/fleet-item.ts`). The title's marker
+(`[fleet-reconcile <scope> <what>]`, which the fleet finds its items by) is not shown, and stays in the data.
+An old count title (`1 ask (tick 7)`) shows its first ask's question, cut at a word, with "(+N more)"; an
+old alert (`fleet sri: <kind>`) shows its message. The card's place reads `fleet · sri · tick 7` instead of the
+run folder. The detail lists the asks, each with its class, says what each verb does (Approve acknowledges,
+Send back answers with your note, Cancel dismisses), and folds the words addressed to the run agent under
+*Instructions to the run*. Two brief shapes are read:
+
+- **old**: a lead paragraph, then the asks as `[a1] (class) question` lines in a fenced block, then the run's
+  instructions.
+- **new**: `## For you` (any prose, and the asks as `[a1] (class) question` lines, bulleted or fenced; a
+  bullet may wrap onto indented lines), then `## For the run` (everything for the agent). The title is the
+  first ask's question with ` (+N more)` before the marker, shown as written.
+
+A brief of neither shape shows as written. The **Fleet** view shows the rest, per scope, read from those files:
 
 - **Health.** On time, failing (the newest tick exited 1, or started and never finished), missed,
   off (the fleet's kill switch), or not scheduled (no LaunchAgent runs it).
@@ -553,7 +568,8 @@ shown beside it, never instead of it. A file that cannot be read is an error row
   shown under its initiative and together under *All ideas*. It is answered through the same
   human-only `ask.answer` path, lock and receipt as any decision ask (see
   [Answering a decision ask](#answering-a-decision-ask)); Decisions does not list ideas.
-  - **Develop** also files a queued work item in the initiative's folder, briefed from the initiative
+  - **Develop** also files a queued work item in the initiative's folder, titled after the ask's headline
+    (else the idea, cut at a word within 100 characters), briefed from the initiative
     and the idea, with `hold:` set: neither the loop nor a session starts it. It stays queued until you start
     it; the loop, when it is on, flags it in Needs you as yours. The item names its idea (`idea: <ledger>#<id>`), so
     an idea gets one item: when filing failed after the answer, or the idea was answered develop outside

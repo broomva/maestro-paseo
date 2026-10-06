@@ -6,10 +6,12 @@
 // that is mid-change is read once the change has finished, never half-written.
 
 import type { MaestroConfig, WorkItem } from "../shared/contracts";
+import { fleetHeading } from "../shared/fleet-item";
 import { HISTORY_CAP, HISTORY_DAYS, type HistoryEvent, type WorkFile } from "../shared/records";
 import { ChangedCache } from "./changed";
 import { shiftDays, toWireEvents } from "./events";
 import { listFiles, readText } from "./files";
+import { briefOf } from "./frontmatter";
 import type { Paseo } from "./runs";
 import { placement, type StoredWork, WorkStore } from "./store";
 
@@ -22,11 +24,12 @@ export function historyOf(
   const events: HistoryEvent[] = [];
   for (const item of items) {
     const { initiative, project } = placement(item.rel);
+    const heading = fleetHeading(item.title, briefOf(item.work?.body ?? ""))?.title ?? item.title;
     // Newest first within the item too, so receipts stamped in the same millisecond keep their order.
     for (const event of toWireEvents(item.events).reverse()) {
       const at = Date.parse(event.ts);
       if (!(at >= since)) continue;
-      events.push({ ...event, itemId: item.contract.id, title: item.title, initiative, project });
+      events.push({ ...event, itemId: item.contract.id, title: item.title, heading, initiative, project });
     }
   }
   // A stable sort: equal times keep the newest-first order they were pushed in.

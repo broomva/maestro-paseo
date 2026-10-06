@@ -12,7 +12,6 @@ import {
   boardColumns,
   cardLabel,
   changedVisible,
-  crumb,
   flagText,
   groupHint,
   groupsOf,
@@ -20,6 +19,7 @@ import {
   stuckText,
   workerText,
 } from "./plane-model";
+import { placeText, titleText } from "./records-text";
 import { radius, StateDot, StateLabel, space, useText, webAria } from "./ui";
 
 type Selectable = { theme: PluginTheme; selected: string | null; onSelect: (id: string) => void };
@@ -107,6 +107,14 @@ export function ListView({ items, loopOn, ...pick }: Plane) {
   );
 }
 
+/**
+ * What a screen reader hears for a card: cardLabel's words with the title and
+ * place a person reads (records-text.ts), not the raw marker and folder path.
+ */
+function labelOf(item: WorkItem): string {
+  return cardLabel({ ...item, title: titleText(item), initiative: placeText(item), project: null, repo: null });
+}
+
 /** One line on a card that says why it needs a hand: stuck, or flagged by the loop. */
 function Why({ theme, children }: { theme: PluginTheme; children: string }) {
   const text = useText(theme);
@@ -124,7 +132,7 @@ function Why({ theme, children }: { theme: PluginTheme; children: string }) {
 
 function WorkCard({ theme, item, selected, onSelect }: Selectable & { item: WorkItem }) {
   const text = useText(theme);
-  const place = crumb(item);
+  const place = placeText(item);
   const stuck = stuckText(item);
   const flagged = flagText(item);
   const worker = workerText(item.worker);
@@ -135,7 +143,7 @@ function WorkCard({ theme, item, selected, onSelect }: Selectable & { item: Work
       accessibilityRole="button"
       accessibilityState={{ selected: isSelected }}
       {...webAria({ "aria-current": isSelected })}
-      accessibilityLabel={cardLabel(item)}
+      accessibilityLabel={labelOf(item)}
       onPress={() => onSelect(item.id)}
       style={({ pressed }) => ({
         gap: space[2],
@@ -153,7 +161,7 @@ function WorkCard({ theme, item, selected, onSelect }: Selectable & { item: Work
         <Text style={[text.small, text.tabular]}>{ago(item.updatedAt)}</Text>
       </View>
       <Text style={[text.body, { fontWeight: "500" }]} numberOfLines={2}>
-        {item.title}
+        {titleText(item)}
       </Text>
       {stuck ? <Why theme={theme}>{stuck}</Why> : null}
       {flagged ? <Why theme={theme}>{flagged}</Why> : null}
@@ -181,7 +189,7 @@ function WorkCard({ theme, item, selected, onSelect }: Selectable & { item: Work
 
 function ListRow({ theme, item, selected, onSelect }: Selectable & { item: WorkItem }) {
   const text = useText(theme);
-  const place = crumb(item);
+  const place = placeText(item);
   const branch = item.worker?.branch ?? null;
   const isSelected = item.id === selected;
   return (
@@ -189,7 +197,7 @@ function ListRow({ theme, item, selected, onSelect }: Selectable & { item: WorkI
       accessibilityRole="button"
       accessibilityState={{ selected: isSelected }}
       {...webAria({ "aria-current": isSelected })}
-      accessibilityLabel={cardLabel(item)}
+      accessibilityLabel={labelOf(item)}
       onPress={() => onSelect(item.id)}
       style={({ pressed }) => ({
         flexDirection: "row",
@@ -206,7 +214,7 @@ function ListRow({ theme, item, selected, onSelect }: Selectable & { item: WorkI
         {stateText(item)}
       </Text>
       <Text style={[text.body, { flex: 2, minWidth: 0 }]} numberOfLines={1}>
-        {item.title}
+        {titleText(item)}
       </Text>
       <Text style={[text.small, { flex: 1, minWidth: 0 }]} numberOfLines={1}>
         {place ?? ""}

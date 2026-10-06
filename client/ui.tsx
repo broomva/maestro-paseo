@@ -365,3 +365,70 @@ export function Section({
     </View>
   );
 }
+
+/**
+ * A row that opens what it labels: a chevron that turns a quarter (transform
+ * only, 160ms, still under reduced motion), the label, and an optional hint.
+ * Closed by default; the children render only while open.
+ */
+export function Disclosure({
+  theme,
+  label,
+  hint,
+  children,
+}: {
+  theme: PluginTheme;
+  label: string;
+  hint?: string;
+  children: ReactNode;
+}) {
+  const text = useText(theme);
+  const [open, setOpen] = useState(false);
+  const reduced = useReducedMotion();
+  const turn = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const to = open ? 1 : 0;
+    if (reduced) {
+      turn.setValue(to);
+      return;
+    }
+    const run = Animated.timing(turn, {
+      toValue: to,
+      duration: 160,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: Platform.OS !== "web",
+    });
+    run.start();
+    return () => run.stop();
+  }, [open, reduced, turn]);
+  const rotate = turn.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "90deg"] });
+  return (
+    <View style={{ gap: space[2] }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        aria-expanded={open}
+        accessibilityLabel={label}
+        onPress={() => setOpen(!open)}
+        style={({ pressed }) => ({
+          flexDirection: "row",
+          alignItems: "center",
+          alignSelf: "flex-start",
+          gap: space[2],
+          minHeight: 40,
+          paddingHorizontal: space[2],
+          marginLeft: -space[2],
+          borderRadius: radius.control,
+          backgroundColor: pressed ? theme.colors.surface2 : "transparent",
+        })}
+      >
+        <Animated.View style={{ transform: [{ rotate }] }}>
+          <Icon name="ChevronRight" size={14} color={theme.colors.foregroundMuted} />
+        </Animated.View>
+        <Text style={text.muted}>{label}</Text>
+        {hint ? <Text style={[text.small, text.tabular]}>{hint}</Text> : null}
+      </Pressable>
+      {open ? children : null}
+    </View>
+  );
+}
