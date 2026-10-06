@@ -20,7 +20,7 @@ import {
   answeredLine,
   answerVerb,
   askKey,
-  BATCHED_TEXT,
+  fateLine,
   headlineOf,
   metaLine,
   SILENCE_TAG,
@@ -264,6 +264,12 @@ function Fact({ theme, label, children }: { theme: PluginTheme; label: string; c
  * answer is written fold under Details. The answer is written into the
  * ledger at the ask's home, under its lock.
  */
+/** The answered line's colour: green only once the answer was acted on (or Maestro holds no account of it); amber while it is on its way. */
+export function answeredColor(theme: PluginTheme, fate: ReturnType<typeof fateLine>): string {
+  if (!fate || fate.tone === "done") return theme.colors.statusSuccess;
+  return fate.tone === "waiting" ? theme.colors.statusWarning : theme.colors.foregroundMuted;
+}
+
 export function DecisionCard({
   theme,
   ask,
@@ -358,6 +364,7 @@ export function DecisionCard({
   const [fullOpen, setFullOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const open = ask.state === "open" && !frozen;
+  const fate = fateLine(ask);
   const option = ask.options.find((entry) => entry.id === chosen) ?? null;
   const hasOptions = ask.options.length > 0;
   const lead = headlineOf(ask);
@@ -587,7 +594,7 @@ export function DecisionCard({
         </View>
       ) : !open ? (
         <View style={{ gap: 2 }}>
-          <Text style={[text.small, { color: theme.colors.statusSuccess, fontWeight: "600" }]}>
+          <Text style={[text.small, { color: answeredColor(theme, fate), fontWeight: "600" }]}>
             {answeredLine(ask)}
           </Text>
           {ask.answer ? (
@@ -595,7 +602,11 @@ export function DecisionCard({
               {ask.answer}
             </Text>
           ) : null}
-          {ask.batched ? <Text style={text.small}>{BATCHED_TEXT}</Text> : null}
+          {fate ? (
+            <Text style={[text.small, fate.tone === "waiting" ? { color: theme.colors.statusWarning } : null]}>
+              {fate.words}
+            </Text>
+          ) : null}
         </View>
       ) : ask.refusal ? (
         <View style={{ gap: space[2] }}>

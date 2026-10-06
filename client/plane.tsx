@@ -19,7 +19,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { ChangeScope } from "./changed";
 import { type DecisionsFocus, DecisionsView } from "./decision-triage";
-import { AskNotices, useDecisionCounts } from "./decisions";
+import { AnswersNotices, AskNotices, useDecisionCounts } from "./decisions";
 import { ledgerOf } from "./decisions-model";
 import { WorkDetail } from "./detail";
 import { FleetNotices, FleetView } from "./fleet";
@@ -64,6 +64,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
         attention.data.timeline,
         attention.data.asks,
         attention.data.initiatives,
+        attention.data.answers,
       )
     : null;
   // The same read as the loop control's (one query): whether the loop is on words the Queued hint.
@@ -190,6 +191,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
       {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
 
       {view === "fleet" ? null : <FleetNotices theme={theme} compact={compact} onOpen={openFleet} />}
+      <AnswersNotices theme={theme} compact={compact} />
       {view === "decisions" ? null : (
         <AskNotices
           theme={theme}

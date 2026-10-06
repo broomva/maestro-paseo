@@ -61,7 +61,7 @@ export function useInitiatives() {
 }
 
 /** Opens a link outside Maestro; one the host cannot open is said. */
-function useOpenUrl() {
+export function useOpenUrl() {
   const toast = useToast();
   return (url: string) => {
     Linking.openURL(url).catch((error: unknown) => toast.error(`Could not open ${url}: ${errorText(error)}`));

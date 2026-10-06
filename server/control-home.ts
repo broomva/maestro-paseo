@@ -31,9 +31,10 @@
 //   in another.
 // - The main checkout is never a fallback: it is one checkout under the rule.
 //
-// Not here: landing the answers batch (a gated work item, §5.2 "The answers
-// batch"), re-application from receipts, and routing an answer to the session
-// that asked. An answer on maestro/answers is committed there and waits.
+// An answer on maestro/answers is committed there and waits for the loop: it
+// lands the batch through one gated PR (server/answers-landing.ts) and routes
+// each answer once it is where it belongs (server/answer-routes.ts). Not here:
+// re-application from receipts.
 
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";

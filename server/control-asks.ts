@@ -19,8 +19,9 @@
 //   minimal byte edits inside the entry (from the Asks plugin's ledger.ts), so
 //   the diff stays within the entry's map. A receipt line records it.
 //
-// Not here: routing the answer to the session that asked (Send or Spawn). The
-// writer reads the answer from its own file, the spec's "Record only".
+// Not here: routing the answer to the session that asked. A workspace answer
+// is routed by the loop (server/answer-routes.ts); a fleet root's writer reads
+// the answer from its own file, the spec's "Record only".
 
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";

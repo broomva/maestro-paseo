@@ -952,6 +952,27 @@ describe("the header's count, split", () => {
     expect(shares).toEqual({ total: 8, fleet: 4, work: 2, decisions: 1, timeline: 1, initiatives: 0 });
     expect(shares.fleet + shares.work + shares.decisions + shares.timeline + shares.initiatives).toBe(shares.total);
   });
+
+  test("an answers batch that waits on you counts once, as Decisions' share, and the shares still add up", () => {
+    const attention = {
+      waiting: [],
+      fleet: [],
+      timeline: [],
+      asks: [],
+      initiatives: [],
+      answers: [
+        {
+          kind: "waiting" as const,
+          pending: 3,
+          pr: { number: 915, url: "u" },
+          words: "3 answers wait to land: PR #915",
+        },
+      ],
+    };
+    const shares = headerShares(attention, new Set());
+    expect([shares.total, shares.decisions]).toEqual([1, 1]);
+    expect(shares.fleet + shares.work + shares.decisions + shares.timeline + shares.initiatives).toBe(shares.total);
+  });
 });
 
 describe("the ask body clamp (BRO-2852)", () => {

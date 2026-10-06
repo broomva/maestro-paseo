@@ -99,6 +99,21 @@ export function homeText(ask: DecisionAsk): string {
 export const BATCHED_TEXT = "In the answers batch on maestro/answers: not on origin/main until it lands.";
 
 /**
+ * What became of your answer, as an answered card says it (shared/answers.ts
+ * AnswerFate): `done` only once it was acted on, `waiting` while it is on its
+ * way (in the batch, or landed and not yet acted on). A stranded answer is
+ * never shown as done. An older daemon sends no fate: the batch flag stands in.
+ */
+export function fateLine(ask: DecisionAsk): { words: string; tone: "done" | "waiting" | "plain" } | null {
+  const fate = ask.fate;
+  if (fate) {
+    const tone = fate.stage === "acted" ? "done" : fate.stage === "before" ? "plain" : "waiting";
+    return { words: fate.words, tone };
+  }
+  return ask.batched ? { words: BATCHED_TEXT, tone: "waiting" } : null;
+}
+
+/**
  * The ask a Needs you notice names and opens: one that blocks when any does,
  * else the first. The line's words and its "Open Decisions" both use this, so
  * the button never opens a different ask than the one named.

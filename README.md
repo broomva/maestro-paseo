@@ -222,10 +222,38 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
   the loop is off, a quiet flag clears with the next event on the work. A quiet run's notice
   offers **Leave it running**: your receipt ("You left it running", a look), which clears the flag
   and restarts the quiet clock. It is yours alone, never on the agent socket.
+- **It lands your answers, and acts on them.** When Maestro reads a control repo, each wake brings
+  the answers batch (below, *Answering a decision ask*) toward origin/main and routes each answer
+  once it is where it belongs. It decides no ask: the answers are yours.
+  - *Landing.* It fetches origin/main and counts the answers `maestro/answers` records that main
+    does not. None: the batch has landed (by Maestro's PR, squashed or not, or by any other), so the
+    branch is brought level with main, and a PR of Maestro's left with nothing in it is closed with a
+    word. Some: it merges origin/main into the branch, pushes it, and opens ONE PR on the control
+    repo's origin titled `answers: N answers from Maestro wait to land`, or updates the one open. The
+    PR is gated like any other; Maestro never merges it and never bypasses a gate. A merge that
+    conflicts is aborted: the batch is kept whole, Needs you names the ledgers and where to settle
+    it, and an answer to an ask whose home is main is refused until it is settled, so none is lost.
+    The batch's state is kept in `answers-landing.json` beside the receipts.
+  - *Routing.* Each answer Maestro wrote (an `ask.answered` receipt) is routed once, once it is
+    where it belongs: landed on origin/main, or at once in its checkout. The session that asked,
+    idle, is sent the answer, quoted verbatim; at work or asking a permission, the delivery waits
+    for its turn to end (never interrupting one). A session gone, or none named: a work item,
+    queued with gate human, briefed from the ask and your answer, in the ask's `initiative` when it
+    names one (the ask's own key, else the ledger's), filed once (`answer:` on the work). An answer
+    whose option the ledger marks `status_quo: true` needs no work, nor does an idea's (develop
+    files its own). Only that key says an option changes nothing, never its words. Each routing is
+    an `ask.routed` line in the receipts. Answers given before routing first ran (a
+    `routing.began` line) are never routed. A fleet scope's own asks are the fleet's to act on.
+  - *In Maestro.* While answers wait to land, or the batch cannot take main, Needs you says so
+    above every view ("3 answers wait to land: PR #915", with **Open PR #915**) and the header
+    counts it. In Decisions an answered ask says what became of your answer: it waits to land, it
+    has landed (or is written in its checkout) and waits to be acted on, it was acted on (sent, or
+    filed as work), or it was answered before Maestro acted on answers. Only an answer acted on reads
+    as done.
 - **Every wake leaves a receipt.** One line per wake in `wake-log.jsonl` beside the config
   (override with `MAESTRO_PASEO_WAKE_LOG`): why it woke, what it started, what it left alone and
   why, what needs you, running work quiet for 30 minutes or more, sessions it could not ask, the
-  flags it raised, and the quiet flags it took down. It keeps the newest 500 once it passes 1000 lines. The next wake is due a
+  flags it raised, the quiet flags it took down, and the answers batch and the answers it routed. It keeps the newest 500 once it passes 1000 lines. The next wake is due a
   period after the last one there, so a restart keeps the cadence.
 - **One wake at a time.** A wake asked for while one runs is recorded as skipped, not queued. With
   no Paseo client yet (right after a restart) a wake records that it could not start work, and the
@@ -553,7 +581,10 @@ contract (workspace#861, `docs/specs/2026-10-01-maestro-control-interface.html`)
   1. origin/main records its outcome: it is closed, whatever any checkout holds.
   2. W's copy is *local* when it changed a field from B's and that change has not landed (each field
      W changed reads, on main now, as W gave it). A checkout whose copy main has moved past is not
-     the ask.
+     the ask. An ask W added that landed by a squash merge and was edited on main since is judged
+     against the ask as it first landed on main (the oldest of main's last 200 commits to that
+     ledger asking it at the same time in the same words), so W's own edit after the merge is still
+     W's.
   3. Of the local copies, the one in the checkout its `origin.cwd` names.
   4. The single local copy.
   5. Two or more: *diverged*. The card lists them and takes no answer.
@@ -563,7 +594,7 @@ contract (workspace#861, `docs/specs/2026-10-01-maestro-control-interface.html`)
   origin/main, Maestro's answers worktree, `~/.local/state/maestro-paseo/control-answers` on the
   branch `maestro/answers`. It is made from origin/main the first time, takes origin/main's newer
   asks by a merge before each answer (a conflict is refused), and each answer is committed there.
-  The card then says it waits in the answers batch. Landing that batch on main is not built yet.
+  The card then says it waits in the answers batch, until the loop lands it (*The loop*, above).
   An ask whose home moved since you read it is refused. The fleet's own root is a home of its own:
   its file, never a git checkout; `.control` or `asks` that is a link out of the state dir is
   refused. Drop-ins in `~/.config/maestro-paseo/ask-roots.d/` (p9's, say) are not read yet.
@@ -603,8 +634,9 @@ contract (workspace#861, `docs/specs/2026-10-01-maestro-control-interface.html`)
   not written, and the card says why. A receipt line goes to
   `~/.local/state/maestro-paseo/asks.jsonl`, with the ask's uid or id, its `asked_at`, the asking
   session, and the entry's hash; one that cannot be written is said beside the answer.
-- **Not routed.** Maestro does not send the answer to the session that asked. The fleet reads it from
-  its own file at its next tick (the spec's *Record only*).
+- **Routed once, by the loop.** A workspace answer is sent to the session that asked, or filed as
+  work when it is gone (*The loop*, above). A fleet scope's answer is not routed: the fleet reads it
+  from its own file at its next tick (the spec's *Record only*).
 
 Answers are yours alone, so the agent socket refuses `ask.answer`, at every home. `MAESTRO_PASEO_ASK_LOCKS` and
 `MAESTRO_PASEO_ASK_RECEIPTS` move the lock folder and the receipts, for a second daemon or a test.
@@ -811,6 +843,12 @@ It is pinned to 0.8.0 so one build serves 0.8 and 0.9 hosts.
   installed does not appear until it is tracked.
 - Cancel does not stop or archive the Paseo session. Stop it from the session if it is still
   working.
+- Answers land and are routed only while the loop is on: with `loopMinutes` empty the batch waits,
+  and Decisions says it waits to land. An answer in its checkout is routed at once either way.
+- Work filed for an answer starts under the loop's own rules: at the run cap it waits, listed in the
+  wake's "Left alone: … at the run cap", and its Decisions card names the item it was filed as.
+- Why a delivery still waits (the session at work) is kept in memory: after a restart the card says
+  only that Maestro acts on it at its next check, until a wake or the session's turn end routes it.
 - The Timeline sees what the Mac and the daemon keep, nothing more:
   - A cron a Claude session made for itself lives only in that session, so it is not shown. The
     coordinator's :13/:43 tick is one.

@@ -15,6 +15,7 @@ import { ActivityIndicator, Animated, Easing, Platform, Pressable, Text, View } 
 import type { DecisionAsk } from "../shared/fleet";
 import {
   ANSWER_KEY,
+  answeredColor,
   answerInFlight,
   type CardKeys,
   DecisionCard,
@@ -29,9 +30,9 @@ import {
   answeredElsewhere,
   answeredLine,
   askKey,
-  BATCHED_TEXT,
   cutAtWord,
   decisionAsks,
+  fateLine,
   headlineOf,
   isTriaged,
   ledgerName,
@@ -852,7 +853,7 @@ export function DecisionsView({
           ? answeredList.map((ask) => (
               <View key={askKey(ask)} style={{ gap: 2, paddingLeft: space[4] }}>
                 <Text style={[text.body, { fontSize: 13 }]}>{headlineOf(ask).headline}</Text>
-                <Text style={[text.small, { color: theme.colors.statusSuccess }]}>
+                <Text style={[text.small, { color: answeredColor(theme, fateLine(ask)) }]}>
                   {`${answeredLine(ask)} · ${ledgerName(ledgerOf(ask))}`}
                 </Text>
                 {ask.answer ? (
@@ -860,7 +861,7 @@ export function DecisionsView({
                     {ask.answer}
                   </Text>
                 ) : null}
-                <Text style={text.small}>{ask.batched ? BATCHED_TEXT : writtenTo(ask)}</Text>
+                <Text style={text.small}>{fateLine(ask)?.words ?? writtenTo(ask)}</Text>
               </View>
             ))
           : null}

@@ -2,10 +2,12 @@
 // gate, is stuck, or was flagged by the loop, or a fleet scope's tick is
 // missed or failing and not already there as the fleet's own work, or another
 // scheduled run failed or was missed (the Timeline's notices), or a decision
-// ask waits on you (blocking, or recommending what cannot be undone), and
-// nothing at all while none does. Pure.
+// ask waits on you (blocking, or recommending what cannot be undone), or your
+// answers wait to land through a PR Maestro never merges (shared/answers.ts),
+// and nothing at all while none does. Pure.
 
 import type { PluginButton } from "@getpaseo/plugin/client";
+import type { AnswersNotice } from "../shared/answers";
 import type { WorkItem } from "../shared/contracts";
 import type { AskNotice, FleetNotice } from "../shared/fleet";
 import type { InitiativeNotice } from "../shared/initiatives";
@@ -26,8 +28,9 @@ export function needsYouLabel(count: number): string {
 
 /**
  * What the count counts: the work that needs you, each fleet notice
- * (server/fleet.ts), each timeline notice (server/timeline.ts) and each
- * decision ask that waits on you (shared/fleet.ts isWaiting).
+ * (server/fleet.ts), each timeline notice (server/timeline.ts), each
+ * decision ask that waits on you (shared/fleet.ts isWaiting), and the answers
+ * batch while it waits on you (shared/answers.ts answersNotice).
  */
 export function needsYouCount(
   items: readonly Listed[],
@@ -35,8 +38,9 @@ export function needsYouCount(
   timeline: readonly Pick<TimelineNotice, "id">[] = [],
   asks: readonly Pick<AskNotice, "scope">[] = [],
   initiatives: readonly Pick<InitiativeNotice, "id">[] = [],
+  answers: readonly Pick<AnswersNotice, "kind">[] = [],
 ): number {
-  return needsYou(items).length + fleet.length + timeline.length + asks.length + initiatives.length;
+  return needsYou(items).length + fleet.length + timeline.length + asks.length + initiatives.length + answers.length;
 }
 
 /**
@@ -47,8 +51,9 @@ export function needsYouCount(
  * fleet's notices sit above every view but the Fleet view, and the
  * timeline's above every view but the Timeline, and the asks' above every
  * view but Decisions, which holds them all. With only fleet notices,
- * it opens the Fleet view at the first; with only asks, Decisions (blocking
- * first), which lists the workspace's and each fleet root's;
+ * it opens the Fleet view at the first; with only asks, or an answers batch
+ * that waits, Decisions (blocking first), which lists the workspace's and
+ * each fleet root's;
  * with only timeline notices, the Timeline;
  * with only stale or overdue initiatives, Initiatives, whose notices sit above
  * every other view.
@@ -59,14 +64,15 @@ export function needsYouTarget(
   timeline: readonly Pick<TimelineNotice, "id">[] = [],
   asks: readonly Pick<AskNotice, "scope">[] = [],
   initiatives: readonly Pick<InitiativeNotice, "id">[] = [],
+  answers: readonly Pick<AnswersNotice, "kind">[] = [],
 ): MaestroIntent {
   const waiting = needsYou(items);
   const [only] = waiting;
   const [notice] = fleet;
   const [ask] = asks;
-  const notices = fleet.length + timeline.length + asks.length + initiatives.length;
+  const notices = fleet.length + timeline.length + asks.length + initiatives.length + answers.length;
   if (waiting.length === 0 && notice) return { kind: "fleet", scope: notice.scope };
-  if (waiting.length === 0 && ask) return { kind: "decisions" };
+  if (waiting.length === 0 && (ask || answers.length > 0)) return { kind: "decisions" };
   if (waiting.length === 0 && timeline.length > 0) return { kind: "timeline" };
   if (waiting.length === 0 && initiatives.length > 0) return { kind: "initiatives" };
   if (waiting.length === 1 && only && notices === 0) return { kind: "select", id: only.id };
