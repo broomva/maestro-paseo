@@ -372,7 +372,6 @@ function Verbs({
         <Text style={text.label}>Needs you</Text>
         {look ? (
           <View style={{ gap: space[3] }}>
-            <Text style={[text.muted, text.tabular]}>{look.ran}</Text>
             <LookView look={look} theme={theme} compact={compact} />
             <ArcReport item={item} theme={theme} compact={compact} open={open} />
           </View>
@@ -460,6 +459,7 @@ function Verbs({
           </View>
         )}
         {!sendingBack && verbsNeedSaying(look) ? <Text style={text.small}>{VERBS_MEAN}</Text> : null}
+        {look ? <Text style={[text.small, text.tabular]}>{look.ran}</Text> : null}
       </Card>,
     );
   }

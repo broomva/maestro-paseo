@@ -182,8 +182,10 @@ The eight system states are Maestro's; the UI speaks the six plain labels.
 - **Adopted sessions** (a session running its own arc, such as one an orchestrator started) land
   at Needs you only when a turn hands you something: an `ARC-STATUS:` line, an `## Ask` section, or
   the handback skill's `## ⛔ Blocked on you` block. Any other turn end is the arc between steps:
-  the work stays Running, and the loop names it if it goes quiet. A dispatched run is one task, so
-  its turn end still lands, and so does the turn that answers your Send back or Unblock. The card shows the ask in the session's own words, or its last words
+  the work stays Running. With the loop on, it is named in Needs you once it goes quiet; with the
+  loop off (the default) an arc that stops without handing anything back stays Running until it
+  does, you stop it, or its session is archived (then it is Stuck). A dispatched run is one task,
+  so its turn end still lands, and so does the first turn to end after your Send back or Unblock. The card shows the ask in the session's own words, or its last words
   and what Approve and Send back do; it never invents a question.
 
 Two edges differ from the Maestro runtime because Paseo owns execution: review can return to

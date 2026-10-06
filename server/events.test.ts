@@ -93,6 +93,8 @@ describe("the look at the gate", () => {
       "> ARC-STATUS: CLOSED is what the brief asks for at the end. Continuing.",
       "- ARC-STATUS: the grammar ctx-core reads. Next, the approval route.",
       "The ARC-STATUS grammar is ctx-core's; next, the approval route.",
+      "ARC-STATUS: lines are what the stop hook reads; continuing.",
+      "Its stop hook reads this:\n\n    ARC-STATUS: CLOSED\n\nNext, the approval route.",
     ]) {
       expect(handsBack(text)).toBe(false);
     }

@@ -456,10 +456,11 @@ export const handsBack = (text: string): boolean =>
 
 /**
  * A line that starts an arc verdict dressed in emphasis (`**ARC-STATUS:** …`,
- * `*ARC-STATUS*: …`), colon required. A code span, a quote or a list item is
- * how a session mentions the grammar, not how it ends an arc, so none is read.
+ * `*ARC-STATUS*: …`), colon required. Undressed, only ctx-core's grammar is a
+ * verdict (arcStatus); a code span, a quote, a list item, an indented line or
+ * a plain mention is how a session talks about the grammar, so none is read.
  */
-const ANY_ARC = /^\s*[*_]*ARC-STATUS[*_]*\s*:/;
+const ANY_ARC = /^[*_]+ARC-STATUS[*_]*\s*:/;
 
 /**
  * The arc verdict a text ends with, as the gate reads it: ctx-core's grammar
@@ -501,12 +502,17 @@ export function blockedOnYou(text: string): { heading: string; body: string | nu
 
 /**
  * Whether the session is on its own arc: adopted (running an arc of its own,
- * not one task from Maestro), and given no task since. A Send back's note or
- * an Unblock is a task, as a dispatched run is: the turn that answers it lands
- * at your gate like one (engine.ts endTurn).
+ * not one task from Maestro), with no task of yours outstanding. A Send back's
+ * note or an Unblock is a task, as a dispatched run is: the first turn to end
+ * after it answers it and lands at your gate like one (engine.ts endTurn);
+ * the turns after that are the arc's again.
  */
-export const onItsOwnArc = (events: readonly WorkEvent[]): boolean =>
-  lastOf(events, "dispatched", "adopted", "gate", "unblocked")?.type === "adopted";
+export function onItsOwnArc(events: readonly WorkEvent[]): boolean {
+  const bound = events.findLastIndex((e) => e.type === "dispatched" || e.type === "adopted");
+  if (events[bound]?.type !== "adopted") return false;
+  const task = events.findLastIndex((e) => e.type === "unblocked" || (e.type === "gate" && e.verdict === "revise"));
+  return task < bound || events.slice(task + 1).some((e) => e.type === "turn.ended");
+}
 
 export function lookOf(state: OrchState, events: readonly WorkEvent[], now: number): Look | null {
   if (state !== "review") return null;

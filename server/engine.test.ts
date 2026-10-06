@@ -3073,7 +3073,40 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
     const answer = "100 matches the upstream page size; lowering it doubles the calls. I kept it.";
     await end(answer);
     expect((await engine.get(item.id)).item).toMatchObject({ state: "review", look: { ask: "", closing: answer } });
-    // Its arc goes on after you are answered only if you leave it running: the next task is yours to give.
+    // Answered, it is the arc's again: sent back to carry on, its answer lands, and the turns after it do not.
+    await decide(item.id, "revise", "Use 50, then carry on with the arc");
+    await end("Set it to 50.");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+    await decide(item.id, "revise", "Good, carry on");
+    await end("Carrying on: rebased, the engine suite runs in the background.");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+    await end("Typechecking the touched packages next.");
+    expect((await engine.get(item.id)).item.state).toBe("running");
+  });
+
+  test("an Unblock is a task too: the turn that answers it lands, the arc's turns after it do not", async () => {
+    const { engine, fake, item, end } = await adopted();
+    await end("Running the live DB drill.", { kind: "failed", error: { message: "API overloaded" } });
+    expect((await engine.get(item.id)).item.state).toBe("blocked");
+    expect((await engine.unblock(fake.paseo, item.id, "")).state).toBe("running");
+    await end("Picked up where I stopped: the drill passes on the branch.");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+  });
+
+  test("after an answered Unblock, the arc's own turns stay running", async () => {
+    const { engine, fake, item, end } = await adopted();
+    await end("Running the live DB drill.", { kind: "failed", error: { message: "API overloaded" } });
+    await engine.unblock(fake.paseo, item.id, "");
+    await end("Picked up where I stopped: the drill passes on the branch.");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+    // You leave it to its arc: the session goes on, and its next turns are the arc between steps.
+    const agent = fake.agents.get("arc");
+    if (agent) agent.status = "running";
+    await engine.onTurnStarted({ id: "arc" });
+    expect((await engine.get(item.id)).item.state).toBe("running");
+    await end("Rebased onto main; re-running the touched suites.");
+    await end("Typechecking the touched packages next.");
+    expect((await engine.get(item.id)).item.state).toBe("running");
   });
 
   test("replay of STI-3492: a reload finds the arc idle mid-work, keeps it running, and does not re-read it", async () => {
