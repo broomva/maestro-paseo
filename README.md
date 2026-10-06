@@ -228,7 +228,8 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
   - *Landing.* It fetches origin/main and counts the answers `maestro/answers` records that main
     does not. None: the batch has landed (by Maestro's PR, squashed or not, or by any other), so the
     branch is brought level with main, and a PR of Maestro's left with nothing in it is closed with a
-    word. Some: it merges origin/main into the branch, pushes it, and opens ONE PR on the control
+    word. Some: it merges origin/main into the branch, pushes it (a fast-forward of origin's batch,
+    or over one every answer of which main records: never over answers main lacks), and opens ONE PR on the control
     repo's origin titled `answers: N answers from Maestro wait to land`, or updates the one open. The
     PR is gated like any other; Maestro never merges it and never bypasses a gate. A merge that
     conflicts is aborted: the batch is kept whole, Needs you names the ledgers and where to settle
@@ -241,15 +242,21 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
     queued with gate human, briefed from the ask and your answer, in the ask's `initiative` when it
     names one (the ask's own key, else the ledger's), filed once (`answer:` on the work). An answer
     whose option the ledger marks `status_quo: true` needs no work, nor does an idea's (develop
-    files its own). Only that key says an option changes nothing, never its words. Each routing is
-    an `ask.routed` line in the receipts. Answers given before routing first ran (a
-    `routing.began` line) are never routed. A fleet scope's own asks are the fleet's to act on.
+    files its own). Only that key says an option changes nothing, never its words. An ask that by
+    then records another outcome where it lives (main's wins) is *superseded*: never acted on, your
+    words kept in the receipt. Each routing is an `ask.routed` line in the receipts. Answers given
+    before routing first ran (a `routing.began` line, by time) are never routed. A fleet scope's own
+    asks are the fleet's to act on.
   - *In Maestro.* While answers wait to land, or the batch cannot take main, Needs you says so
     above every view ("3 answers wait to land: PR #915", with **Open PR #915**) and the header
     counts it. In Decisions an answered ask says what became of your answer: it waits to land, it
     has landed (or is written in its checkout) and waits to be acted on, it was acted on (sent, or
-    filed as work), or it was answered before Maestro acted on answers. Only an answer acted on reads
-    as done.
+    filed as work), superseded (the ask was closed another way on main, whose outcome wins), or it
+    was answered before Maestro acted on answers. Only an answer acted on reads as done.
+
+    | Answers waiting to land (amber, with the PR) | Landed and acted on |
+    | --- | --- |
+    | ![Answers waiting to land](docs/answers-waiting.png) | ![Answers acted on](docs/answers-acted.png) |
 - **Every wake leaves a receipt.** One line per wake in `wake-log.jsonl` beside the config
   (override with `MAESTRO_PASEO_WAKE_LOG`): why it woke, what it started, what it left alone and
   why, what needs you, running work quiet for 30 minutes or more, sessions it could not ask, the
