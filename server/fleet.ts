@@ -670,12 +670,27 @@ export class Fleet {
     return { health: { ...base, item, needsYou: urgent && !counted }, latest };
   }
 
-  /** Every scope's own root asks, each tagged with its scope: Decisions lists them beside the workspace's. */
+  /**
+   * Every scope's own root asks, each tagged with its scope and each listed
+   * once: two scopes configured with one state dir read one ledger file, whose
+   * asks are one ask each (by root, ledger, uid and id), under the first scope.
+   * Decisions lists these (scopeDecisions) and the header counts the waiting
+   * ones (waitingAsks), so both count the same asks.
+   */
   async scopeDecisions(): Promise<{ asks: DecisionAsk[]; warnings: string[] }> {
     const { scopes, error } = await this.scopes();
     const reads = await Promise.all(scopes.map((config) => readDecisions(join(config.stateDir, ASK_ROOT))));
+    const seen = new Set<string>();
+    const asks = reads.flatMap((read, at) =>
+      read.asks.flatMap((ask) => {
+        const key = JSON.stringify([ask.home.path, ask.ledger, ask.uid, ask.id]);
+        if (seen.has(key)) return [];
+        seen.add(key);
+        return [{ ...ask, scope: scopes[at]?.id ?? null }];
+      }),
+    );
     return {
-      asks: reads.flatMap((read, at) => read.asks.map((ask) => ({ ...ask, scope: scopes[at]?.id ?? null }))),
+      asks,
       warnings: [
         // An unreadable fleet config, in scopes()'s words: the scopes are then the last read, else the state dirs found.
         ...(error ? [error] : []),
@@ -684,14 +699,10 @@ export class Fleet {
     };
   }
 
-  /** The decision asks in each scope's own root that wait on you (shared/fleet.ts isWaiting), for work.attention. */
+  /** The decision asks in each scope's own root that wait on you (shared/fleet.ts isWaiting), for work.attention: scopeDecisions' own. */
   async waitingAsks(): Promise<AskNotice[]> {
-    const { scopes } = await this.scopes();
-    const reads = await Promise.all(scopes.map((config) => readDecisions(join(config.stateDir, ASK_ROOT))));
-    return reads.flatMap((read, at) => {
-      const scope = scopes[at]?.id ?? null;
-      return read.asks.filter((ask) => ask.waiting).map((ask) => askNotice(ask, scope));
-    });
+    const { asks } = await this.scopeDecisions();
+    return asks.filter((ask) => ask.waiting).map((ask) => askNotice(ask, ask.scope ?? null));
   }
 
   /** What needs you on its own (work.attention): each scope's missed or failing tick not already in Needs you as the fleet's item. */

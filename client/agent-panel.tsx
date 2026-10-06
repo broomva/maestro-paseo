@@ -2,13 +2,28 @@
 
 import type { PluginAgentPanelProps } from "@getpaseo/plugin/client";
 import { useToast } from "@getpaseo/plugin/client/react-native";
+import type { ComponentType } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { WorkDetail } from "./detail";
 import { errorText } from "./format";
 import { useAgentWork, useVerbs } from "./hooks";
+import type { MaestroIntent } from "./intent";
 import { Button, Card, Notice, space, useText } from "./ui";
 
-export function WorkPanel({ theme, layout, agentId, navigation }: PluginAgentPanelProps) {
+/** The panel, bound to how this plugin opens Maestro (a panel beside a session is outside its surface). */
+export function createWorkPanel(open: (intent: MaestroIntent) => void): ComponentType<PluginAgentPanelProps> {
+  return function MaestroWorkPanel(props: PluginAgentPanelProps) {
+    return <WorkPanel {...props} open={open} />;
+  };
+}
+
+function WorkPanel({
+  theme,
+  layout,
+  agentId,
+  navigation,
+  open,
+}: PluginAgentPanelProps & { open: (intent: MaestroIntent) => void }) {
   const found = useAgentWork(agentId);
   const verbs = useVerbs();
   const toast = useToast();
@@ -35,7 +50,7 @@ export function WorkPanel({ theme, layout, agentId, navigation }: PluginAgentPan
   if (item) {
     return (
       <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
-        <WorkDetail id={item.id} theme={theme} compact={layout.compact} navigation={navigation} />
+        <WorkDetail id={item.id} theme={theme} compact={layout.compact} navigation={navigation} open={open} />
       </View>
     );
   }

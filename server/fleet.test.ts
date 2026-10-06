@@ -1043,6 +1043,24 @@ describe("drilling in", () => {
     await expect(fleet.tick("nowhere", 1)).rejects.toThrow("The fleet has no scope named nowhere.");
   });
 
+  test("two scopes on one state dir read one ledger: each ask is listed once, and waits on you once", async () => {
+    const { paths, fleet } = await setup();
+    const shared = join(paths.state, "alpha");
+    await writeFleet(paths, {
+      alpha: { ticks: [{ tick: 35, at: ago(0.2), exit: 0 }] },
+      beta: { ticks: [{ tick: 35, at: ago(0.2), exit: 0 }], config: { state_dir: shared } },
+    });
+    const askRoot = join(shared, ".control", "asks");
+    await mkdir(askRoot, { recursive: true });
+    await writeFile(
+      join(askRoot, "fleet-alpha.yaml"),
+      ["asks:", "  - id: one", '    headline: "Stop it?"', "    blocking: true", ""].join("\n"),
+    );
+    const { asks } = await fleet.scopeDecisions();
+    expect(asks.map((ask) => [ask.scope, ask.id])).toEqual([["alpha", "one"]]);
+    expect((await fleet.waitingAsks()).map((notice) => [notice.scope, notice.id])).toEqual([["alpha", "one"]]);
+  });
+
   test("decision asks in the fleet's ask root are in the view, and an answer is written there under the lock", async () => {
     const { root, paths, fleet, logs } = await setup();
     await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: ago(0.2), exit: 0 }] } });

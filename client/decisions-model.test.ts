@@ -493,9 +493,6 @@ describe("a fleet scope's own asks, beside the workspace's (BRO-2856)", () => {
     const sri = scoped("sri", "sti-1.yaml", "s1");
     expect(ids(decisionAsks({ decisions: [mine], fleet: [sri] }))).toEqual(["a1", "s1"]);
     expect(ids(decisionAsks({ decisions: [mine] }))).toEqual(["a1"]);
-    // Two scopes on one state dir read one ledger file: one ask, listed once, under the first scope.
-    const twin = scoped("sri-b", "sti-1.yaml", "s1", { home: root("sri") });
-    expect(decisionAsks({ decisions: [], fleet: [sri, twin] }).map((one) => one.scope)).toEqual(["sri"]);
   });
 
   test("a scope's ask is filed under its scope; a workspace ledger of the same name is another ledger", () => {

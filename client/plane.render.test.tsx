@@ -181,6 +181,7 @@ const { PaseoApiProvider, PluginClientStateProvider, PluginRpcProvider } = await
 const { MaestroSurface } = await import("./plane");
 const { WorkDetail } = await import("./detail");
 const { createGateCard } = await import("./gate-card");
+const { createWorkPanel } = await import("./agent-panel");
 const { requestIntent, resetIntents, takeIntent } = await import("./intent");
 const { MaestroSettings } = await import("./settings");
 const { attentionOf } = await import("../server/attention");
@@ -1054,6 +1055,10 @@ const invoke = async (method: string, input: unknown) => {
     return { proposals: [...proposalsNow, ...sriProposals].filter((entry) => keys.includes(entry.key)) };
   }
   if (method === "work.adopt") return { item: items.find((entry) => entry.id === "a") };
+  if (method === "work.for-agent") {
+    const { agentId } = input as { agentId: string };
+    return { item: items.find((entry) => entry.worker?.agentId === agentId) ?? null };
+  }
   if (method === "work.files") return { files };
   if (method === "work.file") {
     const { name } = input as { name: string };
@@ -1322,7 +1327,9 @@ describe("the changed line", () => {
   });
 
   test("the detail alone, as the agent panel mounts it, survives a host without state", async () => {
-    const view = await mount(<WorkDetail id="a" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="a" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     expect(view.text()).toContain("Approve the branch");
     expect(view.text()).toContain("Changed");
     expect(view.text()).toContain("maestro/a-1");
@@ -1342,7 +1349,9 @@ describe("before a verb that can start a run", () => {
 
   test("a queued item whose mode comes only from Settings says so and warns before Dispatch", async () => {
     items = [...fixture(), work("q", "proposed", { nextRun: fromSettings() })];
-    const view = await mount(<WorkDetail id="q" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="q" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     expect(view.text()).toContain("Runs with claude (from Settings): mode bypassPermissions (from Settings).");
     expect(view.text()).toContain("This run skips permission prompts");
     expect(view.byLabel("Dispatch")).not.toBeNull();
@@ -1353,7 +1362,9 @@ describe("before a verb that can start a run", () => {
       ...fixture(),
       work("s", "blocked", { worker: worker("s", null), reason: "The session was archived", nextRun: fromSettings() }),
     ];
-    const view = await mount(<WorkDetail id="s" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="s" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     expect(view.text()).toContain(
       "If the session is gone, Unblock starts a new run in a fresh worktree on its own run branch (from Settings), with claude (from Settings): mode bypassPermissions (from Settings).",
     );
@@ -1363,7 +1374,9 @@ describe("before a verb that can start a run", () => {
 
   test("a run that asks before it acts carries no warning", async () => {
     items = [...fixture(), work("p", "proposed", { nextRun: fromSettings({ modeId: "acceptEdits" }) })];
-    const view = await mount(<WorkDetail id="p" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="p" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     expect(view.text()).toContain("mode acceptEdits (from Settings)");
     expect(view.text()).not.toContain("skip");
   });
@@ -1431,7 +1444,9 @@ describe("work the loop flagged", () => {
   test("a quiet run's notice offers Leave it running, which asks the host; other flags offer nothing of their own", async () => {
     const quiet = { kind: "quiet" as const, reason: "Quiet for 41 minutes, worth a look.", at: yours.at };
     items = [...flagged(), work("z", "running", { worker: worker("z", "maestro/z-1"), phase: "working", flag: quiet })];
-    const view = await mount(<WorkDetail id="z" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="z" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     const [alert] = view.all('[role="alert"]');
     expect(alert?.textContent).toContain(quiet.reason);
     const leave = alert?.querySelector('[aria-label="Leave it running"]');
@@ -1441,24 +1456,32 @@ describe("work the loop flagged", () => {
       { id: "z" },
     ]);
     // A start left to you clears when you dispatch or cancel: its notice has no verb of its own.
-    await view.rerender(<WorkDetail id="y" theme={theme} compact={false} navigation={undefined} />);
+    await view.rerender(
+      <WorkDetail id="y" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     expect(view.byLabel("Leave it running")).toBeNull();
     expect(view.all('[role="alert"]').map((el) => el.textContent)).toContain(yours.reason);
   });
 
   test("the detail says why, as a warning Notice; unflagged work has none", async () => {
     items = flagged();
-    const view = await mount(<WorkDetail id="y" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="y" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     expect(view.all('[role="alert"]').map((el) => el.textContent)).toContain(yours.reason);
     expect(view.byLabel("Dispatch")).not.toBeNull();
-    await view.rerender(<WorkDetail id="d" theme={theme} compact={false} navigation={undefined} />);
+    await view.rerender(
+      <WorkDetail id="d" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     expect(view.text()).not.toContain(yours.reason);
     expect(view.all('[role="alert"]')).toHaveLength(0);
   });
 });
 
 describe("a finished arc at your gate (BRO-2856)", () => {
-  const detail = (id: string) => <WorkDetail id={id} theme={theme} compact={false} navigation={undefined} />;
+  const detail = (id: string) => (
+    <WorkDetail id={id} theme={theme} compact={false} navigation={undefined} open={requestIntent} />
+  );
   const root = { kind: "root" as const, path: "/state/broomva/.control/asks", branch: null };
   const arcLook = {
     ran: "2h unsupervised · 1 turn · ran to the gate",
@@ -1560,6 +1583,40 @@ describe("a finished arc at your gate (BRO-2856)", () => {
     ]);
   });
 
+  test("in the work panel beside a session, the link goes through the panel's opener, which opens Maestro too", async () => {
+    items = [
+      ...fixture(),
+      work("arc", "review", {
+        worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
+        look: arcLook,
+      }),
+    ];
+    decisionsNow = [
+      { ...decisionFixture(), ledger: "sti-3485.yaml", arc: "sti-3485-approval-reply", id: "redeploy", home: root },
+    ];
+    const asked: unknown[] = [];
+    const Panel = createWorkPanel((intent) => asked.push(intent));
+    const props = {
+      theme,
+      layout: { compact: false },
+      agentId: "ag-arc",
+      navigation: undefined,
+    } as unknown as ComponentProps<typeof Panel>;
+    const view = await mount(<Panel {...props} />);
+    for (let tries = 0; tries < 100 && !view.text().includes("Answer its"); tries += 1) await settle(20);
+    takeIntent();
+    await view.press(view.byLabel("Answer its 1 decision in Decisions"));
+    expect(takeIntent()).toBeNull();
+    expect(asked).toEqual([
+      {
+        kind: "decisions",
+        ledger: "broomva/sti-3485.yaml",
+        id: "redeploy",
+        key: JSON.stringify([root.path, "sti-3485.yaml", null, "redeploy"]),
+      },
+    ]);
+  });
+
   test("with nothing left above the verdict and the session alive, the card adds nothing", async () => {
     const bare = {
       ...arcLook,
@@ -1587,7 +1644,9 @@ describe("Stop run", () => {
       look: { ran: "4m unsupervised · 1 turn · paused on a question", decided: [], ask: "Run a command: rm -rf dist" },
       ...extra,
     });
-  const detail = (id: string) => <WorkDetail id={id} theme={theme} compact={false} navigation={undefined} />;
+  const detail = (id: string) => (
+    <WorkDetail id={id} theme={theme} compact={false} navigation={undefined} open={requestIntent} />
+  );
   const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
   const move = (id: string, next: WorkItem) => {
     items = items.map((item) => (item.id === id ? next : item));
@@ -1965,7 +2024,9 @@ describe("History", () => {
 
 describe("work the fleet raised (BRO-2839)", () => {
   test("reads by its asks: no marker, the fleet's place, verbs explained, the run's words folded, repeats once", async () => {
-    const view = await mount(<WorkDetail id="fleet-1" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="fleet-1" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     await settle(50);
     const text = view.text();
     // The displayed title is the source's text exactly (no U+2011); the flag token is kept from wrapping.
@@ -2003,7 +2064,9 @@ describe("work the fleet raised (BRO-2839)", () => {
 
 describe("the work folder's files", () => {
   test("lists them; a file opens as text, a long one says it was cut, a binary one says why", async () => {
-    const view = await mount(<WorkDetail id="a" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="a" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     // The detail loads first; the file list is its own read after that.
     await settle(50);
     expect(view.text()).toContain("Files");
@@ -2907,8 +2970,12 @@ describe("drilling in", () => {
     const view = await mount(surface(false));
     await view.press(tab(view, "Fleet"));
     await view.press(view.byLabel("Read and answer the fleet's decisions, broomva"));
-    // Every read after this fails: only the answer's reply can tell either list.
+    // Every read after this fails or is held: only the answer's reply can tell either list.
     workspaceFail = "asks.workspace timed out";
+    let release = () => {};
+    fleetHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     await view.press(view.byLabel("File all four, recommended"));
     await view.press(view.byLabel("Answer A10: File all four"));
     expect(view.text()).toContain("Answered just now: “File all four”");
@@ -2916,6 +2983,8 @@ describe("drilling in", () => {
     expect(
       view.all("[aria-expanded]").some((one) => one.getAttribute("aria-label")?.startsWith("maestro-paseo-gaps.yaml:")),
     ).toBe(true);
+    fleetHeld = null;
+    release();
     await view.goto("Decisions");
     for (let tries = 0; tries < 100 && !view.text().includes("Recently answered · 1"); tries += 1) await settle(20);
     await view.press(view.byLabel("Recently answered · 1"));

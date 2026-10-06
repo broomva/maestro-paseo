@@ -15,23 +15,12 @@ export function ledgerOf(ask: Pick<DecisionAsk, "ledger" | "scope">): string {
   return ask.scope ? `${ask.scope}/${ask.ledger}` : ask.ledger;
 }
 
-/**
- * Every ask Decisions lists: the workspace's, then each fleet scope's own
- * root's (an older daemon sends none), each ask once. Two scopes configured
- * with one state dir read one ledger file: its asks are one ask each (one
- * askKey), listed under the first scope.
- */
+/** Every ask Decisions lists: the workspace's, then each fleet scope's own root's, each once (scopeDecisions); an older daemon sends none. */
 export function decisionAsks(view: {
   decisions: readonly DecisionAsk[];
   fleet?: readonly DecisionAsk[];
 }): DecisionAsk[] {
-  const seen = new Set<string>();
-  return [...view.decisions, ...(view.fleet ?? [])].filter((ask) => {
-    const key = askKey(ask);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  return [...view.decisions, ...(view.fleet ?? [])];
 }
 
 /** Where an answer to the ask is written: its scope's root through the fleet, else its home in the workspace. */

@@ -1,5 +1,5 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { WorkPanel } from "./client/agent-panel";
+import { createWorkPanel } from "./client/agent-panel";
 import { createPillContent, PILL_ICONS } from "./client/composer-pill";
 import { createGateCard } from "./client/gate-card";
 import { opener, startIntegrations } from "./client/integrations";
@@ -21,12 +21,15 @@ export default function contribute(client: PluginClientContext) {
   // The loop's panel opens Settings, which only this context can do, and only on a host that has the call (client/settings-link.ts).
   const unlinkSettings = linkSettingsOf(client, "maestro");
 
+  // How anything outside the Maestro surface opens it: the intent, and the surface with it.
+  const open = opener(client);
+
   client.addWorkspacePanel({
     id: "work",
     title: "Work",
     icon: "LayoutDashboard",
     context: "agent",
-    Component: WorkPanel,
+    Component: createWorkPanel(open),
   });
 
   client.addCommandCenterItem({
@@ -80,8 +83,6 @@ export default function contribute(client: PluginClientContext) {
       openPanel("work");
     },
   });
-
-  const open = opener(client);
 
   // The card a run leaves in its session when it lands at your gate (server/gate-card.ts).
   client.addTimelineRenderer({
