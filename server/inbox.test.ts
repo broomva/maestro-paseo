@@ -6,6 +6,7 @@ import type { ProviderEvent, ProviderInput } from "@getpaseo/plugin/server/provi
 import { GATE_CARD_KIND } from "../shared/gate-card";
 import type { WorkEvent } from "./events";
 import {
+  BURST_MS,
   createInboxProvider,
   decodeNotice,
   encodeNotice,
@@ -153,6 +154,43 @@ describe("the provider", () => {
     ]);
   });
 
+  test("a notice that rides as an attachment is read from it; a prompt for a session it never opened fails", async () => {
+    const { events, send } = await connected();
+    const notice: InboxNotice = {
+      title: "Fix the flaky test",
+      ask: "Merge #12?",
+      card: { workId: "w", landing: 3, agentId: "a" },
+    };
+    events.length = 0;
+    await send({
+      type: "session.prompt",
+      sessionId: "s1",
+      prompt: {
+        clientMessageId: "c1",
+        delivery: "auto",
+        input: {
+          type: "message",
+          content: [
+            { type: "text", text: "Fix the flaky test" },
+            { type: "text", mimeType: "text/plain", title: "Maestro notice", text: encodeNotice(notice) },
+          ],
+        },
+      },
+    });
+    const items = events.flatMap((e) => (e.type === "timeline.item" ? [e.item] : []));
+    expect(items.map((item) => item.type)).toEqual(["assistant_message", "plugin"]);
+    events.length = 0;
+    await send({ ...prompt("x"), sessionId: "nope" } as ProviderInput);
+    expect(events).toEqual([
+      {
+        type: "session.prompt_result",
+        sessionId: "nope",
+        clientMessageId: "c1",
+        result: { type: "failed", error: { message: "The inbox session is not open" } },
+      },
+    ]);
+  });
+
   test("what you write there is answered with where to answer", async () => {
     const { events, send } = await connected();
     events.length = 0;
@@ -164,31 +202,52 @@ describe("the provider", () => {
 });
 
 describe("the inbox session", () => {
+  let clock = T0 + 31 * 60_000;
   function fakePaseo() {
-    const agents = new Map<string, { archivedAt: string | null }>();
+    const agents = new Map<
+      string,
+      { archivedAt: string | null; requiresAttention: boolean; attentionTimestamp: string | null }
+    >();
     const created: Array<Record<string, unknown>> = [];
-    const sent: Array<{ id: string; text: string }> = [];
+    const sent: Array<{ id: string; prompt: string; text: string }> = [];
+    let refreshFails = false;
     const paseo = {
       agents: {
         create: async (options: Record<string, unknown>) => {
           await new Promise((resolve) => setTimeout(resolve, 5));
           const id = `inbox-${created.length + 1}`;
           created.push(options);
-          agents.set(id, { archivedAt: null });
+          agents.set(id, { archivedAt: null, requiresAttention: false, attentionTimestamp: null });
           return { id };
         },
         ref: (id: string) => ({
           refresh: async () => {
+            if (refreshFails) throw new Error("socket closed");
             const agent = agents.get(id);
             return agent ? { agent, project: null } : null;
           },
-          send: async (text: string) => {
-            sent.push({ id, text });
+          archive: async () => {
+            const agent = agents.get(id);
+            if (agent) agent.archivedAt = at(50);
+            return { archivedAt: at(50) };
+          },
+          // What Paseo does with a finished turn: the session is unread until you open it.
+          send: async (prompt: string, options?: { attachments?: Array<{ text: string }> }) => {
+            sent.push({ id, prompt, text: options?.attachments?.[0]?.text ?? "" });
+            const agent = agents.get(id);
+            if (agent && !agent.requiresAttention) {
+              agent.requiresAttention = true;
+              agent.attentionTimestamp = new Date(clock).toISOString();
+            }
           },
         }),
       },
     } as unknown as Paseo;
-    return { paseo, agents, created, sent };
+    const open = (id: string) => {
+      const agent = agents.get(id);
+      if (agent) agent.requiresAttention = false;
+    };
+    return { paseo, agents, created, sent, open, failRefresh: () => (refreshFails = true) };
   }
 
   async function setup() {
@@ -202,7 +261,7 @@ describe("the inbox session", () => {
       async () => "/Users/me/maestro",
       (message) => logs.push(message),
       path,
-      () => T0 + 31 * 60_000,
+      () => clock,
     );
     return { fake, inbox, path, logs };
   }
@@ -212,10 +271,13 @@ describe("the inbox session", () => {
   test("the first landing opens the inbox on Maestro's provider and keeps its id; the next one reuses it", async () => {
     const { fake, inbox, path } = await setup();
     await inbox.landed(...landing("## Ask\n- Merge #2134?"));
+    fake.open("inbox-1");
     await inbox.landed(...landing("ARC-STATUS: HANDBACK 1", "w2"));
     expect(fake.created).toEqual([
       { config: { provider: `${INBOX_PROVIDER}/inbox` }, cwd: "/Users/me/maestro", title: INBOX_TITLE },
     ]);
+    // Your side of the inbox reads the work's title; the notice itself rides as an attachment.
+    expect(fake.sent[0]?.prompt).toBe("SRI: STI-3492 organisation referrers (arc)");
     expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ agentId: "inbox-1" });
     expect(fake.sent.map((s) => [s.id, decodeNotice(s.text)?.ask])).toEqual([
       ["inbox-1", "Merge #2134?"],
@@ -233,6 +295,7 @@ describe("the inbox session", () => {
   test("an inbox you archived is replaced by a new one; a change that is not a landing sends nothing", async () => {
     const { fake, inbox } = await setup();
     await inbox.landed(...landing("## Ask\n- A?"));
+    fake.open("inbox-1");
     const first = fake.agents.get("inbox-1");
     if (first) first.archivedAt = at(40);
     await inbox.landed(...landing("## Ask\n- B?", "w2"));
@@ -261,8 +324,8 @@ describe("the inbox session", () => {
         create: fake.paseo.agents.create,
         ref: (id: string) => ({
           ...fake.paseo.agents.ref(id),
-          send: (text: string) =>
-            ++sends === 1 ? new Promise<void>(() => undefined) : fake.paseo.agents.ref(id).send(text),
+          send: (text: string, options?: Parameters<ReturnType<Paseo["agents"]["ref"]>["send"]>[1]) =>
+            ++sends === 1 ? new Promise<void>(() => undefined) : fake.paseo.agents.ref(id).send(text, options),
         }),
       },
     } as unknown as Paseo;
@@ -279,6 +342,45 @@ describe("the inbox session", () => {
     await Promise.all([first, inbox.landed(...landing("## Ask\n- B?", "w2"))]);
     expect(logs).toEqual(["inbox notice for w1 not sent: Paseo did not answer within 0.05 s"]);
     expect(fake.sent.map((s) => decodeNotice(s.text)?.card.workId)).toEqual(["w2"]);
+  });
+
+  test("a burst is one push; an inbox left unread past the burst is archived, and a fresh one pushes", async () => {
+    const { fake, inbox } = await setup();
+    await inbox.landed(...landing("## Ask\n- A?"));
+    clock += 60_000;
+    await inbox.landed(...landing("## Ask\n- B?", "w2"));
+    expect(fake.sent.map((s) => s.id)).toEqual(["inbox-1", "inbox-1"]);
+    // You answered from Maestro, never opening the inbox: Paseo would not push for it again.
+    clock += BURST_MS;
+    await inbox.landed(...landing("## Ask\n- C?", "w3"));
+    expect(fake.agents.get("inbox-1")?.archivedAt).not.toBeNull();
+    expect(fake.sent.map((s) => s.id)).toEqual(["inbox-1", "inbox-1", "inbox-2"]);
+  });
+
+  test("a daemon that cannot say whether the inbox is there opens no second one: the notice is dropped", async () => {
+    const { fake, inbox, logs } = await setup();
+    await inbox.landed(...landing("## Ask\n- A?"));
+    fake.open("inbox-1");
+    fake.failRefresh();
+    await inbox.landed(...landing("## Ask\n- B?", "w2"));
+    expect(fake.created).toHaveLength(1);
+    expect(logs).toEqual(["inbox notice for w2 not sent: socket closed"]);
+  });
+
+  test("an inbox id that cannot be written is kept for the run: the next landing opens no other", async () => {
+    const { fake } = await setup();
+    const logs: string[] = [];
+    const inbox = new Inbox(
+      () => fake.paseo,
+      async () => "/m",
+      (m) => logs.push(m),
+      "/nonexistent/dir/inbox.json",
+    );
+    await inbox.landed(...landing("## Ask\n- A?"));
+    fake.open("inbox-1");
+    await inbox.landed(...landing("## Ask\n- B?", "w2"));
+    expect(fake.created).toHaveLength(1);
+    expect(logs[0]).toStartWith("inbox id not kept on disk (kept for this run):");
   });
 
   test("without a connection to Paseo the notice is logged and dropped, never thrown", async () => {

@@ -182,7 +182,9 @@ The eight system states are Maestro's; the UI speaks the six plain labels.
   one session of its own, *Maestro · Needs you*, on a provider it registers (`server/inbox.ts`).
   Each landing at your gate is a turn there: its message ("Needs you · the work, then its ask") is
   the push, and the gate card under it answers the work in place. Paseo pushes once until you open
-  the inbox; landings before that wait there. Archive the inbox and the next landing opens a new one.
+  the inbox, so landings within 10 minutes of a push join it silently; an inbox still unread after
+  that is archived and a fresh one pushes again (every item stays in Needs you either way). Archive
+  the inbox yourself and the next landing opens a new one.
 - A **permission request** parks the item at Needs you as a question. Answer it from Maestro or
   in the session; the run resumes.
 - **Adopted sessions** (a session running its own arc, such as one an orchestrator started) land
