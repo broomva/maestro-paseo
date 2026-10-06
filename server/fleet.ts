@@ -19,7 +19,7 @@
 
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { type FileHandle, lstat, open, readdir, stat } from "node:fs/promises";
+import { type FileHandle, lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import type { WorkItem } from "../shared/contracts";
@@ -670,14 +670,39 @@ export class Fleet {
     return { health: { ...base, item, needsYou: urgent && !counted }, latest };
   }
 
-  /** The decision asks in each scope's own root that wait on you (shared/fleet.ts isWaiting), for work.attention. */
+  /**
+   * Every scope's own root asks, each tagged with its scope. A root is read
+   * once: two scopes configured with one state dir (however reached: the
+   * root is resolved) read one set of ledgers, listed under the first scope.
+   * Within a root every ask is listed as the ledger reader gives it, refused
+   * twins included. Decisions lists these and the header counts the waiting
+   * ones (waitingAsks), so both count the same asks.
+   */
+  async scopeDecisions(): Promise<{ asks: DecisionAsk[]; warnings: string[] }> {
+    const { scopes, error } = await this.scopes();
+    const roots = await Promise.all(
+      scopes.map((config) => {
+        const root = join(config.stateDir, ASK_ROOT);
+        return realpath(root).catch(() => root);
+      }),
+    );
+    const firsts = scopes.filter((_, at) => roots.indexOf(roots[at] as string) === at);
+    const reads = await Promise.all(firsts.map((config) => readDecisions(join(config.stateDir, ASK_ROOT))));
+    const asks = reads.flatMap((read, at) => read.asks.map((ask) => ({ ...ask, scope: firsts[at]?.id ?? null })));
+    return {
+      asks,
+      warnings: [
+        // An unreadable fleet config, in scopes()'s words: the scopes are then the last read, else the state dirs found.
+        ...(error ? [error] : []),
+        ...reads.flatMap((read, at) => read.warnings.map((warning) => `Fleet ${firsts[at]?.id}: ${warning}`)),
+      ],
+    };
+  }
+
+  /** The decision asks in each scope's own root that wait on you (shared/fleet.ts isWaiting), for work.attention: scopeDecisions' own. */
   async waitingAsks(): Promise<AskNotice[]> {
-    const { scopes } = await this.scopes();
-    const reads = await Promise.all(scopes.map((config) => readDecisions(join(config.stateDir, ASK_ROOT))));
-    return reads.flatMap((read, at) => {
-      const scope = scopes[at]?.id ?? null;
-      return read.asks.filter((ask) => ask.waiting).map((ask) => askNotice(ask, scope));
-    });
+    const { asks } = await this.scopeDecisions();
+    return asks.filter((ask) => ask.waiting).map((ask) => askNotice(ask, ask.scope ?? null));
   }
 
   /** What needs you on its own (work.attention): each scope's missed or failing tick not already in Needs you as the fleet's item. */

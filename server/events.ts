@@ -347,6 +347,71 @@ export function bullets(text: string): string[] {
   );
 }
 
+/** The note a session's archiving leaves on its work (engine.ts onArchived). */
+export const ARCHIVED_NOTE = "The session was archived";
+
+const ARC_LINE = /^ARC-STATUS: ([A-Z]+)/;
+// Markdown's own limits: a heading or a rule is indented at most 3 spaces; deeper, it is code.
+const HEADING = /^ {0,3}#{1,6}\s/;
+const RULE = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
+const TABLE_ROW = /^\s*\|/;
+/** Where the closing block above an arc's verdict starts: after a heading, a table row or a rule. */
+const edgeOf = (line: string) => HEADING.test(line) || TABLE_ROW.test(line) || RULE.test(line);
+
+/**
+ * An arc's verdict as the workspace writes it, ctx-core's grammar exactly
+ * (ctx.py _extract_arc): the last line of the text that starts
+ * `ARC-STATUS: WORD`, the word, and the line's index. Null when no line does.
+ * Code fences are not read: the text is a tail cut at its start, so whether a
+ * line sits inside one cannot be known.
+ */
+export function arcStatus(text: string): { status: string; line: string; at: number } | null {
+  const lines = text.split("\n");
+  for (let at = lines.length - 1; at >= 0; at--) {
+    const line = lines[at] ?? "";
+    const word = ARC_LINE.exec(line)?.[1];
+    if (word) return { status: word, line: line.trim(), at };
+  }
+  return null;
+}
+
+/**
+ * The block just above line `at`, verbatim (blank lines around it dropped,
+ * nothing else): from the nearest heading (kept), table row or rule above it,
+ * else from the text's start. When a table ends right above, the table is the
+ * block; a rule that only sets the verdict apart is passed over. Null when
+ * nothing is above. Where it starts is a reading of the text, not a claim: the
+ * card shows it as the arc's last words.
+ */
+export function closingAbove(text: string, at: number): string | null {
+  const lines = text.split("\n").slice(0, at);
+  const line = (i: number) => lines[i] ?? "";
+  const blank = (i: number) => !line(i).trim();
+  let end = lines.length;
+  while (end > 0 && (blank(end - 1) || RULE.test(line(end - 1)))) end -= 1;
+  let start = end;
+  if (TABLE_ROW.test(line(end - 1))) while (start > 0 && TABLE_ROW.test(line(start - 1))) start -= 1;
+  else while (start > 0 && !edgeOf(line(start - 1))) start -= 1;
+  if (start > 0 && HEADING.test(line(start - 1))) start -= 1;
+  while (start < end && blank(start)) start += 1;
+  return start < end ? lines.slice(start, end).join("\n") : null;
+}
+
+/** The ask an arc's verdict makes of you, in words. It says what the arc reported, and nothing about where. */
+function arcAsk(status: string, line: string): string {
+  const verbs = "Approve to close the work, or send it back with a note.";
+  if (status === "CLOSED" || status === "DONE" || status === "MERGED") return `It reports its arc finished. ${verbs}`;
+  if (status === "HANDBACK") {
+    const count = Number(/^ARC-STATUS: HANDBACK (\d+)\b/.exec(line)?.[1]);
+    if (count === 0) return `It reports nothing handed back to you. ${verbs}`;
+    const many = Number.isInteger(count) && count > 1;
+    const what = Number.isInteger(count) && count > 0 ? `${count} ${many ? "things" : "thing"}` : "work";
+    return `It hands ${what} back to you. Approve to close the work once you have taken ${many ? "them" : "it"} on, or send it back with a note.`;
+  }
+  if (status === "BLOCKED") return "It reports its arc blocked. Send it back with a note, or cancel the work.";
+  return `It ended with “${line}”. ${verbs}`;
+}
+
 export function lookOf(state: OrchState, events: readonly WorkEvent[], now: number): Look | null {
   if (state !== "review") return null;
   const permission = pendingPermission(events);
@@ -368,12 +433,26 @@ export function lookOf(state: OrchState, events: readonly WorkEvent[], now: numb
     };
   }
   const summary = lastOf(events, "turn.ended")?.summary ?? "";
-  const decided = section(summary, "Decided");
-  const ask = section(summary, "Ask");
+  const arc = arcStatus(summary);
+  // The sections are read above the verdict line, so a last `## Ask` never takes the verdict in.
+  const body = arc ? summary.split("\n").slice(0, arc.at).join("\n") : summary;
+  const decided = section(body, "Decided");
+  const ask = section(body, "Ask");
+  const closing = arc ? closingAbove(summary, arc.at) : null;
+  // Archived since this run was bound and since the turn that brought it here: a session sent back and run again is not.
+  const since = events.findLastIndex((e) => e.type === "turn.ended" || e.type === "dispatched" || e.type === "adopted");
+  const archived = events.slice(since + 1).some((e) => e.type === "note" && e.text === ARCHIVED_NOTE);
   return {
     ran,
     decided: decided ? bullets(decided) : [],
-    ask: ask ? bullets(ask).join(" ") : "Approve to close it, or send it back with a note.",
+    ask: ask
+      ? bullets(ask).join(" ")
+      : arc
+        ? arcAsk(arc.status, arc.line)
+        : "Approve to close it, or send it back with a note.",
+    arc: arc ? { status: arc.status, line: arc.line } : null,
+    closing,
+    archived,
   };
 }
 

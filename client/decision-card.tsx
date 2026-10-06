@@ -57,6 +57,8 @@ export type CardKeys = {
 /** Every answer in flight carries this key's head; one ask's adds its full identity (askKey). */
 export const ANSWER_KEY = ["maestro", "answer"] as const;
 const answerKeyOf = (ask: DecisionAsk) => [...ANSWER_KEY, askKey(ask)];
+/** An answer's reply, filed under the scope of the copy it stands for (the server's reply carries none). */
+const withScope = (reply: DecisionAsk, copy: DecisionAsk): DecisionAsk => ({ ...reply, scope: copy.scope });
 
 /** Whether any answer is in flight, read from the mutation cache at once: a second press in the same frame sees the first. */
 export function answerInFlight(client: QueryClient): boolean {
@@ -316,8 +318,10 @@ export function DecisionCard({
         const { [askKey(ask)]: _spent, ...rest } = now;
         return rest;
       });
+      // The list learns it in whichever part holds it, each copy keeping its own list's scope.
+      const swap = (one: DecisionAsk) => (sameAsk(one, answered) ? withScope(answered, one) : one);
       client.setQueriesData<WorkspaceAsksView>({ queryKey: ["maestro", "workspace-asks"] }, (view) =>
-        view ? { ...view, decisions: view.decisions.map((one) => (sameAsk(one, answered) ? answered : one)) } : view,
+        view ? { ...view, decisions: view.decisions.map(swap), fleet: view.fleet?.map(swap) } : view,
       );
       if (warning) toast.error(warning);
     },
@@ -376,9 +380,9 @@ export function DecisionCard({
     answer.mutate(
       { where, ledger: ask.ledger, uid: ask.uid, id: ask.id, hash: ask.hash, option: chosen, note },
       {
-        onSuccess: ({ ask: answered, warning }) => {
+        onSuccess: ({ ask: reply, warning }) => {
           setDraft(EMPTY_DRAFT);
-          onAnswered(answered, warning);
+          onAnswered(withScope(reply, ask), warning);
         },
       },
     );
@@ -723,7 +727,7 @@ export function DecisionCard({
               </Fact>
             ) : null}
             <Fact theme={theme} label="Ledger">
-              {`${ask.ledger}${ask.arc ? ` (arc ${ask.arc})` : ""}${ask.uid ? ` · uid ${ask.uid}` : ""}`}
+              {`${ask.scope ? `fleet ${ask.scope} · ` : ""}${ask.ledger}${ask.arc ? ` (arc ${ask.arc})` : ""}${ask.uid ? ` · uid ${ask.uid}` : ""}`}
             </Fact>
             {open ? <Text style={text.small}>{writtenTo(ask)}</Text> : null}
             {origin && navigation ? (

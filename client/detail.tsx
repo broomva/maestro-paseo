@@ -11,11 +11,13 @@ import { type CheckResult, NOT_STOPPED, type Pending, type WorkEventWire, type W
 import { fleetDetail, parseFleetBrief } from "../shared/fleet-item";
 import { nextRunCopy } from "../shared/run";
 import { PLAIN_VOICE } from "../shared/states";
+import { ArcReport } from "./arc-report";
 import { ChangeText, WithChange } from "./changed";
 import { FilesSection } from "./files";
 import { FleetBriefView } from "./fleet-brief";
 import { ago, agoWords, basename, errorText } from "./format";
 import { useRefresh, useVerbs, useWorkDetail } from "./hooks";
+import type { MaestroIntent } from "./intent";
 import { changedVisible } from "./plane-model";
 import { collapseRepeats, fleetOriginOf, placeText, repeatText, repeatWords, titleText } from "./records-text";
 import { Button, Card, IconButton, Notice, radius, StateLabel, space, Unbroken, useText } from "./ui";
@@ -28,12 +30,15 @@ export function WorkDetail({
   compact,
   navigation,
   onBack,
+  open,
 }: {
   id: string;
   theme: PluginTheme;
   compact: boolean;
   navigation: Navigation;
   onBack?: () => void;
+  /** How this place opens another Maestro view: inside Maestro, an intent; beside a session, the intent and Maestro with it. */
+  open: (intent: MaestroIntent) => void;
 }) {
   const detail = useWorkDetail(id);
   const text = useText(theme);
@@ -93,7 +98,7 @@ export function WorkDetail({
       {/* The loop flagged it: why it is in Needs you though it is not at your gate or stuck. */}
       {item.flag ? <FlagNotice item={item} theme={theme} compact={compact} /> : null}
 
-      <Verbs item={item} theme={theme} compact={compact} />
+      <Verbs item={item} theme={theme} compact={compact} open={open} />
 
       {navigation && item.worker ? (
         <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
@@ -202,7 +207,17 @@ export function movedOnText(item: WorkItem): string {
   return `${lead} it is now ${label === "Needs you" ? "in Needs you" : label}.`;
 }
 
-function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; compact: boolean }) {
+function Verbs({
+  item,
+  theme,
+  compact,
+  open,
+}: {
+  item: WorkItem;
+  theme: PluginTheme;
+  compact: boolean;
+  open: (intent: MaestroIntent) => void;
+}) {
   const verbs = useVerbs();
   const toast = useToast();
   const paseo = usePaseo();
@@ -372,6 +387,7 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
               <Text style={text.label}>Ask</Text>
               <Text style={text.body}>{look.ask}</Text>
             </View>
+            <ArcReport item={item} theme={theme} compact={compact} open={open} />
           </View>
         ) : null}
         <WithChange workspaceId={item.worker?.workspaceId} stat={item.changed}>

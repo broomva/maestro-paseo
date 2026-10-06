@@ -255,9 +255,17 @@ export default function contribute(host: PluginServerContext) {
   server.handle(reviewProposal, ({ scope, keys, verdict, note }) => fleet.review({ scope, keys, verdict, note }));
   server.handle(getFleetTick, ({ scope, tick }) => fleet.tick(scope, tick));
   // The workspace's asks, each read at its home (server/control-home.ts).
-  server.handle(getWorkspaceAsks, () =>
-    workspace ? workspace.view() : Promise.resolve({ controlRepo: "", main: null, decisions: [], warnings: [] }),
-  );
+  // Each fleet scope's own root asks ride along, so Decisions lists every ask Maestro reads.
+  server.handle(getWorkspaceAsks, async () => {
+    const [view, scoped] = await Promise.all([
+      workspace ? workspace.view() : Promise.resolve({ controlRepo: "", main: null, decisions: [], warnings: [] }),
+      fleet.scopeDecisions().catch((error) => ({
+        asks: [],
+        warnings: [`The fleet's asks could not be read: ${(error as Error).message}`],
+      })),
+    ]);
+    return { ...view, fleet: scoped.asks, warnings: [...view.warnings, ...scoped.warnings] };
+  });
   // Your answer to a decision ask, at its home: written under the ledger lock, and never on the agent socket.
   // An idea answered develop also files its held work item (above); park writes the wake you chose.
   server.handle(answerAsk, async ({ where, ...input }, { paseo }) => {

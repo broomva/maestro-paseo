@@ -240,6 +240,9 @@ describe("the gate", () => {
       ran: "30m unsupervised · 1 turn · ran to the gate",
       decided: ["kept it small"],
       ask: "Ship it?",
+      arc: null,
+      closing: null,
+      archived: false,
     });
   });
 

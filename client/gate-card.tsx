@@ -13,6 +13,7 @@ import { type ComponentType, type ReactNode, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { getWork, type Look, type WorkItem } from "../shared/contracts";
 import type { GateCardData } from "../shared/gate-card";
+import { ArcReport } from "./arc-report";
 import { errorText } from "./format";
 import { answerTarget, cardSettled, cardView, resolution, SUPERSEDED } from "./gate-state";
 import { useVerbs } from "./hooks";
@@ -117,7 +118,7 @@ function GateBody({
       {view === "asking" && target ? (
         <Asking item={item} target={target} theme={theme} compact={compact} after={openInMaestro} />
       ) : view === "deciding" ? (
-        <Deciding item={item} theme={theme} compact={compact} after={openInMaestro} />
+        <Deciding item={item} theme={theme} compact={compact} after={openInMaestro} open={open} />
       ) : (
         <View style={{ gap: space[2] }}>
           <Text style={text.muted}>{view === "superseded" ? SUPERSEDED : resolution(item)}</Text>
@@ -159,11 +160,13 @@ function Deciding({
   theme,
   compact,
   after,
+  open,
 }: {
   item: WorkItem;
   theme: PluginTheme;
   compact: boolean;
   after: ReactNode;
+  open: Open;
 }) {
   const verbs = useVerbs();
   const toast = useToast();
@@ -173,6 +176,7 @@ function Deciding({
   return (
     <View style={{ gap: space[3] }}>
       {item.look ? <LookView look={item.look} theme={theme} /> : null}
+      <ArcReport item={item} theme={theme} compact={compact} open={open} />
       {sendingBack ? (
         <View style={{ gap: space[2] }}>
           <TextInput

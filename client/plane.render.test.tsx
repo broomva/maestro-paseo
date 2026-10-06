@@ -29,7 +29,7 @@
 import { afterAll, afterEach, describe, expect, mock, setDefaultTimeout, spyOn, test } from "bun:test";
 import type { PluginClientStateSource } from "@getpaseo/plugin/client/host";
 import { Window } from "happy-dom";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import type { MaestroConfig, Scoreboard, WakeEntry, WorkItem } from "../shared/contracts";
 import {
   type AskNotice,
@@ -180,6 +180,8 @@ notifyManager.setNotifyFunction((notify) => {
 const { PaseoApiProvider, PluginClientStateProvider, PluginRpcProvider } = await import("@getpaseo/plugin/client/host");
 const { MaestroSurface } = await import("./plane");
 const { WorkDetail } = await import("./detail");
+const { createGateCard } = await import("./gate-card");
+const { createWorkPanel } = await import("./agent-panel");
 const { requestIntent, resetIntents, takeIntent } = await import("./intent");
 const { MaestroSettings } = await import("./settings");
 const { attentionOf } = await import("../server/attention");
@@ -953,6 +955,8 @@ const invoke = async (method: string, input: unknown) => {
       controlRepo: "/Users/me/broomva",
       main: { sha: "1c7740c5", fetchedAt: null },
       decisions: workspaceNow,
+      // Each fleet scope's own root asks, tagged as the server tags them (Fleet.scopeDecisions).
+      fleet: decisionsNow.map((ask) => ({ ...ask, scope: "broomva" })),
       warnings: [],
     };
   }
@@ -1051,6 +1055,10 @@ const invoke = async (method: string, input: unknown) => {
     return { proposals: [...proposalsNow, ...sriProposals].filter((entry) => keys.includes(entry.key)) };
   }
   if (method === "work.adopt") return { item: items.find((entry) => entry.id === "a") };
+  if (method === "work.for-agent") {
+    const { agentId } = input as { agentId: string };
+    return { item: items.find((entry) => entry.worker?.agentId === agentId) ?? null };
+  }
   if (method === "work.files") return { files };
   if (method === "work.file") {
     const { name } = input as { name: string };
@@ -1319,7 +1327,9 @@ describe("the changed line", () => {
   });
 
   test("the detail alone, as the agent panel mounts it, survives a host without state", async () => {
-    const view = await mount(<WorkDetail id="a" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="a" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     expect(view.text()).toContain("Approve the branch");
     expect(view.text()).toContain("Changed");
     expect(view.text()).toContain("maestro/a-1");
@@ -1339,7 +1349,9 @@ describe("before a verb that can start a run", () => {
 
   test("a queued item whose mode comes only from Settings says so and warns before Dispatch", async () => {
     items = [...fixture(), work("q", "proposed", { nextRun: fromSettings() })];
-    const view = await mount(<WorkDetail id="q" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="q" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     expect(view.text()).toContain("Runs with claude (from Settings): mode bypassPermissions (from Settings).");
     expect(view.text()).toContain("This run skips permission prompts");
     expect(view.byLabel("Dispatch")).not.toBeNull();
@@ -1350,7 +1362,9 @@ describe("before a verb that can start a run", () => {
       ...fixture(),
       work("s", "blocked", { worker: worker("s", null), reason: "The session was archived", nextRun: fromSettings() }),
     ];
-    const view = await mount(<WorkDetail id="s" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="s" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     expect(view.text()).toContain(
       "If the session is gone, Unblock starts a new run in a fresh worktree on its own run branch (from Settings), with claude (from Settings): mode bypassPermissions (from Settings).",
     );
@@ -1360,7 +1374,9 @@ describe("before a verb that can start a run", () => {
 
   test("a run that asks before it acts carries no warning", async () => {
     items = [...fixture(), work("p", "proposed", { nextRun: fromSettings({ modeId: "acceptEdits" }) })];
-    const view = await mount(<WorkDetail id="p" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="p" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     expect(view.text()).toContain("mode acceptEdits (from Settings)");
     expect(view.text()).not.toContain("skip");
   });
@@ -1428,7 +1444,9 @@ describe("work the loop flagged", () => {
   test("a quiet run's notice offers Leave it running, which asks the host; other flags offer nothing of their own", async () => {
     const quiet = { kind: "quiet" as const, reason: "Quiet for 41 minutes, worth a look.", at: yours.at };
     items = [...flagged(), work("z", "running", { worker: worker("z", "maestro/z-1"), phase: "working", flag: quiet })];
-    const view = await mount(<WorkDetail id="z" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="z" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     const [alert] = view.all('[role="alert"]');
     expect(alert?.textContent).toContain(quiet.reason);
     const leave = alert?.querySelector('[aria-label="Leave it running"]');
@@ -1438,19 +1456,181 @@ describe("work the loop flagged", () => {
       { id: "z" },
     ]);
     // A start left to you clears when you dispatch or cancel: its notice has no verb of its own.
-    await view.rerender(<WorkDetail id="y" theme={theme} compact={false} navigation={undefined} />);
+    await view.rerender(
+      <WorkDetail id="y" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     expect(view.byLabel("Leave it running")).toBeNull();
     expect(view.all('[role="alert"]').map((el) => el.textContent)).toContain(yours.reason);
   });
 
   test("the detail says why, as a warning Notice; unflagged work has none", async () => {
     items = flagged();
-    const view = await mount(<WorkDetail id="y" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="y" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     expect(view.all('[role="alert"]').map((el) => el.textContent)).toContain(yours.reason);
     expect(view.byLabel("Dispatch")).not.toBeNull();
-    await view.rerender(<WorkDetail id="d" theme={theme} compact={false} navigation={undefined} />);
+    await view.rerender(
+      <WorkDetail id="d" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     expect(view.text()).not.toContain(yours.reason);
     expect(view.all('[role="alert"]')).toHaveLength(0);
+  });
+});
+
+describe("a finished arc at your gate (BRO-2856)", () => {
+  const detail = (id: string) => (
+    <WorkDetail id={id} theme={theme} compact={false} navigation={undefined} open={requestIntent} />
+  );
+  const root = { kind: "root" as const, path: "/state/broomva/.control/asks", branch: null };
+  const arcLook = {
+    ran: "2h unsupervised · 1 turn · ran to the gate",
+    decided: [],
+    ask: "It hands 1 thing back to you. Approve to close the work once you have taken it on, or send it back with a note.",
+    arc: { status: "HANDBACK", line: "ARC-STATUS: HANDBACK 1" },
+    closing: "What's left for you:\n1. Redeploy main to production.",
+    archived: true,
+  };
+
+  test("it says what the arc reported, shows what it left verbatim, says the session is archived, and links its ask exactly", async () => {
+    // The run's folder is the arc's name: its ledger's open ask is linked, a ledger of another arc is not.
+    items = [
+      ...fixture(),
+      work("arc", "review", {
+        worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
+        look: arcLook,
+      }),
+    ];
+    decisionsNow = [
+      { ...decisionFixture(), ledger: "sti-3485.yaml", arc: "sti-3485-approval-reply", id: "redeploy", home: root },
+      { ...decisionFixture(), ledger: "sti-3485.yaml", arc: "another-arc", id: "twin", home: root },
+    ];
+    const view = await mount(detail("arc"));
+    for (let tries = 0; tries < 100 && !view.text().includes("Answer its"); tries += 1) await settle(20);
+    const text = view.text();
+    expect(text).toContain("It hands 1 thing back to you.");
+    expect(text).toContain("Its session is archived.");
+    expect(text).toContain("Its last words · ARC-STATUS: HANDBACK 1");
+    expect(text).toContain("Redeploy main to production.");
+    expect(text).toContain("Answer its 1 decision in Decisions");
+    takeIntent();
+    await view.press(view.byLabel("Answer its 1 decision in Decisions"));
+    // The ask's full identity (askKey: home, ledger, uid, id), so Decisions opens that ask and no other.
+    expect(takeIntent()).toEqual({
+      kind: "decisions",
+      ledger: "broomva/sti-3485.yaml",
+      id: "redeploy",
+      key: JSON.stringify([root.path, "sti-3485.yaml", null, "redeploy"]),
+    });
+  });
+
+  test("asks of one arc in two ledgers: the link opens every ledger, at the first ask", async () => {
+    items = [
+      ...fixture(),
+      work("arc", "review", {
+        worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
+        look: arcLook,
+      }),
+    ];
+    decisionsNow = [
+      { ...decisionFixture(), ledger: "a.yaml", arc: "sti-3485-approval-reply", id: "first", home: root },
+      { ...decisionFixture(), ledger: "b.yaml", arc: "sti-3485-approval-reply", id: "second", home: root },
+    ];
+    const view = await mount(detail("arc"));
+    for (let tries = 0; tries < 100 && !view.text().includes("Answer its"); tries += 1) await settle(20);
+    takeIntent();
+    await view.press(view.byLabel("Answer its 2 decisions in Decisions"));
+    expect(takeIntent()).toEqual({
+      kind: "decisions",
+      ledger: null,
+      id: "first",
+      key: JSON.stringify([root.path, "a.yaml", null, "first"]),
+    });
+  });
+
+  test("from a session's gate card, the link goes through the card's opener, which opens Maestro too", async () => {
+    items = [
+      ...fixture(),
+      work("arc", "review", {
+        worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
+        look: arcLook,
+        landing: 3,
+      }),
+    ];
+    decisionsNow = [
+      { ...decisionFixture(), ledger: "sti-3485.yaml", arc: "sti-3485-approval-reply", id: "redeploy", home: root },
+    ];
+    const asked: unknown[] = [];
+    const Card = createGateCard((intent) => asked.push(intent));
+    const props = {
+      item: { data: { workId: "arc", landing: 3, agentId: "ag-arc" } },
+      theme,
+      layout: { compact: false },
+    } as unknown as ComponentProps<typeof Card>;
+    const view = await mount(<Card {...props} />);
+    for (let tries = 0; tries < 100 && !view.text().includes("Answer its"); tries += 1) await settle(20);
+    takeIntent();
+    await view.press(view.byLabel("Answer its 1 decision in Decisions"));
+    // Not left for a surface that may not be open: handed to the card's opener.
+    expect(takeIntent()).toBeNull();
+    expect(asked).toEqual([
+      {
+        kind: "decisions",
+        ledger: "broomva/sti-3485.yaml",
+        id: "redeploy",
+        key: JSON.stringify([root.path, "sti-3485.yaml", null, "redeploy"]),
+      },
+    ]);
+  });
+
+  test("in the work panel beside a session, the link goes through the panel's opener, which opens Maestro too", async () => {
+    items = [
+      ...fixture(),
+      work("arc", "review", {
+        worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
+        look: arcLook,
+      }),
+    ];
+    decisionsNow = [
+      { ...decisionFixture(), ledger: "sti-3485.yaml", arc: "sti-3485-approval-reply", id: "redeploy", home: root },
+    ];
+    const asked: unknown[] = [];
+    const Panel = createWorkPanel((intent) => asked.push(intent));
+    const props = {
+      theme,
+      layout: { compact: false },
+      agentId: "ag-arc",
+      navigation: undefined,
+    } as unknown as ComponentProps<typeof Panel>;
+    const view = await mount(<Panel {...props} />);
+    for (let tries = 0; tries < 100 && !view.text().includes("Answer its"); tries += 1) await settle(20);
+    takeIntent();
+    await view.press(view.byLabel("Answer its 1 decision in Decisions"));
+    expect(takeIntent()).toBeNull();
+    expect(asked).toEqual([
+      {
+        kind: "decisions",
+        ledger: "broomva/sti-3485.yaml",
+        id: "redeploy",
+        key: JSON.stringify([root.path, "sti-3485.yaml", null, "redeploy"]),
+      },
+    ]);
+  });
+
+  test("with nothing left above the verdict and the session alive, the card adds nothing", async () => {
+    const bare = {
+      ...arcLook,
+      closing: null,
+      archived: false,
+      ask: "It reports its arc finished. Approve to close the work, or send it back with a note.",
+    };
+    items = [...fixture(), work("arc", "review", { worker: worker("arc", null), look: bare })];
+    const view = await mount(detail("arc"));
+    const text = view.text();
+    expect(text).toContain("It reports its arc finished.");
+    expect(text).not.toContain("Its last words");
+    expect(text).not.toContain("Its session is archived.");
+    expect(text).not.toContain("in Decisions");
   });
 });
 
@@ -1464,7 +1644,9 @@ describe("Stop run", () => {
       look: { ran: "4m unsupervised · 1 turn · paused on a question", decided: [], ask: "Run a command: rm -rf dist" },
       ...extra,
     });
-  const detail = (id: string) => <WorkDetail id={id} theme={theme} compact={false} navigation={undefined} />;
+  const detail = (id: string) => (
+    <WorkDetail id={id} theme={theme} compact={false} navigation={undefined} open={requestIntent} />
+  );
   const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
   const move = (id: string, next: WorkItem) => {
     items = items.map((item) => (item.id === id ? next : item));
@@ -1842,7 +2024,9 @@ describe("History", () => {
 
 describe("work the fleet raised (BRO-2839)", () => {
   test("reads by its asks: no marker, the fleet's place, verbs explained, the run's words folded, repeats once", async () => {
-    const view = await mount(<WorkDetail id="fleet-1" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="fleet-1" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     await settle(50);
     const text = view.text();
     // The displayed title is the source's text exactly (no U+2011); the flag token is kept from wrapping.
@@ -1880,7 +2064,9 @@ describe("work the fleet raised (BRO-2839)", () => {
 
 describe("the work folder's files", () => {
   test("lists them; a file opens as text, a long one says it was cut, a binary one says why", async () => {
-    const view = await mount(<WorkDetail id="a" theme={theme} compact={false} navigation={undefined} />);
+    const view = await mount(
+      <WorkDetail id="a" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
+    );
     // The detail loads first; the file list is its own read after that.
     await settle(50);
     expect(view.text()).toContain("Files");
@@ -2779,6 +2965,32 @@ describe("drilling in", () => {
     expect(opened).toEqual(["agent-asker"]);
   });
 
+  test("answered in the Fleet view, the ask stays filed under its scope in Decisions, and under its ledger here", async () => {
+    decisionsNow = [decisionFixture()];
+    const view = await mount(surface(false));
+    await view.press(tab(view, "Fleet"));
+    await view.press(view.byLabel("Read and answer the fleet's decisions, broomva"));
+    // Every read after this fails or is held: only the answer's reply can tell either list.
+    workspaceFail = "asks.workspace timed out";
+    let release = () => {};
+    fleetHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await view.press(view.byLabel("File all four, recommended"));
+    await view.press(view.byLabel("Answer A10: File all four"));
+    expect(view.text()).toContain("Answered just now: “File all four”");
+    // The Fleet view's group is its ledger's, as before: the reply is untagged there.
+    expect(
+      view.all("[aria-expanded]").some((one) => one.getAttribute("aria-label")?.startsWith("maestro-paseo-gaps.yaml:")),
+    ).toBe(true);
+    fleetHeld = null;
+    release();
+    await view.goto("Decisions");
+    for (let tries = 0; tries < 100 && !view.text().includes("Recently answered · 1"); tries += 1) await settle(20);
+    await view.press(view.byLabel("Recently answered · 1"));
+    expect(view.text()).toContain("· broomva · maestro-paseo-gaps");
+  });
+
   test("a fleet scope's decisions: one that waits on you is its own card; the others fold past ten open", async () => {
     decisionsNow = [
       { ...decisionFixture(), ledger: "waits.yaml", id: "W1", blocking: true, waiting: true },
@@ -3138,6 +3350,97 @@ describe("the Decisions tab", () => {
     expect(view.text()).toContain("Answered just now: “Drop all four” · bro-2795-local-first-agentic-canvas ·");
   });
 
+  test("a fleet scope's ask is listed beside the workspace's, filed under its scope, and answered at its root", async () => {
+    const root = { kind: "root" as const, path: "/state/broomva/.control/asks", branch: null };
+    // The same file name as a workspace ledger: two ledgers, never one.
+    decisionsNow = [canvas("redeploy", { headline: "Redeploy main's tip?", home: root, hash: "bbbbbbbbbbbbbbbb" })];
+    workspaceNow = [canvas("product-name")];
+    const view = await open();
+    await until(view, "Decision ");
+    expect(view.byLabel("All ledgers: 2 open")).not.toBeNull();
+    expect(view.byLabel("bro-2795-local-first-agentic-canvas.yaml: 1 open")).not.toBeNull();
+    await view.press(view.byLabel("broomva/bro-2795-local-first-agentic-canvas.yaml: 1 open"));
+    expect(view.text()).toContain("Decision 1 of 1");
+    expect(view.text()).toContain("Redeploy main's tip?");
+    expect(view.text()).toContain("broomva · bro-2795-local-first-agentic-canvas · ");
+    await view.press(view.byLabel("File all four, recommended"));
+    await view.press(view.byLabel("Answer redeploy: File all four"));
+    expect(sent("ask.answer")).toEqual([
+      expect.objectContaining({
+        where: { kind: "fleet", scope: "broomva" },
+        ledger: "bro-2795-local-first-agentic-canvas.yaml",
+        id: "redeploy",
+        hash: "bbbbbbbbbbbbbbbb",
+      }),
+    ]);
+    // What it answered names the scope's ledger, not the workspace's of the same name.
+    await until(view, "answers are not undone here");
+    expect(view.text()).toContain("· broomva · bro-2795-local-first-agentic-canvas · answers are not undone here");
+  });
+
+  test("an intent with an ask's full identity opens that ask, of two sharing a ledger and an id in two checkouts", async () => {
+    const at = (path: string) => ({ kind: "checkout" as const, path, branch: path.slice(-1) });
+    // Two checkouts hold one ledger with the same id (control-home's copies): only the home tells them apart.
+    workspaceNow = [
+      canvas("redeploy", { headline: "Redeploy, as checkout a has it", home: at("/wt/a") }),
+      canvas("redeploy", {
+        headline: "Redeploy, as checkout b has it",
+        home: at("/wt/b"),
+        blocking: true,
+        waiting: true,
+      }),
+    ];
+    const view = await open();
+    await until(view, "Redeploy, as checkout b has it");
+    await step(generation, () =>
+      requestIntent({
+        kind: "decisions",
+        ledger: null,
+        id: "redeploy",
+        key: JSON.stringify(["/wt/a", "bro-2795-local-first-agentic-canvas.yaml", null, "redeploy"]),
+      }),
+    );
+    // The card's own heading, not Up next, which lists both.
+    const headings = () => view.all('[role="heading"]').map((el) => el.textContent);
+    for (let tries = 0; tries < 150 && !headings().includes("Redeploy, as checkout a has it"); tries += 1) {
+      await settle(20);
+    }
+    expect(headings()).toContain("Redeploy, as checkout a has it");
+    expect(headings()).not.toContain("Redeploy, as checkout b has it");
+  });
+
+  test("an intent with the full identity of an ask answered since says so, and shows the first open one", async () => {
+    workspaceNow = [canvas("old", { state: "answered", answeredAt: new Date().toISOString() }), canvas("product-name")];
+    const view = await open();
+    await until(view, "Canvas ask product-name");
+    await step(generation, () =>
+      requestIntent({
+        kind: "decisions",
+        ledger: null,
+        id: "old",
+        // A main-home ask's home key is origin/main (homeKey).
+        key: JSON.stringify(["origin/main", "bro-2795-local-first-agentic-canvas.yaml", null, "old"]),
+      }),
+    );
+    await until(view, "That decision is answered now");
+    expect(view.text()).toContain("That decision is answered now: showing the first open one.");
+  });
+
+  test("a fleet scope's ask answered while the list cannot be read again: the list learns the answer in place", async () => {
+    const root = { kind: "root" as const, path: "/state/broomva/.control/asks", branch: null };
+    decisionsNow = [canvas("redeploy", { headline: "Redeploy main's tip?", home: root })];
+    const view = await open();
+    await until(view, "Redeploy main's tip?");
+    // Every read after this fails: only the answer's own reply can tell the list.
+    workspaceFail = "asks.workspace timed out";
+    await view.press(view.byLabel("File all four, recommended"));
+    await view.press(view.byLabel("Answer redeploy: File all four"));
+    await until(view, "Recently answered · 1");
+    expect(view.text()).toContain("Recently answered · 1");
+    expect(view.text()).toContain("0 open");
+    expect(view.text()).toContain("Nothing to decide");
+  });
+
   test("an ask with no decision layer: its first sentence leads, the rest behind Full question; answered in words", async () => {
     workspaceNow = [
       canvas("A1", {
@@ -3277,7 +3580,7 @@ describe("the Decisions tab", () => {
     await until(view, "This ask is no longer open here");
     await view.press(view.byLabel("Next decision"));
     await until(view, "Nothing to decide");
-    expect(view.text()).toContain("No open asks in your workspace's ledgers.");
+    expect(view.text()).toContain("No open asks in your workspace's ledgers or the fleet's.");
   });
 
   test("the card is pinned to its ask: a refetch never swaps it; answered elsewhere, it stays and says so", async () => {

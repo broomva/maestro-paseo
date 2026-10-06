@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ARCHIVED_NOTE,
+  arcStatus,
   bullets,
+  closingAbove,
   type FlaggedEvent,
   flagOf,
   formatDuration,
@@ -59,6 +62,9 @@ describe("the look at the gate", () => {
       ran: "2h 14m unsupervised · 1 turn · ran to the gate",
       decided: ["Persist on the Run record, it survives restarts", "Cover replay with tests"],
       ask: "Approve the branch so reviews stop needing the live session.",
+      arc: null,
+      closing: null,
+      archived: false,
     });
   });
 
@@ -403,5 +409,142 @@ describe("a decision inside its undo window", () => {
       { ts: at(11), type: "state", actor: "human", from: "review", to: "done", reason: null },
     ];
     expect(toWireEvents(applied).map((event) => event.text)).toEqual(["You approved", "Took effect"]);
+  });
+});
+
+describe("an arc's own verdict at the gate (BRO-2856)", () => {
+  const ended = (text: string): WorkEvent[] =>
+    toReview.map((e) => (e.type === "turn.ended" ? { ...e, summary: text } : e));
+  const line = (text: string) => arcStatus(text)?.at ?? -1;
+
+  test("the verdict is ctx-core's: the last line that starts exactly `ARC-STATUS: WORD`", () => {
+    expect(arcStatus("x\nARC-STATUS: DONE\nmore\nARC-STATUS: HANDBACK 2\n")).toEqual({
+      status: "HANDBACK",
+      line: "ARC-STATUS: HANDBACK 2",
+      at: 3,
+    });
+    // Indented, lower case, or mid-line: not the grammar.
+    expect(arcStatus("  ARC-STATUS: DONE")).toBeNull();
+    expect(arcStatus("ARC-STATUS: done")).toBeNull();
+    expect(arcStatus("it said ARC-STATUS: DONE")).toBeNull();
+  });
+
+  test("a tail cut inside a code block still reads the verdict: fences are not read", () => {
+    // The kept text starts mid-block, so its first fence line is that block's closer.
+    const cut = ["…fly deploy", "```", "", "Left: redeploy.", "", "ARC-STATUS: HANDBACK 1"].join("\n");
+    expect(arcStatus(cut)?.status).toBe("HANDBACK");
+    expect(closingAbove(cut, line(cut))).toBe("…fly deploy\n```\n\nLeft: redeploy.");
+  });
+
+  test("the closing is the block above the verdict: back to a heading (kept), a table or a rule", () => {
+    const text = [
+      "# Report",
+      "| a | b |",
+      "| 1 | 2 |",
+      "",
+      "### No handback",
+      "",
+      "Two notes:",
+      "- one",
+      "",
+      "ARC-STATUS: CLOSED",
+    ].join("\n");
+    expect(closingAbove(text, line(text))).toBe("### No handback\n\nTwo notes:\n- one");
+    const prose = ["| a | b |", "| 1 | 2 |", "What's left:", "1. Redeploy", "", "ARC-STATUS: HANDBACK 1"].join("\n");
+    expect(closingAbove(prose, line(prose))).toBe("What's left:\n1. Redeploy");
+    const rule = ["before", "---", "after", "ARC-STATUS: DONE"].join("\n");
+    expect(closingAbove(rule, line(rule))).toBe("after");
+  });
+
+  test("the closing is verbatim, indentation kept; a heading or rule is one indented at most 3 spaces", () => {
+    const code = ["Run this:", "", "    fly deploy", "ARC-STATUS: DONE"].join("\n");
+    expect(closingAbove(code, line(code))).toBe("Run this:\n\n    fly deploy");
+    const opens = ["Intro", "---", "", "    fly deploy", "", "ARC-STATUS: DONE"].join("\n");
+    expect(closingAbove(opens, line(opens))).toBe("    fly deploy");
+    // Indented 4 spaces, `# sri` and `---` are code, not a heading or a rule.
+    const nested = [
+      "What's left:",
+      "- Redeploy:",
+      "    # sri",
+      "    ---",
+      "    fly deploy",
+      "ARC-STATUS: HANDBACK 1",
+    ].join("\n");
+    expect(closingAbove(nested, line(nested))).toBe("What's left:\n- Redeploy:\n    # sri\n    ---\n    fly deploy");
+  });
+
+  test("a rule that only sets the verdict apart is passed over, not taken as the end of the closing", () => {
+    const text = ["Done, PR merged.", "", "---", "", "ARC-STATUS: HANDBACK 2"].join("\n");
+    expect(closingAbove(text, line(text))).toBe("Done, PR merged.");
+  });
+
+  test("a table right above the verdict is the closing; nothing above is none", () => {
+    const text = [
+      "Intro",
+      "",
+      "| item | evidence |",
+      "| --- | --- |",
+      "| Deploy | failed |",
+      "",
+      "ARC-STATUS: HANDBACK 1",
+    ].join("\n");
+    expect(closingAbove(text, line(text))).toBe("| item | evidence |\n| --- | --- |\n| Deploy | failed |");
+    expect(closingAbove("ARC-STATUS: DONE", 0)).toBeNull();
+  });
+
+  test("the ask says what the arc reported and nothing about where; an Ask section still wins", () => {
+    const verbs = "Approve to close the work, or send it back with a note.";
+    expect(lookOf("review", ended("Merged.\n\nNothing left.\n\nARC-STATUS: CLOSED"), T0)).toMatchObject({
+      ask: `It reports its arc finished. ${verbs}`,
+      arc: { status: "CLOSED", line: "ARC-STATUS: CLOSED" },
+      closing: "Merged.\n\nNothing left.",
+    });
+    expect(lookOf("review", ended("Left:\n1. a\n2. b\nARC-STATUS: HANDBACK 2"), T0)?.ask).toBe(
+      "It hands 2 things back to you. Approve to close the work once you have taken them on, or send it back with a note.",
+    );
+    expect(lookOf("review", ended("Left: a\nARC-STATUS: HANDBACK 1"), T0)?.ask).toBe(
+      "It hands 1 thing back to you. Approve to close the work once you have taken it on, or send it back with a note.",
+    );
+    expect(lookOf("review", ended("Left: a\nARC-STATUS: HANDBACK 0"), T0)?.ask).toBe(
+      `It reports nothing handed back to you. ${verbs}`,
+    );
+    expect(lookOf("review", ended("Left: a\nARC-STATUS: HANDBACK"), T0)?.ask).toStartWith(
+      "It hands work back to you. Approve to close the work once you have taken it on",
+    );
+    expect(lookOf("review", ended("x\nARC-STATUS: BLOCKED"), T0)?.ask).toBe(
+      "It reports its arc blocked. Send it back with a note, or cancel the work.",
+    );
+    expect(lookOf("review", ended("x\nARC-STATUS: PAUSED"), T0)?.ask).toBe(
+      `It ended with “ARC-STATUS: PAUSED”. ${verbs}`,
+    );
+    // Nothing above the verdict: no closing.
+    expect(lookOf("review", ended("ARC-STATUS: CLOSED"), T0)).toMatchObject({ closing: null });
+    expect(lookOf("review", ended(`${summary}\nARC-STATUS: DONE`), T0)?.ask).toBe(
+      "Approve the branch so reviews stop needing the live session.",
+    );
+  });
+
+  test("archived only when its session was archived after this run was bound and after the turn that landed it", () => {
+    const note = (minutes: number): WorkEvent => ({
+      ts: at(minutes),
+      type: "note",
+      actor: "maestro",
+      text: ARCHIVED_NOTE,
+    });
+    expect(lookOf("review", [...toReview, note(135)], T0)?.archived).toBe(true);
+    expect(lookOf("review", toReview, T0)?.archived).toBe(false);
+    // An earlier session's archiving, before this run's dispatch, is not this one's.
+    const earlier = [note(-5), ...toReview.map((e) => (e.type === "dispatched" ? { ...e, ts: at(1) } : e))];
+    expect(lookOf("review", earlier, T0)?.archived).toBe(false);
+    // Sent back after it was archived, run again, and landed again: not archived now.
+    const turn = toReview.find((e) => e.type === "turn.ended") as WorkEvent;
+    const again: WorkEvent[] = [
+      ...toReview,
+      note(135),
+      { ts: at(136), type: "state", actor: "human", from: "review", to: "running", reason: "Sent back with a note" },
+      { ...turn, ts: at(150) },
+      { ts: at(150), type: "state", actor: "maestro", from: "running", to: "review", reason: null },
+    ];
+    expect(lookOf("review", again, T0)?.archived).toBe(false);
   });
 });

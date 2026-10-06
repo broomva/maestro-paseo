@@ -1043,6 +1043,42 @@ describe("drilling in", () => {
     await expect(fleet.tick("nowhere", 1)).rejects.toThrow("The fleet has no scope named nowhere.");
   });
 
+  test("two scopes on one state dir, however reached, read one root once; within it, every ask as the ledger reader gives it", async () => {
+    const { paths, fleet } = await setup();
+    const shared = join(paths.state, "alpha");
+    await mkdir(shared, { recursive: true });
+    // gamma reaches alpha's state dir through a symlink.
+    const via = join(paths.state, "..", "alpha-link");
+    await symlink(shared, via);
+    await writeFleet(paths, {
+      alpha: { ticks: [{ tick: 35, at: ago(0.2), exit: 0 }] },
+      beta: { ticks: [{ tick: 35, at: ago(0.2), exit: 0 }], config: { state_dir: shared } },
+      gamma: { ticks: [{ tick: 35, at: ago(0.2), exit: 0 }], config: { state_dir: via } },
+    });
+    const askRoot = join(shared, ".control", "asks");
+    await mkdir(askRoot, { recursive: true });
+    // Two asks named A1 and no uid: the reader lists both, each refused, and the blocking one waits on you.
+    await writeFile(
+      join(askRoot, "fleet-alpha.yaml"),
+      [
+        "asks:",
+        "  - id: A1",
+        '    headline: "One?"',
+        "    blocking: false",
+        "  - id: A1",
+        '    headline: "Two?"',
+        "    blocking: true",
+        "",
+      ].join("\n"),
+    );
+    const { asks } = await fleet.scopeDecisions();
+    expect(asks.map((ask) => [ask.scope, ask.headline])).toEqual([
+      ["alpha", "One?"],
+      ["alpha", "Two?"],
+    ]);
+    expect((await fleet.waitingAsks()).map((notice) => [notice.scope, notice.headline])).toEqual([["alpha", "Two?"]]);
+  });
+
   test("decision asks in the fleet's ask root are in the view, and an answer is written there under the lock", async () => {
     const { root, paths, fleet, logs } = await setup();
     await writeFleet(paths, { alpha: { ticks: [{ tick: 35, at: ago(0.2), exit: 0 }] } });
@@ -1076,8 +1112,17 @@ describe("drilling in", () => {
     expect((await fleet.waitingAsks()).map((notice) => [notice.scope, notice.ledger, notice.blocking])).toEqual([
       ["alpha", "fleet-blocking.yaml", true],
     ]);
+    // Decisions lists every scope's own asks beside the workspace's, each tagged with its scope.
+    const scoped = await fleet.scopeDecisions();
+    expect(scoped.asks.map((ask) => [ask.scope, ask.ledger, ask.id])).toEqual([
+      ["alpha", "fleet-alpha.yaml", "spawn-duplicate-1"],
+      ["alpha", "fleet-blocking.yaml", "spawn-duplicate-1"],
+    ]);
+    expect(scoped.warnings).toEqual([]);
     await rm(join(askRoot, "fleet-blocking.yaml"));
     const detail = (await fleet.get()).detail;
+    // The Fleet view's own read is untagged: it lists them under their scope already.
+    expect(detail?.decisions.every((ask) => ask.scope === undefined)).toBe(true);
     expect(detail?.askRoot).toBe(askRoot);
     expect(detail?.decisions.map((ask) => [ask.id, ask.state, ask.options.map((option) => option.id)])).toEqual([
       ["spawn-duplicate-1", "open", ["stop-newer", "leave"]],

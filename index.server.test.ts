@@ -571,3 +571,95 @@ test("initiatives and their ideas are wired: develop files held work in the init
     }
   }
 });
+
+test("asks.workspace carries each fleet scope's root asks, tagged; a fleet answer is written at its root (BRO-2856)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
+  roots.push(root);
+  const config = join(root, "config.json");
+  await writeFile(
+    config,
+    JSON.stringify({ workRoot: join(root, "work"), provider: "claude/test-model", modeId: null }),
+  );
+  const state = join(root, "fleet-state");
+  const fleetConfig = join(root, "fleet.json");
+  await writeFile(fleetConfig, "{ not json");
+  // A scope found on disk (its ticks folder), with one decision ask in its own root.
+  await mkdir(join(state, "alpha", "ticks"), { recursive: true });
+  const askRoot = join(state, "alpha", ".control", "asks");
+  await mkdir(askRoot, { recursive: true });
+  await writeFile(
+    join(askRoot, "fleet-alpha.yaml"),
+    [
+      "arc: fleet-alpha",
+      "asks:",
+      "  - id: redeploy",
+      '    headline: "Redeploy main?"',
+      "    options:",
+      "      - id: go",
+      '        label: "Redeploy"',
+      '        consequence: "Production runs the fix."',
+      "        reversible: true",
+      "        recommended: true",
+      "    blocking: false",
+      "",
+    ].join("\n"),
+  );
+  const keys = [
+    "MAESTRO_PASEO_CONFIG",
+    "MAESTRO_PASEO_SOCKET",
+    "MAESTRO_PASEO_FLEET_CONFIG",
+    "MAESTRO_PASEO_FLEET_STATE",
+    "MAESTRO_PASEO_FLEET_AGENTS",
+    "MAESTRO_PASEO_CONTROL_REPO",
+    "MAESTRO_PASEO_ASK_LOCKS",
+    "MAESTRO_PASEO_ASK_RECEIPTS",
+  ] as const;
+  const saved = keys.map((key) => [key, process.env[key]] as const);
+  Object.assign(process.env, {
+    MAESTRO_PASEO_CONFIG: config,
+    MAESTRO_PASEO_SOCKET: join(root, "m.sock"),
+    // An unreadable fleet config: the scopes are the state dirs found, and Decisions says why.
+    MAESTRO_PASEO_FLEET_CONFIG: fleetConfig,
+    MAESTRO_PASEO_FLEET_STATE: state,
+    MAESTRO_PASEO_FLEET_AGENTS: join(root, "agents"),
+    MAESTRO_PASEO_CONTROL_REPO: "off",
+    MAESTRO_PASEO_ASK_LOCKS: join(root, "locks"),
+    MAESTRO_PASEO_ASK_RECEIPTS: join(root, "asks.jsonl"),
+  });
+  const { host, handlers } = fakeHost();
+  const cleanup = contribute(host);
+  const context = { paseo: fakePaseo().paseo, signal: new AbortController().signal };
+  const run = async <T>(name: string, input: unknown): Promise<T> => {
+    const handler = handlers.get(name);
+    if (!handler) throw new Error(`${name} is not handled`);
+    return (await handler(input, context)) as T;
+  };
+  type Ask = { ledger: string; id: string; hash: string; state: string; scope?: string | null };
+  try {
+    const view = await run<{ decisions: Ask[]; fleet?: Ask[]; warnings: string[] }>("asks.workspace", {});
+    expect(view.decisions).toEqual([]);
+    expect(view.fleet?.map((ask) => [ask.scope, ask.ledger, ask.id, ask.state])).toEqual([
+      ["alpha", "fleet-alpha.yaml", "redeploy", "open"],
+    ]);
+    expect(view.warnings.some((warning) => warning === `The fleet config (${fleetConfig}) is not valid JSON.`)).toBe(
+      true,
+    );
+    const answered = await run<{ ask: Ask }>("ask.answer", {
+      where: { kind: "fleet", scope: "alpha" },
+      ledger: "fleet-alpha.yaml",
+      uid: null,
+      id: "redeploy",
+      hash: view.fleet?.[0]?.hash ?? "",
+      option: "go",
+      note: "",
+    });
+    // The reply is the ledger's ask as written, untagged: the card that asked files it under its own list's scope.
+    expect([answered.ask.scope, answered.ask.state]).toEqual([undefined, "answered"]);
+  } finally {
+    await cleanup();
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});

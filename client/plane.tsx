@@ -20,6 +20,7 @@ import { ActivityIndicator, Text, View } from "react-native";
 import { ChangeScope } from "./changed";
 import { type DecisionsFocus, DecisionsView } from "./decision-triage";
 import { AskNotices, useDecisionCounts } from "./decisions";
+import { ledgerOf } from "./decisions-model";
 import { WorkDetail } from "./detail";
 import { FleetNotices, FleetView } from "./fleet";
 import { errorText, plural } from "./format";
@@ -27,7 +28,7 @@ import { needsYouCount } from "./header-count";
 import { HistoryView } from "./history";
 import { useAttention, useLoop, useWorkList } from "./hooks";
 import { InitiativeNotices, InitiativesView } from "./initiatives";
-import { useIntent } from "./intent";
+import { requestIntent, useIntent } from "./intent";
 import { LoopControl, LoopPanel } from "./loop";
 import { NewWork } from "./new-work";
 import { FilterRow, ScopeRow, ViewPicker, ViewSwitch } from "./plane-controls";
@@ -82,7 +83,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     setFleetTick(tick);
     setView("fleet");
   };
-  // The workspace's asks open in Decisions, at the ask named; a fleet scope's stay in its Fleet view.
+  // Asks open in Decisions, at the ask named: the workspace's and every fleet scope's.
   const openDecisions = (ledger: string | null, ask: DecisionsFocus["ask"]) => {
     setDecisionsFocus({ ledger, ask, at: Date.now() });
     setView("decisions");
@@ -93,7 +94,10 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     else if (intent.kind === "new") setCreating(true);
     else if (intent.kind === "fleet") openFleet(intent.scope);
     else if (intent.kind === "decisions")
-      openDecisions(intent.ledger ?? null, intent.id ? { ledger: intent.ledger ?? null, id: intent.id } : null);
+      openDecisions(
+        intent.ledger ?? null,
+        intent.id ? { ledger: intent.ledger ?? null, id: intent.id, key: intent.key ?? null } : null,
+      );
     else if (intent.kind === "timeline") setView("timeline");
     else if (intent.kind === "initiatives") setView("initiatives");
     else {
@@ -140,7 +144,14 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     return (
       <ChangeScope>
         <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
-          <WorkDetail id={current} theme={theme} compact navigation={navigation} onBack={() => setSelected(null)} />
+          <WorkDetail
+            id={current}
+            theme={theme}
+            compact
+            navigation={navigation}
+            onBack={() => setSelected(null)}
+            open={requestIntent}
+          />
           {newWork}
         </View>
       </ChangeScope>
@@ -183,11 +194,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
         <AskNotices
           theme={theme}
           compact={compact}
-          onOpen={(notice) =>
-            notice.scope === null
-              ? openDecisions(null, { ledger: notice.ledger, uid: notice.uid, id: notice.id })
-              : openFleet(notice.scope)
-          }
+          onOpen={(notice) => openDecisions(null, { ledger: ledgerOf(notice), uid: notice.uid, id: notice.id })}
         />
       )}
       {view === "timeline" ? null : (
@@ -335,13 +342,14 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
                 compact={false}
                 navigation={navigation}
                 onBack={() => setSelected(null)}
+                open={requestIntent}
               />
             </View>
           ) : null
         ) : (
           <View style={{ flex: 1 }}>
             {current ? (
-              <WorkDetail id={current} theme={theme} compact={false} navigation={navigation} />
+              <WorkDetail id={current} theme={theme} compact={false} navigation={navigation} open={requestIntent} />
             ) : (
               <View
                 style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: space[8], gap: space[2] }}

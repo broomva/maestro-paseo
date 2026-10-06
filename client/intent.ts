@@ -15,7 +15,14 @@ export type MaestroIntent =
   | { kind: "new" }
   | { kind: "filter"; group: Group }
   | { kind: "fleet"; scope: string | null }
-  | { kind: "decisions"; ledger?: string | null; id?: string | null }
+  | {
+      kind: "decisions";
+      /** The ledger the tab lists (null: all). */
+      ledger?: string | null;
+      /** The ask to show first: its id, and its full identity (askKey) when the caller holds the ask. */
+      id?: string | null;
+      key?: string | null;
+    }
   | { kind: "timeline" }
   | { kind: "initiatives" };
 

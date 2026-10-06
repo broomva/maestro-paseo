@@ -24,6 +24,7 @@ import {
   askKey,
   askNoticeText,
   type DecisionGroup,
+  decisionAsks,
   groupDecisions,
   groupMeta,
   isTriaged,
@@ -179,10 +180,10 @@ export function useWorkspaceAsks() {
   return useQuery({ queryKey: ["maestro", "workspace-asks"], queryFn: () => get({}), refetchInterval: POLL_MS });
 }
 
-/** The workspace's open decisions (ideas aside) and how many wait on you: the Decisions tab's badge. */
+/** The open decisions the tab lists (ideas aside: decisionAsks) and how many wait on you: the Decisions tab's badge. */
 export function useDecisionCounts(): { open: number; waiting: number } {
   const read = useWorkspaceAsks();
-  const open = (read.data?.decisions ?? []).filter(isTriaged);
+  const open = (read.data ? decisionAsks(read.data) : []).filter(isTriaged);
   return { open: open.length, waiting: open.filter((ask) => ask.waiting).length };
 }
 
@@ -220,7 +221,7 @@ export function WorkspaceDecisions({
         .filter(Boolean)
         .join(" · ")}
     >
-      <Text style={text.small}>They are not the fleet's: they have their own tab, one decision at a time.</Text>
+      <Text style={text.small}>They have their own tab, beside the fleet's, one decision at a time.</Text>
       <View style={{ flexDirection: "row" }}>
         <Button
           theme={theme}
@@ -237,8 +238,8 @@ export function WorkspaceDecisions({
 /**
  * The decision asks that wait on you, where Maestro shows what needs you, from
  * work.attention: exactly what the header count counts for them. Open
- * Decisions goes to the Decisions tab for the workspace's, at the first one,
- * and to the Fleet view for a fleet scope's.
+ * Decisions goes to the Decisions tab at the first one, the workspace's and a
+ * fleet scope's alike.
  */
 export function AskNotices({
   theme,

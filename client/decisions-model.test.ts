@@ -7,11 +7,15 @@ import {
   askKey,
   askNoticeText,
   cutAtWord,
+  decisionAsks,
   fallbackOption,
   groupDecisions,
   groupMeta,
+  handedAsks,
   headlineOf,
   homeText,
+  ledgerName,
+  ledgerOf,
   ledgerRail,
   metaLine,
   nextAfter,
@@ -28,6 +32,7 @@ import {
   triageKey,
   triageQueue,
   upNext,
+  whereOf,
   writtenTo,
 } from "./decisions-model";
 
@@ -475,5 +480,69 @@ describe("round 3", () => {
     expect(answeredElsewhere({ ...done, answerOption: null, answer: null })).toBe(
       "This was answered elsewhere: its answer is in the ledger now. Nothing was sent from here.",
     );
+  });
+});
+
+describe("a fleet scope's own asks, beside the workspace's (BRO-2856)", () => {
+  const root = (scope: string) => ({ kind: "root" as const, path: `/state/${scope}/.control/asks`, branch: null });
+  const scoped = (scope: string, ledger: string, id: string, extra: Partial<DecisionAsk> = {}) =>
+    ask(ledger, id, { scope, home: root(scope), ...extra });
+
+  test("Decisions lists the workspace's, then each scope's; an older daemon sends none", () => {
+    const mine = ask("bro-1.yaml", "a1");
+    const sri = scoped("sri", "sti-1.yaml", "s1");
+    expect(ids(decisionAsks({ decisions: [mine], fleet: [sri] }))).toEqual(["a1", "s1"]);
+    expect(ids(decisionAsks({ decisions: [mine] }))).toEqual(["a1"]);
+  });
+
+  test("a scope's ask is filed under its scope; a workspace ledger of the same name is another ledger", () => {
+    const mine = ask("same.yaml", "a1");
+    const sri = scoped("sri", "same.yaml", "a1");
+    expect(ledgerOf(mine)).toBe("same.yaml");
+    expect(ledgerOf(sri)).toBe("sri/same.yaml");
+    expect(ledgerName(ledgerOf(sri))).toBe("sri · same");
+    expect(groupDecisions([mine, sri]).map((group) => group.ledger)).toEqual(["same.yaml", "sri/same.yaml"]);
+    expect(ledgerRail([mine, sri]).map((entry) => entry.ledger)).toEqual(["same.yaml", "sri/same.yaml"]);
+    expect(ids(triageQueue([mine, sri], { ordering: "oldest", ledger: "sri/same.yaml" }))).toEqual(["a1"]);
+    expect(triageQueue([mine, sri], { ordering: "oldest", ledger: "sri/same.yaml" })[0]?.scope).toBe("sri");
+    expect(resolveFocus([mine, sri], { ledger: "sri/same.yaml", id: "a1" })?.ask.scope).toBe("sri");
+    expect(askKey(mine)).not.toBe(askKey(sri));
+  });
+
+  test("an answer goes where the ask lives: the fleet's route for a scope's, the workspace's home otherwise", () => {
+    expect(whereOf(scoped("sri", "sti-1.yaml", "s1"))).toEqual({ kind: "fleet", scope: "sri" });
+    expect(whereOf(ask("bro-1.yaml", "a1"))).toEqual({ kind: "workspace", home: "origin/main" });
+    expect(writtenTo(scoped("sri", "sti-1.yaml", "s1"))).toBe("Written into the fleet's sri ledger sti-1");
+    expect(metaLine(scoped("sri", "sti-1.yaml", "s1"))).toStartWith("sri · sti-1 · ");
+  });
+
+  test("a focus with the ask's full identity opens that ask, among asks that differ in one field each", () => {
+    const base = ask("same.yaml", "redeploy", { uid: "u1", home: { kind: "checkout", path: "/wt/a", branch: "a" } });
+    const otherHome = { ...base, home: { kind: "checkout" as const, path: "/wt/b", branch: "b" }, waiting: true };
+    const otherUid = { ...base, uid: "u2", waiting: true };
+    const otherScope = { ...base, scope: "sri", home: root("sri"), waiting: true };
+    const queue = [otherHome, otherUid, otherScope, base];
+    expect(resolveFocus(queue, { ledger: null, id: "redeploy", key: askKey(base) })?.ask).toBe(base);
+    for (const one of [otherHome, otherUid, otherScope]) {
+      expect(resolveFocus(queue, { ledger: null, id: "redeploy", key: askKey(one) })?.ask).toBe(one);
+    }
+    // A key no ask holds now opens nothing, never a near match.
+    expect(resolveFocus(queue, { ledger: null, id: "redeploy", key: askKey({ ...base, uid: "gone" }) })).toBeNull();
+  });
+
+  test("a finished arc's asks link exactly: open asks in a ledger whose arc is the run's folder, nothing else", () => {
+    const byArc = scoped("sri", "sti-3485.yaml", "redeploy", { arc: "sti-3485-approval-reply" });
+    const twin = ask("other.yaml", "twin", { arc: "sti-3485-approval-reply" });
+    const near = scoped("sri", "sti-3451-replacement-session-history.yaml", "redeploy", {
+      arc: "sti-3451-replacement-session-history",
+    });
+    const answered = scoped("sri", "sti-3485.yaml", "old", { arc: "sti-3485-approval-reply", state: "answered" });
+    const all = [byArc, twin, near, answered];
+    // One arc, wherever its ledgers are: every open ask of it.
+    expect(ids(handedAsks(all, "/wt/0t6jwuf0/sti-3485-approval-reply"))).toEqual(["redeploy", "twin"]);
+    // A near name, a folder no ledger names, no folder at all: no link.
+    expect(handedAsks(all, "/wt/sti-3451-session-history")).toEqual([]);
+    expect(handedAsks(all, "/wt/rustic-rat")).toEqual([]);
+    expect(handedAsks(all, null)).toEqual([]);
   });
 });

@@ -2,8 +2,31 @@
 // ledgers with asks that wait on you first, the answered ones apart so they
 // can stay folded. And the words for where an answer goes. Pure.
 
-import { type AskNotice, type DecisionAsk, type DecisionOption, homeKey } from "../shared/fleet";
+import { type AnswerWhere, type AskNotice, type DecisionAsk, type DecisionOption, homeKey } from "../shared/fleet";
 import { ago, plural } from "./format";
+
+/**
+ * The ledger an ask is filed under, as Decisions groups, filters and names it:
+ * its file name, after its fleet scope for a scope's own root
+ * (`sri/sti-3485.yaml`). A workspace ledger and a scope's that share a file
+ * name are two ledgers, never one.
+ */
+export function ledgerOf(ask: Pick<DecisionAsk, "ledger" | "scope">): string {
+  return ask.scope ? `${ask.scope}/${ask.ledger}` : ask.ledger;
+}
+
+/** Every ask Decisions lists: the workspace's, then each fleet scope's own root's, each once (scopeDecisions); an older daemon sends none. */
+export function decisionAsks(view: {
+  decisions: readonly DecisionAsk[];
+  fleet?: readonly DecisionAsk[];
+}): DecisionAsk[] {
+  return [...view.decisions, ...(view.fleet ?? [])];
+}
+
+/** Where an answer to the ask is written: its scope's root through the fleet, else its home in the workspace. */
+export function whereOf(ask: Pick<DecisionAsk, "scope" | "home">): AnswerWhere {
+  return ask.scope ? { kind: "fleet", scope: ask.scope } : { kind: "workspace", home: homeKey(ask.home) };
+}
 
 export interface DecisionGroup {
   ledger: string;
@@ -20,8 +43,9 @@ export interface DecisionGroup {
 export function groupDecisions(asks: readonly DecisionAsk[]): DecisionGroup[] {
   const groups = new Map<string, DecisionGroup>();
   for (const ask of asks) {
-    const group = groups.get(ask.ledger) ?? {
-      ledger: ask.ledger,
+    const ledger = ledgerOf(ask);
+    const group = groups.get(ledger) ?? {
+      ledger,
       arc: ask.arc,
       open: [],
       answered: [],
@@ -30,7 +54,7 @@ export function groupDecisions(asks: readonly DecisionAsk[]): DecisionGroup[] {
     if (ask.state === "open") group.open.push(ask);
     else group.answered.push(ask);
     if (ask.waiting) group.waiting += 1;
-    groups.set(ask.ledger, group);
+    groups.set(ledger, group);
   }
   const list = [...groups.values()];
   for (const group of list) {
@@ -120,9 +144,9 @@ export function sameAsk(
   return askKey(a) === askKey(b);
 }
 
-/** A ledger's name as a person reads it: its file name without `.yaml`. */
+/** A ledger's name as a person reads it: its file name without `.yaml`, after its scope (ledgerOf) as `sri · `. */
 export function ledgerName(ledger: string): string {
-  return ledger.replace(/\.ya?ml$/, "");
+  return ledger.replace(/\.ya?ml$/, "").replace("/", " · ");
 }
 
 /** An ask that is answered here: open, and not an idea (ideas are answered in Initiatives). */
@@ -132,7 +156,7 @@ export function isTriaged(ask: DecisionAsk): boolean {
 
 const NEVER = "￿";
 const byAge = (a: DecisionAsk, b: DecisionAsk) => (a.askedAt ?? NEVER).localeCompare(b.askedAt ?? NEVER);
-const byName = (a: DecisionAsk, b: DecisionAsk) => a.ledger.localeCompare(b.ledger) || a.id.localeCompare(b.id);
+const byName = (a: DecisionAsk, b: DecisionAsk) => ledgerOf(a).localeCompare(ledgerOf(b)) || a.id.localeCompare(b.id);
 
 export interface LedgerEntry {
   ledger: string;
@@ -185,7 +209,7 @@ export function triageQueue(
   options: { ordering: Ordering; ledger?: string | null; skipped?: ReadonlySet<string> },
 ): DecisionAsk[] {
   const { ordering, ledger = null, skipped = new Set<string>() } = options;
-  const open = asks.filter((ask) => isTriaged(ask) && (ledger === null || ask.ledger === ledger));
+  const open = asks.filter((ask) => isTriaged(ask) && (ledger === null || ledgerOf(ask) === ledger));
   let ordered: DecisionAsk[];
   if (ordering === "ledger") {
     ordered = groupDecisions(open).flatMap((group) => group.open);
@@ -225,18 +249,23 @@ export function upNext(queue: readonly DecisionAsk[], index: number, count = 3):
 }
 
 /**
- * A focus resolved: the one ask it names; with only a ledger and an id that
- * two homes share, the one that waits on you, else the first with a note
- * saying there are more; null with no match.
+ * A focus resolved: the one ask it names. With its full identity (askKey),
+ * that ask and no other; else, with only a ledger and an id that two homes
+ * share, the one that waits on you, else the first with a note saying there
+ * are more; null with no match.
  */
 export function resolveFocus(
   queue: readonly DecisionAsk[],
-  want: { ledger: string | null; id: string; uid?: string | null; home?: string | null },
+  want: { ledger: string | null; id: string; uid?: string | null; home?: string | null; key?: string | null },
 ): { ask: DecisionAsk; note: string | null } | null {
+  if (want.key) {
+    const exact = queue.find((ask) => askKey(ask) === want.key);
+    return exact ? { ask: exact, note: null } : null;
+  }
   const found = queue.filter(
     (ask) =>
       ask.id === want.id &&
-      (want.ledger == null || ask.ledger === want.ledger) &&
+      (want.ledger == null || ledgerOf(ask) === want.ledger) &&
       (want.uid == null || ask.uid === want.uid) &&
       (want.home == null || homeKey(ask.home) === want.home),
   );
@@ -249,7 +278,7 @@ export function resolveFocus(
   const pick = waiting[0] ?? first;
   return {
     ask: pick,
-    note: `${found.length} asks are named ${want.id} in ${ledgerName(pick.ledger)}: this is the one ${writtenTo(pick)
+    note: `${found.length} asks are named ${want.id} in ${ledgerName(ledgerOf(pick))}: this is the one ${writtenTo(pick)
       .replace(/^Written to /, "at ")
       .replace(/^Written into /, "in ")}.`,
   };
@@ -365,7 +394,7 @@ export function metaLine(ask: DecisionAsk, now: number = Date.now()): string {
   const age = ask.askedAt ? ago(ask.askedAt, now) : "";
   const undo = reversibility(ask.options);
   return [
-    ledgerName(ask.ledger),
+    ledgerName(ledgerOf(ask)),
     age ? (age === "now" ? "asked just now" : `asked ${age} ago`) : null,
     ask.blocking ? "blocking" : "not blocking",
     undo === true ? "reversible" : undo === false ? "an option cannot be undone" : "undo: not stated",
@@ -435,7 +464,17 @@ export function writtenTo(ask: DecisionAsk): string {
   if (home.kind === "main") return "Written to Maestro's answers batch, on maestro/answers";
   if (home.kind === "checkout")
     return `Written to the checkout ${lastPart(home.path)}${home.branch ? ` (${home.branch})` : ""}`;
+  if (ask.scope) return `Written into the fleet's ${ask.scope} ledger ${ledgerName(ask.ledger)}`;
   return home.path ? `Written to ${lastPart(home.path)}` : `Written into ${ask.ledger}`;
+}
+
+/**
+ * The open asks a finished arc handed you, linked exactly and no other way:
+ * in a ledger whose `arc` is the name of the folder the work ran in.
+ */
+export function handedAsks(asks: readonly DecisionAsk[], cwd: string | null | undefined): DecisionAsk[] {
+  const folder = cwd ? lastPart(cwd) : null;
+  return folder === null ? [] : asks.filter((ask) => isTriaged(ask) && ask.arc === folder);
 }
 
 /** The answered asks the tab lists, newest first. */
