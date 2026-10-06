@@ -15,6 +15,7 @@ import {
   type DecisionAsk,
   type WorkspaceAsksView,
 } from "../shared/fleet";
+import { withinTimeout } from "./answer-timeout";
 import {
   answeredLine,
   answerVerb,
@@ -40,24 +41,7 @@ export type Draft = { chosen: string | null; note: string };
 /** Your choice and words per ask (askKey), in the query cache so they outlive this card and its view. */
 export type Drafts = Readonly<Record<string, Draft>>;
 export const DRAFTS_KEY = ["decision-drafts"];
-/**
- * How long an answer may go without a reply before this card stops waiting.
- * The server gives up on a held ledger lock in 5 s; past this the reply is
- * lost, and holding every card still would leave no way out.
- */
-export const ANSWER_TIMEOUT_MS = 20_000;
 
-/** The answer, or a refusal once `ms` (ANSWER_TIMEOUT_MS) passes with no reply. */
-export function withinTimeout<T>(reply: Promise<T>, ms: number = ANSWER_TIMEOUT_MS): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error("No reply in 20 s. The answer may still land: refresh before answering again.")),
-      ms,
-    );
-  });
-  return Promise.race([reply, late]).finally(() => clearTimeout(timer));
-}
 export const EMPTY_DRAFT: Draft = { chosen: null, note: "" };
 
 /** What the keyboard drives on the card on screen: choose an option, answer, call off an armed confirm. */

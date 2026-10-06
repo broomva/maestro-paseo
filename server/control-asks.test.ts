@@ -136,6 +136,8 @@ describe("reading decision asks", () => {
     // Capped at AUDIT_LINES, each id at 48 characters.
     const many = Array.from({ length: 12 }, (_, at) => `lane-${at}`).join(", ");
     expect(decisionsOf(ledger(`    gates: [${many}]\n`), "a.yaml")[0]?.audit?.gates).toHaveLength(AUDIT_LINES);
+    // Ids past the cap are not free text: nothing is said to be withheld.
+    expect(decisionsOf(ledger(`    gates: [${many}]\n`), "a.yaml")[0]?.audit?.withheld).toBe(0);
     // A class too long to be an id is left home, and counted.
     expect(decisionsOf(ledger(`    class: ${"x".repeat(49)}\n`), "a.yaml")[0]?.audit).toEqual({
       class: null,

@@ -131,7 +131,8 @@ export function auditOf(row: Row): AskAudit | null {
   const kind = text(row.class);
   const written = textsOf(row.gates);
   const gates = auditIds(written);
-  const withheld = written.length - gates.length + (kind && !AUDIT_ID.test(kind) ? 1 : 0);
+  // Only free text is withheld; ids past the AUDIT_LINES cap are not "free text".
+  const withheld = written.filter((value) => !AUDIT_ID.test(value)).length + (kind && !AUDIT_ID.test(kind) ? 1 : 0);
   const audit = { class: kind && AUDIT_ID.test(kind) ? kind : null, gates, withheld };
   return audit.class || audit.gates.length > 0 || withheld > 0 ? audit : null;
 }

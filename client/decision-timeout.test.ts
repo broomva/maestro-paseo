@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { withinTimeout } from "./decision-card";
+import { withinTimeout } from "./answer-timeout";
 
 describe("an answer that never replies", () => {
   test("stops waiting after the timeout, so every card is free again", async () => {
-    const never = new Promise<string>(() => undefined);
-    await expect(withinTimeout(never, 10)).rejects.toThrow("No reply in 20 s");
+    // A reply that comes only after the deadline: without the timeout it would be the answer.
+    const late = new Promise<string>((resolve) => setTimeout(() => resolve("late"), 200));
+    await expect(withinTimeout(late, 10)).rejects.toThrow("No reply in 20 s");
   });
 
   test("a reply in time is the answer", async () => {
