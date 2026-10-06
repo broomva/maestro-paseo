@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ARCHIVED_NOTE,
+  arcStatus,
   bullets,
+  closingAbove,
   type FlaggedEvent,
   flagOf,
   formatDuration,
   lastActivityOf,
+  ledgersNamed,
   lookOf,
   parseEvents,
   pendingPermission,
@@ -59,6 +63,10 @@ describe("the look at the gate", () => {
       ran: "2h 14m unsupervised · 1 turn · ran to the gate",
       decided: ["Persist on the Run record, it survives restarts", "Cover replay with tests"],
       ask: "Approve the branch so reviews stop needing the live session.",
+      arc: null,
+      closing: null,
+      ledgers: [],
+      archived: false,
     });
   });
 
@@ -403,5 +411,97 @@ describe("a decision inside its undo window", () => {
       { ts: at(11), type: "state", actor: "human", from: "review", to: "done", reason: null },
     ];
     expect(toWireEvents(applied).map((event) => event.text)).toEqual(["You approved", "Took effect"]);
+  });
+});
+
+describe("an arc's own verdict at the gate (BRO-2856)", () => {
+  const ended = (text: string): WorkEvent[] =>
+    toReview.map((e) => (e.type === "turn.ended" ? { ...e, summary: text } : e));
+
+  test("the verdict is the last line that starts exactly `ARC-STATUS: WORD`", () => {
+    expect(arcStatus("x\nARC-STATUS: DONE\nmore\nARC-STATUS: HANDBACK 2\n")).toEqual({
+      status: "HANDBACK",
+      line: "ARC-STATUS: HANDBACK 2",
+      at: 3,
+    });
+    // Indented, lower case, or mid-line: not the grammar.
+    expect(arcStatus("  ARC-STATUS: DONE")).toBeNull();
+    expect(arcStatus("ARC-STATUS: done")).toBeNull();
+    expect(arcStatus("it said ARC-STATUS: DONE")).toBeNull();
+  });
+
+  test("the closing is the block above the verdict: back to a heading (kept), a table or a rule", () => {
+    const text = [
+      "# Report",
+      "| a | b |",
+      "| 1 | 2 |",
+      "",
+      "### No handback",
+      "",
+      "Two notes:",
+      "- one",
+      "",
+      "ARC-STATUS: CLOSED",
+    ];
+    const verdict = arcStatus(text.join("\n"));
+    expect(closingAbove(text.join("\n"), verdict?.at ?? 0)).toBe("### No handback\n\nTwo notes:\n- one");
+    const prose = ["| a | b |", "| 1 | 2 |", "What's left:", "1. Redeploy", "", "ARC-STATUS: HANDBACK 1"].join("\n");
+    expect(closingAbove(prose, 5)).toBe("What's left:\n1. Redeploy");
+    const rule = ["before", "---", "after", "ARC-STATUS: DONE"].join("\n");
+    expect(closingAbove(rule, 3)).toBe("after");
+  });
+
+  test("a table right above the verdict is the closing; nothing above is none", () => {
+    const text = [
+      "Intro",
+      "",
+      "| item | evidence |",
+      "| --- | --- |",
+      "| Deploy | failed |",
+      "",
+      "ARC-STATUS: HANDBACK 1",
+    ].join("\n");
+    expect(closingAbove(text, 6)).toBe("| item | evidence |\n| --- | --- |\n| Deploy | failed |");
+    expect(closingAbove("ARC-STATUS: DONE", 0)).toBeNull();
+  });
+
+  test("ledgers a text names by path, each once", () => {
+    expect(
+      ledgersNamed(
+        "asks in `~/.local/state/fleet-reconcile/sri/.control/asks/sti-3165.yaml` and .control/asks/b.yml; again .control/asks/sti-3165.yaml",
+      ),
+    ).toEqual(["sti-3165.yaml", "b.yml"]);
+    expect(ledgersNamed("a ledger sti-3165.yaml with no path")).toEqual([]);
+  });
+
+  test("a finished arc says what it reported; a HANDBACK names how many things; an Ask section still wins", () => {
+    const closed = lookOf("review", ended("Merged.\n\nNothing left.\n\nARC-STATUS: CLOSED"), T0);
+    expect(closed).toMatchObject({
+      ask: "It reports its arc finished. Read what it left you below, then approve to close the work.",
+      arc: { status: "CLOSED", line: "ARC-STATUS: CLOSED" },
+      closing: "Merged.\n\nNothing left.",
+    });
+    expect(lookOf("review", ended("Left:\n1. a\n2. b\nARC-STATUS: HANDBACK 2"), T0)?.ask).toBe(
+      "It hands 2 things back to you, below. Approve to close the work once you have taken them on, or send it back with a note.",
+    );
+    expect(lookOf("review", ended("Left: a\nARC-STATUS: HANDBACK 1"), T0)?.ask).toStartWith("It hands 1 thing back");
+    expect(lookOf("review", ended("x\nARC-STATUS: PAUSED"), T0)?.ask).toStartWith("It ended with “ARC-STATUS: PAUSED”");
+    expect(lookOf("review", ended(`${summary}\nARC-STATUS: DONE`), T0)?.ask).toBe(
+      "Approve the branch so reviews stop needing the live session.",
+    );
+  });
+
+  test("archived only when its session was archived after it was bound to this run", () => {
+    const note = (minutes: number): WorkEvent => ({
+      ts: at(minutes),
+      type: "note",
+      actor: "maestro",
+      text: ARCHIVED_NOTE,
+    });
+    expect(lookOf("review", [...toReview, note(135)], T0)?.archived).toBe(true);
+    expect(lookOf("review", toReview, T0)?.archived).toBe(false);
+    // An earlier session's archiving, before this run's dispatch, is not this one's.
+    const earlier = [note(-5), ...toReview.map((e) => (e.type === "dispatched" ? { ...e, ts: at(1) } : e))];
+    expect(lookOf("review", earlier, T0)?.archived).toBe(false);
   });
 });

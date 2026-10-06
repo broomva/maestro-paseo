@@ -35,6 +35,7 @@ import {
 import { runChecks } from "./checks";
 import { loadConfig } from "./config";
 import {
+  ARCHIVED_NOTE,
   BY_HUMAN,
   checkOutcome,
   decisionApplied,
@@ -1606,7 +1607,7 @@ export class Engine {
             return { to: "blocked", reason: "The session was archived while it was asking" };
           }
           if (isTerminal(state)) return null;
-          return { events: [this.note("The session was archived")] };
+          return { events: [this.note(ARCHIVED_NOTE)] };
         },
         item.dir,
       );

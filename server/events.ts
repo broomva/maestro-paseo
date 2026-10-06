@@ -347,6 +347,70 @@ export function bullets(text: string): string[] {
   );
 }
 
+/** The note a session's archiving leaves on its work (engine.ts onArchived). */
+export const ARCHIVED_NOTE = "The session was archived";
+
+const ARC_LINE = /^ARC-STATUS: ([A-Z]+)/;
+/** Where the closing block above an arc's verdict starts: after a heading, a table row or a rule. */
+const BLOCK_EDGE = /^\s*(?:#{1,6}\s|\||(?:-{3,}|\*{3,}|_{3,})\s*$)/;
+const HEADING = /^\s*#{1,6}\s/;
+const TABLE_ROW = /^\s*\|/;
+/** A ledger a text names by its path: the file name after `.control/asks/`. */
+const LEDGER_PATH = /\.control\/asks\/([A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml)\b/g;
+
+/** The ask ledgers a text names by path (`.control/asks/<file>.yaml`), each once, in order. */
+export function ledgersNamed(text: string): string[] {
+  return [...new Set([...text.matchAll(LEDGER_PATH)].map((match) => match[1] as string))];
+}
+
+/**
+ * An arc's verdict as the workspace writes it (ctx-core's grammar): the last
+ * line of the text that starts exactly `ARC-STATUS: WORD`, the word, and the
+ * line's index. Null when no line does.
+ */
+export function arcStatus(text: string): { status: string; line: string; at: number } | null {
+  const lines = text.split("\n");
+  for (let at = lines.length - 1; at >= 0; at--) {
+    const line = lines[at] ?? "";
+    const word = ARC_LINE.exec(line)?.[1];
+    if (word) return { status: word, line: line.trim(), at };
+  }
+  return null;
+}
+
+/**
+ * The block just above line `at`, verbatim: from the nearest heading (kept),
+ * table row or rule above it, else from the text's start. When a table ends
+ * right above, the table is the block. Null when empty.
+ */
+export function closingAbove(text: string, at: number): string | null {
+  const lines = text.split("\n").slice(0, at);
+  let end = lines.length;
+  while (end > 0 && !(lines[end - 1] ?? "").trim()) end -= 1;
+  let start = end;
+  const row = (line: string | undefined) => TABLE_ROW.test(line ?? "");
+  if (row(lines[end - 1])) while (start > 0 && row(lines[start - 1])) start -= 1;
+  else while (start > 0 && !BLOCK_EDGE.test(lines[start - 1] ?? "")) start -= 1;
+  if (start > 0 && HEADING.test(lines[start - 1] ?? "")) start -= 1;
+  const block = lines.slice(start, end).join("\n").trim();
+  return block ? block : null;
+}
+
+/** The ask an arc's verdict makes of you, in words; the closing block under it says the rest. */
+function arcAsk(status: string, line: string): string {
+  if (status === "CLOSED" || status === "DONE" || status === "MERGED") {
+    return "It reports its arc finished. Read what it left you below, then approve to close the work.";
+  }
+  if (status === "HANDBACK") {
+    const count = Number(/^ARC-STATUS: HANDBACK (\d+)\b/.exec(line)?.[1]);
+    const what = Number.isInteger(count) && count > 0 ? `${count} ${count === 1 ? "thing" : "things"}` : "work";
+    return `It hands ${what} back to you, below. Approve to close the work once you have taken ${count === 1 ? "it" : "them"} on, or send it back with a note.`;
+  }
+  if (status === "BLOCKED")
+    return "It reports its arc blocked; what on is below. Send it back with a note, or cancel the work.";
+  return `It ended with “${line}”; what it left you is below. Approve to close the work, or send it back with a note.`;
+}
+
 export function lookOf(state: OrchState, events: readonly WorkEvent[], now: number): Look | null {
   if (state !== "review") return null;
   const permission = pendingPermission(events);
@@ -368,12 +432,26 @@ export function lookOf(state: OrchState, events: readonly WorkEvent[], now: numb
     };
   }
   const summary = lastOf(events, "turn.ended")?.summary ?? "";
-  const decided = section(summary, "Decided");
-  const ask = section(summary, "Ask");
+  const arc = arcStatus(summary);
+  // The sections are read above the verdict line, so a last `## Ask` never takes the verdict in.
+  const body = arc ? summary.split("\n").slice(0, arc.at).join("\n") : summary;
+  const decided = section(body, "Decided");
+  const ask = section(body, "Ask");
+  const archived = (start === null ? events : events.filter((e) => ms(e.ts) >= start)).some(
+    (e) => e.type === "note" && e.text === ARCHIVED_NOTE,
+  );
   return {
     ran,
     decided: decided ? bullets(decided) : [],
-    ask: ask ? bullets(ask).join(" ") : "Approve to close it, or send it back with a note.",
+    ask: ask
+      ? bullets(ask).join(" ")
+      : arc
+        ? arcAsk(arc.status, arc.line)
+        : "Approve to close it, or send it back with a note.",
+    arc: arc ? { status: arc.status, line: arc.line } : null,
+    closing: arc ? closingAbove(summary, arc.at) : null,
+    ledgers: ledgersNamed(summary),
+    archived,
   };
 }
 

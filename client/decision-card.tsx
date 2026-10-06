@@ -723,7 +723,7 @@ export function DecisionCard({
               </Fact>
             ) : null}
             <Fact theme={theme} label="Ledger">
-              {`${ask.ledger}${ask.arc ? ` (arc ${ask.arc})` : ""}${ask.uid ? ` · uid ${ask.uid}` : ""}`}
+              {`${ask.scope ? `fleet ${ask.scope} · ` : ""}${ask.ledger}${ask.arc ? ` (arc ${ask.arc})` : ""}${ask.uid ? ` · uid ${ask.uid}` : ""}`}
             </Fact>
             {open ? <Text style={text.small}>{writtenTo(ask)}</Text> : null}
             {origin && navigation ? (

@@ -11,6 +11,7 @@ import { type CheckResult, NOT_STOPPED, type Pending, type WorkEventWire, type W
 import { fleetDetail, parseFleetBrief } from "../shared/fleet-item";
 import { nextRunCopy } from "../shared/run";
 import { PLAIN_VOICE } from "../shared/states";
+import { ArcReport } from "./arc-report";
 import { ChangeText, WithChange } from "./changed";
 import { FilesSection } from "./files";
 import { FleetBriefView } from "./fleet-brief";
@@ -372,6 +373,7 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
               <Text style={text.label}>Ask</Text>
               <Text style={text.body}>{look.ask}</Text>
             </View>
+            <ArcReport item={item} theme={theme} compact={compact} />
           </View>
         ) : null}
         <WithChange workspaceId={item.worker?.workspaceId} stat={item.changed}>

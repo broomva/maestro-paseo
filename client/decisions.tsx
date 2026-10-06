@@ -24,6 +24,7 @@ import {
   askKey,
   askNoticeText,
   type DecisionGroup,
+  decisionAsks,
   groupDecisions,
   groupMeta,
   isTriaged,
@@ -179,10 +180,10 @@ export function useWorkspaceAsks() {
   return useQuery({ queryKey: ["maestro", "workspace-asks"], queryFn: () => get({}), refetchInterval: POLL_MS });
 }
 
-/** The workspace's open decisions (ideas aside) and how many wait on you: the Decisions tab's badge. */
+/** The open decisions the tab lists (ideas aside: decisionAsks) and how many wait on you: the Decisions tab's badge. */
 export function useDecisionCounts(): { open: number; waiting: number } {
   const read = useWorkspaceAsks();
-  const open = (read.data?.decisions ?? []).filter(isTriaged);
+  const open = (read.data ? decisionAsks(read.data) : []).filter(isTriaged);
   return { open: open.length, waiting: open.filter((ask) => ask.waiting).length };
 }
 

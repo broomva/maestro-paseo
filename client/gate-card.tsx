@@ -13,6 +13,7 @@ import { type ComponentType, type ReactNode, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { getWork, type Look, type WorkItem } from "../shared/contracts";
 import type { GateCardData } from "../shared/gate-card";
+import { ArcReport } from "./arc-report";
 import { errorText } from "./format";
 import { answerTarget, cardSettled, cardView, resolution, SUPERSEDED } from "./gate-state";
 import { useVerbs } from "./hooks";
@@ -173,6 +174,7 @@ function Deciding({
   return (
     <View style={{ gap: space[3] }}>
       {item.look ? <LookView look={item.look} theme={theme} /> : null}
+      <ArcReport item={item} theme={theme} compact={compact} />
       {sendingBack ? (
         <View style={{ gap: space[2] }}>
           <TextInput

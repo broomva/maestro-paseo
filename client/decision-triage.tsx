@@ -1,4 +1,5 @@
-// The Decisions tab: the workspace's open asks one at a time (design draft C,
+// The Decisions tab: every open ask Maestro reads, the workspace's and each
+// fleet scope's own root's (each answered where it lives), one at a time (design draft C,
 // BRO-2838). The card on screen is pinned to its ask's full identity (askKey:
 // home, ledger, uid, id) the moment it shows: a poll, another client or an
 // answer elsewhere never swaps it for another. An ask answered elsewhere stays
@@ -11,7 +12,7 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useIsMutating, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Easing, Platform, Pressable, Text, View } from "react-native";
-import { type AnswerWhere, type DecisionAsk, homeKey } from "../shared/fleet";
+import type { DecisionAsk } from "../shared/fleet";
 import {
   ANSWER_KEY,
   answerInFlight,
@@ -30,9 +31,11 @@ import {
   askKey,
   BATCHED_TEXT,
   cutAtWord,
+  decisionAsks,
   headlineOf,
   isTriaged,
   ledgerName,
+  ledgerOf,
   ledgerRail,
   nextAfter,
   ORDERINGS,
@@ -47,6 +50,7 @@ import {
   triageKey,
   triageQueue,
   upNext,
+  whereOf,
   writtenTo,
 } from "./decisions-model";
 import { errorText } from "./format";
@@ -86,8 +90,6 @@ export type DecisionsFocus = {
   ask: { ledger: string | null; id: string; uid?: string | null; home?: string | null } | null;
   at: number;
 };
-
-const workspaceWhere = (ask: DecisionAsk): AnswerWhere => ({ kind: "workspace", home: homeKey(ask.home) });
 
 /** A ledger in the rail: its name, its open count, and a warn dot only where an ask waits on you. */
 function RailRow({
@@ -322,10 +324,11 @@ export function DecisionsView({
   const keys = useRef<CardKeys | null>(null);
   const root = useRef<View>(null);
 
-  const all = (read.data?.decisions ?? []).filter((ask) => !ask.idea);
+  // The workspace's asks and every fleet scope's (each answered where it lives: whereOf), ideas aside.
+  const all = (read.data ? decisionAsks(read.data) : []).filter((ask) => !ask.idea);
   const rail = ledgerRail(all);
   // A ledger you chose stays chosen when its last ask is answered ("Nothing open in it"); one no read knows is no filter.
-  const ledgerShown = ledger !== null && all.some((ask) => ask.ledger === ledger) ? ledger : null;
+  const ledgerShown = ledger !== null && all.some((ask) => ledgerOf(ask) === ledger) ? ledger : null;
   const openAll = all.filter(isTriaged);
   const queue = triageQueue(all, { ordering, ledger: ledgerShown, skipped });
   const queueRef = useRef(queue);
@@ -346,7 +349,7 @@ export function DecisionsView({
   // An ask whose answer is still on its way is not gone: the list may learn the answer a moment before the card does.
   const gone = current !== null && !leaving && index < 0 && !(currentKey !== null && answeringHere.has(currentKey));
   const sameIdentity = (ask: DecisionAsk) =>
-    current !== null && ask.ledger === current.ledger && ask.uid === current.uid && ask.id === current.id;
+    current !== null && ledgerOf(ask) === ledgerOf(current) && ask.uid === current.uid && ask.id === current.id;
   const answeredCopy = gone ? all.find((ask) => sameIdentity(ask) && ask.state !== "open") : undefined;
   const moved = gone && !answeredCopy && current?.uid != null ? (queue.find(sameIdentity) ?? null) : null;
   const frozen =
@@ -581,7 +584,7 @@ export function DecisionsView({
           />
           <Text style={[text.small, { flex: 1, color: theme.colors.foreground }]}>
             {status.kind === "answered"
-              ? `${answeredLine(status.ask)} · ${ledgerName(status.ask.ledger)} · answers are not undone here`
+              ? `${answeredLine(status.ask)} · ${ledgerName(ledgerOf(status.ask))} · answers are not undone here`
               : `Skipped “${cutAtWord(headlineOf(status.ask).headline, 60)}”: it comes back at the end of the queue`}
             {status.kind === "answered" && status.warning ? (
               <Text style={{ color: theme.colors.statusWarning }}>{` · ${status.warning}`}</Text>
@@ -781,7 +784,7 @@ export function DecisionsView({
           <Pressable
             key={askKey(ask)}
             accessibilityRole="button"
-            accessibilityLabel={`Go to ${ask.id} in ${ask.ledger}: ${headlineOf(ask).headline}`}
+            accessibilityLabel={`Go to ${ask.id} in ${ledgerOf(ask)}: ${headlineOf(ask).headline}`}
             onPress={() => go(queue.indexOf(ask))}
             style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({
               ...focusRing(theme, focused),
@@ -802,7 +805,7 @@ export function DecisionsView({
               {headlineOf(ask).headline}
             </Text>
             <Text numberOfLines={1} style={[text.small, { fontFamily: mono }]}>
-              {ledgerName(ask.ledger)}
+              {ledgerName(ledgerOf(ask))}
             </Text>
           </Pressable>
         ))}
@@ -841,7 +844,7 @@ export function DecisionsView({
               <View key={askKey(ask)} style={{ gap: 2, paddingLeft: space[4] }}>
                 <Text style={[text.body, { fontSize: 13 }]}>{headlineOf(ask).headline}</Text>
                 <Text style={[text.small, { color: theme.colors.statusSuccess }]}>
-                  {`${answeredLine(ask)} · ${ledgerName(ask.ledger)}`}
+                  {`${answeredLine(ask)} · ${ledgerName(ledgerOf(ask))}`}
                 </Text>
                 {ask.answer ? (
                   <Text style={text.small} selectable>
@@ -863,7 +866,7 @@ export function DecisionsView({
           <DecisionCard
             theme={theme}
             ask={current}
-            where={workspaceWhere(current)}
+            where={whereOf(current)}
             compact={compact}
             navigation={navigation}
             onAnswered={onAnswered}

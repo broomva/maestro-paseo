@@ -43,6 +43,18 @@ export const LookSchema = z.object({
   ran: z.string(),
   decided: z.array(z.string()),
   ask: z.string(),
+  /**
+   * The arc's own verdict, when the last turn's text ends one the workspace's
+   * way: its last line that starts exactly `ARC-STATUS: WORD` (ctx-core's
+   * grammar), the word, and the line as written. Absent from an older daemon.
+   */
+  arc: z.object({ status: z.string(), line: z.string() }).nullable().optional(),
+  /** With an arc verdict, the block of text just above that line, verbatim: what the arc left you. */
+  closing: z.string().nullable().optional(),
+  /** The ask ledgers the last turn's text names by path (`.control/asks/<file>.yaml`): its asks, linked exactly. */
+  ledgers: z.array(z.string()).optional(),
+  /** The session it ran in was archived after it reached the gate. */
+  archived: z.boolean().optional(),
 });
 export type Look = z.infer<typeof LookSchema>;
 

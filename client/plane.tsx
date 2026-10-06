@@ -20,6 +20,7 @@ import { ActivityIndicator, Text, View } from "react-native";
 import { ChangeScope } from "./changed";
 import { type DecisionsFocus, DecisionsView } from "./decision-triage";
 import { AskNotices, useDecisionCounts } from "./decisions";
+import { ledgerOf } from "./decisions-model";
 import { WorkDetail } from "./detail";
 import { FleetNotices, FleetView } from "./fleet";
 import { errorText, plural } from "./format";
@@ -183,11 +184,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
         <AskNotices
           theme={theme}
           compact={compact}
-          onOpen={(notice) =>
-            notice.scope === null
-              ? openDecisions(null, { ledger: notice.ledger, uid: notice.uid, id: notice.id })
-              : openFleet(notice.scope)
-          }
+          onOpen={(notice) => openDecisions(null, { ledger: ledgerOf(notice), uid: notice.uid, id: notice.id })}
         />
       )}
       {view === "timeline" ? null : (

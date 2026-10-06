@@ -670,6 +670,16 @@ export class Fleet {
     return { health: { ...base, item, needsYou: urgent && !counted }, latest };
   }
 
+  /** Every scope's own root asks, each tagged with its scope: Decisions lists them beside the workspace's. */
+  async scopeDecisions(): Promise<{ asks: DecisionAsk[]; warnings: string[] }> {
+    const { scopes } = await this.scopes();
+    const reads = await Promise.all(scopes.map((config) => readDecisions(join(config.stateDir, ASK_ROOT))));
+    return {
+      asks: reads.flatMap((read, at) => read.asks.map((ask) => ({ ...ask, scope: scopes[at]?.id ?? null }))),
+      warnings: reads.flatMap((read, at) => read.warnings.map((warning) => `Fleet ${scopes[at]?.id}: ${warning}`)),
+    };
+  }
+
   /** The decision asks in each scope's own root that wait on you (shared/fleet.ts isWaiting), for work.attention. */
   async waitingAsks(): Promise<AskNotice[]> {
     const { scopes } = await this.scopes();

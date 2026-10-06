@@ -1076,8 +1076,17 @@ describe("drilling in", () => {
     expect((await fleet.waitingAsks()).map((notice) => [notice.scope, notice.ledger, notice.blocking])).toEqual([
       ["alpha", "fleet-blocking.yaml", true],
     ]);
+    // Decisions lists every scope's own asks beside the workspace's, each tagged with its scope.
+    const scoped = await fleet.scopeDecisions();
+    expect(scoped.asks.map((ask) => [ask.scope, ask.ledger, ask.id])).toEqual([
+      ["alpha", "fleet-alpha.yaml", "spawn-duplicate-1"],
+      ["alpha", "fleet-blocking.yaml", "spawn-duplicate-1"],
+    ]);
+    expect(scoped.warnings).toEqual([]);
     await rm(join(askRoot, "fleet-blocking.yaml"));
     const detail = (await fleet.get()).detail;
+    // The Fleet view's own read is untagged: it lists them under their scope already.
+    expect(detail?.decisions.every((ask) => ask.scope === undefined)).toBe(true);
     expect(detail?.askRoot).toBe(askRoot);
     expect(detail?.decisions.map((ask) => [ask.id, ask.state, ask.options.map((option) => option.id)])).toEqual([
       ["spawn-duplicate-1", "open", ["stop-newer", "leave"]],

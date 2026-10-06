@@ -270,6 +270,12 @@ export const DecisionAskSchema = z.object({
   /** Why it cannot be answered here, in words (an id collision, a diverged copy); null when it can. */
   refusal: z.string().nullable(),
   home: AskHomeSchema,
+  /**
+   * The fleet scope whose own root holds it, as Decisions lists it beside the
+   * workspace's (getWorkspaceAsks `fleet`); null or absent for the workspace's
+   * asks, and for a scope's as the Fleet view reads them.
+   */
+  scope: z.string().nullable().optional(),
   /** Answered in Maestro's answers worktree, and not yet on origin/main. */
   batched: z.boolean(),
   /** Open, and blocking or recommending what cannot be undone (§5.4): it counts in Needs you, default or not. */
@@ -493,6 +499,12 @@ export const getWorkspaceAsks = defineRpc({
     /** origin/main's commit as read, and when it was last fetched (null: not this run). */
     main: z.object({ sha: z.string(), fetchedAt: z.string().nullable() }).nullable(),
     decisions: z.array(DecisionAskSchema),
+    /**
+     * Each fleet scope's own root asks (the ones the Fleet view lists), each
+     * with its `scope`: Decisions lists them beside the workspace's and
+     * answers them at their root. Absent from an older daemon.
+     */
+    fleet: z.array(DecisionAskSchema).optional(),
     /** What could not be read, in words. */
     warnings: z.array(z.string()),
   }),
