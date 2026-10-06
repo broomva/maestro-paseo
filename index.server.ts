@@ -7,12 +7,14 @@ import { Engine, UserError } from "./server/engine";
 import { AwakeClock, Fleet, wallClock } from "./server/fleet";
 import { inspectFolder as inspect } from "./server/folders";
 import { GateCards } from "./server/gate-card";
+import { createInboxProvider, Inbox } from "./server/inbox";
 import { agentIds, ghRun, ideaWork, prStates, workspaceInitiatives } from "./server/initiatives";
 import { Launchd } from "./server/launchd";
 import { Loop } from "./server/loop";
 import {
   controlAskPaths,
   controlRepoPaths,
+  expandHome,
   launchdPrefix,
   paseoSchedulesDir,
   socketPath,
@@ -72,7 +74,19 @@ export default function contribute(host: PluginServerContext) {
   // reads the same client. One that came due before the first client (a restart
   // inside the undo window) applies as soon as the first one arrives.
   let latest: Paseo | null = null;
-  const engine = new Engine({ client: () => latest, landed: (before, after) => cards.landed(before, after) });
+  // And the inbox tells you through Paseo's own push (server/inbox.ts): its provider, and the one session on it.
+  // A host without providers cannot carry it: Maestro then works as before, with no push of its own.
+  if (typeof host.registerProvider === "function") host.registerProvider(createInboxProvider());
+  else log("this Paseo takes no plugin providers, so Maestro's inbox cannot push; Needs you still shows in Maestro");
+  const inbox: Inbox = new Inbox(
+    () => latest,
+    async () => expandHome((await engine.settings()).workRoot),
+    log,
+  );
+  const engine: Engine = new Engine({
+    client: () => latest,
+    landed: (before, after) => Promise.all([cards.landed(before, after), inbox.landed(before, after)]),
+  });
   // The loop wakes on its own timer, outside any handler, so it reads the same client (server/loop.ts).
   const loop = new Loop({ engine, client: () => latest, log });
   const keep = (paseo: Paseo) => {

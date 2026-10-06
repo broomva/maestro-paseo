@@ -1,0 +1,274 @@
+// Maestro's inbox: the one session that tells you, through Paseo's own
+// notification, that work needs you.
+//
+// Paseo pushes when a top-level session finishes a turn (its agent attention,
+// "finished") and never for a session another session started
+// (isDelegatedAgent), which every orchestrated arc is; a plugin has no other
+// way to reach your phone. So Maestro registers a provider of its own and
+// keeps one session on it. Each landing at your gate is a turn there: its one
+// message is the notice, which Paseo's push shows (its first 220 characters,
+// under "Agent finished"), and the gate card under it answers the work in
+// place. Paseo raises a session's attention once until you open it, so a
+// second landing before you look is in the inbox without a second push.
+
+import { readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import type {
+  ProviderConnection,
+  ProviderEvent,
+  ProviderInput,
+  ProviderRegistration,
+} from "@getpaseo/plugin/server/provider";
+import { z } from "zod";
+import { GATE_CARD_KIND, GATE_CARD_VERSION, type GateCardData, GateCardSchema } from "../shared/gate-card";
+import { lookOf, workerOf } from "./events";
+import { landingOf } from "./gate-card";
+import { configPath } from "./paths";
+import type { Paseo } from "./runs";
+import type { StoredWork } from "./store";
+
+export const INBOX_PROVIDER = "maestro-inbox";
+const MODEL = "inbox";
+const PLUGIN_ID = "maestro";
+export const INBOX_TITLE = "Maestro · Needs you";
+
+/** What Maestro sends its inbox: one landing, as the prompt's text (encodeNotice). */
+const NoticeSchema = z.object({ title: z.string(), ask: z.string(), card: GateCardSchema });
+export type InboxNotice = z.infer<typeof NoticeSchema>;
+const PREFIX = "maestro-inbox:";
+
+export const encodeNotice = (notice: InboxNotice): string => PREFIX + JSON.stringify(notice);
+
+export function decodeNotice(text: string): InboxNotice | null {
+  if (!text.startsWith(PREFIX)) return null;
+  try {
+    const parsed = NoticeSchema.safeParse(JSON.parse(text.slice(PREFIX.length)));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The notice as the inbox says it, and as the push reads it: what needs you first, then what it asks. */
+export const noticeText = (notice: InboxNotice): string =>
+  notice.ask ? `**Needs you** · ${notice.title}\n\n${notice.ask}` : `**Needs you** · ${notice.title}`;
+
+/**
+ * The notice for a change, when it is a landing at your gate (landingOf), else
+ * null. The ask is the session's own (lookOf); when it asked nothing, the
+ * notice names the work and the card under it carries its last words.
+ */
+export function noticeOf(before: Pick<StoredWork, "events">, after: StoredWork, now: number): InboxNotice | null {
+  const landing = landingOf(before, after);
+  const agentId = workerOf(after.events)?.agentId;
+  if (landing === null || !agentId) return null;
+  const look = lookOf("review", after.events, now);
+  return { title: after.title, ask: look?.ask ?? "", card: { workId: after.contract.id, landing, agentId } };
+}
+
+// ── The provider ─────────────────────────────────────────────────────────────
+
+/** A session that only ever says what Maestro sends it: no model, no tools, nothing to configure. */
+export function createInboxProvider(): ProviderRegistration {
+  return {
+    id: INBOX_PROVIDER,
+    label: "Maestro",
+    description: "Where Maestro tells you that work needs you",
+    async connect(request) {
+      if (!request.versions.includes(1)) throw new Error("Provider protocol version 1 is required");
+      return inboxConnection();
+    },
+  };
+}
+
+const CAPABILITIES = ["prompt.message", "session.persistence", "timeline.plugin"] as const;
+
+function inboxConnection(): ProviderConnection {
+  const listeners = new Set<(event: ProviderEvent) => void>();
+  const open = new Map<string, { turns: number }>();
+  let closed = false;
+  const emit = (event: ProviderEvent) => {
+    if (!closed) for (const listener of listeners) listener(event);
+  };
+  return {
+    version: 1,
+    capabilities: CAPABILITIES,
+    async send(input) {
+      if (closed) throw new Error("The inbox provider is closed");
+      queueMicrotask(() => answer(input, open, emit));
+    },
+    onEvent(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    async close() {
+      closed = true;
+      open.clear();
+      listeners.clear();
+    },
+  };
+}
+
+function answer(input: ProviderInput, open: Map<string, { turns: number }>, emit: (event: ProviderEvent) => void) {
+  switch (input.type) {
+    case "catalog":
+      emit({
+        type: "catalog",
+        requestId: input.requestId,
+        catalog: { models: [{ id: MODEL, label: "Inbox" }], modes: [], defaultModel: MODEL },
+      });
+      return;
+    case "sessions":
+      emit({ type: "sessions", requestId: input.requestId, sessions: [] });
+      return;
+    case "session.open": {
+      open.set(input.sessionId, { turns: 0 });
+      // Nothing of its own to restore: Paseo keeps the timeline, and a notice is never replayed.
+      const persistence = input.persistence ?? { version: 1, data: { inbox: input.sessionId } };
+      emit({
+        type: "session.opened",
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        capabilities: CAPABILITIES,
+        restoration: "core",
+        persistence,
+        title: input.config.title ?? INBOX_TITLE,
+        cwd: input.config.cwd,
+      });
+      emit({ type: "session.ready", requestId: input.requestId, sessionId: input.sessionId });
+      return;
+    }
+    case "session.prompt": {
+      const session = open.get(input.sessionId);
+      if (!session) return;
+      const { prompt } = input;
+      const text =
+        prompt.input.type === "message"
+          ? prompt.input.content
+              .filter((part) => part.type === "text")
+              .map((part) => part.text)
+              .join("\n")
+          : "";
+      session.turns += 1;
+      const turnId = `inbox-${session.turns}`;
+      const sessionId = input.sessionId;
+      emit({
+        type: "session.prompt_result",
+        sessionId,
+        clientMessageId: prompt.clientMessageId,
+        result: { type: "turn", turnId },
+      });
+      emit({ type: "session.turn", sessionId, turnId, state: "started" });
+      const notice = decodeNotice(text);
+      if (notice) {
+        emit({
+          type: "timeline.item",
+          sessionId,
+          item: { type: "assistant_message", id: `${turnId}-notice`, text: noticeText(notice) },
+        });
+        emit({
+          type: "timeline.item",
+          sessionId,
+          item: {
+            type: "plugin",
+            id: `${turnId}-card`,
+            pluginId: PLUGIN_ID,
+            kind: GATE_CARD_KIND,
+            version: GATE_CARD_VERSION,
+            data: notice.card satisfies GateCardData,
+          },
+        });
+      } else {
+        // You wrote here: the inbox has nothing to say back but where to answer.
+        emit({
+          type: "timeline.item",
+          sessionId,
+          item: { type: "user_message", id: `${turnId}-you`, text, clientMessageId: prompt.clientMessageId },
+        });
+        emit({
+          type: "timeline.item",
+          sessionId,
+          item: {
+            type: "assistant_message",
+            id: `${turnId}-reply`,
+            text: "This is Maestro's inbox. Answer from a card above, or open Maestro.",
+          },
+        });
+      }
+      emit({ type: "session.turn", sessionId, turnId, state: "completed" });
+      return;
+    }
+    case "session.close":
+      open.delete(input.sessionId);
+      emit({ type: "session.closed", sessionId: input.sessionId });
+      emit({ type: "request.completed", requestId: input.requestId });
+      return;
+    case "session.interrupt":
+    case "session.configure":
+    case "session.revert":
+    case "session.archive":
+    case "session.unarchive":
+      emit({ type: "request.completed", requestId: input.requestId });
+      return;
+    case "session.permission":
+      return;
+  }
+}
+
+// ── The inbox session ────────────────────────────────────────────────────────
+
+/** Where the inbox session's id is kept: beside the config, like the socket. */
+export const inboxPath = (env: NodeJS.ProcessEnv = process.env): string =>
+  env.MAESTRO_PASEO_INBOX ?? join(dirname(configPath(env)), "inbox.json");
+
+export class Inbox {
+  /** One notice at a time, so two landings at once open one session, not two. */
+  private chain: Promise<unknown> = Promise.resolve();
+
+  constructor(
+    private readonly paseo: () => Paseo | null,
+    private readonly cwd: () => Promise<string>,
+    private readonly log: (message: string) => void,
+    private readonly path: string = inboxPath(),
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** Tells the inbox about a landing. Never rejects: a notice that cannot be sent is logged and dropped. */
+  landed(before: Pick<StoredWork, "events">, after: StoredWork): Promise<void> {
+    const notice = noticeOf(before, after, this.now());
+    if (!notice) return Promise.resolve();
+    const sent = this.chain.then(() => this.send(notice));
+    this.chain = sent.catch(() => undefined);
+    return sent.catch((error) =>
+      this.log(`inbox notice for ${notice.card.workId} not sent: ${(error as Error).message}`),
+    );
+  }
+
+  private async send(notice: InboxNotice): Promise<void> {
+    const paseo = this.paseo();
+    if (!paseo) throw new Error("Maestro has no connection to Paseo yet");
+    const id = await this.session(paseo);
+    await paseo.agents.ref(id).send(encodeNotice(notice));
+  }
+
+  /** The inbox session: the one kept, while Paseo still has it unarchived, else a new one. */
+  private async session(paseo: Paseo): Promise<string> {
+    const kept = await readFile(this.path, "utf8")
+      .then((text) => z.object({ agentId: z.string() }).parse(JSON.parse(text)).agentId)
+      .catch(() => null);
+    if (kept) {
+      const found = await paseo.agents
+        .ref(kept)
+        .refresh()
+        .catch(() => null);
+      if (found?.agent && !found.agent.archivedAt) return kept;
+    }
+    const created = await paseo.agents.create({
+      config: { provider: `${INBOX_PROVIDER}/${MODEL}` },
+      cwd: await this.cwd(),
+      title: INBOX_TITLE,
+    });
+    await writeFile(this.path, `${JSON.stringify({ agentId: created.id })}\n`);
+    return created.id;
+  }
+}
