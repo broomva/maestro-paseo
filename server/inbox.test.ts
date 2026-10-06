@@ -49,10 +49,10 @@ const ended = (summary: string): WorkEvent => ({
 });
 const toReview: WorkEvent = { ts: at(30), type: "state", actor: "agent", from: "running", to: "review", reason: null };
 
-function work(events: WorkEvent[]): StoredWork {
+function work(events: WorkEvent[], id = "w1"): StoredWork {
   return {
     title: "SRI: STI-3492 organisation referrers (arc)",
-    contract: { id: "w1" },
+    contract: { id },
     events,
   } as unknown as StoredWork;
 }
@@ -206,12 +206,13 @@ describe("the inbox session", () => {
     );
     return { fake, inbox, path, logs };
   }
-  const landing = (summary: string) => [work([adopted]), work([adopted, ended(summary), toReview])] as const;
+  const landing = (summary: string, id = "w1") =>
+    [work([adopted], id), work([adopted, ended(summary), toReview], id)] as const;
 
   test("the first landing opens the inbox on Maestro's provider and keeps its id; the next one reuses it", async () => {
     const { fake, inbox, path } = await setup();
     await inbox.landed(...landing("## Ask\n- Merge #2134?"));
-    await inbox.landed(...landing("ARC-STATUS: HANDBACK 1"));
+    await inbox.landed(...landing("ARC-STATUS: HANDBACK 1", "w2"));
     expect(fake.created).toEqual([
       { config: { provider: `${INBOX_PROVIDER}/inbox` }, cwd: "/Users/me/maestro", title: INBOX_TITLE },
     ]);
@@ -224,7 +225,7 @@ describe("the inbox session", () => {
 
   test("two landings at once open one inbox, not two", async () => {
     const { fake, inbox } = await setup();
-    await Promise.all([inbox.landed(...landing("## Ask\n- A?")), inbox.landed(...landing("## Ask\n- B?"))]);
+    await Promise.all([inbox.landed(...landing("## Ask\n- A?")), inbox.landed(...landing("## Ask\n- B?", "w2"))]);
     expect(fake.created).toHaveLength(1);
     expect(fake.sent).toHaveLength(2);
   });
@@ -234,10 +235,50 @@ describe("the inbox session", () => {
     await inbox.landed(...landing("## Ask\n- A?"));
     const first = fake.agents.get("inbox-1");
     if (first) first.archivedAt = at(40);
-    await inbox.landed(...landing("## Ask\n- B?"));
+    await inbox.landed(...landing("## Ask\n- B?", "w2"));
     expect(fake.sent.map((s) => s.id)).toEqual(["inbox-1", "inbox-2"]);
     await inbox.landed(work([adopted]), work([adopted, ended("Typechecking.")]));
     expect(fake.sent).toHaveLength(2);
+  });
+
+  test("one landing reported twice pushes once; a later landing of the same work pushes again", async () => {
+    const { fake, inbox } = await setup();
+    const [before, after] = landing("## Ask\n- A?");
+    await Promise.all([inbox.landed(before, after), inbox.landed(before, after)]);
+    expect(fake.sent).toHaveLength(1);
+    const again = work([...after.events, ended("## Ask\n- B?"), toReview]);
+    await inbox.landed(after, again);
+    expect(fake.sent.map((s) => decodeNotice(s.text)?.card.landing)).toEqual([2, 4]);
+  });
+
+  test("a send Paseo never answers is dropped at the limit, and the next notice still goes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "maestro-inbox-"));
+    roots.push(root);
+    const fake = fakePaseo();
+    let sends = 0;
+    const paseo = {
+      agents: {
+        create: fake.paseo.agents.create,
+        ref: (id: string) => ({
+          ...fake.paseo.agents.ref(id),
+          send: (text: string) =>
+            ++sends === 1 ? new Promise<void>(() => undefined) : fake.paseo.agents.ref(id).send(text),
+        }),
+      },
+    } as unknown as Paseo;
+    const logs: string[] = [];
+    const inbox = new Inbox(
+      () => paseo,
+      async () => "/m",
+      (m) => logs.push(m),
+      join(root, "inbox.json"),
+      Date.now,
+      50,
+    );
+    const first = inbox.landed(...landing("## Ask\n- A?"));
+    await Promise.all([first, inbox.landed(...landing("## Ask\n- B?", "w2"))]);
+    expect(logs).toEqual(["inbox notice for w1 not sent: Paseo did not answer within 0.05 s"]);
+    expect(fake.sent.map((s) => decodeNotice(s.text)?.card.workId)).toEqual(["w2"]);
   });
 
   test("without a connection to Paseo the notice is logged and dropped, never thrown", async () => {

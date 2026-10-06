@@ -33,7 +33,12 @@ const PLUGIN_ID = "maestro";
 export const INBOX_TITLE = "Maestro · Needs you";
 
 /** What Maestro sends its inbox: one landing, as the prompt's text (encodeNotice). */
-const NoticeSchema = z.object({ title: z.string(), ask: z.string(), card: GateCardSchema });
+const NoticeSchema = z.object({
+  title: z.string(),
+  ask: z.string(),
+  // A notice is always for one landing in one worker's session: the card's optional fields are required here.
+  card: GateCardSchema.extend({ landing: z.number().int().nonnegative(), agentId: z.string() }),
+});
 export type InboxNotice = z.infer<typeof NoticeSchema>;
 const PREFIX = "maestro-inbox:";
 
@@ -221,9 +226,14 @@ function answer(input: ProviderInput, open: Map<string, { turns: number }>, emit
 export const inboxPath = (env: NodeJS.ProcessEnv = process.env): string =>
   env.MAESTRO_PASEO_INBOX ?? join(dirname(configPath(env)), "inbox.json");
 
+/** How long one notice may take before it is dropped, so a daemon that never answers jams no later notice. */
+export const NOTICE_MS = 30_000;
+
 export class Inbox {
   /** One notice at a time, so two landings at once open one session, not two. */
   private chain: Promise<unknown> = Promise.resolve();
+  /** Per work id, the latest landing this process has told, as GateCards keeps it: a repeated report pushes once. */
+  private readonly told = new Map<string, number>();
 
   constructor(
     private readonly paseo: () => Paseo | null,
@@ -231,17 +241,32 @@ export class Inbox {
     private readonly log: (message: string) => void,
     private readonly path: string = inboxPath(),
     private readonly now: () => number = Date.now,
+    private readonly limitMs: number = NOTICE_MS,
   ) {}
 
-  /** Tells the inbox about a landing. Never rejects: a notice that cannot be sent is logged and dropped. */
+  /**
+   * Tells the inbox about a landing. Always settles and never rejects: a
+   * notice that fails, or takes longer than the limit, is logged and dropped,
+   * and the next one goes on.
+   */
   landed(before: Pick<StoredWork, "events">, after: StoredWork): Promise<void> {
     const notice = noticeOf(before, after, this.now());
-    if (!notice) return Promise.resolve();
-    const sent = this.chain.then(() => this.send(notice));
+    if (!notice || notice.card.landing <= (this.told.get(notice.card.workId) ?? -1)) return Promise.resolve();
+    // Claimed before the first await, so two reports of one landing at once still push once.
+    this.told.set(notice.card.workId, notice.card.landing);
+    const sent = this.chain.then(() => this.bounded(this.send(notice)));
     this.chain = sent.catch(() => undefined);
     return sent.catch((error) =>
       this.log(`inbox notice for ${notice.card.workId} not sent: ${(error as Error).message}`),
     );
+  }
+
+  private bounded(work: Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Paseo did not answer within ${this.limitMs / 1000} s`)), this.limitMs);
+    });
+    return Promise.race([work, late]).finally(() => clearTimeout(timer));
   }
 
   private async send(notice: InboxNotice): Promise<void> {
