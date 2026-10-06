@@ -21,10 +21,14 @@
 // - Identity. The uid; an ask without one is (ledger, id), under the same-ask
 //   test: W's entry existed at B, or equals main's, or (beyond the spec's
 //   letter, for §5.2's squash-merged worktree that outlives the merge) W added
-//   it and main holds it asked at the same time in the same words. Two entries
-//   with one handle that fail it are an id collision: both shown, neither
-//   answered. So is a handle two entries of one copy share, and an id with a uid
-//   in one copy and none in another.
+//   it and main holds it asked at the same time in the same words. Such an
+//   ask's B, for step 2, is its entry as it first landed: the oldest of main's
+//   last 200 first-parent commits to that ledger whose entry passes that test.
+//   When that window does not reach the landing, W's copy counts only for an
+//   outcome it records and main does not. Two entries with one handle that
+//   fail it are an id collision: both shown, neither answered. So is a handle
+//   two entries of one copy share, and an id with a uid in one copy and none
+//   in another.
 // - The main checkout is never a fallback: it is one checkout under the rule.
 //
 // Not here: landing the answers batch (a gated work item, §5.2 "The answers
@@ -66,6 +70,8 @@ const LEDGER_LIMIT = 1024 * 1024;
 const CAT_FILE_MS = 30_000;
 /** An answer fetches origin/main first, unless it was fetched this recently. */
 const ANSWER_FETCH_FRESH_MS = 30_000;
+/** How far back main's history of a ledger is read for where a squash-merged ask first landed. */
+export const LANDED_WINDOW = 200;
 
 /** One ledger as parsed: its top level (for `arc`) and its asks list, in order. */
 export interface Ledger {
@@ -83,6 +89,13 @@ export interface CheckoutCopy {
   base: Ledgers;
 }
 
+/** A ledger's copies on origin/main's first-parent history, oldest first; null where a commit removed it or it reads as no ledger. */
+export interface MainHistory {
+  copies: (Ledger | null)[];
+  /** The oldest copy is the one that made the ledger, so nothing before it held an ask. */
+  complete: boolean;
+}
+
 export interface Sources {
   controlRepo: string;
   /** Every ledger on origin/main. */
@@ -90,6 +103,8 @@ export interface Sources {
   checkouts: CheckoutCopy[];
   /** The answers worktree's ledgers that differ from main's. */
   answers: Ledgers;
+  /** Main's history (the last LANDED_WINDOW commits to it) of each ledger landedLedgers names. */
+  landed: Map<string, MainHistory>;
 }
 
 // ── The rule (pure) ──────────────────────────────────────────────────────────
@@ -173,6 +188,45 @@ function landedAndEdited(mine: Row, main: Row): boolean {
     (key) => text(mine[key]) !== null && text(main[key]) !== null,
   );
   return words.length > 0 && words.every((key) => same(mine[key], main[key]));
+}
+
+/**
+ * The ledgers whose history main's must be read for: some checkout holds an
+ * ask without a uid that B lacks, that landed and was edited on main since,
+ * and that reads unlike main's. Scan reads those, and only those.
+ */
+export function landedLedgers(sources: Pick<Sources, "main" | "checkouts">): string[] {
+  const names = new Set<string>();
+  for (const checkout of sources.checkouts) {
+    for (const [name, ledger] of checkout.tree) {
+      const mainLedger = sources.main.get(name);
+      if (names.has(name) || !mainLedger) continue;
+      const landed = ledger.rows.some((mine) => {
+        const id = mine ? text(mine.id) : null;
+        if (!mine || !id || text(mine.uid)) return false;
+        const [main] = entriesOf(mainLedger, null, id);
+        const [base] = entriesOf(checkout.base.get(name), null, id);
+        return main !== undefined && base === undefined && !same(mine, main) && landedAndEdited(mine, main);
+      });
+      if (landed) names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+
+/**
+ * W's added ask as it first landed on main: the entry in the oldest copy of
+ * main's history that passes landedAndEdited. Null when none does, or when the
+ * oldest that does is the window's first and the window does not reach the
+ * ledger's making, so an older copy may hold it.
+ */
+function firstLanded(history: MainHistory | undefined, id: string, mine: Row): Row | null {
+  const copies = history?.copies ?? [];
+  for (const [at, copy] of copies.entries()) {
+    const row = entriesOf(copy ?? undefined, null, id).find((entry) => landedAndEdited(mine, entry));
+    if (row) return at > 0 || history?.complete ? row : null;
+  }
+  return null;
 }
 
 /** One ledger's copy in one source: its rows that go by a handle, and where an answer to them would go. */
@@ -272,10 +326,14 @@ function resolveOne(
     // The same-ask test, for an ask without a uid: W inherited it from B, or W's added ask has landed.
     const edited = uid === null && main !== null && base === null && landedAndEdited(mine, main);
     const sameAsk = uid !== null || main === null || base !== null || same(mine, main) || edited;
-    // Landed and edited on main since, with no B to tell W's edits from main's: W's copy counts only for an
-    // outcome it records and main does not. An edit W made to another field after its ask landed is not told
-    // apart from main's edit, and reads as main's; it shows once W lands it.
-    const local = edited ? stateOf(mine) !== "open" && stateOf(main as Row) === "open" : isLocal(base, mine, main);
+    // Landed and edited on main since: its B is its entry as it first landed on main, which tells W's edits since
+    // from main's. With none in main's history window, W's copy counts only for an outcome it records and main
+    // does not; an edit W made to another field after its ask landed then reads as main's until W lands it.
+    const landed = edited ? firstLanded(sources.landed.get(name), id, mine) : null;
+    const local =
+      edited && !landed
+        ? stateOf(mine) !== "open" && stateOf(main as Row) === "open"
+        : isLocal(landed ?? base, mine, main);
     const copy = { at, row: mine, ledger, local };
     if (sameAsk) copies.push(copy);
     else collisions.push(copy);
@@ -479,6 +537,7 @@ export class WorkspaceAsks {
   private readonly parsedBlobs = new Map<string, Ledger | Error>();
   private readonly trees = new Map<string, Map<string, string>>();
   private readonly bases = new Map<string, string | null>();
+  private readonly histories = new Map<string, MainHistory>();
   private readonly files = new Map<string, { stamp: string; id: string; bytes: Buffer }>();
   private format: "sha1" | "sha256" | null = null;
   private lastFetch = 0;
@@ -656,13 +715,70 @@ export class WorkspaceAsks {
         );
       } else answers.set(name, ledger);
     }
+    // A second pass, only for a ledger holding a squash-merged ask a checkout has edited since: main's history of it.
+    const landed = new Map<string, MainHistory>();
+    for (const name of landedLedgers({ main, checkouts: copies })) {
+      try {
+        landed.set(name, await this.historyOf(name, mainSha));
+      } catch (error) {
+        warnings.push(`The history of ${name} on ${MAIN_REF} could not be read: ${(error as Error).message}`);
+      }
+    }
     this.trimCaches();
     return {
       controlRepo: repo,
       main: { sha: mainSha, fetchedAt: this.fetchedAt },
-      all: resolveHomes({ controlRepo: await realpath(repo).catch(() => repo), main, checkouts: copies, answers }),
+      all: resolveHomes({
+        controlRepo: await realpath(repo).catch(() => repo),
+        main,
+        checkouts: copies,
+        answers,
+        landed,
+      }),
       warnings,
     };
+  }
+
+  /**
+   * A ledger's copies on main's first-parent history, the last LANDED_WINDOW
+   * commits to it, oldest first; read once per (ledger, main sha), its blobs by id.
+   */
+  private async historyOf(name: string, mainSha: string): Promise<MainHistory> {
+    const key = `${mainSha}:${name}`;
+    const known = this.histories.get(key);
+    if (known) return known;
+    const repo = this.options.controlRepo;
+    // Each commit, then its raw diff line against its first parent: `:mode mode old new status\tpath`.
+    const log = await git(repo, [
+      "log",
+      "--first-parent",
+      "--no-abbrev",
+      "--format=%H",
+      "--raw",
+      "-n",
+      String(LANDED_WINDOW),
+      mainSha,
+      "--",
+      `${ASKS_DIR}/${name}`,
+    ]);
+    const changes = log
+      .split("\n")
+      .filter((line) => line.startsWith(":"))
+      .map((line) => {
+        const [, , before = "", after = ""] = line.slice(1).split("\t")[0]?.split(" ") ?? [];
+        const none = (id: string) => /^0+$/.test(id);
+        return { before: none(before) ? null : before, after: none(after) ? null : after };
+      })
+      .reverse();
+    const ids = changes.flatMap((change) => (change.after ? [change.after] : []));
+    await this.loadBlobs(repo, ids);
+    const copies = changes.map((change) => {
+      const ledger = change.after ? this.parsedBlobs.get(change.after) : undefined;
+      return ledger && !(ledger instanceof Error) ? ledger : null;
+    });
+    const history = { copies, complete: changes.length > 0 && changes[0]?.before === null };
+    this.histories.set(key, history);
+    return history;
   }
 
   private parseFile(file: { id: string; bytes: Buffer }): Ledger | Error {
@@ -744,6 +860,7 @@ export class WorkspaceAsks {
     if (this.parsedBlobs.size > 4000) this.parsedBlobs.clear();
     if (this.trees.size > 200) this.trees.clear();
     if (this.bases.size > 500) this.bases.clear();
+    if (this.histories.size > 200) this.histories.clear();
     if (this.files.size > 8000) this.files.clear();
   }
 

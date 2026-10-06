@@ -12,6 +12,7 @@ import {
   gitWords,
   isLocal,
   type Ledger,
+  landedLedgers,
   parseWorktrees,
   resolveHomes,
   type Sources,
@@ -35,6 +36,7 @@ const sources = (over: Partial<Sources>): Sources => ({
   main: new Map(),
   checkouts: [],
   answers: new Map(),
+  landed: new Map(),
   ...over,
 });
 const checkout = (path: string, tree: Record<string, string>, base: Record<string, string> = {}) => ({
@@ -237,6 +239,29 @@ describe("the home rule (§5.2)", () => {
       sources({ main: new Map([["l.yaml", ledger(edited)]]), checkouts: [checkout("/w", { "l.yaml": answered }, {})] }),
     );
     expect(local.map((entry) => [entry.state, entry.home.kind])).toEqual([["answered", "checkout"]]);
+  });
+
+  test("a squash-merged ask main has edited since: W's own edit after it landed is told from main's by the ask as it landed", () => {
+    const added = ask(`    ask: "Merge it?"\n    asked_at: 2026-10-01T10:00Z\n    stakes: "old"\n`);
+    const edited = added.replace('stakes: "old"', 'stakes: "new"');
+    const mine = `${added}    headline: "Merge it now?"\n`;
+    const main = new Map([["l.yaml", ledger(edited)]]);
+    const landed = (complete: boolean) => new Map([["l.yaml", { copies: [ledger(added), ledger(edited)], complete }]]);
+    const read = (text: string, complete = true) =>
+      resolveHomes(
+        sources({ main, checkouts: [checkout("/w", { "l.yaml": text }, {})], landed: landed(complete) }),
+      ).map((entry) => [entry.headline, entry.stakes, entry.home.kind, entry.refusal]);
+    // W set the headline after its ask landed; main changed the stakes. W's copy, as W has it, is the home.
+    expect(read(mine)).toEqual([["Merge it now?", "old", "checkout", null]]);
+    // W changed nothing since it landed: main's.
+    expect(read(added)).toEqual([[null, "new", "main", null]]);
+    // The window's first copy holds it and is not the ledger's making, so an older one may: an outcome only, as before.
+    expect(read(mine, false)).toEqual([[null, "new", "main", null]]);
+    expect(read(`${mine}    answer: "Merge."\n`, false).map((row) => row[2])).toEqual(["checkout"]);
+    // Main's history is read only for such a ledger: not where W's copy is main's, nor where B holds the ask.
+    const named = (text: string, base: Record<string, string> = {}) =>
+      landedLedgers({ main, checkouts: [checkout("/w", { "l.yaml": text }, base)] });
+    expect([named(mine), named(edited), named(mine, { "l.yaml": added })]).toEqual([["l.yaml"], [], []]);
   });
 
   test("main's answer closes its own ask, never a different one a branch added under its id (spec §8 case 7)", () => {
@@ -588,6 +613,41 @@ describe("the workspace's asks, in a scratch control repo", () => {
     run(repo, "fetch", "--quiet", "origin");
     const landed = find((await asks.read()).all, "product-name");
     expect([landed.state, landed.home.kind]).toEqual(["answered", "main"]);
+  });
+
+  test("a worktree's ask, squash-merged and edited on main since: the worktree's edit after the merge makes it the home", async () => {
+    const { root, origin, repo, asks } = await workspace();
+    const tree = join(root, "arc-tree");
+    run(repo, "worktree", "add", "--quiet", "-b", "arc", tree, "origin/main");
+    const added = `arc: squash\nasks:\n  - id: S1\n    ask: "Squash it?"\n    asked_at: 2026-10-02T10:00Z\n    stakes: "old"\n    blocking: false\n    default: hold\n`;
+    const file = join(".control", "asks", "squash.yaml");
+    await writeFile(join(tree, file), added);
+    run(tree, "add", file);
+    run(tree, "commit", "--quiet", "-m", "ask S1");
+    // Squash-merged: main takes the ledger as one new commit of its own, then edits another field.
+    const other = join(root, "other");
+    run(root, "clone", "--quiet", origin, other);
+    await writeFile(join(other, file), added);
+    run(other, "add", file);
+    run(other, "commit", "--quiet", "-m", "squash: ask S1 (#1)");
+    await writeFile(join(other, file), added.replace('stakes: "old"', 'stakes: "new"'));
+    run(other, "commit", "--quiet", "-am", "edit S1's stakes");
+    run(other, "push", "--quiet", "origin", "main");
+    run(repo, "fetch", "--quiet", "origin");
+    const before = find((await asks.read()).all, "S1");
+    expect([before.stakes, before.home.kind, before.refusal]).toEqual(["new", "main", null]);
+    // The worktree, which outlives the merge, sets the headline.
+    await writeFile(join(tree, file), `${added}    headline: "Squash it now?"\n`);
+    const after = await asks.read();
+    const s1 = find(after.all, "S1");
+    expect(after.warnings).toEqual([]);
+    expect([s1.headline, s1.stakes, s1.home.kind, s1.home.path, s1.refusal]).toEqual([
+      "Squash it now?",
+      "old",
+      "checkout",
+      await realpath(tree),
+      null,
+    ]);
   });
 
   test("a fetch of origin/main runs in the background, at most every five minutes", async () => {
