@@ -531,8 +531,9 @@ export function ProgressBar({ theme, fraction }: { theme: PluginTheme; fraction:
 }
 
 /**
- * A segmented control: one choice of a few, each a labelled button. The track
- * is 10 (the segments' 7 plus its 3 of padding), so the corners nest.
+ * A segmented control: one choice of a few, each a labelled button, 40 pt
+ * tall (44 on a phone). The track is 10 (the segments' 7 plus its 3 of
+ * padding), so the corners nest.
  */
 export function Segmented<T extends string>({
   theme,
@@ -575,9 +576,10 @@ export function Segmented<T extends string>({
             aria-checked={selected}
             accessibilityLabel={option.label}
             onPress={() => onChange(option.id)}
-            style={({ pressed }) => ({
+            style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({
+              ...focusRing(theme, focused),
               flex: compact ? 1 : undefined,
-              minHeight: compact ? 40 : 28,
+              minHeight: compact ? 44 : 40,
               paddingHorizontal: space[3],
               alignItems: "center",
               justifyContent: "center",
@@ -599,4 +601,46 @@ export function Segmented<T extends string>({
       })}
     </View>
   );
+}
+
+/** Whether the last input was a key (true) or a pointer (false): focus rings show for keys only (focus-visible). */
+let keyboardModality = false;
+let modalityWatched = false;
+function watchModality(): void {
+  if (modalityWatched || Platform.OS !== "web") return;
+  const doc = (globalThis as { document?: { addEventListener(type: string, fn: () => void, capture: boolean): void } })
+    .document;
+  if (!doc) return;
+  modalityWatched = true;
+  doc.addEventListener(
+    "keydown",
+    () => {
+      keyboardModality = true;
+    },
+    true,
+  );
+  for (const type of ["mousedown", "pointerdown", "touchstart"]) {
+    doc.addEventListener(
+      type,
+      () => {
+        keyboardModality = false;
+      },
+      true,
+    );
+  }
+}
+
+/**
+ * A focus ring for a Pressable's style callback: a 2 px accent outline, offset
+ * 2, while it has focus from the keyboard (focus-visible), never from a click.
+ */
+export function focusRing(theme: PluginTheme, focused: boolean | undefined): ViewStyle {
+  watchModality();
+  if (!focused || !keyboardModality) return {};
+  return {
+    outlineColor: theme.colors.accent,
+    outlineStyle: "solid",
+    outlineWidth: 2,
+    outlineOffset: 2,
+  } as ViewStyle;
 }

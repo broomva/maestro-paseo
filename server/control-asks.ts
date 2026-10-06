@@ -111,9 +111,34 @@ function textsOf(value: unknown): string[] {
   });
 }
 
-/** An ask's audit layer (class, gates, exhausted); null when it writes none of them. */
+/** The audit layer's lines that go to a client: this many, each cut to AUDIT_LINE_CHARS. */
+export const AUDIT_LINES = 8;
+export const AUDIT_LINE_CHARS = 240;
+/**
+ * A line that looks like it carries a secret or a path to one: an API key's
+ * prefix (OpenAI/Anthropic `sk-`, GitHub `ghp_`/`gho_`/`github_pat_`, Slack
+ * `xox`, AWS `AKIA`), a private key block, an SSH key path, or `token=`. Such a
+ * line is dropped before the wire: the audit layer justifies an ask, it never
+ * needs the secret itself.
+ */
+const SECRET_LIKE =
+  /\bsk-[A-Za-z0-9_-]{6,}|\bgh[pousr]_[A-Za-z0-9]{6,}|github_pat_|\bxox[abposr]-|\bAKIA[0-9A-Z]{8,}|BEGIN [A-Z ]*PRIVATE KEY|\bid_(rsa|ed25519|ecdsa|dsa)\b|\.ssh\/|\btoken=/i;
+
+/** The exhausted lines a client may see: none that look like a secret, at most AUDIT_LINES, each cut short. */
+export function safeAuditLines(lines: readonly string[]): string[] {
+  return lines
+    .filter((line) => !SECRET_LIKE.test(line))
+    .slice(0, AUDIT_LINES)
+    .map((line) => (line.length > AUDIT_LINE_CHARS ? `${line.slice(0, AUDIT_LINE_CHARS - 1)}…` : line));
+}
+
+/** An ask's audit layer (class, gates, exhausted, made safe for the wire); null when it writes none of them. */
 export function auditOf(row: Row): AskAudit | null {
-  const audit = { class: text(row.class), gates: textsOf(row.gates), exhausted: textsOf(row.exhausted) };
+  const audit = {
+    class: text(row.class),
+    gates: textsOf(row.gates).slice(0, AUDIT_LINES),
+    exhausted: safeAuditLines(textsOf(row.exhausted)),
+  };
   return audit.class || audit.gates.length > 0 || audit.exhausted.length > 0 ? audit : null;
 }
 

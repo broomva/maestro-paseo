@@ -249,31 +249,47 @@ The **Decisions** view holds your workspace's decision asks: every `.control/ask
 the control repo (`~/broomva`, or `MAESTRO_PASEO_CONTROL_REPO`), each ask read where it lives (see
 [Which copy](#answering-a-decision-ask)). Ideas are answered in [Initiatives](#initiatives), not here.
 
-- **One at a time.** *Decision N of M* and a thin bar say where you are. The order is a choice of
+- **One at a time.** *Decision N of M* counts this visit: M is every ask the queue has held since
+  you opened the tab (new arrivals add to it), N the ones handled (answered or skipped, here or
+  elsewhere) plus the one on screen, and the bar is what is handled. The order is a choice of
   *Blocking first* (blocking asks, then the rest that wait on you, then the oldest), *Oldest* (by
   `asked_at`, undated last) or *By ledger* (a ledger at a time, in the rail's order); a new order
   starts at its first decision. *Up next* lists the following three; pressing one goes to it.
-- **The ledger rail.** Each ledger with an open ask and its count, *All* first. A dot marks a
-  ledger only when an ask in it waits on you (open and blocking, or recommending an option that
-  cannot be undone, §5.4). Past eight ledgers the rest fold under *+ N more*. On a phone the rail is
-  a *Ledger* picker.
-- **The card.** A muted line (ledger · id, age, blocking or not, reversible), then the question as
-  its headline. An ask without a `headline` leads with its question's first sentence, cut at a word
-  past 120 characters, the rest behind *Full question*. *What waiting costs* and *Why you* sit side
-  by side (stacked on a phone). Each option is a radio card: its label, what it does, *Recommended*,
+- **The card stays the card.** The ask on screen is pinned to its full identity (its home, ledger,
+  uid and id) the moment it shows. A poll, another client or a newer ask never swaps it. An ask
+  answered elsewhere stays on screen, read-only, saying *This was answered elsewhere*, with *Next
+  decision*; nothing moves on by itself. Your choice and words are kept per ask while you move
+  between asks. A focus from elsewhere opens the one ask that matches every field it gives, or none.
+- **The ledger rail.** Each ledger with an open ask and its count, *All* first, names cut at a word.
+  A dot marks a ledger only when an ask in it waits on you (open and blocking, or recommending an
+  option that cannot be undone, §5.4). Past eight ledgers the rest fold under *+ N more*, which
+  counts their open asks and those that wait on you. On a phone the rail is a *Ledger* picker.
+- **The card.** A muted line (the ledger, age, blocking or not, and undo: *reversible*, *an option
+  cannot be undone*, or *Undo: not stated*), then the question as its headline. An ask without a
+  `headline` leads with its question's first sentence, cut at a word past 120 characters, and *Full
+  question* holds only what the headline leaves out. *What waiting costs* and *Why you* sit side by
+  side (stacked on a phone). Each option is a radio card: its label, what it does, *Recommended*,
   and *Cannot be undone* when `reversible: false`. Nothing is chosen for you, the recommendation
-  included. *If you say nothing* says the default, and says when it names an option other than the
-  recommended one. The verb reads *Answer with <option>* and waits until you choose (an ask with no
-  options says so and takes your words). *Skip* leaves it open and moves it to the end of the queue,
-  for this visit. *Details* holds the full question, the audit layer (class, gates, what was tried
-  before asking), the ledger, where the answer is written, and the session that asked.
-- **Keys, on the web.** 1–4 choose an option, Enter answers, S skips, J and K go to the next and the
-  previous, each hinted beside what it drives. None acts while you type in a field or with a modifier
-  held, and Enter on a focused button presses that button.
-- **After an answer.** The card leaves (opacity to 0 and up 6 px in 160 ms; at once under reduced
-  motion) and the next comes up. A line above it says what you answered and where it was written.
-  There is no undo: `ask.answer` has none, so none is offered. *Recently answered* lists the latest
-  answered asks, folded.
+  included. *If you say nothing* is its own row: the option the default names (it is that option's
+  id or label, or begins with one of four characters or more) with *same as recommended* or
+  *differs from the recommendation*, or the ledger's words with *(not one of the options above)*.
+  The verb reads *Answer with <option>* and waits until you choose (an ask with no options says so
+  and takes your words); one answer is sent however fast you press. *Skip* leaves it open and moves
+  it to the end of the queue, for this visit. *Details* holds the ask's id, the full question, the
+  audit layer (class, gates, what was tried before asking), the ledger, where the answer is written
+  (short: never a machine path on the main surface), and the session that asked. The audit layer's
+  lines are checked by the plugin before they leave it: any that look like a key or a path to one
+  are dropped, at most eight are sent, each cut at 240 characters.
+- **Keys, on the web.** The tab takes focus when it opens and after each answer. Inside it, 1–4
+  choose an option, Enter answers, S skips (only where Skip is offered), J and K go to the next and
+  the previous, each hinted beside what it drives. A key outside the tab is never taken. None acts
+  while you type in a field or with a modifier held, and Enter on a focused button presses that
+  button. Controls are 40 pt tall (44 on a phone) and show a focus ring for the keyboard only.
+- **After an answer.** The card you answered leaves as it read (opacity to 0 and up 6 px in 160 ms;
+  at once under reduced motion; a refetch landing meanwhile does not change it) and the next comes
+  up. The line under the count says what you answered. There is no undo: `ask.answer` has none, so
+  none is offered. *Recently answered* lists the latest answered asks, folded, each with where it
+  was written.
 - **Getting there.** A decision that waits on you shows above every other view with *Open
   Decisions*, which opens the tab at that ask. When only workspace asks wait, the header count opens
   the tab, blocking first. An initiative's *Open in Decisions* opens it at that ledger and ask.

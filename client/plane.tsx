@@ -18,7 +18,8 @@ import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { ChangeScope } from "./changed";
-import { AskNotices, type DecisionsFocus, DecisionsView, useDecisionCounts } from "./decisions";
+import { type DecisionsFocus, DecisionsView } from "./decision-triage";
+import { AskNotices, useDecisionCounts } from "./decisions";
 import { WorkDetail } from "./detail";
 import { FleetNotices, FleetView } from "./fleet";
 import { errorText, plural } from "./format";
@@ -70,7 +71,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     setView("fleet");
   };
   // The workspace's asks open in Decisions, at the ask named; a fleet scope's stay in its Fleet view.
-  const openDecisions = (ledger: string | null, ask: { ledger: string | null; id: string } | null) => {
+  const openDecisions = (ledger: string | null, ask: DecisionsFocus["ask"]) => {
     setDecisionsFocus({ ledger, ask, at: Date.now() });
     setView("decisions");
   };
@@ -172,7 +173,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
           compact={compact}
           onOpen={(notice) =>
             notice.scope === null
-              ? openDecisions(null, { ledger: notice.ledger, id: notice.id })
+              ? openDecisions(null, { ledger: notice.ledger, uid: notice.uid, id: notice.id })
               : openFleet(notice.scope)
           }
         />

@@ -7,6 +7,8 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type AnswerInput,
+  AUDIT_LINE_CHARS,
+  AUDIT_LINES,
   acquireLock,
   answerDecision,
   decisionsOf,
@@ -16,6 +18,7 @@ import {
   lockKey,
   readDecisions,
   releaseLock,
+  safeAuditLines,
   withAnswer,
 } from "./control-asks";
 
@@ -110,6 +113,35 @@ const answered = (source: string, extra: Partial<AnswerInput>) =>
   withAnswer(source, "test-arc.yaml", input(extra), AT).out;
 
 describe("reading decision asks", () => {
+  test("the audit layer never carries a secret-like line, and is capped in count and length", () => {
+    const lines = [
+      // Built from parts, so the test file itself carries no key-shaped string for a scanner to flag.
+      `read: the key is ${"sk"}-ant-${"api03"}-AbCdEf123456 in the log`,
+      `read: GitHub token ${"ghp"}_${"abcdefghijklmnop1234"}`,
+      `slack ${"xoxb"}-1234-5678 found`,
+      `aws ${"AKIA"}${"ABCDEFGHIJKLMNOP"} leaked`,
+      `-----BEGIN OPENSSH ${"PRIVATE"} KEY-----`,
+      "read: ~/.ssh/id_ed25519 is present",
+      "curl https://x?token=abc",
+      "read: nothing on disk",
+      ...Array.from({ length: 12 }, (_, at) => `default: available ${at}`),
+      `long: ${"x".repeat(400)}`,
+    ];
+    const safe = safeAuditLines(lines);
+    expect(safe[0]).toBe("read: nothing on disk");
+    expect(safe).toHaveLength(AUDIT_LINES);
+    for (const line of safe) expect(line.length).toBeLessThanOrEqual(AUDIT_LINE_CHARS);
+    expect(safe.join("\n")).not.toMatch(/sk-ant|ghp_|xoxb|AKIA|PRIVATE KEY|\.ssh|token=/);
+    expect(safeAuditLines([`long: ${"x".repeat(400)}`])[0]?.endsWith("…")).toBe(true);
+    // Words like "task-" or "risk-free" are not keys.
+    expect(safeAuditLines(["read: task-list and risk-free default"])).toEqual([
+      "read: task-list and risk-free default",
+    ]);
+    // Through the reader: the secret line never reaches the wire.
+    const source = `arc: a\nasks:\n  - id: X1\n    ask: "Go?"\n    exhausted: ["read: ${"sk"}-live-abcdef123456 in x", "read: fine"]\n`;
+    expect(decisionsOf(source, "a.yaml")[0]?.audit?.exhausted).toEqual(["read: fine"]);
+  });
+
   test("the audit layer: class, gates as a list (a lone string is one), exhausted; none written is null", () => {
     const ledger = (fields: string) => `arc: a\nasks:\n  - id: X1\n    ask: "Go?"\n${fields}`;
     expect(decisionsOf(ledger(""), "a.yaml")[0]?.audit).toBeNull();
