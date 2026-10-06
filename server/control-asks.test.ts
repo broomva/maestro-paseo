@@ -188,12 +188,38 @@ describe("reading decision asks", () => {
       waiting: false,
       idea: null,
       audit: { class: "decision", gates: [], withheld: 0 },
+      initiative: null,
+      fate: null,
     });
     expect([answer?.uid, answer?.state, answer?.answer]).toEqual([
       "7d1e0c2a-5b8f-4e1a-9c4d-2f6b8a0e3c91",
       "answered",
       "Merge it.",
     ]);
+  });
+
+  test("an option changes nothing only by the ledger's own status_quo key; the ask's initiative, else the ledger's", () => {
+    const source = [
+      "arc: x",
+      "initiative: ledger-wide",
+      "asks:",
+      "  - id: A1",
+      "    initiative: own",
+      "    options:",
+      "      - { id: go, label: Go, consequence: It changes., reversible: true, recommended: true }",
+      "      - { id: hold, label: Hold, consequence: Nothing changes., reversible: true, status_quo: true }",
+      '      - { id: wait, label: "Keep as is", consequence: Nothing changes at all., reversible: true }',
+      "  - id: A2",
+      "    ask: two",
+    ].join("\n");
+    const [one, two] = decisionsOf(source, "x.yaml");
+    // Only `status_quo: true` says so: an option whose words say nothing changes is not read as one.
+    expect(one?.options.map((option) => [option.id, option.statusQuo ?? false])).toEqual([
+      ["go", false],
+      ["hold", true],
+      ["wait", false],
+    ]);
+    expect([one?.initiative, two?.initiative]).toEqual(["own", "ledger-wide"]);
   });
 
   test("handles that name more than one ask are shown refused, and never answered", () => {

@@ -563,6 +563,27 @@ export class WorkspaceAsks {
     await this.fetching;
   }
 
+  /** origin/main fetched now (one fetch at a time, shared with reads): why it failed, or null. Off for a test without a remote. */
+  fetchMain(): Promise<string | null> {
+    return this.options.fetch === false ? Promise.resolve(null) : this.fetchNow();
+  }
+
+  /**
+   * Runs `run` in the answers' own queue, so nothing else writes the answers
+   * worktree meanwhile (the landing step, server/answers-landing.ts), and the
+   * next read is fresh.
+   */
+  exclusive<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.writes
+      .catch(() => undefined)
+      .then(run)
+      .finally(() => {
+        this.cached = null;
+      });
+    this.writes = next;
+    return next;
+  }
+
   private async scan(): Promise<WorkspaceRead> {
     const repo = this.options.controlRepo;
     const warnings: string[] = [];
@@ -872,29 +893,16 @@ export class WorkspaceAsks {
         );
       });
     }
-    const [ours, theirs, onBranch] = await Promise.all([
-      git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(() => ""),
-      git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(() => ""),
-      git(path, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => ""),
-    ]);
-    const [oursReal, theirsReal] = await Promise.all([
-      realpath(ours.trim()).catch(() => ours.trim()),
-      realpath(theirs.trim()).catch(() => theirs.trim()),
-    ]);
-    if (!oursReal || oursReal !== theirsReal || onBranch.trim() !== ANSWERS_BRANCH) {
+    if (!(await isAnswersWorktree(repo, path))) {
       throw new UserError(
         `${path} is not ${repo}'s answers worktree on ${ANSWERS_BRANCH}, so no answer was written there.`,
       );
     }
     // Anything uncommitted there (an earlier answer whose commit failed, a hand edit) is never swept into this answer's commit.
-    // Each line is `XY path`; X may be a space, so lines are never trimmed before the cut.
-    const dirty = (await git(path, ["status", "--porcelain", "--untracked-files=all"]))
-      .split("\n")
-      .filter((line) => line.length > 3);
+    const dirty = await uncommitted(path);
     if (dirty.length > 0) {
-      const files = dirty.map((line) => line.slice(3)).join(", ");
       throw new UserError(
-        `Maestro's answers worktree has changes not committed (${files}), so no answer was written. Commit or discard them in ${path} first.`,
+        `Maestro's answers worktree has changes not committed (${dirty.join(", ")}), so no answer was written. Commit or discard them in ${path} first.`,
       );
     }
     const current = await git(path, ["merge-base", "--is-ancestor", mainSha, "HEAD"]).then(
@@ -951,6 +959,28 @@ export class WorkspaceAsks {
       return message;
     }
   }
+}
+
+/** Whether `path` is a worktree of `repo`'s own (one git common dir) with maestro/answers checked out. */
+export async function isAnswersWorktree(repo: string, path: string): Promise<boolean> {
+  const [ours, theirs, onBranch] = await Promise.all([
+    git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(() => ""),
+    git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(() => ""),
+    git(path, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => ""),
+  ]);
+  const [oursReal, theirsReal] = await Promise.all([
+    realpath(ours.trim()).catch(() => ours.trim()),
+    realpath(theirs.trim()).catch(() => theirs.trim()),
+  ]);
+  return Boolean(oursReal) && oursReal === theirsReal && onBranch.trim() === ANSWERS_BRANCH;
+}
+
+/** A checkout's files not committed, by path. Each line is `XY path`; X may be a space, so lines are never trimmed before the cut. */
+export async function uncommitted(path: string): Promise<string[]> {
+  return (await git(path, ["status", "--porcelain", "--untracked-files=all"]))
+    .split("\n")
+    .filter((line) => line.length > 3)
+    .map((line) => line.slice(3));
 }
 
 export function homeWords(home: AskHome): string {

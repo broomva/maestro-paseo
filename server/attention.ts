@@ -2,6 +2,7 @@
 // computed from the work files alone, with no session reconcile, so every
 // open client can poll it without costing an agent round trip per item. Pure.
 
+import type { AnswersNotice } from "../shared/answers";
 import type { Attention, WorkItem } from "../shared/contracts";
 import type { AskNotice, FleetNotice } from "../shared/fleet";
 import { withoutMarker } from "../shared/fleet-item";
@@ -24,7 +25,9 @@ export const RECENT_MS = 24 * 60 * 60 * 1000;
  * `asks`: decision asks that wait on you (shared/fleet.ts isWaiting): the
  * workspace's (server/control-home.ts) and each fleet scope's own root's.
  * `initiatives`: initiatives past their review date, or parked ones whose
- * wake date came (server/initiatives.ts).
+ * wake date came (server/initiatives.ts). `answers`: the answers batch while
+ * answers wait to land on origin/main or it cannot take main
+ * (server/answers-landing.ts): Maestro never merges its PR, so it is yours.
  */
 export function attentionOf(
   items: readonly WorkItem[],
@@ -33,6 +36,7 @@ export function attentionOf(
   timeline: readonly TimelineNotice[] = [],
   asks: readonly AskNotice[] = [],
   initiatives: readonly InitiativeNotice[] = [],
+  answers: readonly AnswersNotice[] = [],
 ): Attention {
   const waiting = needsYouOf(items).map(({ id, group, flag }) => ({ id, group, flag }));
   const sessions: Attention["sessions"] = [];
@@ -56,5 +60,6 @@ export function attentionOf(
     timeline: [...timeline],
     asks: [...asks],
     initiatives: [...initiatives],
+    answers: [...answers],
   };
 }

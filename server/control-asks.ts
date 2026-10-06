@@ -73,6 +73,7 @@ export function optionsOf(raw: unknown): DecisionOption[] {
         consequence: text(option.consequence),
         reversible: typeof option.reversible === "boolean" ? option.reversible : null,
         recommended: option.recommended === true,
+        ...(option.status_quo === true ? { statusQuo: true } : {}),
       },
     ];
   });
@@ -251,6 +252,8 @@ export function decisionOf(
     waiting: isWaiting({ state, blocking, options }),
     idea: ideaOf(row),
     audit: auditOf(row),
+    initiative: text(row.initiative) ?? text(data.initiative),
+    fate: null,
   };
 }
 

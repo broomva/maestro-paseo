@@ -3,6 +3,7 @@
 
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { AnswersLandingSchema, AnswersNoticeSchema, ROUTES } from "./answers";
 import { AskNoticeSchema, FleetNoticeSchema } from "./fleet";
 import { InitiativeNoticeSchema } from "./initiatives";
 import { GATE_MODES, GROUP_ORDER, KINDS, ORCH_STATES, VERDICTS } from "./states";
@@ -408,6 +409,8 @@ export const attentionWork = defineRpc({
     asks: z.array(AskNoticeSchema).optional(),
     /** Initiatives past their review date, or parked ones whose wake date came (shared/initiatives.ts); absent from an older daemon. */
     initiatives: z.array(InitiativeNoticeSchema).optional(),
+    /** The answers batch, while answers wait to land or it cannot take main (shared/answers.ts); absent from an older daemon. */
+    answers: z.array(AnswersNoticeSchema).optional(),
   }),
 });
 export type Attention = z.infer<typeof attentionWork.output>;
@@ -455,6 +458,20 @@ export const WakeEntrySchema = z.object({
    * Absent on entries written before the loop cleared flags.
    */
   cleared: z.array(Named).default([]),
+  /**
+   * The answers step (server/answers-landing.ts, server/answer-routes.ts):
+   * the batch as this wake left it, and each answer it routed. Null when
+   * Maestro reads no control repo; absent on entries written before it.
+   */
+  answers: z
+    .object({
+      landing: AnswersLandingSchema.nullable(),
+      routed: z.array(z.object({ ledger: z.string(), id: z.string(), route: z.enum(ROUTES), words: z.string() })),
+      /** Answers due to be routed that wait: a session at work, or not landed yet. */
+      waiting: z.number().int().min(0),
+    })
+    .nullable()
+    .optional(),
   narrative: z.array(z.string()),
   skipped: z.string().optional(),
 });

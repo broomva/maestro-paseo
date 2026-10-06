@@ -1,5 +1,8 @@
+import { dirname, join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { agentMethods, keepServing } from "./server/agent-socket";
+import { AnswerRouter } from "./server/answer-routes";
+import { AnswersLander, ghForge } from "./server/answers-landing";
 import { attentionOf } from "./server/attention";
 import { loadConfig, saveConfig } from "./server/config";
 import { WorkspaceAsks } from "./server/control-home";
@@ -22,6 +25,7 @@ import { Records } from "./server/records";
 import type { Paseo } from "./server/runs";
 import { Timeline } from "./server/timeline";
 import { WAKE_LOG_MAX, WakeLog } from "./server/wake-log";
+import { answersNotice } from "./shared/answers";
 import {
   adoptAgent,
   attentionWork,
@@ -73,8 +77,50 @@ export default function contribute(host: PluginServerContext) {
   // inside the undo window) applies as soon as the first one arrives.
   let latest: Paseo | null = null;
   const engine = new Engine({ client: () => latest, landed: (before, after) => cards.landed(before, after) });
+  // The workspace's own asks: the control repo's ledgers, at their homes (spec #861 §5.2).
+  const control = controlRepoPaths();
+  const askPaths = controlAskPaths();
+  const workspace = control.repo
+    ? new WorkspaceAsks({
+        controlRepo: control.repo,
+        answersPath: control.answers,
+        lockRoot: askPaths.locks,
+        receipts: askPaths.receipts,
+        log,
+      })
+    : null;
+  // Your answers after you give them (BRO-2827): the batch landed through one gated PR, each answer routed once.
+  const lander =
+    workspace && control.repo
+      ? new AnswersLander({
+          asks: workspace,
+          controlRepo: control.repo,
+          answersPath: control.answers,
+          statePath: join(dirname(askPaths.receipts), "answers-landing.json"),
+          forge: ghForge(),
+          log,
+        })
+      : null;
+  const router =
+    workspace && control.repo
+      ? new AnswerRouter({
+          receipts: askPaths.receipts,
+          asks: workspace,
+          engine,
+          client: () => latest,
+          controlRepo: control.repo,
+          log,
+        })
+      : null;
+  // Where routing begins: an answer given before this is never routed (it was acted on, or not, by hand).
+  void router?.begin().catch((error) => log(`answers: marking where routing begins: ${(error as Error).message}`));
   // The loop wakes on its own timer, outside any handler, so it reads the same client (server/loop.ts).
-  const loop = new Loop({ engine, client: () => latest, log });
+  const loop = new Loop({
+    engine,
+    client: () => latest,
+    log,
+    answers: lander && router ? { land: () => lander.land(), route: () => router.route() } : undefined,
+  });
   const keep = (paseo: Paseo) => {
     const first = !latest && Boolean(paseo);
     latest = paseo;
@@ -106,18 +152,6 @@ export default function contribute(host: PluginServerContext) {
   awakeClock?.start();
   const clock = awakeClock ?? wallClock();
   const fleet = new Fleet({ items: () => engine.list().then(({ items }) => items), clock, log });
-  // The workspace's own asks: the control repo's ledgers, at their homes (spec #861 §5.2).
-  const control = controlRepoPaths();
-  const askPaths = controlAskPaths();
-  const workspace = control.repo
-    ? new WorkspaceAsks({
-        controlRepo: control.repo,
-        answersPath: control.answers,
-        lockRoot: askPaths.locks,
-        receipts: askPaths.receipts,
-        log,
-      })
-    : null;
   // The workspace's initiatives and their ideas (server/initiatives.ts), read under the same home rule.
   const initiatives = control.repo
     ? workspaceInitiatives({
@@ -199,7 +233,7 @@ export default function contribute(host: PluginServerContext) {
   // A fleet or a timeline that cannot be read costs the count its notices, never the work's.
   server.handle(attentionWork, async () => {
     const { items } = await engine.list();
-    const [notices, scheduled, workspaceAsks, fleetAsks, initiativeNotices] = await Promise.all([
+    const [notices, scheduled, workspaceAsks, fleetAsks, initiativeNotices, landing] = await Promise.all([
       fleet.notices(items).catch((error) => {
         log(`reading the fleet for the header count: ${(error as Error).message}`);
         return [];
@@ -220,8 +254,18 @@ export default function contribute(host: PluginServerContext) {
         log(`reading the initiatives for the header count: ${(error as Error).message}`);
         return [];
       }),
+      (lander?.state() ?? Promise.resolve(null)).catch(() => null),
     ]);
-    return attentionOf(items, Date.now(), notices, scheduled, [...workspaceAsks, ...fleetAsks], initiativeNotices);
+    const batch = answersNotice(landing);
+    return attentionOf(
+      items,
+      Date.now(),
+      notices,
+      scheduled,
+      [...workspaceAsks, ...fleetAsks],
+      initiativeNotices,
+      batch ? [batch] : [],
+    );
   });
   server.handle(getTimeline, () => timeline.get());
   // A launchd job's log end, only when you open its row: never in the polled view.
@@ -264,7 +308,11 @@ export default function contribute(host: PluginServerContext) {
         warnings: [`The fleet's asks could not be read: ${(error as Error).message}`],
       })),
     ]);
-    return { ...view, fleet: scoped.asks, warnings: [...view.warnings, ...scoped.warnings] };
+    // An answered ask says what became of your answer: waiting to land, landed, or acted on (shared/answers.ts).
+    const decisions = router
+      ? await router.fates(view.decisions, await (lander?.state() ?? Promise.resolve(null)).catch(() => null))
+      : view.decisions;
+    return { ...view, decisions, fleet: scoped.asks, warnings: [...view.warnings, ...scoped.warnings] };
   });
   // Your answer to a decision ask, at its home: written under the ledger lock, and never on the agent socket.
   // An idea answered develop also files its held work item (above); park writes the wake you chose.
@@ -275,6 +323,8 @@ export default function contribute(host: PluginServerContext) {
     }
     if (!workspace) throw new UserError("Maestro reads no control repo here (MAESTRO_PASEO_CONTROL_REPO is off).");
     const answered = await workspace.answer({ ...input, home: where.home });
+    // An answer in its checkout is where it belongs already: routed now, not at the next wake. Never awaited.
+    if (answered.ask.home.kind === "checkout") void router?.route();
     const filed = await develop(answered.ask, paseo);
     return {
       ask: answered.ask,
@@ -327,9 +377,11 @@ export default function contribute(host: PluginServerContext) {
   server.handle(wakeLoop, () => loop.wake("manual"));
 
   server.on("agent.turn_started", (event) => engine.onTurnStarted(event.agent));
-  server.on("agent.turn_ended", (event) =>
-    engine.onTurnEnded(event.agent, event.outcome, event.timeline, event.turnId),
-  );
+  // A session's turn ended: Maestro's own bookkeeping first, then any answer that waited for it to go idle.
+  server.on("agent.turn_ended", async (event) => {
+    await engine.onTurnEnded(event.agent, event.outcome, event.timeline, event.turnId);
+    void router?.route({ agentId: event.agent.id });
+  });
   server.on("agent.permission_requested", (event) => engine.onPermissionRequested(event.agent, event.request));
   server.on("agent.permission_resolved", (event) => engine.onPermissionResolved(event.agent, event.requestId));
   server.on("agent.archived", (event, { paseo }) => engine.onArchived(event.agent, paseo));

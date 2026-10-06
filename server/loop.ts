@@ -22,10 +22,19 @@
 //      too: a session at work again mid-turn sends Maestro no event, so the
 //      loop takes that flag down itself (`cleared`), and leaves it when the
 //      session cannot be asked;
-//   5. flags, in Maestro's Needs you, what it leaves to you, what it could
+//   5. lands your answers and acts on them (BRO-2827): the answers batch on
+//      maestro/answers is brought up to origin/main, pushed, and carried by
+//      one PR, gated like any other and never merged by Maestro; once it has
+//      landed the branch is levelled with main (server/answers-landing.ts).
+//      Then each answer where it belongs, landed or in its checkout, is
+//      routed once: to the session that asked when it is idle, else, when
+//      that session is gone, as queued work at your gate (server/answer-
+//      routes.ts). A batch that cannot take main is kept whole and named in
+//      Needs you. It decides no ask: the answers are yours;
+//   6. flags, in Maestro's Needs you, what it leaves to you, what it could
 //      not start, and what has gone quiet (server/flags.ts): one event per
 //      work, and none while the same flag already stands;
-//   6. writes one wake-log entry (server/wake-log.ts) that says all of it.
+//   7. writes one wake-log entry (server/wake-log.ts) that says all of it.
 // While the loop is off, a quiet flag stands until the next event on the work.
 // It never stops, sends back or decides anything: those stay yours. Being
 // deferred at the run cap is not flagged: that work starts when a slot frees.
@@ -39,8 +48,10 @@
 // while the wake is still running.
 
 import { randomUUID } from "node:crypto";
+import { type AnswersLanding, landingWords } from "../shared/answers";
 import type { FlagKind, WakeEntry, WorkItem } from "../shared/contracts";
 import { isDispatchable } from "../shared/states";
+import type { RouteOutcome } from "./answer-routes";
 import { AtCapacity, type Engine, leftToYou, realTimer, type Timer, UserError, within } from "./engine";
 import { LOOP } from "./events";
 import {
@@ -92,6 +103,12 @@ type Silent = { item: WorkItem; last: number };
 /** A run flagged quiet whose session has worked again, and when it last did (the daemon's word). */
 type Clear = { item: WorkItem; activeAt: number };
 
+/** Step 5's two halves (server/answers-landing.ts, server/answer-routes.ts); neither throws. */
+export interface AnswersStep {
+  land(): Promise<AnswersLanding>;
+  route(): Promise<RouteOutcome[]>;
+}
+
 export interface LoopOptions {
   engine: Engine;
   /** The daemon client once the plugin has one. */
@@ -104,6 +121,8 @@ export interface LoopOptions {
   log?: (message: string) => void;
   /** How long a wake waits for one session to say when it last worked; tests pass a short one. */
   askMs?: number;
+  /** Step 5, when Maestro reads a control repo. */
+  answers?: AnswersStep;
 }
 
 /**
@@ -121,6 +140,8 @@ export function narrate(entry: Omit<WakeEntry, "narrative" | "tickId" | "wokeAt"
     ...(stuck > 0 ? [`${stuck} stuck.`] : []),
     ...entry.quiet.map((run) => `${run.title} has been quiet ${minutesWords(run.minutes)}, worth a look.`),
   ];
+  const landing = entry.answers?.landing ? landingWords(entry.answers.landing) : null;
+  if (landing) needs.push(landing);
   if (needs.length > 0) lines.push("Needs you:", ...needs.map((line) => `  ${line}`));
   if (entry.unasked.length > 0) {
     lines.push(
@@ -128,8 +149,13 @@ export function narrate(entry: Omit<WakeEntry, "narrative" | "tickId" | "wokeAt"
       ...entry.unasked.map((run) => `  ${run.title}: ${sentence(run.reason)}`),
     );
   }
-  if (entry.dispatched.length > 0) {
-    lines.push("Did:", ...entry.dispatched.map((work) => `  Started ${work.title}.`));
+  const routed = entry.answers?.routed ?? [];
+  if (entry.dispatched.length > 0 || routed.length > 0) {
+    lines.push(
+      "Did:",
+      ...entry.dispatched.map((work) => `  Started ${work.title}.`),
+      ...routed.map((answer) => `  Your answer to ${answer.id} (${answer.ledger}): ${answer.words}`),
+    );
   } else {
     lines.push("Did nothing new this tick.");
   }
@@ -162,6 +188,7 @@ export class Loop {
   private readonly wakeLog: WakeLog;
   private readonly log: (message: string) => void;
   private readonly askMs: number;
+  private readonly answers: AnswersStep | null;
   private cancel: (() => void) | null = null;
   private nextAt: Date | null = null;
   /** The lease: true while a wake runs. Set before the wake's first await, so two can never both run. */
@@ -188,6 +215,7 @@ export class Loop {
     this.log = options.log ?? ((message) => console.log(`[maestro] ${message}`));
     this.wakeLog = options.wakeLog ?? new WakeLog(undefined, this.log);
     this.askMs = options.askMs ?? ASK_MS;
+    this.answers = options.answers ?? null;
   }
 
   /** The loop now: its period (null: off), the next wake, whether one is running, the newest wakes first. */
@@ -342,6 +370,7 @@ export class Loop {
       this.missedClient = false;
       await this.startQueued(paseo, items, entry, raise);
     }
+    await this.landAndRoute(entry);
     await this.raiseFlags(raise, entry);
     await this.clearFlags(clear, entry);
     entry.narrative = narrate(entry, notes);
@@ -399,6 +428,31 @@ export class Loop {
     } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  /**
+   * Step 5: the answers batch, then the answers due. Each half says what it
+   * could not do in what it returns, so neither keeps the wake from the rest.
+   */
+  private async landAndRoute(entry: WakeEntry): Promise<void> {
+    if (!this.answers) return;
+    const landing = await this.answers.land().catch((error) => {
+      this.log(`the loop could not land the answers: ${(error as Error).message}`);
+      return null;
+    });
+    const outcomes = await this.answers.route().catch((error) => {
+      this.log(`the loop could not route the answers: ${(error as Error).message}`);
+      return [] as RouteOutcome[];
+    });
+    entry.answers = {
+      landing,
+      routed: outcomes.flatMap((outcome) =>
+        outcome.status === "routed" && outcome.route
+          ? [{ ledger: outcome.ledger, id: outcome.id, route: outcome.route, words: outcome.words }]
+          : [],
+      ),
+      waiting: outcomes.filter((outcome) => outcome.status !== "routed").length,
+    };
   }
 
   /** Write the flags this wake raised; the engine writes each only when the work's current flag is another kind. */

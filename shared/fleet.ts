@@ -6,6 +6,7 @@
 
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { AnswerFateSchema } from "./answers";
 import { GROUP_ORDER, ORCH_STATES } from "./states";
 
 /**
@@ -187,6 +188,12 @@ export const DecisionOptionSchema = z.object({
   /** null when the ledger does not say. */
   reversible: z.boolean().nullable(),
   recommended: z.boolean(),
+  /**
+   * The ledger says this option changes nothing (`status_quo: true`): an
+   * answer that takes it needs no work. Only the ledger's own key says so;
+   * never read from the option's words. Absent from an older daemon.
+   */
+  statusQuo: z.boolean().optional(),
 });
 export type DecisionOption = z.infer<typeof DecisionOptionSchema>;
 
@@ -284,6 +291,13 @@ export const DecisionAskSchema = z.object({
   idea: IdeaSchema.nullable().optional(),
   /** The audit layer's ids (DECISION-LAYER.md): its class and gates. Absent from an older daemon. */
   audit: AskAuditSchema.nullable().optional(),
+  /** The initiative the ask names (its own `initiative`, else the ledger's); null when none. */
+  initiative: z.string().nullable().optional(),
+  /**
+   * An answer Maestro wrote, after it: in the batch, landed, or acted on
+   * (shared/answers.ts). Null for an open ask, and for one answered elsewhere.
+   */
+  fate: AnswerFateSchema.nullable().optional(),
 });
 export type DecisionAsk = z.infer<typeof DecisionAskSchema>;
 
