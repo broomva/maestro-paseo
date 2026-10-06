@@ -236,6 +236,46 @@ const fixture = (): WorkItem[] => [
 ];
 let items = fixture();
 
+// Work fleet-reconcile raised, as the producer writes it (BRO-2839): an old count title, its brief for the run.
+const FLEET_ITEM = work("fleet-1", "review", {
+  title: "1 ask (tick 7) [fleet-reconcile sri batch 7-3]",
+  initiative: "fleet-reconcile-sri",
+  project: "maestro-asks",
+  look: { ran: "1m unsupervised · 1 turn · ran to the gate", decided: ["nothing"], ask: "Approve to close" },
+  display: {
+    title: "The core comparison (ctx doctor --compare) is not run in scope sri…",
+    fleet: { scope: "sri", what: "batch 7-3", tick: "7" },
+  },
+});
+const FLEET_TURN = (minutesAgo: number) => ({
+  ts: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+  type: "turn.ended",
+  actor: "agent" as const,
+  text: "Turn finished",
+  detail: "Yes, there are two now.",
+});
+// The contract's shape (fleet-reconcile paseo_ask.brief, BRO-2840): For you with a verbs line, then For the run.
+const FLEET_DETAIL = {
+  item: FLEET_ITEM,
+  brief: [
+    "## For you",
+    "",
+    "The fleet has 1 question for you from scope sri (tick 7). In a terminal, `fleet asks --scope sri` lists them too.",
+    "",
+    "```text",
+    "- [a1] (observe) The core comparison (ctx doctor --compare) is not run in scope sri: move it aside, then register.",
+    "```",
+    "",
+    "Approve acknowledges them · Send back answers with your note (the fleet reads it at its next tick) · Cancel dismisses them.",
+    "",
+    "## For the run",
+    "",
+    "Change nothing and run no tools. End your turn at once with exactly two sections.",
+  ].join("\n"),
+  events: [FLEET_TURN(180), FLEET_TURN(120), FLEET_TURN(60)],
+  checkResults: [],
+};
+
 // Local times around today's midnight, so each lands in the day its test says wherever it runs.
 const midnight = new Date();
 midnight.setHours(0, 0, 0, 0);
@@ -913,6 +953,7 @@ const invoke = async (method: string, input: unknown) => {
     if (name === "run.log") return { name, text: "step 1\nstep 2\n", truncated: true };
     return { name, text: "# Work a\n\nStore it on the Run record.\n", truncated: false };
   }
+  if ((input as { id?: string }).id === FLEET_ITEM.id) return FLEET_DETAIL;
   const item = items.find((entry) => entry.id === (input as { id: string }).id);
   return { item, brief: "", events: [], checkResults: [] };
 };
@@ -1113,11 +1154,11 @@ describe("the changed line", () => {
   test("a surface without client state renders, logs once, and shows no changed stat", async () => {
     const view = await mount(surface(false));
     expect(view.text()).toContain("3 need you · 1 running");
-    expect(view.text()).toContain("hawthorne › core");
+    expect(view.text()).toContain("hawthorne · core");
     expect(view.text()).toContain("maestro/a-1");
     expect(view.text()).not.toMatch(/\+\d+ −\d+/);
     expect(probeLogs()).toBe(1);
-    await view.press(view.byLabel("Work a, Needs you, hawthorne › core, updated 12 minutes ago"));
+    await view.press(view.byLabel("Work a, Needs you, hawthorne · core, updated 12 minutes ago"));
     expect(view.text()).toContain("Changed");
     await view.press(view.byLabel("Work g, Needs you, updated 12 minutes ago"));
     expect(view.text()).toContain("Approve the branch");
@@ -1129,7 +1170,7 @@ describe("the changed line", () => {
     const view = await mount(surface(false), { state: diffState as unknown as PluginClientStateSource });
     expect(view.text()).toContain("+12 −3");
     expect(view.byLabel("12 lines added, 3 removed")).not.toBeNull();
-    const card = view.byLabel("Work a, Needs you, hawthorne › core, updated 12 minutes ago");
+    const card = view.byLabel("Work a, Needs you, hawthorne · core, updated 12 minutes ago");
     expect(card?.getAttribute("aria-current")).toBe("false");
     await view.press(card);
     expect(card?.getAttribute("aria-current")).toBe("true");
@@ -1141,7 +1182,7 @@ describe("the changed line", () => {
     items = fixture().map((item) => (item.id === "a" ? { ...item, changed: { additions: 5, deletions: 1 } } : item));
     const view = await mount(surface(false));
     expect(view.byLabel("5 lines added, 1 removed")).not.toBeNull();
-    await view.press(view.byLabel("Work a, Needs you, hawthorne › core, updated 12 minutes ago"));
+    await view.press(view.byLabel("Work a, Needs you, hawthorne · core, updated 12 minutes ago"));
     expect(view.text().match(/\+5 −1/g)).toHaveLength(2);
   });
 
@@ -1632,10 +1673,48 @@ describe("History", () => {
     expect(view.text()).not.toContain("You approved");
     await view.press(view.byLabel("All work"));
 
-    const row = view.all('[aria-label^="You approved, Work a, hawthorne › core, You, Today at "]')[0];
+    const row = view.all('[aria-label^="You approved, Work a, hawthorne · core, You, Today at "]')[0];
     await view.press(row);
     expect(row?.getAttribute("aria-current")).toBe("true");
     expect(view.text()).toContain("Approve the branch");
+  });
+});
+
+describe("work the fleet raised (BRO-2839)", () => {
+  test("reads by its asks: no marker, the fleet's place, verbs explained, the run's words folded, repeats once", async () => {
+    const view = await mount(<WorkDetail id="fleet-1" theme={theme} compact={false} navigation={undefined} />);
+    await settle(50);
+    const text = view.text();
+    // The displayed title is the source's text exactly (no U+2011); the flag token is kept from wrapping.
+    expect(text).toContain("The core comparison (ctx doctor --compare) is not run in scope sri…");
+    expect(text).not.toContain("\u2011");
+    const flag = view.all("*").find((el) => el.children.length === 0 && el.textContent === "--compare");
+    expect(flag?.getAttribute("style") ?? "").toContain("white-space: nowrap");
+    expect(text).not.toContain("[fleet-reconcile");
+    expect(text).toContain("fleet · sri");
+    expect(text).toContain("tick 7 · batch 7-3");
+    expect(text).not.toContain("fleet-reconcile-sri / maestro-asks");
+    expect(text).toContain("observe");
+    expect(text).toContain("move it aside, then register.");
+    // The producer's lead says what is asked; it is shown whole, and no heading repeats it.
+    expect(text).not.toContain("The fleet asks you");
+    expect(text).not.toContain("```");
+    // The producer's own verbs line, once.
+    expect(text.split("Approve acknowledges them").length - 1).toBe(1);
+    expect(text).toContain("The fleet has 1 question for you from scope sri");
+    // The run's instructions are folded until asked for.
+    const fold = view.byLabel("Instructions to the run");
+    expect(fold?.getAttribute("aria-expanded")).toBe("false");
+    expect(text).not.toContain("Change nothing and run no tools.");
+    await view.press(fold);
+    expect(view.byLabel("Instructions to the run")?.getAttribute("aria-expanded")).toBe("true");
+    expect(view.text()).toContain("Change nothing and run no tools.");
+    // Three identical turn receipts read once, counted.
+    expect(view.text().split("Yes, there are two now.").length - 1).toBe(1);
+    expect(view.text()).toContain("\u00d73 · 3h\u20131h");
+    expect(view.byLabel("Turn finished, 3 times in a row, from 3 hours ago to 1 hour ago")).not.toBeNull();
+    // The fold's row is a phone-sized target.
+    expect(view.byLabel("Instructions to the run")?.getAttribute("style") ?? "").toContain("min-height: 44px");
   });
 });
 

@@ -4,6 +4,7 @@
 // about the work, not a change to it (server/events.ts lastActivityOf).
 
 import type { MaestroConfig, WorkItem } from "../shared/contracts";
+import { fleetHeading } from "../shared/fleet-item";
 import { groupOf } from "../shared/states";
 import {
   lastActivityOf,
@@ -16,6 +17,7 @@ import {
   workerOf,
 } from "./events";
 import { flagNow } from "./flags";
+import { briefOf } from "./frontmatter";
 import { lastLanding } from "./gate-card";
 import { nextRun } from "./runs";
 import { placement, type StoredWork } from "./store";
@@ -28,6 +30,7 @@ export function toWire(item: StoredWork, now: number, config: MaestroConfig): Wo
   const { initiative, project } = placement(item.rel);
   const decision = pendingDecision(events);
   const next = nextRun(config, item);
+  const heading = fleetHeading(item.title, briefOf(item.work?.body ?? ""));
   return {
     id: contract.id,
     path: item.rel,
@@ -62,5 +65,6 @@ export function toWire(item: StoredWork, now: number, config: MaestroConfig): Wo
         }
       : null,
     flag: flagNow(events, contract.state, next, now, item.mtime),
+    display: { title: heading?.title ?? item.title, fleet: heading?.origin ?? null },
   };
 }

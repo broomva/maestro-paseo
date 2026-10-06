@@ -10,6 +10,7 @@ import { ORCH_STATES, type OrchState } from "../shared/states";
 import { errorText } from "./format";
 import { useAgentWork } from "./hooks";
 import type { MaestroIntent } from "./intent";
+import { titleText } from "./records-text";
 import { Button, Notice, StateDot, StateLabel, space, useText } from "./ui";
 
 function dotFor(state: OrchState): ComponentType<PluginButtonIconProps> {
@@ -63,7 +64,7 @@ function PillBody({
       <View style={{ gap: space[1] }}>
         <StateLabel theme={theme} state={item.state} />
         <Text style={text.title} numberOfLines={2}>
-          {item.title}
+          {titleText(item)}
         </Text>
       </View>
       {ask ? (

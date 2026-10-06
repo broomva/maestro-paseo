@@ -21,6 +21,7 @@ import {
   REVIEW_VERDICTS,
   type TickStatus,
 } from "../shared/fleet";
+import { fleetMarker, withoutMarker } from "../shared/fleet-item";
 import { needsHand } from "../shared/needs-you";
 import { isTerminal } from "../shared/states";
 
@@ -552,15 +553,22 @@ export function healthOf(input: HealthInput): Health {
 
 // ── The fleet's Maestro work ─────────────────────────────────────────────────
 
-/** The marker the fleet ends its items' titles with (fleetlib/paseo_ask.py marker). */
+/**
+ * The marker the fleet ends its items' titles with (fleetlib/paseo_ask.py
+ * marker), read by the one grammar every surface uses (shared/fleet-item.ts
+ * fleetMarker): a batch's or an alert's, with its id.
+ */
 export function markerOf(title: string): { scope: string; what: "batch" | "alert"; id: string } | null {
-  const match = /\[fleet-reconcile ([a-z0-9_-]+) (batch|alert) ([^\]]+)\]$/.exec(title.trim());
-  if (!match?.[1] || !match[3]) return null;
-  return { scope: match[1], what: match[2] as "batch" | "alert", id: match[3] };
+  const mark = fleetMarker(title.trim());
+  const match = mark ? /^(batch|alert) (.+)$/.exec(mark.what) : null;
+  if (!mark || !match?.[1] || !match[2]) return null;
+  return { scope: mark.scope, what: match[1] as "batch" | "alert", id: match[2] };
 }
 
+/** A fleet item as the Fleet tab lists it: titled as a person reads it, never with the marker. */
 export function fleetItem(item: WorkItem): FleetItem {
-  return { id: item.id, title: item.title, state: item.state, group: item.group, needsYou: needsHand(item) };
+  const title = item.display?.title || withoutMarker(item.title);
+  return { id: item.id, title, state: item.state, group: item.group, needsYou: needsHand(item) };
 }
 
 /** The scope's alert items that are not done or canceled, newest first. */

@@ -16,6 +16,8 @@ export const FILE_READ_BYTES = 64 * 1024;
 export const HistoryEventSchema = WorkEventSchema.extend({
   itemId: z.string(),
   title: z.string(),
+  /** The title a person reads (WorkItem.display.title); absent from older daemons. */
+  heading: z.string().optional(),
   initiative: z.string().nullable(),
   project: z.string().nullable(),
 });

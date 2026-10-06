@@ -98,6 +98,18 @@ describe("work.attention", () => {
     });
     expect(RECENT_MS).toBe(24 * 60 * 60 * 1000);
   });
+
+  test("a composer pill names fleet work by the title a person reads, never its marker (BRO-2839)", () => {
+    const raw = "1 ask (tick 7) [fleet-reconcile sri batch 7-3]";
+    const { sessions } = attentionOf(
+      [
+        fakeWork("shown", "review", inA, { title: raw, display: { title: "The core comparison…", fleet: null } }),
+        fakeWork("older", "review", inA, { title: raw }),
+      ],
+      now,
+    );
+    expect(sessions.map((session) => session.title)).toEqual(["The core comparison…", "1 ask (tick 7)"]);
+  });
 });
 
 test("a list reconciles sessions at most once every 10 s, however often it is called", async () => {

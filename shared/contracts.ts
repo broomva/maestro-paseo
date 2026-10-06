@@ -156,6 +156,18 @@ export const WorkItemSchema = z.object({
    * stuck. Null once anything else happens to the work (server/events.ts flagOf).
    */
   flag: FlagSchema.nullable(),
+  /**
+   * How a person reads it (shared/fleet-item.ts fleetHeading): the title with
+   * a fleet-reconcile marker dropped (an old `1 ask (tick 7)` title becomes its
+   * first ask), and for fleet work where it came from. `title` stays raw: the
+   * fleet finds its items by the marker. Absent from older daemons.
+   */
+  display: z
+    .object({
+      title: z.string(),
+      fleet: z.object({ scope: z.string(), what: z.string(), tick: z.string().nullable() }).nullable(),
+    })
+    .optional(),
 });
 export type WorkItem = z.infer<typeof WorkItemSchema>;
 

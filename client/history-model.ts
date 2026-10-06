@@ -3,6 +3,7 @@
 
 import type { HistoryEvent } from "../shared/records";
 import { plural } from "./format";
+import { eventFleetPlace, eventTitle } from "./records-text";
 
 export type Who = "all" | "you" | "autonomous";
 export const WHO: readonly { id: Who; label: string }[] = [
@@ -94,10 +95,12 @@ export function actorText(actor: HistoryEvent["actor"]): string {
   return actor === "human" ? "You" : actor === "agent" ? "Agent" : "Maestro";
 }
 
-/** "initiative › project", or null for work outside any initiative. */
-export function eventCrumb(event: Pick<HistoryEvent, "initiative" | "project">): string | null {
+/** "initiative · project", the fleet's words for fleet work (`fleet · sri`), or null for work outside any initiative. */
+export function eventCrumb(event: Pick<HistoryEvent, "initiative" | "project"> & { title?: string }): string | null {
+  const fleet = event.title ? eventFleetPlace({ title: event.title }) : null;
+  if (fleet) return fleet;
   const parts = [event.initiative, event.project === event.initiative ? null : event.project].filter(Boolean);
-  return parts.length > 0 ? parts.join(" › ") : null;
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 export interface EventGroup {
@@ -129,7 +132,7 @@ export function groupByWork(events: readonly HistoryEvent[]): EventGroup[] {
   for (const event of events) {
     let group = groups.get(event.itemId);
     if (!group) {
-      group = { key: event.itemId, title: event.title, hint: eventCrumb(event), events: [] };
+      group = { key: event.itemId, title: eventTitle(event), hint: eventCrumb(event), events: [] };
       groups.set(event.itemId, group);
     }
     group.events.push(event);
@@ -149,7 +152,7 @@ export function groupEvents(
 /** What a screen reader hears for a row: what happened, to which work, by whom, and when. */
 export function rowLabel(event: HistoryEvent, now: number = Date.now()): string {
   const when = `${dayLabel(dayKey(event.ts), now)} at ${timeText(event.ts)}`;
-  return [event.text, event.title, eventCrumb(event), actorText(event.actor), when].filter(Boolean).join(", ");
+  return [event.text, eventTitle(event), eventCrumb(event), actorText(event.actor), when].filter(Boolean).join(", ");
 }
 
 export function emptyHistoryText(who: Who, days: number): string {

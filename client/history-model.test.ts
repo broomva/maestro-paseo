@@ -75,7 +75,7 @@ describe("grouping", () => {
   test("by work, the work with the newest event first, its crumb under the title", () => {
     const groups = groupByWork(events);
     expect(groups.map((group) => [group.title, group.hint, group.events.length])).toEqual([
-      ["Work a", "hawthorne › core", 2],
+      ["Work a", "hawthorne · core", 2],
       ["Work b", "genesis", 1],
       ["Work c", null, 1],
     ]);
@@ -94,14 +94,14 @@ describe("words", () => {
   });
 
   test("a crumb names initiative and project once", () => {
-    expect(eventCrumb({ initiative: "hawthorne", project: "core" })).toBe("hawthorne › core");
+    expect(eventCrumb({ initiative: "hawthorne", project: "core" })).toBe("hawthorne · core");
     expect(eventCrumb({ initiative: "hawthorne", project: "hawthorne" })).toBe("hawthorne");
     expect(eventCrumb({ initiative: null, project: null })).toBeNull();
   });
 
   test("a row reads as what happened, to which work, by whom, and when", () => {
     expect(rowLabel(events[0] as HistoryEvent, NOW)).toBe(
-      "You approved, Work a, hawthorne › core, You, Today at 14:05",
+      "You approved, Work a, hawthorne · core, You, Today at 14:05",
     );
     expect(rowLabel(events[3] as HistoryEvent, NOW)).toBe("Turn failed, Work c, Agent, Friday, September 25 at 08:00");
   });

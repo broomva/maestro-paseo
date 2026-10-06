@@ -4,6 +4,7 @@
 
 import type { Attention, WorkItem } from "../shared/contracts";
 import type { AskNotice, FleetNotice } from "../shared/fleet";
+import { withoutMarker } from "../shared/fleet-item";
 import type { InitiativeNotice } from "../shared/initiatives";
 import { needsYouOf } from "../shared/needs-you";
 import { isTerminal } from "../shared/states";
@@ -41,7 +42,8 @@ export function attentionOf(
     if (isTerminal(item.state) && now - Date.parse(item.updatedAt) >= RECENT_MS) continue;
     sessions.push({
       workId: item.id,
-      title: item.title,
+      // The title a person reads: a composer pill never shows the fleet's marker.
+      title: item.display?.title || withoutMarker(item.title),
       state: item.state,
       agentId: worker.agentId,
       workspaceId: worker.workspaceId,

@@ -41,6 +41,7 @@ import {
   eventsSince,
   type FlaggedEvent,
   flagOf,
+  keptSummary,
   lastOf,
   latestChecks,
   type Origin,
@@ -98,7 +99,7 @@ export function latestOutputText(timeline: readonly AgentTimelineItem[]): string
       broken = true;
     }
   }
-  return output.trim().slice(-8000);
+  return keptSummary(output);
 }
 
 interface HookAgent {

@@ -16,6 +16,7 @@ import type {
 } from "../shared/contracts";
 import { describeRun } from "../shared/run";
 import type { OrchState, Verdict } from "../shared/states";
+import { clipWords, inlinePlain, plainMarkdown, tailWords } from "../shared/text";
 
 export type Actor = "human" | "agent" | "maestro";
 
@@ -335,16 +336,15 @@ export function section(text: string, heading: string): string | null {
 }
 
 export function bullets(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) =>
-      line
-        .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "")
-        .replace(/\*\*(.+?)\*\*/g, "$1")
-        .trim(),
-    )
-    .filter((line) => line.length > 0)
-    .slice(0, 5);
+  return (
+    text
+      .split("\n")
+      // Plain words as the lead reads: code ticks and **bold** dropped, a link as "text (host)". Globs
+      // (`src/*.ts`) and names (`__init__`) stay: single `*` and `_` are never read as emphasis.
+      .map((line) => inlinePlain(line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, ""), { hosts: true }).trim())
+      .filter((line) => line.length > 0)
+      .slice(0, 5)
+  );
 }
 
 export function lookOf(state: OrchState, events: readonly WorkEvent[], now: number): Look | null {
@@ -387,19 +387,46 @@ const STATE_WORDS: Partial<Record<OrchState, string>> = {
   canceled: "Canceled",
 };
 
+/** A receipt's excerpt: one line, cut at a word with "…". */
 function shorten(text: string, max = 280): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+  return clipWords(text, max);
 }
 
-/** The message before its Decided/Ask sections, without Markdown markers. */
+/**
+ * The most of a turn's text a `turn.ended` keeps (engine.ts latestOutputText),
+ * its end: a longer message is cut at its start. Summaries written before
+ * BRO-2839 were cut at this length mid-word, with no mark.
+ */
+export const SUMMARY_MAX = 8000;
+
+/** A turn's text as kept: its last SUMMARY_MAX characters, starting at a line, sentence or word, with "…". */
+export function keptSummary(text: string): string {
+  return tailWords(text.trim(), SUMMARY_MAX);
+}
+
+/**
+ * Whether an older daemon cut this summary mid-word: it kept `slice(-8000)`,
+ * so such a summary is exactly SUMMARY_MAX long, and a cut mid-word starts
+ * with a lowercase letter or digit. A summary of any other length, or one
+ * that starts as a sentence does, is whole and shown as written.
+ */
+function cutByOlderDaemon(text: string): boolean {
+  return text.length === SUMMARY_MAX && /^[a-z0-9]/.test(text);
+}
+
+/**
+ * The message before its Decided/Ask sections as plain prose: Markdown markers
+ * dropped, links as their text, a table as its header cells. A summary an
+ * older daemon cut mid-word (cutByOlderDaemon) starts at its first whole word, with "…".
+ */
 export function plainSummary(summary: string): string {
-  const cut = summary.search(/^#{1,4}\s*(Decided|Ask)\b/im);
-  return (cut >= 0 ? summary.slice(0, cut) : summary)
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/\*\*(.+?)\*\*/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .trim();
+  let text = summary;
+  if (cutByOlderDaemon(text)) {
+    const space = text.slice(0, 200).search(/\s/);
+    text = `\u2026 ${space >= 0 ? text.slice(space).trimStart() : text}`;
+  }
+  const cut = text.search(/^#{1,4}\s*(Decided|Ask)\b/im);
+  return plainMarkdown(cut >= 0 ? text.slice(0, cut) : text);
 }
 
 /** Events whose own receipt already says why the state that follows them changed. */

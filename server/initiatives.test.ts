@@ -9,6 +9,7 @@ import { decisionOf, parsed, rowsOf } from "./control-asks";
 import {
   agentIds,
   ghOutput,
+  IDEA_TITLE_MAX,
   ideaCounts,
   ideaWork,
   initiativeOf,
@@ -268,7 +269,8 @@ describe("ideas", () => {
     if (!idea) throw new Error("no idea");
     const maestro = read(MAESTRO, "maestro.yaml");
     const { title, brief } = ideaWork(maestro, { ...idea, answer: "Develop: A work item\nstart with the cards" });
-    expect(title).toBe("An Initiatives tab");
+    // The headline is written for people: the work is titled after it.
+    expect(title).toBe("Build the Initiatives tab, or park it?");
     for (const part of [
       "ideas-maestro.yaml I1",
       "## The idea",
@@ -287,6 +289,25 @@ describe("ideas", () => {
     }
     // An initiative that cannot be read is said in the brief, never papered over.
     expect(ideaWork(null, idea).brief).toContain(".control/initiatives/maestro.yaml could not be read");
+  });
+
+  test("a develop title is never cut mid-word: the headline, else the idea, at a word with …", () => {
+    const [idea] = ideaAsks();
+    if (!idea?.idea) throw new Error("no idea");
+    const long =
+      "Build the factory cell in six slices (S1-S6): one eve app driving holon worker units through a shared ledger and a replayable trace";
+    // No headline: the idea, cut at the last whole word within IDEA_TITLE_MAX.
+    const fromIdea = ideaWork(null, { ...idea, headline: null, idea: { ...idea.idea, idea: long } }).title;
+    expect(fromIdea.length).toBeLessThanOrEqual(IDEA_TITLE_MAX);
+    expect(fromIdea.endsWith("\u2026")).toBe(true);
+    expect(long.startsWith(fromIdea.slice(0, -1))).toBe(true);
+    expect(long.charAt(fromIdea.length - 1)).toBe(" ");
+    expect(fromIdea).not.toContain("holon worker u\u2026");
+    // A headline wins over the idea, and a blank one falls back to it.
+    expect(ideaWork(null, { ...idea, headline: "Factory cell: build it?" }).title).toBe("Factory cell: build it?");
+    expect(ideaWork(null, { ...idea, headline: "  " }).title).toBe("An Initiatives tab");
+    // Nothing but the id: the id.
+    expect(ideaWork(null, { ...idea, headline: null, idea: null }).title).toBe(idea.id);
   });
 });
 
