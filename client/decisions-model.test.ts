@@ -98,7 +98,14 @@ describe("Decisions, a ledger at a time", () => {
     expect(askNoticeText([])).toBe("");
     expect(askNoticeText([notice("Merge #863?", true)])).toBe("A decision waits on you: Merge #863?");
     expect(askNoticeText([notice("Merge #863?", true), notice("Send?", false)])).toBe(
-      "2 decisions wait on you, 1 blocking: Merge #863?, and more.",
+      "2 decisions wait on you, 1 blocking: Merge #863? (+1 more)",
+    );
+    // The blocking ask is the one named, wherever it sits in the list.
+    expect(askNoticeText([notice("Send?", false), notice("Merge #863?", true)])).toBe(
+      "2 decisions wait on you, 1 blocking: Merge #863? (+1 more)",
+    );
+    expect(askNoticeText([notice("Send?", false), notice("Ship?", false)])).toBe(
+      "2 decisions wait on you: Send? (+1 more)",
     );
   });
 });

@@ -32,6 +32,7 @@ import {
   askLines,
   askTag,
   askWhen,
+  clampedBody,
   cutWords,
   displayName,
   plainEvidence,
@@ -348,7 +349,7 @@ function AskCard({
       title={lines.title}
       // The fleet's words as written: clamped to a few lines until shown in full, never edited.
       body={lines.body}
-      bodyLines={open ? 0 : phone ? 3 : 2}
+      bodyLines={open || !clampedBody(lines.body, phone) ? 0 : phone ? 3 : 2}
       hint={!phone && agentId ? `Opens ${session?.short ?? ""} in Paseo` : null}
       verbs={
         <>
@@ -376,7 +377,7 @@ function AskCard({
         </>
       }
     >
-      {!open && lines.body && lines.body.length > (phone ? 120 : 200) ? (
+      {!open && clampedBody(lines.body, phone) ? (
         <View style={{ flexDirection: "row", marginTop: -space[1] }}>
           <Verb
             theme={theme}
@@ -860,11 +861,11 @@ function WaitingDecisionCard({
       tagIcon="GitFork"
       scope={scope}
       meta={ask.arc ?? ask.ledger}
-      title={cutWords(headline, 140)}
+      title={headline}
     >
       {shown ? null : (
-        <Text style={t.muted}>
-          {ask.stakes ? cutWords(ask.stakes, 160) : "Open it to see what it costs and each option."}
+        <Text style={t.muted} numberOfLines={3}>
+          {ask.stakes ?? "Open it to see what it costs and each option."}
         </Text>
       )}
       <View style={{ flexDirection: "row" }}>

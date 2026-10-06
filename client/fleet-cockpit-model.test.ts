@@ -953,3 +953,13 @@ describe("the header's count, split", () => {
     expect(shares.fleet + shares.work + shares.decisions + shares.timeline + shares.initiatives).toBe(shares.total);
   });
 });
+
+describe("the ask body clamp (BRO-2852)", () => {
+  test("one predicate: short text is never clamped, long text always is", async () => {
+    const { clampedBody } = await import("./fleet-cockpit-model");
+    expect(clampedBody("short", false)).toBe(false);
+    expect(clampedBody("x".repeat(301), false)).toBe(true);
+    expect(clampedBody("x".repeat(161), true)).toBe(true);
+    expect(clampedBody(null, true)).toBe(false);
+  });
+});

@@ -810,3 +810,12 @@ export const HISTORY_LEGEND: { kind: HistoryKind; label: string }[] = [
   { kind: "quiet", label: "idle or closed" },
   { kind: "unlisted", label: "not listed" },
 ];
+
+/**
+ * Whether an ask's body is long enough to clamp. One predicate decides both the
+ * clamp and its "Show all", so text is never clamped without a way to read it;
+ * the lengths are well past what the clamped lines hold at either width.
+ */
+export function clampedBody(body: string | null | undefined, phone: boolean): boolean {
+  return Boolean(body) && (body as string).length > (phone ? 160 : 300);
+}
