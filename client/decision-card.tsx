@@ -57,6 +57,8 @@ export type CardKeys = {
 /** Every answer in flight carries this key's head; one ask's adds its full identity (askKey). */
 export const ANSWER_KEY = ["maestro", "answer"] as const;
 const answerKeyOf = (ask: DecisionAsk) => [...ANSWER_KEY, askKey(ask)];
+/** An answer's reply, filed under the scope of the copy it stands for (the server's reply carries none). */
+const withScope = (reply: DecisionAsk, copy: DecisionAsk): DecisionAsk => ({ ...reply, scope: copy.scope });
 
 /** Whether any answer is in flight, read from the mutation cache at once: a second press in the same frame sees the first. */
 export function answerInFlight(client: QueryClient): boolean {
@@ -316,8 +318,8 @@ export function DecisionCard({
         const { [askKey(ask)]: _spent, ...rest } = now;
         return rest;
       });
-      // The list learns it in whichever part holds it: the workspace's, or a fleet scope's.
-      const swap = (one: DecisionAsk) => (sameAsk(one, answered) ? answered : one);
+      // The list learns it in whichever part holds it, each copy keeping its own list's scope.
+      const swap = (one: DecisionAsk) => (sameAsk(one, answered) ? withScope(answered, one) : one);
       client.setQueriesData<WorkspaceAsksView>({ queryKey: ["maestro", "workspace-asks"] }, (view) =>
         view ? { ...view, decisions: view.decisions.map(swap), fleet: view.fleet?.map(swap) } : view,
       );
@@ -378,9 +380,9 @@ export function DecisionCard({
     answer.mutate(
       { where, ledger: ask.ledger, uid: ask.uid, id: ask.id, hash: ask.hash, option: chosen, note },
       {
-        onSuccess: ({ ask: answered, warning }) => {
+        onSuccess: ({ ask: reply, warning }) => {
           setDraft(EMPTY_DRAFT);
-          onAnswered(answered, warning);
+          onAnswered(withScope(reply, ask), warning);
         },
       },
     );

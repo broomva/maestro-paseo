@@ -381,8 +381,17 @@ export function DecisionsView({
       if (want && !found && pending.retriedAt === readAt) return;
       setPending(null);
       const first = found?.ask ?? queueRef.current[0] ?? null;
+      // Asked by its full identity and read, but no longer open: answered, not missing.
+      const closed =
+        want?.key && !found && read.data
+          ? decisionAsks(read.data).some((ask) => askKey(ask) === want.key && ask.state !== "open")
+          : false;
       setFocusNote(
-        want && !found ? "That decision isn't in the list yet: showing the first one." : (found?.note ?? null),
+        want && !found
+          ? closed
+            ? "That decision is answered now: showing the first open one."
+            : "That decision isn't in the list yet: showing the first one."
+          : (found?.note ?? null),
       );
       setPinned(first ? { key: askKey(first), ask: first } : null);
       setLastIndex(0);

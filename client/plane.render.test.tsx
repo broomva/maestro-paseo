@@ -29,7 +29,7 @@
 import { afterAll, afterEach, describe, expect, mock, setDefaultTimeout, spyOn, test } from "bun:test";
 import type { PluginClientStateSource } from "@getpaseo/plugin/client/host";
 import { Window } from "happy-dom";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import type { MaestroConfig, Scoreboard, WakeEntry, WorkItem } from "../shared/contracts";
 import {
   type AskNotice,
@@ -180,6 +180,7 @@ notifyManager.setNotifyFunction((notify) => {
 const { PaseoApiProvider, PluginClientStateProvider, PluginRpcProvider } = await import("@getpaseo/plugin/client/host");
 const { MaestroSurface } = await import("./plane");
 const { WorkDetail } = await import("./detail");
+const { createGateCard } = await import("./gate-card");
 const { requestIntent, resetIntents, takeIntent } = await import("./intent");
 const { MaestroSettings } = await import("./settings");
 const { attentionOf } = await import("../server/attention");
@@ -1041,8 +1042,7 @@ const invoke = async (method: string, input: unknown) => {
     };
     if (where.kind === "workspace") workspaceNow = workspaceNow.map((entry) => (entry.id === id ? answered : entry));
     else decisionsNow = decisionsNow.map((entry) => (entry.id === id ? answered : entry));
-    // A fleet answer comes back tagged with its scope, as index.server.ts tags it.
-    return { ask: where.kind === "fleet" ? { ...answered, scope: "broomva" } : answered, warning: null };
+    return { ask: answered, warning: null };
   }
   if (method === "fleet.review") {
     const { keys, verdict, note } = input as { keys: string[]; verdict: "accept" | "reject"; note: string };
@@ -1523,6 +1523,41 @@ describe("a finished arc at your gate (BRO-2856)", () => {
       id: "first",
       key: JSON.stringify([root.path, "a.yaml", null, "first"]),
     });
+  });
+
+  test("from a session's gate card, the link goes through the card's opener, which opens Maestro too", async () => {
+    items = [
+      ...fixture(),
+      work("arc", "review", {
+        worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
+        look: arcLook,
+        landing: 3,
+      }),
+    ];
+    decisionsNow = [
+      { ...decisionFixture(), ledger: "sti-3485.yaml", arc: "sti-3485-approval-reply", id: "redeploy", home: root },
+    ];
+    const asked: unknown[] = [];
+    const Card = createGateCard((intent) => asked.push(intent));
+    const props = {
+      item: { data: { workId: "arc", landing: 3, agentId: "ag-arc" } },
+      theme,
+      layout: { compact: false },
+    } as unknown as ComponentProps<typeof Card>;
+    const view = await mount(<Card {...props} />);
+    for (let tries = 0; tries < 100 && !view.text().includes("Answer its"); tries += 1) await settle(20);
+    takeIntent();
+    await view.press(view.byLabel("Answer its 1 decision in Decisions"));
+    // Not left for a surface that may not be open: handed to the card's opener.
+    expect(takeIntent()).toBeNull();
+    expect(asked).toEqual([
+      {
+        kind: "decisions",
+        ledger: "broomva/sti-3485.yaml",
+        id: "redeploy",
+        key: JSON.stringify([root.path, "sti-3485.yaml", null, "redeploy"]),
+      },
+    ]);
   });
 
   test("with nothing left above the verdict and the session alive, the card adds nothing", async () => {
@@ -2867,6 +2902,26 @@ describe("drilling in", () => {
     expect(opened).toEqual(["agent-asker"]);
   });
 
+  test("answered in the Fleet view, the ask stays filed under its scope in Decisions, and under its ledger here", async () => {
+    decisionsNow = [decisionFixture()];
+    const view = await mount(surface(false));
+    await view.press(tab(view, "Fleet"));
+    await view.press(view.byLabel("Read and answer the fleet's decisions, broomva"));
+    // Every read after this fails: only the answer's reply can tell either list.
+    workspaceFail = "asks.workspace timed out";
+    await view.press(view.byLabel("File all four, recommended"));
+    await view.press(view.byLabel("Answer A10: File all four"));
+    expect(view.text()).toContain("Answered just now: “File all four”");
+    // The Fleet view's group is its ledger's, as before: the reply is untagged there.
+    expect(
+      view.all("[aria-expanded]").some((one) => one.getAttribute("aria-label")?.startsWith("maestro-paseo-gaps.yaml:")),
+    ).toBe(true);
+    await view.goto("Decisions");
+    for (let tries = 0; tries < 100 && !view.text().includes("Recently answered · 1"); tries += 1) await settle(20);
+    await view.press(view.byLabel("Recently answered · 1"));
+    expect(view.text()).toContain("· broomva · maestro-paseo-gaps");
+  });
+
   test("a fleet scope's decisions: one that waits on you is its own card; the others fold past ten open", async () => {
     decisionsNow = [
       { ...decisionFixture(), ledger: "waits.yaml", id: "W1", blocking: true, waiting: true },
@@ -3283,6 +3338,23 @@ describe("the Decisions tab", () => {
     }
     expect(headings()).toContain("Redeploy, as checkout a has it");
     expect(headings()).not.toContain("Redeploy, as checkout b has it");
+  });
+
+  test("an intent with the full identity of an ask answered since says so, and shows the first open one", async () => {
+    workspaceNow = [canvas("old", { state: "answered", answeredAt: new Date().toISOString() }), canvas("product-name")];
+    const view = await open();
+    await until(view, "Canvas ask product-name");
+    await step(generation, () =>
+      requestIntent({
+        kind: "decisions",
+        ledger: null,
+        id: "old",
+        // A main-home ask's home key is origin/main (homeKey).
+        key: JSON.stringify(["origin/main", "bro-2795-local-first-agentic-canvas.yaml", null, "old"]),
+      }),
+    );
+    await until(view, "That decision is answered now");
+    expect(view.text()).toContain("That decision is answered now: showing the first open one.");
   });
 
   test("a fleet scope's ask answered while the list cannot be read again: the list learns the answer in place", async () => {

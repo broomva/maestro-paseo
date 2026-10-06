@@ -17,6 +17,7 @@ import { FilesSection } from "./files";
 import { FleetBriefView } from "./fleet-brief";
 import { ago, agoWords, basename, errorText } from "./format";
 import { useRefresh, useVerbs, useWorkDetail } from "./hooks";
+import { requestIntent } from "./intent";
 import { changedVisible } from "./plane-model";
 import { collapseRepeats, fleetOriginOf, placeText, repeatText, repeatWords, titleText } from "./records-text";
 import { Button, Card, IconButton, Notice, radius, StateLabel, space, Unbroken, useText } from "./ui";
@@ -373,7 +374,7 @@ function Verbs({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; c
               <Text style={text.label}>Ask</Text>
               <Text style={text.body}>{look.ask}</Text>
             </View>
-            <ArcReport item={item} theme={theme} compact={compact} />
+            <ArcReport item={item} theme={theme} compact={compact} open={requestIntent} />
           </View>
         ) : null}
         <WithChange workspaceId={item.worker?.workspaceId} stat={item.changed}>

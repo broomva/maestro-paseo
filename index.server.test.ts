@@ -572,7 +572,7 @@ test("initiatives and their ideas are wired: develop files held work in the init
   }
 });
 
-test("asks.workspace carries each fleet scope's root asks, tagged; a fleet answer comes back tagged (BRO-2856)", async () => {
+test("asks.workspace carries each fleet scope's root asks, tagged; a fleet answer is written at its root (BRO-2856)", async () => {
   const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
   roots.push(root);
   const config = join(root, "config.json");
@@ -653,7 +653,8 @@ test("asks.workspace carries each fleet scope's root asks, tagged; a fleet answe
       option: "go",
       note: "",
     });
-    expect([answered.ask.scope, answered.ask.state]).toEqual(["alpha", "answered"]);
+    // The reply is the ledger's ask as written, untagged: the card that asked files it under its own list's scope.
+    expect([answered.ask.scope, answered.ask.state]).toEqual([undefined, "answered"]);
   } finally {
     await cleanup();
     for (const [key, value] of saved) {

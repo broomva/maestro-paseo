@@ -14,14 +14,25 @@ import { useWorkspaceAsks } from "./decisions";
 import { askKey, decisionAsks, handedAsks, ledgerOf } from "./decisions-model";
 import { clampedBody } from "./fleet-cockpit-model";
 import { plural } from "./format";
-import { requestIntent } from "./intent";
+import type { MaestroIntent } from "./intent";
 import { MarkdownView } from "./markdown-view";
 import { Button, space, useText } from "./ui";
 
 /** How tall a long closing shows before Show all. */
 const CLAMP = { phone: 180, desktop: 260 } as const;
 
-export function ArcReport({ item, theme, compact }: { item: WorkItem; theme: PluginTheme; compact: boolean }) {
+export function ArcReport({
+  item,
+  theme,
+  compact,
+  open,
+}: {
+  item: WorkItem;
+  theme: PluginTheme;
+  compact: boolean;
+  /** How this place opens Decisions: inside Maestro, an intent; from a session's gate card, the intent and Maestro with it. */
+  open: (intent: MaestroIntent) => void;
+}) {
   const text = useText(theme);
   const read = useWorkspaceAsks();
   const [all, setAll] = useState(false);
@@ -66,7 +77,7 @@ export function ArcReport({ item, theme, compact }: { item: WorkItem; theme: Plu
             label={`Answer its ${plural(handed.length, "decision")} in Decisions`}
             compact={compact}
             onPress={() =>
-              requestIntent({
+              open({
                 kind: "decisions",
                 ledger: oneLedger,
                 id: first.id,

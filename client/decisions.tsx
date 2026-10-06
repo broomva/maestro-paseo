@@ -221,7 +221,7 @@ export function WorkspaceDecisions({
         .filter(Boolean)
         .join(" · ")}
     >
-      <Text style={text.small}>They are not the fleet's: they have their own tab, one decision at a time.</Text>
+      <Text style={text.small}>They have their own tab, beside the fleet's, one decision at a time.</Text>
       <View style={{ flexDirection: "row" }}>
         <Button
           theme={theme}
@@ -238,8 +238,8 @@ export function WorkspaceDecisions({
 /**
  * The decision asks that wait on you, where Maestro shows what needs you, from
  * work.attention: exactly what the header count counts for them. Open
- * Decisions goes to the Decisions tab for the workspace's, at the first one,
- * and to the Fleet view for a fleet scope's.
+ * Decisions goes to the Decisions tab at the first one, the workspace's and a
+ * fleet scope's alike.
  */
 export function AskNotices({
   theme,
