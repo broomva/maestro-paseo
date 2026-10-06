@@ -6,7 +6,6 @@ import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
 import { Pressable, Text, View } from "react-native";
 import type { WorkItem } from "../shared/contracts";
 import { GROUP_COPY, type Group } from "../shared/states";
-import { noFlagBreaks } from "../shared/text";
 import { ChangeText, WithChange } from "./changed";
 import { ago } from "./format";
 import {
@@ -21,7 +20,7 @@ import {
   workerText,
 } from "./plane-model";
 import { placeText, titleText } from "./records-text";
-import { radius, StateDot, StateLabel, space, useText, webAria } from "./ui";
+import { radius, StateDot, StateLabel, space, Unbroken, useText, webAria } from "./ui";
 
 type Selectable = { theme: PluginTheme; selected: string | null; onSelect: (id: string) => void };
 /** A plane's work, and whether the loop is on, which words the Queued hint. */
@@ -162,7 +161,7 @@ function WorkCard({ theme, item, selected, onSelect }: Selectable & { item: Work
         <Text style={[text.small, text.tabular]}>{ago(item.updatedAt)}</Text>
       </View>
       <Text style={[text.body, { fontWeight: "500" }]} numberOfLines={2}>
-        {noFlagBreaks(titleText(item))}
+        <Unbroken>{titleText(item)}</Unbroken>
       </Text>
       {stuck ? <Why theme={theme}>{stuck}</Why> : null}
       {flagged ? <Why theme={theme}>{flagged}</Why> : null}
@@ -215,7 +214,7 @@ function ListRow({ theme, item, selected, onSelect }: Selectable & { item: WorkI
         {stateText(item)}
       </Text>
       <Text style={[text.body, { flex: 2, minWidth: 0 }]} numberOfLines={1}>
-        {noFlagBreaks(titleText(item))}
+        <Unbroken>{titleText(item)}</Unbroken>
       </Text>
       <Text style={[text.small, { flex: 1, minWidth: 0 }]} numberOfLines={1}>
         {place ?? ""}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { clipWords, inlinePlain, linksAndBold, noFlagBreaks, plainMarkdown, tailWords } from "./text";
+import { clipWords, flagRuns, inlinePlain, linksAndBold, plainMarkdown, tailWords } from "./text";
 
 describe("clipWords", () => {
   test("text that fits is flattened and kept whole", () => {
@@ -143,10 +143,18 @@ describe("plainMarkdown", () => {
     expect(inlinePlain("see [BRO-1](https://linear.app/b/BRO-1)")).toBe("see BRO-1");
   });
 
-  test("flag hyphens do not break a line; other hyphens are left alone", () => {
-    expect(noFlagBreaks("ctx doctor --compare (-v) on ctx-core")).toBe(
-      "ctx doctor \u2011\u2011compare (\u2011v) on ctx-core",
-    );
+  test("flag tokens are their own runs; the runs join back to the source byte for byte", () => {
+    const source = "ctx doctor --compare (-v) on ctx-core, see a-b";
+    const runs = flagRuns(source);
+    expect(runs.filter((run) => run.flag).map((run) => run.text)).toEqual(["--compare", "-v"]);
+    expect(runs.map((run) => run.text).join("")).toBe(source);
+    expect(runs.map((run) => run.text).join("")).not.toContain("\u2011");
+    for (const plain of ["", "no flags here", "ctx-core"])
+      expect(
+        flagRuns(plain)
+          .map((run) => run.text)
+          .join(""),
+      ).toBe(plain);
   });
 
   test("a gate bullet keeps code ticks and globs; only links and bold change", () => {

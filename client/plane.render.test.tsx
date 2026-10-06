@@ -1685,8 +1685,11 @@ describe("work the fleet raised (BRO-2839)", () => {
     const view = await mount(<WorkDetail id="fleet-1" theme={theme} compact={false} navigation={undefined} />);
     await settle(50);
     const text = view.text();
-    // Flag hyphens do not break across lines (U+2011).
-    expect(text).toContain("The core comparison (ctx doctor \u2011\u2011compare) is not run in scope sri…");
+    // The displayed title is the source's text exactly (no U+2011); the flag token is kept from wrapping.
+    expect(text).toContain("The core comparison (ctx doctor --compare) is not run in scope sri…");
+    expect(text).not.toContain("\u2011");
+    const flag = view.all("*").find((el) => el.children.length === 0 && el.textContent === "--compare");
+    expect(flag?.getAttribute("style") ?? "").toContain("white-space: nowrap");
     expect(text).not.toContain("[fleet-reconcile");
     expect(text).toContain("fleet · sri");
     expect(text).toContain("tick 7 · batch 7-3");

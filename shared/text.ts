@@ -158,13 +158,20 @@ export function inlinePlain(line: string, options: { hosts?: boolean } = {}): st
 }
 
 /**
- * Hyphens that open a command-line flag (`--compare`, `-v`) as non-breaking
- * (U+2011), so a line never wraps between them. Display text only: copy the
- * command from its source, not from this.
+ * `text` split into runs, each flag-like token (`--compare`, `-v`) its own
+ * run, so a surface can keep that token from wrapping at its hyphen. The runs
+ * join back to `text` exactly: the words are never changed.
  */
-export function noFlagBreaks(text: string): string {
-  return text.replace(
-    /(^|[\s(])(-{1,2})(?=[A-Za-z0-9])/g,
-    (_, lead: string, dashes: string) => `${lead}${"\u2011".repeat(dashes.length)}`,
-  );
+export function flagRuns(text: string): Array<{ text: string; flag: boolean }> {
+  const runs: Array<{ text: string; flag: boolean }> = [];
+  const pattern = /(^|[\s(])(--?[A-Za-z][\w-]{0,200})/g;
+  let at = 0;
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    const start = match.index + (match[1] ?? "").length;
+    if (start > at) runs.push({ text: text.slice(at, start), flag: false });
+    runs.push({ text: match[2] ?? "", flag: true });
+    at = start + (match[2] ?? "").length;
+  }
+  if (at < text.length || runs.length === 0) runs.push({ text: text.slice(at), flag: false });
+  return runs;
 }

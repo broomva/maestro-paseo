@@ -11,7 +11,6 @@ import { type CheckResult, NOT_STOPPED, type Pending, type WorkEventWire, type W
 import { fleetDetail, parseFleetBrief } from "../shared/fleet-item";
 import { nextRunCopy } from "../shared/run";
 import { PLAIN_VOICE } from "../shared/states";
-import { noFlagBreaks } from "../shared/text";
 import { ChangeText, WithChange } from "./changed";
 import { FilesSection } from "./files";
 import { FleetBriefView } from "./fleet-brief";
@@ -19,7 +18,7 @@ import { ago, agoWords, basename, errorText } from "./format";
 import { useRefresh, useVerbs, useWorkDetail } from "./hooks";
 import { changedVisible } from "./plane-model";
 import { collapseRepeats, fleetOriginOf, placeText, repeatText, repeatWords, titleText } from "./records-text";
-import { Button, Card, IconButton, Notice, radius, StateLabel, space, useText } from "./ui";
+import { Button, Card, IconButton, Notice, radius, StateLabel, space, Unbroken, useText } from "./ui";
 
 type Navigation = PluginSurfaceProps["navigation"];
 
@@ -80,7 +79,7 @@ export function WorkDetail({
           <Text style={text.small}>{item.gate === "human" ? "You approve" : "Checks decide"}</Text>
         </View>
         <Text style={text.heading} accessibilityRole="header">
-          {noFlagBreaks(shownTitle)}
+          <Unbroken>{shownTitle}</Unbroken>
         </Text>
         {where ? <Text style={text.muted}>{where}</Text> : null}
         {fleet ? <Text style={[text.small, text.tabular]}>{fleetDetail(fleet)}</Text> : null}

@@ -19,6 +19,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import { type OrchState, PLAIN_VOICE, type Tone } from "../shared/states";
+import { flagRuns } from "../shared/text";
 
 export const space = { 1: 4, 2: 8, 3: 12, 4: 16, 5: 20, 6: 24, 8: 32 } as const;
 export const radius = { control: 8, card: 12, pill: 9999 } as const;
@@ -431,5 +432,30 @@ export function Disclosure({
       </Pressable>
       {open ? children : null}
     </View>
+  );
+}
+
+/**
+ * Text whose flag-like tokens (`--compare`) never wrap at their hyphen: each
+ * is a nested Text with `white-space: nowrap` on the web; native ignores the
+ * rule, so it is set there only. The string is the source's, byte for byte.
+ */
+export function Unbroken({ children }: { children: string }) {
+  const runs = flagRuns(children);
+  if (Platform.OS !== "web" || !runs.some((run) => run.flag)) return <>{children}</>;
+  const nowrap = { whiteSpace: "nowrap" } as unknown as TextStyle;
+  return (
+    <>
+      {runs.map((run, index) =>
+        run.flag ? (
+          // biome-ignore lint/suspicious/noArrayIndexKey: runs are a fixed split of one string, never reordered.
+          <Text key={index} style={nowrap}>
+            {run.text}
+          </Text>
+        ) : (
+          run.text
+        ),
+      )}
+    </>
   );
 }

@@ -6,8 +6,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Text, View } from "react-native";
 import { alertKind, type FleetBrief, type FleetOrigin, leadRestates } from "../shared/fleet-item";
-import { noFlagBreaks } from "../shared/text";
-import { Disclosure, radius, size, space, useText } from "./ui";
+import { Disclosure, radius, size, space, Unbroken, useText } from "./ui";
 
 /**
  * Says each thing once. The lead is left out when it restates the scope or
@@ -53,7 +52,7 @@ export function FleetBriefView({
                   </View>
                 ) : null}
                 <Text style={text.body} selectable>
-                  {noFlagBreaks(ask.question)}
+                  <Unbroken>{ask.question}</Unbroken>
                 </Text>
               </View>
             );
