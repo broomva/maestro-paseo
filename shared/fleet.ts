@@ -329,6 +329,38 @@ export const FleetScopeSchema = z.object({
 });
 export type FleetScope = z.infer<typeof FleetScopeSchema>;
 
+/**
+ * One session row of a scope's newest report (report.json `sessions`): what
+ * the fleet saw of it and what it would do. `inScope` is false for the
+ * report's class 1 (out of scope: another scope's, or unplaced). `history` is
+ * its class at each of the ticks read (newest first), for in-scope sessions:
+ * null at a tick whose report did not list it, or that wrote no report.
+ */
+export const FleetSessionSchema = z.object({
+  id: z.string(),
+  short: z.string(),
+  name: z.string().nullable(),
+  kind: z.string().nullable(),
+  /** The listing's state (busy, idle, failed, blocked, done, stopped): a background session's `state`, else its `status`. */
+  state: z.string().nullable(),
+  cwd: z.string().nullable(),
+  branch: z.string().nullable(),
+  agentId: z.string().nullable(),
+  classId: z.string(),
+  className: z.string().nullable(),
+  /** What the fleet would do, in its words (`nothing` included). */
+  action: z.string().nullable(),
+  evidence: z.string().nullable(),
+  /** Its last activity: the report's time less the activity age it gives. */
+  activeAt: z.string().nullable(),
+  /** The scope the fleet placed it in, and how (`cwd`, `worktree-parent`, `board`, `unplaced`). */
+  scope: z.string().nullable(),
+  placement: z.string().nullable(),
+  inScope: z.boolean(),
+  history: z.array(z.object({ tick: z.number(), classId: z.string().nullable() })),
+});
+export type FleetSession = z.infer<typeof FleetSessionSchema>;
+
 export const FleetDetailSchema = z.object({
   id: z.string(),
   stateDir: z.string(),
@@ -346,6 +378,20 @@ export const FleetDetailSchema = z.object({
   alerts: z.array(FleetItemSchema),
   /** Files that could not be read, in words. */
   warnings: z.array(z.string()),
+  /** The newest report's sessions (FleetSessionSchema); null when no report was read; absent from an older daemon. */
+  roster: z
+    .object({ tick: z.number(), at: z.string().nullable(), sessions: z.array(FleetSessionSchema) })
+    .nullable()
+    .optional(),
+  /**
+   * What each step of the newest tick said it did, from its lines in tick.log
+   * (`recover` → `0 open intent(s) closed`); null when the log holds none.
+   * Absent from an older daemon.
+   */
+  stepWords: z
+    .object({ tick: z.number(), said: z.record(z.string(), z.string()) })
+    .nullable()
+    .optional(),
 });
 export type FleetDetail = z.infer<typeof FleetDetailSchema>;
 

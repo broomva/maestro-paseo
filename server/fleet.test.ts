@@ -158,6 +158,16 @@ describe("reading the fleet", () => {
     ]);
     // Alerts the fleet raised that are still open, whatever their state; never your own work.
     expect(detail?.alerts.map((item) => item.id)).toEqual(["w-alert"]);
+    // The newest report's sessions, each in-scope one with its class at every tick read.
+    expect(detail?.roster?.tick).toBe(35);
+    expect(
+      detail?.roster?.sessions.map((row) => [row.short, row.classId, row.inScope, row.history.map((h) => h.classId)]),
+    ).toEqual([
+      ["11111111", "1", false, []],
+      ["22222222", "4", true, ["4", "4"]],
+      ["33333333", "10", true, ["10", "10"]],
+      ["44444444", "5", true, ["5", "5"]],
+    ]);
     expect(detail?.warnings).toEqual([]);
     expect((await fleet.get("beta")).detail?.id).toBe("beta");
   });
@@ -1018,6 +1028,18 @@ describe("drilling in", () => {
     });
     // A tick the log no longer holds, and one with no report: each is null, not an error.
     expect(await fleet.tick("alpha", 7)).toEqual({ tick: 7, report: null, notes: [], log: null });
+    // The newest tick's step words come with the read; tick 35 said nothing of its steps.
+    expect((await fleet.get("alpha")).detail?.stepWords).toEqual({ tick: 35, said: {} });
+    // No tick.log: no step words and nothing to say. A tick.log that is a link is refused, and said.
+    await rm(join(paths.state, "alpha", "tick.log"));
+    const none = (await fleet.get("alpha")).detail;
+    expect(none?.stepWords).toBeNull();
+    expect(none?.warnings.filter((warning) => warning.includes("tick.log"))).toEqual([]);
+    await writeFile(join(paths.state, "elsewhere.log"), "[t] tick 35 scope alpha\n");
+    await symlink(join(paths.state, "elsewhere.log"), join(paths.state, "alpha", "tick.log"));
+    const refused = (await fleet.get("alpha")).detail;
+    expect(refused?.stepWords).toBeNull();
+    expect(refused?.warnings.some((warning) => warning.startsWith("tick.log could not be read"))).toBe(true);
     await expect(fleet.tick("nowhere", 1)).rejects.toThrow("The fleet has no scope named nowhere.");
   });
 

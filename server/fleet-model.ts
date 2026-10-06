@@ -17,6 +17,7 @@ import {
   type FleetItem,
   type FleetProposal,
   type FleetReview,
+  type FleetSession,
   type FleetTick,
   REVIEW_VERDICTS,
   type TickStatus,
@@ -217,6 +218,10 @@ export interface ReportSummary {
   asksOpen: Json[];
   /** The report's sessions by id, kept small: what an ask about one names and opens. */
   sessions: Map<string, { name: string | null; agentId: string | null }>;
+  /** Every session row, as the roster shows it (no history: rosterOf adds it). */
+  roster: Omit<FleetSession, "history">[];
+  /** Each session's class at this tick, by id: a roster row's history across ticks. */
+  classes: Map<string, string>;
 }
 
 /** A stable key for one proposal: the same session, class and words read the same at every tick. */
@@ -273,9 +278,39 @@ export function summarizeReport(raw: unknown, scope: string, fallbackTick: numbe
       review: null,
     });
   }
+  const reportAt = ms(ts);
+  const roster = sessions.flatMap((session): Omit<FleetSession, "history">[] => {
+    const id = str(session.session_id);
+    if (!id) return [];
+    const classId = str(session.class) ?? "unknown";
+    const age = typeof session.activity_age_s === "number" ? session.activity_age_s : null;
+    return [
+      {
+        id,
+        short: str(session.short) ?? id.slice(0, 8),
+        name: str(session.name),
+        kind: str(session.kind),
+        state: str(session.state) ?? str(session.status),
+        cwd: str(session.cwd),
+        branch: str(session.branch),
+        agentId: str(session.paseo_agent),
+        classId,
+        className: str(session.class_name) ?? FLEET_CLASSES[classId] ?? null,
+        action: str(session.action),
+        evidence: str(session.evidence),
+        activeAt: reportAt !== null && age !== null && age >= 0 ? new Date(reportAt - age * 1000).toISOString() : null,
+        scope: str(session.scope),
+        placement: str(session.placement),
+        // Class 1 is the report's own word for out of scope; a row placed in another scope is never this one's.
+        inScope: classId !== "1" && (str(session.scope) === null || str(session.scope) === scope),
+      },
+    ];
+  });
   return {
     tick,
     ts,
+    roster,
+    classes: new Map(roster.map((row) => [row.id, row.classId])),
     mode: str(raw.mode),
     dryRun: bool(raw.dry_run),
     classCounts,
@@ -291,6 +326,29 @@ export function summarizeReport(raw: unknown, scope: string, fallbackTick: numbe
 }
 
 /**
+ * The newest report's sessions with what the fleet saw of each in-scope one
+ * at every tick read (`ticks`, newest first): its class there, or null when
+ * that tick's report did not list it or is not there. Nothing is inferred
+ * between reports.
+ */
+export function rosterOf(
+  newest: ReportSummary,
+  reports: ReadonlyMap<number, ReportSummary>,
+  ticks: readonly number[],
+): { tick: number; at: string | null; sessions: FleetSession[] } {
+  return {
+    tick: newest.tick,
+    at: newest.ts,
+    sessions: newest.roster.map((row) => ({
+      ...row,
+      history: row.inScope
+        ? ticks.map((tick) => ({ tick, classId: reports.get(tick)?.classes.get(row.id) ?? null }))
+        : [],
+    })),
+  };
+}
+
+/**
  * The session an ask is about, from its key (`prompt:<session id>:<words>`),
  * with its name and Paseo agent from the report; a key that names a Paseo
  * agent itself opens that agent.
@@ -299,16 +357,21 @@ export function askSession(
   key: string,
   sessions: ReadonlyMap<string, { name: string | null; agentId: string | null }>,
 ): AskSession | null {
-  const id = /^prompt:([0-9a-f][0-9a-f-]{7,}):/i.exec(key)?.[1];
+  // `prompt:<id>:…`, `blocked:<id>:…`: any of the fleet's per-session keys names the session after its kind.
+  const id = /^[a-z][a-z_-]*:([0-9a-f]{8}[0-9a-f-]*):/i.exec(key)?.[1];
   if (!id) return null;
   const known = sessions.get(id);
-  const asAgent = [...sessions.values()].find((session) => session.agentId === id);
-  return {
-    id,
-    short: id.slice(0, 8),
-    name: known?.name ?? asAgent?.name ?? null,
-    agentId: known?.agentId ?? asAgent?.agentId ?? null,
-  };
+  if (known) return { id, short: id.slice(0, 8), name: known.name, agentId: known.agentId };
+  // The key's id is often a short prefix of the session's id or its Paseo agent's: linked by a unique match only.
+  const want = id.toLowerCase();
+  const matches = [...sessions.entries()].filter(
+    ([sessionId, session]) =>
+      sessionId.toLowerCase().startsWith(want) || (session.agentId?.toLowerCase().startsWith(want) ?? false),
+  );
+  const [only] = matches.length === 1 ? matches : [];
+  if (!only) return { id, short: id.slice(0, 8), name: null, agentId: null };
+  const [sessionId, session] = only;
+  return { id: sessionId, short: sessionId.slice(0, 8), name: session.name, agentId: session.agentId };
 }
 
 /**
@@ -332,6 +395,27 @@ export function tickLogSection(log: string, tick: number): string | null {
     }
   }
   return lines.slice(start, end).join("\n").trimEnd();
+}
+
+/**
+ * What each step said it did, from one tick's lines in tick.log: the last
+ * `fleet <step>: <words>` line before its `step <name> rc=N` line. A step
+ * that said nothing is left out; so is the config check, which is no step.
+ */
+export function stepWordsOf(section: string): Record<string, string> {
+  const said: Record<string, string> = {};
+  let words: string | null = null;
+  for (const line of section.split("\n")) {
+    const step = /\] step ([a-z-]+) rc=-?\d+/.exec(line)?.[1];
+    if (step) {
+      if (words) said[step] = words;
+      words = null;
+      continue;
+    }
+    const fleet = /^fleet ([a-z -]+?): (.+)$/.exec(line.trim());
+    if (fleet?.[2] && fleet[1] !== "config-check") words = fleet[2];
+  }
+  return said;
 }
 
 /**

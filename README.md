@@ -340,7 +340,79 @@ The brief contract, the same as fleet-reconcile's SKILL.md (BRO-2840):
 - Older briefs (a lead paragraph, a fenced block of `[a1] (class) question` lines, then the run's instructions)
   read the same, from the fence that holds ask lines.
 
-A brief with no ask line in `## For you` (or, in an older brief, in any fence) shows as written. The **Fleet** view shows the rest, per scope, read from those files:
+A brief with no ask line in `## For you` (or, in an older brief, in any fence) shows as written.
+
+The **Fleet** view is a cockpit (BRO-2837): status first, then what needs you, then the sessions.
+Top to bottom:
+
+- **The fleet bar.** A scope control: *All scopes* (the default, which reads every scope) and each
+  scope with a dot for its health and, when it is not on time, the word. On the right, the mode
+  badge (*Dry run · report only*) and the cadence (*Hourly · next tick in 29 min*, from the
+  LaunchAgent's interval and the last tick's start; *By hand only* when nothing schedules it).
+  There is no *Run tick now* and no *Pause*: the view stays read-only toward the fleet.
+- **What needs you, one number.** One selector (`fleetNeedsYou`, client/fleet-cockpit-model.ts) says
+  what the fleet needs from you, and the health band, the *Needs you* tile, the *Needs you* section
+  and the fleet's share of the header's *N need you* all read it. It counts what the header counts,
+  each once: a scope whose missed or failing tick needs you, an alert the fleet raised as work that
+  needs you, an ask batch raised as work that needs you (one per item, however many asks it
+  carries), and a decision ask in the fleet's own root that waits on you (`waiting`: blocking, or
+  recommending what cannot be undone). Sessions that want a look are named beside it (*6 sessions
+  want a look*), never in it: the header does not count them.
+- **The health band.** A verdict that leads with the problem and never overclaims. It is *healthy*
+  only when every scope was read, ticks on time, nothing needs you and no session wants a look.
+  Otherwise it names, worst first: a scope that cannot be read (no data at all; a refetch that
+  fails while older data stands is a quiet *Couldn't refresh* note instead), one failing or
+  missing its tick, *N need you*, *N sessions want a look* (whatever the scope's state), a paused
+  or unscheduled scope, and a scope still on its first read (*Reading sri…*); *· ticks on time*
+  comes last, and only when true. Then one strip per scope of its last 24 ticks, oldest on the
+  left, with a time axis and a legend (on the phone too). A cell is passed, failed or never
+  finished (×), running (an outline, the one blue on the page), or no exit recorded (?); a missed
+  scope ends on a dashed missed cell (!). There is no "late": a wall-clock gap between two ticks
+  includes sleep, and the server judges a stall in awake time. Every cell carries its words for a
+  screen reader, and on the desktop a cell opens its tick.
+- **KPI tiles.** *Needs you* jumps to the queue and says what it counts (`fleet: 1 tick · 2 asks ·
+  1 decision`). *Attention* (sessions that want a look, with how many failed and blocked),
+  *Running*, *Idle*, *Failed*, *Unmanaged* (the fleet's class 10) and a muted *Out of scope* each
+  filter the roster to exactly what they count, bring it into view, and say *Filtering* while they
+  do; pressed again, they show them all.
+- **Needs you** beside **Latest tick**. One card per counted thing, the first leading with the
+  page's one filled verb. A fleet ask leads with the session it is about, named, linked from the
+  key's id by a unique prefix of the session's or its Paseo agent's id (never when two match):
+  *Open <session>* in Paseo, else *Copy resume command* (`cd '<cwd>' && claude --resume <uuid>`:
+  the folder always single-quoted, a leading `~/` as `"$HOME"`, a canonical UUID only). Answering
+  the raised work and *Copy question* follow. A title keeps the request: a blocked-session ask
+  reads *<session> is waiting on you* with the request as its body; a long first sentence is cut at
+  a clause, the body going on from it. Then, apart and uncounted, **Also open**: asks not raised as
+  work yet (each says when it will be: *raised at the next tick, ~21:18*), alerts at rest, and the
+  scope's decisions that do not wait on you (answered ones stay findable). *Latest tick* shows the
+  failing or missed scope's tick (else the newest) with each step and one plain line, and under
+  *All scopes* every other scope's latest tick as a compact row that opens its log. *Report*, *Log*
+  and *All ticks* open the tick in a sheet.
+- **Sessions in scope.** The newest report's sessions in scope, as a table on the desktop
+  (session, state, where, last active, what the fleet would do, *Open in Paseo* and a ⋯ menu with
+  *Open in Paseo*, *Adopt into Maestro* and *Copy session id*) and stacked rows on the phone.
+  Filters: *Attention* (a class that wants a look: dead at a limit, waiting at a prompt, error,
+  hung, blocked on you, stalled; or a session an open ask names), *Unmanaged*, *Running*, *All*.
+  A footer says how many are out of scope and shows them. A row opens the **inspector**: beside
+  the list on a wide desktop, as a sheet elsewhere. It shows the session's facts, what the fleet
+  saw of it at each tick read (its class, or not listed, with a legend), what the fleet would do
+  with your verdict on it (*Agree*, or *Disagree…* with a note), the report's evidence, and its
+  verbs. Its facts are plain (*Placed by its folder*, *active now* for a running session with no
+  activity recorded), and the report's evidence is a sentence; the raw evidence, the fleet class
+  (*error (class 4)*) and the Paseo agent wait under *Details*. *Adopt into Maestro* is offered
+  only for a Paseo agent in a scope shown; the work's title is the session's name, else its id. A
+  session Paseo does not hold offers *Copy resume command* (filled when it failed or is blocked);
+  the row's ⋯ menu offers it too. Names and paths are cut at a word or a folder, never mid-word or
+  on a dangling separator; a path keeps its last folder.
+
+Below the sessions, uncounted, **Teach the fleet**: the dry-run proposals (*Would list 4 unmanaged
+sessions in its report — nothing is done*), each naming every session it covers. A verdict teaches
+the fleet and changes nothing now, so *Agree* is never the page's filled verb.
+
+On a phone the same reads stack in one column: a full-width scope control, a compact health card,
+four tiles, the queue with 44 pt verbs, the latest tick, then the roster.
+
+The parts, in detail:
 
 - **Health.** On time, failing (the newest tick exited 1, or started and never finished), missed,
   off (the fleet's kill switch), or not scheduled (no LaunchAgent runs it).
@@ -376,11 +448,13 @@ A brief with no ask line in `## For you` (or, in an older brief, in any fence) s
   - An ask about a session (a `prompt:<session>:…` key) names it, and *Open session* opens it in
     Paseo when it is a Paseo agent. *Details* shows the ask's key and batch, and the tick that raised
     it, opened as a tick row opens.
-- **Decisions.** Your workspace's decision asks are in the [Decisions](#decisions) view; the Fleet
-  view shows a short *Workspace decisions* summary that opens it. Per scope, *The fleet's decisions*
-  are those in the fleet's own ask ledger, `<state dir>/.control/asks/*.yaml` (its registered root,
-  workspace#861 §5.6), shown only when that folder holds one.
-  - The fleet's asks are listed a ledger at a time, the ledgers with an ask that waits on you first. Every
+- **The fleet's decisions.** Per scope, the decision asks in the fleet's own ask ledger,
+  `<state dir>/.control/asks/*.yaml` (its registered root, workspace#861 §5.6). Each one that waits
+  on you is its own card in Needs you, the Decisions card (#24's) folded until *Read and answer*;
+  the others, open and answered, are listed under *Also open*, uncounted. Your workspace's own
+  decision asks are not in the Fleet view: they are in the [Decisions](#decisions) tab. Both are
+  drawn the same way:
+  - Asks are listed a ledger at a time, the ledgers with an ask that waits on you first. Every
     ledger starts open while there are ten open asks or fewer; past that, only those with an ask
     that waits on you. A ledger's heading folds and opens it. Its answered asks stay folded under
     *Show N answered*; one you just answered stays in place, saying so.
@@ -391,7 +465,7 @@ A brief with no ask line in `## For you` (or, in an older brief, in any fence) s
     undone (§5.4), default or not: a default says the arc may go on in silence, not that it did.
     Those count in the header's "N need you", and show above every other view with *Open
     Decisions* (a fleet scope's open its Fleet view).
-- **Would do.** These are proposals: each in-scope session whose "would do" in the newest report is
+- **Proposals.** Under *Teach the fleet* (below the sessions), as *Fleet proposal · dry run* cards (a neutral outline tag: dry run is not a status): these are proposals: each in-scope session whose "would do" in the newest report is
   something other than nothing, plus any verb the coordinator logged under dry run.
   - Proposals that read the same and stand the same with you are one card, and one verdict covers
     all of them: one class and one action across many sessions, all waiting or all judged alike.
@@ -401,18 +475,26 @@ A brief with no ask line in `## For you` (or, in an older brief, in any fence) s
     - A coordinator verb is always its own card, its text shown.
     - Each card's verbs sit above its sessions, each session with its evidence, its status, folder
       and branch, and *Open in Paseo* when it is a Paseo agent (the report's `paseo_agent`).
-  - Accept or reject each one; a reject asks for an optional note first.
+  - *Agree* or *Disagree…* (which asks for an optional note first, up to 1,000 characters). Both are
+    secondary unless the card leads the queue: under dry run a verdict teaches the fleet and changes
+    nothing now. A card names every session it covers before you agree. A card you
+    judged in the last hour stays in the queue, saying so; older verdicts are behind *Show
+    reviewed*. The inspector takes a verdict on one session's proposal too.
   - A proposal's key binds its session, its class and its words. For a coordinator verb, the key
     binds the label and whether it adds or removes it, or the mail's template and text. So one
     verdict holds while the fleet proposes the same thing, and a verdict made on a page gone stale
     is refused rather than recorded against different words. Each line names the tick whose words
     you judged.
-- **Ticks.** The last 24, each with its time, its exit and which step failed, and its class counts.
-  Press a tick to open it: its exit and each step's code, its own lines in `tick.log` (from its
-  start line to its done line, the last 4 KB), and its own `report.md`. These are read
-  (`fleet.tick`) only when you open it.
-- **Report.** The newest `report.md`, drawn natively, up to 128 KB. On a phone, its tables become
-  one card per row.
+- **Ticks.** *All ticks* lists the last 24, each with its time, its exit and which step failed,
+  and its class counts. Press a tick to open it: its exit and each step's code, its own lines in
+  `tick.log` (from its start line to its done line, the last 4 KB), and its own `report.md`, drawn
+  natively up to 128 KB (on a phone, its tables become one card per row). These are read
+  (`fleet.tick`) only when you open it. The latest tick's step lines come with the view's read: the
+  end of `tick.log` (16 KB) is read for them.
+- **The roster's data.** `fleet.get` carries the newest report's session rows (`roster`) with each
+  in-scope session's class at every tick read, and the newest tick's step words (`stepWords`). The
+  report's `activity_age_s` dates *last active*; nothing is estimated where the report says
+  nothing.
 
 A missed or failing tick also shows above every other view and in the header count, so it reaches
 the phone. A failing tick counts only on a scheduled scope; one run by hand was seen by whoever ran

@@ -58,7 +58,9 @@ import {
   parseJsonLines,
   type ReportSummary,
   reviewRecord,
+  rosterOf,
   SCOPE_ID,
+  stepWordsOf,
   summarizeReport,
   tickLogSection,
   tickRows,
@@ -293,6 +295,8 @@ type Stamp = string;
 const stampOf = (info: { mtimeMs: number; size: number; ino: number }): Stamp =>
   `${info.ino}:${info.mtimeMs}:${info.size}`;
 const CACHE_LIMIT = 400;
+/** The end of tick.log read for the newest tick's step words: one tick's lines are well under 2 KB. */
+const STEP_WORDS_BYTES = 16 * 1024;
 
 function code(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException)?.code;
@@ -739,6 +743,8 @@ export class Fleet {
         const summary = await this.report(id, stateDir, tick, warnings);
         if (summary) reports.set(tick, summary);
       }
+      // Before the detail is built: a refused tick.log goes into its warnings.
+      const stepWords = numbers[0] !== undefined ? await this.stepWords(stateDir, numbers[0], warnings) : null;
       detail = {
         id,
         stateDir,
@@ -755,9 +761,28 @@ export class Fleet {
         alerts: openAlerts(id, items).map(fleetItem),
         // One file read twice (the newest report, then the tick rows) is said once.
         warnings: [...new Set(warnings)],
+        roster: newest ? rosterOf(newest, reports, numbers) : null,
+        stepWords,
       };
     }
     return { scopes: summaries, detail, error };
+  }
+
+  /**
+   * What the newest tick's steps said, from the end of tick.log, where it is:
+   * a small read every poll. None when the log is not there (ENOENT) or holds
+   * no lines for it. A log that is there and refused (a link, a FIFO, a file
+   * with another hard link) or unreadable is said, as every degraded read is.
+   */
+  private async stepWords(stateDir: string, tick: number, warnings: string[]): Promise<FleetDetail["stepWords"]> {
+    try {
+      const { text } = await readEnd(join(stateDir, "tick.log"), STEP_WORDS_BYTES);
+      const section = tickLogSection(text, tick);
+      return section === null ? null : { tick, said: stepWordsOf(section) };
+    } catch (error) {
+      if (code(error) !== "ENOENT") warnings.push(`tick.log could not be read: ${(error as Error).message}`);
+      return null;
+    }
   }
 
   private async markdown(stateDir: string, tick: number, warnings: string[]): Promise<FleetDetail["report"]> {
