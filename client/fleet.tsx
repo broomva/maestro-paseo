@@ -1,89 +1,72 @@
-// The Fleet view: fleet-reconcile's hourly runs per scope. Its health (on
-// time, failing, missed), what needs you from it (the asks and alerts, each
-// the Maestro work the fleet raised, opened rather than copied), what it would
-// do under dry run with your verdict on each, its last ticks, and its latest
-// report. Your verdict is recorded in the fleet's review file; nothing here
-// changes what the fleet does, its mode or its dry run.
+// The Fleet view, as a cockpit (BRO-2837, design draft A with draft B's
+// inspector): fleet-reconcile's hourly runs per scope, status first. Top to
+// bottom: the scope control with the fleet's mode and cadence; the health band
+// (a verdict and one tick strip per scope); KPI tiles that filter the roster;
+// Needs you (the fleet's asks, alerts and own decisions, and the dry run's
+// proposals waiting on your verdict) beside the latest tick; and the sessions
+// in scope, each opening an inspector. "All" reads every scope.
 //
-// Each thing drills in: an ask opens the session it is about and the tick
-// that raised it; a decision ask, the workspace's or the fleet's own ledger's
-// (client/decisions.tsx), shows what it costs and what each option does, and
-// takes your answer in place; a proposal opens
-// its session in Paseo; a tick opens its report, its failed step and its log.
+// Read-only toward the fleet: your verdicts go to the fleet's review file and
+// your answers to its ask ledger, as before; nothing here runs a tick, pauses
+// the fleet, or changes its mode or dry run (server/fleet.ts). The
+// workspace's own decisions are not here: they are the Decisions tab (BRO-2838).
 //
 // FleetNotices is the same scope health where the rest of Maestro shows what
 // needs you: a missed or failing tick the fleet has not raised as work of its own.
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
-import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
-import { attentionWork } from "../shared/contracts";
+import { Icon, Modal } from "@getpaseo/plugin/client/react-native";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import { useRef, useState } from "react";
+import { ActivityIndicator, Text, View } from "react-native";
+import { type FleetView as FleetRead, getFleet } from "../shared/fleet";
 import {
-  type DecisionAsk,
-  type FleetAsk,
-  type FleetDetail,
-  type FleetItem,
-  type FleetProposal,
-  type FleetView as FleetRead,
-  type FleetScope,
-  type FleetTick,
-  getFleet,
-  getFleetTick,
-  groupProposals,
-  type ProposalGroup,
-  type ReviewVerdict,
-  reviewProposal,
-} from "../shared/fleet";
-import { PLAIN_VOICE } from "../shared/states";
-import { DecisionGroups, sameAsk, WorkspaceDecisions } from "./decisions";
-import {
-  agoText,
-  askMeta,
-  askWhere,
-  classText,
-  groupReviewText,
-  groupSubject,
-  HEALTH_LABEL,
-  healthTone,
-  keysFor,
-  lastTickText,
-  modeText,
-  noticeText,
-  proposalSubject,
-  proposalsHeading,
-  scopeChipLabel,
-  sessionFacts,
-  TICK_LABEL,
-  tickFacts,
-  tickLabel,
-  tickTone,
-  tickWhen,
-} from "./fleet-model";
+  askAge,
+  askedSessions,
+  cadenceText,
+  featuredScope,
+  filterRoster,
+  fleetItemIds,
+  fleetNeedsYou,
+  headerShares,
+  healthCells,
+  linkSession,
+  modeBadge,
+  needsText,
+  nextTickAt,
+  oldestText,
+  proposalsBySession,
+  type RosterFilter,
+  type RosterRow,
+  reviewedGroups,
+  rosterCounts,
+  rosterRows,
+  type ScopeRead,
+  teachQueue,
+  verdictOf,
+} from "./fleet-cockpit-model";
+import { HealthBand, KpiRow, type KpiValue } from "./fleet-health";
+import { HEALTH_LABEL, healthTone, noticeText } from "./fleet-model";
+import { NeedsYouQueue, type ScopeContext, TeachTheFleet } from "./fleet-queue";
+import { Roster, RosterChips, SessionInspector } from "./fleet-roster";
+import { LatestTick, POLL_MS, TickSheet, type TickSheetState } from "./fleet-ticks";
+import { Pill, ramp, SectionHead, Segmented, Verb } from "./fleet-ui";
 import { errorText, plural } from "./format";
-import { useRefresh } from "./hooks";
-import { MarkdownView } from "./markdown-view";
-import { Chip } from "./plane-controls";
-import { Button, Card, Notice, radius, Section, size, space, useText } from "./ui";
+import { useAttention, useWorkList } from "./hooks";
+import { requestIntent } from "./intent";
+import { fleetOriginOf } from "./records-text";
+import { Button, Card, Notice, radius, space, useReducedMotion, useText } from "./ui";
 
-/** Ticks come hourly: a read every 30 s is plenty, and the reads are files. */
-const POLL_MS = 30_000;
 const TICKS = 24;
+/** Below this width the two columns stack, and the inspector opens as a sheet. */
+const WIDE = 900;
+/** Rows the roster shows before "Show all". */
+const ROSTER_SHOWN = 12;
+/** The scope control's id for every scope at once. */
+const ALL = "all";
 
 type Navigation = PluginSurfaceProps["navigation"];
-
-/** One tick's report and log lines, read when its row (or an ask raised at it) is opened. */
-function useFleetTick(scope: string, tick: number, enabled: boolean) {
-  const get = useRpc(getFleetTick);
-  return useQuery({
-    queryKey: ["maestro", "fleet-tick", scope, tick],
-    queryFn: () => get({ scope, tick }),
-    enabled,
-    staleTime: POLL_MS,
-  });
-}
 
 export function useFleet(scope: string | null) {
   const get = useRpc(getFleet);
@@ -94,586 +77,66 @@ export function useFleet(scope: string | null) {
   });
 }
 
-function toneInk(theme: PluginTheme, tone: "danger" | "warn" | "success" | "muted" | "accent"): string {
-  switch (tone) {
-    case "danger":
-      return theme.colors.statusDanger;
-    case "warn":
-      return theme.colors.statusWarning;
-    case "success":
-      return theme.colors.statusSuccess;
-    case "accent":
-      return theme.colors.accent;
-    default:
-      return theme.colors.foregroundMuted;
-  }
-}
-
-/** A dot with its word beside it: color never stands alone. */
-function Status({ theme, tone, label }: { theme: PluginTheme; tone: Parameters<typeof toneInk>[1]; label: string }) {
-  const ink = toneInk(theme, tone);
-  return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: space[1] }}>
-      <View style={{ width: 7, height: 7, borderRadius: 7, backgroundColor: ink }} />
-      <Text style={{ color: ink, fontSize: size.xs, fontWeight: "600" }}>{label}</Text>
-    </View>
-  );
-}
-
-/** A link to work the fleet raised: its title, its state, and Open. */
-function ItemLink({
-  theme,
-  item,
-  compact,
-  onSelect,
-}: {
-  theme: PluginTheme;
-  item: FleetItem;
-  compact: boolean;
-  onSelect: (id: string) => void;
-}) {
-  const text = useText(theme);
-  return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
-      <View style={{ flex: 1, minWidth: 160, gap: 2 }}>
-        <Text style={text.small} numberOfLines={2}>
-          {item.title}
-        </Text>
-        <Text
-          style={[text.small, { color: item.needsYou ? theme.colors.statusWarning : theme.colors.foregroundMuted }]}
-        >
-          {item.needsYou ? "In Needs you" : PLAIN_VOICE[item.state].label}
-        </Text>
-      </View>
-      <Button
-        theme={theme}
-        icon="ArrowUpRight"
-        label="Open"
-        compact={compact}
-        accessibilityLabel={`Open ${item.title}`}
-        onPress={() => onSelect(item.id)}
-      />
-    </View>
-  );
-}
-
-function HealthCard({
-  theme,
-  scope,
-  detail,
-  compact,
-  onSelect,
-}: {
-  theme: PluginTheme;
-  scope: FleetScope;
-  detail: FleetDetail;
-  compact: boolean;
-  onSelect: (id: string) => void;
-}) {
-  const text = useText(theme);
-  const { health } = scope;
-  const every = detail.schedule.intervalMinutes;
-  return (
-    <Card theme={theme}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
-        <Text style={text.title}>{scope.id}</Text>
-        <Status theme={theme} tone={healthTone(health.status)} label={HEALTH_LABEL[health.status]} />
-      </View>
-      <Text style={text.body}>{health.reason}</Text>
-      <Text style={text.small}>
-        {[
-          lastTickText(scope),
-          modeText(scope),
-          detail.schedule.scheduled ? (every ? `every ${every} min` : "scheduled") : "no LaunchAgent",
-        ].join(" · ")}
-      </Text>
-      {health.item ? (
-        <View style={{ gap: space[1] }}>
-          <Text style={text.label}>The fleet raised this as work</Text>
-          <ItemLink theme={theme} item={health.item} compact={compact} onSelect={onSelect} />
-        </View>
-      ) : null}
-    </Card>
-  );
-}
-
-/** A tick's report, failed step, exit and log lines: what opening a tick row shows, and an ask's details. */
-function TickDetail({
-  theme,
-  scope,
-  tick,
-  facts,
-  compact,
-}: {
-  theme: PluginTheme;
-  scope: string;
-  tick: number;
-  facts: string | null;
-  compact: boolean;
-}) {
-  const text = useText(theme);
-  const read = useFleetTick(scope, tick, true);
-  return (
-    <View style={{ gap: space[2], paddingVertical: space[2] }}>
-      {facts ? <Text style={[text.small, text.tabular, { color: theme.colors.foreground }]}>{facts}</Text> : null}
-      {read.isPending ? (
-        <ActivityIndicator color={theme.colors.foregroundMuted} />
-      ) : read.isError ? (
-        <Notice theme={theme} tone="danger">
-          {errorText(read.error)}
-        </Notice>
-      ) : (
-        <>
-          {read.data.notes.map((note) => (
-            <Notice key={note} theme={theme} tone="warn">
-              {note}
-            </Notice>
-          ))}
-          {read.data.log ? (
-            <View style={{ gap: space[1] }}>
-              <Text style={text.label}>{`What tick ${tick} logged`}</Text>
-              <View
-                style={{
-                  padding: space[2],
-                  borderRadius: radius.control,
-                  borderWidth: 1,
-                  borderColor: theme.colors.border,
-                  backgroundColor: theme.colors.surface0,
-                }}
-              >
-                <Text style={text.mono} selectable numberOfLines={compact ? 16 : 40}>
-                  {read.data.log.text}
-                </Text>
-              </View>
-              <Text style={text.small} selectable numberOfLines={1}>
-                {read.data.log.truncated ? `The end of it, from ${read.data.log.path}` : read.data.log.path}
-              </Text>
-            </View>
-          ) : (
-            <Text style={text.small}>{`tick.log holds no lines for tick ${tick}.`}</Text>
-          )}
-          {read.data.report ? (
-            <View style={{ gap: space[1] }}>
-              <Text style={text.label}>{`Tick ${tick}'s report`}</Text>
-              <Card theme={theme}>
-                <MarkdownView source={read.data.report.markdown} theme={theme} compact={compact} />
-                {read.data.report.truncated ? <Text style={text.small}>The report is longer than this.</Text> : null}
-              </Card>
-            </View>
-          ) : (
-            <Text style={text.small}>{`Tick ${tick} wrote no report.`}</Text>
-          )}
-        </>
-      )}
-    </View>
-  );
-}
-
-/** A session's name, how it is, where it runs and its branch, with Open in Paseo when it is a Paseo agent. */
-function SessionLine({
-  theme,
-  session,
-  compact,
-  navigation,
-}: {
-  theme: PluginTheme;
-  session: NonNullable<FleetProposal["session"]>;
-  compact: boolean;
-  navigation: Navigation;
-}) {
-  const text = useText(theme);
-  const agentId = session.agentId;
-  const facts = sessionFacts(session);
-  const name = `${session.short}${session.name ? ` ${session.name}` : ""}`;
-  return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
-      <View style={{ flex: 1, minWidth: 160, gap: 2 }}>
-        <Text style={text.small} numberOfLines={1}>
-          {name}
-        </Text>
-        {facts ? (
-          <Text style={[text.small, { color: theme.colors.foregroundMuted }]} numberOfLines={2} selectable>
-            {facts}
-          </Text>
-        ) : null}
-      </View>
-      {!agentId ? (
-        <Text style={text.small}>Not a Paseo session</Text>
-      ) : navigation ? (
-        <Button
-          theme={theme}
-          icon="ArrowUpRight"
-          label="Open in Paseo"
-          compact={compact}
-          accessibilityLabel={`Open session ${name} in Paseo`}
-          onPress={() => navigation.openAgent({ agentId })}
-        />
-      ) : null}
-    </View>
-  );
-}
-
-function AskRow({
-  theme,
-  scope,
-  ask,
-  compact,
-  navigation,
-  onSelect,
-}: {
-  theme: PluginTheme;
-  scope: string;
-  ask: FleetAsk;
-  compact: boolean;
-  navigation: Navigation;
-  onSelect: (id: string) => void;
-}) {
-  const text = useText(theme);
-  const [open, setOpen] = useState(false);
-  const item = ask.item;
-  const session = ask.session;
-  const agentId = session?.agentId ?? null;
-  return (
-    <View
-      style={{
-        gap: space[1],
-        padding: space[3],
-        borderRadius: radius.control,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-      }}
-    >
-      <Text style={text.body}>{ask.question}</Text>
-      <Text style={text.small}>{askMeta(ask)}</Text>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
-        <Text
-          style={[
-            text.small,
-            {
-              flex: 1,
-              minWidth: 160,
-              color: item?.needsYou ? theme.colors.statusWarning : theme.colors.foregroundMuted,
-            },
-          ]}
-        >
-          {askWhere(ask)}
-        </Text>
-        {agentId && navigation ? (
-          <Button
-            theme={theme}
-            icon="ArrowUpRight"
-            label="Open session"
-            compact={compact}
-            accessibilityLabel={`Open the session ask ${ask.id} is about: ${session?.name ?? session?.short}`}
-            onPress={() => navigation.openAgent({ agentId })}
-          />
-        ) : null}
-        {item ? (
-          <Button
-            theme={theme}
-            icon="ArrowUpRight"
-            label={item.needsYou ? "Answer in Needs you" : "Open"}
-            compact={compact}
-            accessibilityLabel={`Open the fleet's work for ask ${ask.id}: ${item.title}`}
-            onPress={() => onSelect(item.id)}
-          />
-        ) : null}
-        <Button
-          theme={theme}
-          variant="quiet"
-          icon={open ? "ChevronUp" : "ChevronDown"}
-          label={open ? "Less" : "Details"}
-          compact={compact}
-          accessibilityLabel={`${open ? "Hide" : "Show"} the details of ask ${ask.id}`}
-          onPress={() => setOpen((shown) => !shown)}
-        />
-      </View>
-      {open ? (
-        <View style={{ gap: space[1], paddingTop: space[1] }}>
-          <Text style={[text.small, text.tabular]} selectable>
-            {[
-              `key ${ask.key}`,
-              ask.batch ? `batch ${ask.batch}` : null,
-              session ? `session ${session.id}${agentId ? "" : " (not a Paseo session)"}` : null,
-            ]
-              .filter(Boolean)
-              .join(" · ")}
-          </Text>
-          {ask.firstTick !== null ? (
-            <>
-              <Text style={text.label}>{`Raised at tick ${ask.firstTick}`}</Text>
-              <TickDetail theme={theme} scope={scope} tick={ask.firstTick} facts={null} compact={compact} />
-            </>
-          ) : null}
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
 /**
- * Puts verdicts the host has just recorded into every Fleet read held, so the
- * card says so at once: no second tap on a button that still reads Accept,
- * and nothing moves under the finger while the refetch is on its way.
+ * Every scope the cockpit shows, with its detail once read: the chosen one,
+ * or under All each scope, the first from the base read and the rest read
+ * each under its own key (the same reads a scope chosen alone makes).
  */
-function useApplyReviews() {
-  const client = useQueryClient();
-  return (scope: string, reviewed: readonly FleetProposal[]) => {
-    const byKey = new Map(reviewed.map((proposal) => [proposal.key, proposal.review]));
-    client.setQueriesData<FleetRead>({ queryKey: ["maestro", "fleet"] }, (view) => {
-      if (!view?.detail || view.detail.id !== scope) return view;
-      const proposals = view.detail.proposals.map((proposal) =>
-        byKey.has(proposal.key) ? { ...proposal, review: byKey.get(proposal.key) ?? null } : proposal,
-      );
-      const unreviewed = groupProposals(proposals).filter((group) => group.review === null).length;
-      return {
-        ...view,
-        scopes: view.scopes.map((entry) => (entry.id === scope ? { ...entry, unreviewed } : entry)),
-        detail: { ...view.detail, proposals },
-      };
-    });
-  };
-}
-
-/** How many sessions a group lists before "Show all". */
-const GROUP_SHOWN = 3;
-
-function ProposalCard({
-  theme,
-  scope,
-  group,
-  compact,
-  navigation,
-}: {
-  theme: PluginTheme;
-  scope: string;
-  group: ProposalGroup;
-  compact: boolean;
-  navigation: Navigation;
-}) {
-  const text = useText(theme);
-  const toast = useToast();
-  const refresh = useRefresh();
-  const apply = useApplyReviews();
-  const send = useRpc(reviewProposal);
-  // The card says it from the host's answer at once. The refetch after is not waited on: an onSettled that
-  // returned its promise would hold every callback below until it landed, on a slow relay too.
-  const review = useMutation({
-    mutationFn: send,
-    onSuccess: ({ proposals }, sent) => apply(sent.scope, proposals),
-    onSettled: () => {
-      void refresh();
-    },
+function useScopeReads(base: FleetRead | undefined, all: boolean, baseStale: string | null = null): ScopeRead[] {
+  const get = useRpc(getFleet);
+  const others =
+    all && base ? base.scopes.filter((scope) => scope.id !== base.detail?.id).map((scope) => scope.id) : [];
+  const reads = useQueries({
+    queries: others.map((id) => ({
+      queryKey: ["maestro", "fleet", id],
+      queryFn: () => get({ scope: id, ticks: TICKS }),
+      refetchInterval: POLL_MS,
+    })),
   });
-  const [rejecting, setRejecting] = useState(false);
-  const [note, setNote] = useState("");
-  const [all, setAll] = useState(false);
-  const subject = groupSubject(group);
-  const many = group.proposals.length > 1;
-  const decide = (choice: ReviewVerdict, words = "") => {
-    const keys = keysFor(group, choice);
-    if (keys.length === 0) return;
-    review.mutate(
-      { scope, keys, verdict: choice, note: words },
-      {
-        onSuccess: () => {
-          setRejecting(false);
-          setNote("");
-        },
-        onError: (error) => toast.error(errorText(error)),
-      },
-    );
-  };
-  const klass = group.classId
-    ? group.className
-      ? `Class ${group.classId}, ${group.className}`
-      : `Class ${group.classId}`
-    : null;
-  const [first] = group.proposals;
-  const sessions = group.proposals.filter((proposal) => proposal.session);
-  const shown = all ? sessions : sessions.slice(0, GROUP_SHOWN);
-  const verdict = group.review?.verdict ?? null;
-  const label = `${group.action}, ${subject}`;
-  return (
-    <Card theme={theme} style={{ gap: space[2] }}>
-      <Text style={[text.body, { fontWeight: "600" }]}>Would {group.action}</Text>
-      <Text style={text.small} numberOfLines={2}>
-        {[subject, klass, first?.tick !== null && first?.tick !== undefined ? `tick ${first.tick}` : null]
-          .filter(Boolean)
-          .join(" · ")}
-      </Text>
-      {!many && first?.evidence ? (
-        <Text style={text.muted} numberOfLines={3}>
-          {first.evidence}
-        </Text>
-      ) : null}
-      {!many && first?.session ? (
-        <SessionLine theme={theme} session={first.session} compact={compact} navigation={navigation} />
-      ) : null}
-      <Text
-        style={[
-          text.small,
-          {
-            color:
-              verdict === "accept"
-                ? theme.colors.statusSuccess
-                : verdict === "reject"
-                  ? theme.colors.statusDanger
-                  : theme.colors.foregroundMuted,
-          },
-        ]}
-      >
-        {groupReviewText(group)}
-      </Text>
-      {rejecting ? (
-        <View style={{ gap: space[2] }}>
-          <TextInput
-            value={note}
-            onChangeText={setNote}
-            multiline
-            placeholder="Why not? (optional)"
-            placeholderTextColor={theme.colors.foregroundMuted}
-            accessibilityLabel={`Why reject: ${label}`}
-            style={{
-              minHeight: 56,
-              padding: space[3],
-              borderRadius: radius.control,
-              borderWidth: 1,
-              borderColor: theme.colors.border,
-              backgroundColor: theme.colors.surface2,
-              color: theme.colors.foreground,
-              fontSize: 14,
-              textAlignVertical: "top",
-            }}
-          />
-          <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
-            <Button
-              theme={theme}
-              variant="primary"
-              label={many ? `Reject all ${group.proposals.length}` : "Reject"}
-              compact={compact}
-              busy={review.isPending}
-              accessibilityLabel={`Confirm reject: ${label}`}
-              onPress={() => decide("reject", note)}
-            />
-            <Button
-              theme={theme}
-              variant="quiet"
-              label="Keep it"
-              compact={compact}
-              disabled={review.isPending}
-              onPress={() => setRejecting(false)}
-            />
-          </View>
-        </View>
-      ) : (
-        <View style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
-          <Button
-            theme={theme}
-            variant={verdict === "accept" ? "secondary" : "primary"}
-            icon="Check"
-            label={verdict === "accept" ? "Accepted" : many ? `Accept all ${group.proposals.length}` : "Accept"}
-            compact={compact}
-            busy={review.isPending}
-            disabled={verdict === "accept"}
-            accessibilityLabel={`Accept: ${label}`}
-            onPress={() => decide("accept")}
-          />
-          <Button
-            theme={theme}
-            icon="X"
-            label={verdict === "reject" ? "Rejected" : "Reject"}
-            compact={compact}
-            disabled={verdict === "reject" || review.isPending}
-            accessibilityLabel={`Reject: ${label}`}
-            onPress={() => setRejecting(true)}
-          />
-        </View>
-      )}
-      {/* The sessions under the verbs: a long list never pushes the verdict off the screen. */}
-      {many ? (
-        <View style={{ gap: space[1] }}>
-          {shown.map((proposal) => (
-            <View key={proposal.key} style={{ gap: 2 }}>
-              {proposal.session ? (
-                <SessionLine theme={theme} session={proposal.session} compact={compact} navigation={navigation} />
-              ) : (
-                <Text style={text.small} numberOfLines={1}>
-                  {proposalSubject(proposal)}
-                </Text>
-              )}
-              {proposal.evidence ? (
-                <Text style={[text.small, { paddingLeft: space[3] }]} numberOfLines={2}>
-                  {proposal.evidence}
-                </Text>
-              ) : null}
-            </View>
-          ))}
-          {sessions.length > GROUP_SHOWN ? (
-            <View style={{ flexDirection: "row" }}>
-              <Button
-                theme={theme}
-                variant="quiet"
-                label={all ? "Show fewer" : `Show all ${sessions.length}`}
-                compact={compact}
-                accessibilityLabel={`${all ? "Show fewer" : "Show all"} sessions: ${group.action}`}
-                onPress={() => setAll((open) => !open)}
-              />
-            </View>
-          ) : null}
-        </View>
-      ) : null}
-    </Card>
+  if (!base) return [];
+  const details = new Map(
+    [base.detail, ...reads.map((read) => read.data?.detail ?? null)].flatMap((detail) =>
+      detail ? [[detail.id, detail] as const] : [],
+    ),
   );
+  // A scope's own read that failed with no data is said ("Can't read"); one whose refetch failed while
+  // older data stands is a quiet note; one still on its first read is "Reading…". Never a silent gap.
+  const state = new Map(
+    others.map((id, at) => {
+      const read = reads[at];
+      const has = read?.data?.detail?.id === id;
+      return [
+        id,
+        {
+          error: read?.isError && !has ? errorText(read.error) : null,
+          stale: read?.isError && has ? errorText(read.error) : null,
+          reading: !has && !read?.isError,
+        },
+      ] as const;
+    }),
+  );
+  const scopes = all ? base.scopes : base.scopes.filter((scope) => scope.id === base.detail?.id);
+  // A scope's own read is fresher for its summary too (a verdict updates the read that holds its detail).
+  const summary = (id: string) =>
+    reads
+      .map((read) => read.data?.scopes.find((scope) => scope.id === id && read.data?.detail?.id === id))
+      .find(Boolean);
+  return scopes.map((scope) => {
+    const own = state.get(scope.id);
+    return {
+      scope: summary(scope.id) ?? scope,
+      detail: details.get(scope.id) ?? null,
+      error: own?.error ?? null,
+      reading: own?.reading ?? false,
+      stale: own?.stale ?? (scope.id === base.detail?.id ? baseStale : null),
+    };
+  });
 }
 
-function TickRow({
-  theme,
-  scope,
-  tick,
-  compact,
-  open,
-  onToggle,
-}: {
-  theme: PluginTheme;
-  scope: string;
-  tick: FleetTick;
-  compact: boolean;
-  open: boolean;
-  onToggle: () => void;
-}) {
-  const text = useText(theme);
-  const status = (
-    <Status
-      theme={theme}
-      tone={tickTone(tick.status)}
-      label={`${TICK_LABEL[tick.status]}${tick.failedStep ? ` at ${tick.failedStep}` : ""}`}
-    />
-  );
-  const classes = <Text style={[text.small, compact ? null : { flex: 1 }]}>{classText(tick.classCounts)}</Text>;
-  return (
-    <View style={{ borderBottomWidth: 1, borderBottomColor: theme.colors.border }}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        aria-expanded={open}
-        accessibilityLabel={`${tickLabel(tick)}. ${classText(tick.classCounts)}`}
-        onPress={onToggle}
-        style={({ pressed }) => ({ paddingVertical: space[2], gap: 2, opacity: pressed ? 0.85 : 1 })}
-      >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: space[3], flexWrap: "wrap" }}>
-          <Text style={[text.body, text.tabular, { fontWeight: "600", minWidth: 32 }]}>{tick.tick}</Text>
-          <Text style={[text.small, text.tabular, { minWidth: 92 }]}>{tickWhen(tick.at)}</Text>
-          {status}
-          {compact ? null : classes}
-        </View>
-        {compact ? classes : null}
-      </Pressable>
-      {open ? (
-        <TickDetail theme={theme} scope={scope} tick={tick.tick} facts={tickFacts(tick)} compact={compact} />
-      ) : null}
-    </View>
-  );
+/** Brings a section into view where the platform can (the web's scrollIntoView); elsewhere, nothing. */
+function bringIntoView(target: View | null, reduced: boolean): void {
+  const node = target as unknown as { scrollIntoView?: (options: object) => void } | null;
+  node?.scrollIntoView?.({ behavior: reduced ? "auto" : "smooth", block: "start" });
 }
 
 export function FleetView({
@@ -684,40 +147,46 @@ export function FleetView({
   navigation,
   onScope,
   onSelect,
-  focus = null,
 }: {
   theme: PluginTheme;
   compact: boolean;
+  /** The scope shown; null: every scope (All). */
   scope: string | null;
   /** A tick to open, when the view is opened on one (from a timeline run). */
   tick?: number | null;
-  /** A workspace ledger to open in Decisions (from an initiative's waiting_on). */
-  focus?: string | null;
   navigation: Navigation;
-  onScope: (scope: string) => void;
+  onScope: (scope: string | null) => void;
   onSelect: (id: string) => void;
 }) {
   const fleet = useFleet(scope);
   const text = useText(theme);
-  const client = useQueryClient();
-  // An answer the host has just written goes into every Fleet read held, so the card says so at once.
-  const applyAnswer = (scopeId: string, answered: DecisionAsk) =>
-    client.setQueriesData<FleetRead>({ queryKey: ["maestro", "fleet"] }, (view) => {
-      if (!view?.detail || view.detail.id !== scopeId) return view;
-      const decisions = view.detail.decisions.map((ask) => (sameAsk(ask, answered) ? answered : ask));
-      return { ...view, detail: { ...view.detail, decisions } };
-    });
-  const [reportOpen, setReportOpen] = useState(!compact);
-  const [openTick, setOpenTick] = useState<number | null>(tick);
+  const t = ramp(theme);
+  const all = scope === null;
+  const reads = useScopeReads(fleet.data, all, fleet.isError && fleet.data ? errorText(fleet.error) : null);
+  const reduced = useReducedMotion();
+  const workList = useWorkList();
+  // The header's own read (work.attention): what "N need you" counts everywhere.
+  const attention = useAttention();
+  const queueRef = useRef<View>(null);
+  const rosterRef = useRef<View>(null);
+  const [width, setWidth] = useState(compact ? 390 : 1100);
+  const [filter, setFilter] = useState<RosterFilter>("all");
+  const [inspect, setInspect] = useState<string | null>(null);
+  const [rosterAll, setRosterAll] = useState(false);
+  const [sheet, setSheet] = useState<TickSheetState | null>(
+    tick !== null && scope ? { scope, tick, first: "log" } : null,
+  );
+  const [sheetTick, setSheetTick] = useState<number | null>(null);
   const [opened, setOpened] = useState(tick);
   // Opened on another tick while mounted (a second timeline run): that one opens.
   if (tick !== opened) {
     setOpened(tick);
-    setOpenTick(tick);
+    setSheet(tick !== null && scope ? { scope, tick, first: "log" } : null);
   }
 
   if (fleet.isPending) return <ActivityIndicator color={theme.colors.foregroundMuted} />;
-  if (fleet.isError) {
+  // A refetch that failed while data stands is a quiet note below the band, never this.
+  if (fleet.isError && !fleet.data) {
     return (
       <View style={{ gap: space[3] }}>
         <Notice theme={theme} tone="danger">
@@ -727,17 +196,15 @@ export function FleetView({
       </View>
     );
   }
-  const { scopes, detail, error } = fleet.data;
-  const current = scopes.find((entry) => entry.id === detail?.id) ?? null;
-  return (
-    <View style={{ gap: space[5] }}>
-      <WorkspaceDecisions theme={theme} compact={compact} navigation={navigation} focus={focus} />
-      {error ? (
-        <Notice theme={theme} tone="warn">
-          {error}
-        </Notice>
-      ) : null}
-      {scopes.length === 0 || !detail || !current ? (
+  const { scopes, error } = fleet.data;
+  if (scopes.length === 0 || reads.length === 0) {
+    return (
+      <View style={{ gap: space[4] }}>
+        {error ? (
+          <Notice theme={theme} tone="warn">
+            {error}
+          </Notice>
+        ) : null}
         <Card theme={theme}>
           <Text style={text.title}>No fleet on this Mac</Text>
           <Text style={text.muted}>
@@ -745,165 +212,448 @@ export function FleetView({
             a ledger or ticks. Its install.sh sets one up.
           </Text>
         </Card>
+      </View>
+    );
+  }
+
+  const phone = compact;
+  const wide = !phone && width >= WIDE;
+  const now = Date.now();
+  const cells = new Map(
+    reads.map((read) => [read.scope.id, healthCells(read.detail?.ticks ?? [], read.scope.health, TICKS, now)]),
+  );
+  const featured = featuredScope(reads);
+  const badge = modeBadge(reads.map((read) => read.scope));
+  const cadence = featured
+    ? cadenceText(featured.detail?.schedule ?? null, featured.scope.lastTick?.at ?? null, now)
+    : null;
+  const cadenceLine = cadence && all && reads.length > 1 && featured ? `${featured.scope.id}: ${cadence}` : cadence;
+
+  // One selector for what needs you: the band, the tile, the section and the header's fleet share agree.
+  const needs = fleetNeedsYou(reads);
+  const teach = teachQueue(reads, now);
+  // The header's count, split into the fleet's share (here) and each other surface's.
+  // The fleet's own work, every scope's (an item's fleet marker, as #23 reads it), then what this read holds.
+  const fleetWork = new Set([
+    ...(workList.data?.items ?? []).filter((item) => fleetOriginOf(item) !== null).map((item) => item.id),
+    ...fleetItemIds(needs),
+  ]);
+  const shares = attention.data ? headerShares(attention.data, fleetWork) : null;
+  const elsewhere = shares
+    ? [
+        { label: "Work", count: shares.work, intent: { kind: "filter", group: "review" } as const },
+        { label: "Decisions", count: shares.decisions, intent: { kind: "decisions" } as const },
+        { label: "Timeline", count: shares.timeline, intent: { kind: "timeline" } as const },
+        { label: "Initiatives", count: shares.initiatives, intent: { kind: "initiatives" } as const },
+      ].filter((entry) => entry.count > 0)
+    : [];
+  // One scope shown: the fleet's share in the other scopes, so the parts add up to the header's total.
+  const otherScopes = shares ? Math.max(0, shares.fleet - needs.total) : 0;
+  const reviewed = reviewedGroups(reads, now);
+  const roster = rosterRows(reads);
+  const asked = askedSessions(reads);
+  const counts = rosterCounts(roster, asked);
+  const proposals = proposalsBySession(reads);
+  const shownRows = filterRoster(roster, filter, asked);
+  const visibleRows = rosterAll ? shownRows : shownRows.slice(0, ROSTER_SHOWN);
+  const noRoster = reads.every((read) => !read.detail?.roster);
+  const runningScopes = new Set(filterRoster(roster, "running", asked).map((row) => row.scopeId)).size;
+  const verdict = verdictOf(reads, cells, all, {
+    needs: needs.total,
+    needsText: needsText(needs),
+    sessions: needs.sessions,
+    failed: counts.failed,
+    blocked: counts.blocked,
+  });
+  const tiles: KpiValue[] = [
+    // The fleet's own: the header's count is all of Maestro's, so the tile names what it counts.
+    {
+      id: "needs",
+      label: "Needs you here",
+      value: needs.total,
+      sub: needs.total > 0 ? `fleet: ${needsText(needs)}` : needsText(needs),
+      tone: "warn",
+    },
+    {
+      id: "attention",
+      label: "Attention",
+      value: counts.attention,
+      sub:
+        [counts.failed > 0 ? `${counts.failed} failed` : null, counts.blocked > 0 ? `${counts.blocked} blocked` : null]
+          .filter(Boolean)
+          .join(" · ") || (counts.attention > 0 ? "want a look" : "nothing wants a look"),
+      tone: "danger",
+    },
+    {
+      id: "running",
+      label: "Running",
+      value: counts.running,
+      sub: noRoster ? "no report" : `in ${plural(runningScopes, "scope")}`,
+      tone: "info",
+    },
+    {
+      id: "idle",
+      label: "Idle",
+      value: counts.idle,
+      sub: counts.idle > 0 ? oldestText(filterRoster(roster, "idle", asked), now) : null,
+      tone: "muted",
+    },
+    {
+      id: "failed",
+      label: "Failed",
+      value: counts.failed,
+      sub: counts.failed > 0 ? oldestText(filterRoster(roster, "failed", asked), now) : null,
+      tone: "danger",
+    },
+    { id: "unmanaged", label: "Unmanaged", value: counts.unmanaged, sub: "not adopted by the fleet", tone: "muted" },
+    {
+      id: "out",
+      label: "Out of scope",
+      value: counts.out,
+      sub: counts.unplaced > 0 ? `${counts.unplaced} unplaced` : null,
+      tone: "muted",
+      quiet: true,
+    },
+  ];
+  const chooseFilter = (next: RosterFilter) => {
+    setFilter((current) => (current === next && next !== "all" ? "all" : next));
+    setRosterAll(false);
+  };
+  // Needs you jumps to the queue; every other tile filters the roster and brings it into view.
+  const pressTile = (id: KpiValue["id"]) => {
+    if (id === "needs") {
+      bringIntoView(queueRef.current, reduced);
+      return;
+    }
+    chooseFilter(id);
+    bringIntoView(rosterRef.current, reduced);
+  };
+  const readOf = (id: string) => reads.find((read) => read.scope.id === id);
+  const linkable = [...roster.inScope, ...roster.out];
+  const context: ScopeContext = {
+    next: (id) => {
+      const read = readOf(id);
+      return nextTickAt(read?.detail?.schedule ?? null, read?.scope.lastTick?.at ?? null);
+    },
+    age: (id, ask) => askAge(ask, readOf(id)?.detail?.ticks ?? [], now),
+    link: (ask) => linkSession(ask, linkable),
+    dryRun: (id) => readOf(id)?.scope.dryRun ?? null,
+    lastTick: (id) => readOf(id)?.scope.lastTick?.tick ?? null,
+  };
+  const inspected = inspect ? ([...roster.inScope, ...roster.out].find((row) => row.id === inspect) ?? null) : null;
+  const reportTickOf = (row: RosterRow) =>
+    reads.find((read) => read.scope.id === row.scopeId)?.detail?.roster?.tick ?? null;
+  const detailOf = (id: string) => reads.find((read) => read.scope.id === id)?.detail ?? null;
+  const sideBySide = wide && inspected !== null;
+
+  const scopeControl =
+    scopes.length > 1 ? (
+      <Segmented
+        theme={theme}
+        label="Fleet scope"
+        fill={phone}
+        phone={phone}
+        value={scope ?? ALL}
+        onChange={(id) => {
+          setInspect(null);
+          onScope(id === ALL ? null : id);
+        }}
+        segments={[
+          { id: ALL, label: phone ? "All" : "All scopes", accessibilityLabel: "All scopes" },
+          ...scopes.map((entry) => ({
+            id: entry.id,
+            label: entry.health.status === "ok" ? entry.id : `${entry.id} · ${HEALTH_LABEL[entry.health.status]}`,
+            tone: healthTone(entry.health.status),
+            accessibilityLabel: [
+              entry.id,
+              HEALTH_LABEL[entry.health.status],
+              entry.unreviewed > 0 ? `${plural(entry.unreviewed, "proposal")} to review` : null,
+              entry.openAsks > 0 ? plural(entry.openAsks, "open ask") : null,
+            ]
+              .filter(Boolean)
+              .join(", "),
+          })),
+        ]}
+      />
+    ) : (
+      <Text style={t.cardTitle}>{scopes[0]?.id}</Text>
+    );
+
+  const latest = featured ? (
+    <LatestTick
+      theme={theme}
+      scope={featured.scope.id}
+      detail={featured.detail}
+      others={reads.filter((read) => read !== featured).map((read) => ({ scope: read.scope.id, detail: read.detail }))}
+      phone={phone}
+      onOpen={(next) => {
+        setSheetTick(null);
+        setSheet(next);
+      }}
+    />
+  ) : null;
+
+  const queueView = (
+    <View style={{ gap: space[3] }} ref={queueRef}>
+      <SectionHead theme={theme} title="Needs you" count={needs.total} />
+      <NeedsYouQueue
+        theme={theme}
+        cards={needs.cards}
+        also={needs.also}
+        context={context}
+        phone={phone}
+        navigation={navigation}
+        onSelect={onSelect}
+        onOpenTick={(next) => {
+          setSheetTick(null);
+          setSheet(next);
+        }}
+      />
+    </View>
+  );
+
+  // Below the sessions: what the fleet would do, uncounted, never the page's lead.
+  const teachView = (
+    <TeachTheFleet
+      theme={theme}
+      teach={teach}
+      reviewed={reviewed}
+      context={context}
+      phone={phone}
+      navigation={navigation}
+    />
+  );
+
+  const warnings = reads.flatMap((read) =>
+    (read.detail?.warnings ?? []).map((warning) => `${read.scope.id}: ${warning}`),
+  );
+
+  return (
+    <View style={{ gap: phone ? space[4] : space[5] }} onLayout={(event) => setWidth(event.nativeEvent.layout.width)}>
+      {error ? (
+        <Notice theme={theme} tone="warn">
+          {error}
+        </Notice>
+      ) : null}
+
+      {phone ? (
+        scopeControl
+      ) : (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space[3], flexWrap: "wrap" }}>
+          {scopeControl}
+          <View style={{ flex: 1 }} />
+          {badge ? <Pill theme={theme} tone="muted" outline icon="FlaskConical" label={badge} /> : null}
+          {cadenceLine ? <Text style={[t.meta, t.tabular, { fontSize: 13 }]}>{cadenceLine}</Text> : null}
+        </View>
+      )}
+
+      <HealthBand
+        theme={theme}
+        phone={phone}
+        wide={wide}
+        verdict={verdict}
+        strips={reads.map((read) => ({
+          scope: read.scope.id,
+          cells: cells.get(read.scope.id) ?? [],
+          error: read.error ?? null,
+        }))}
+        badge={badge?.startsWith("Dry run") ? "Dry run" : badge}
+        meta={[featured?.scope.lastTick ? `Tick ${featured.scope.lastTick.tick}` : null, cadence]
+          .filter(Boolean)
+          .join(" · ")}
+        onOpenTick={(id, at) => {
+          setSheetTick(null);
+          setSheet({ scope: id, tick: at, first: "log" });
+        }}
+        relation={
+          shares
+            ? {
+                here: needs.total,
+                all: shares.total,
+                elsewhere: [
+                  ...(otherScopes > 0
+                    ? [{ label: "other scopes", count: otherScopes, onPress: () => onScope(null) }]
+                    : []),
+                  ...elsewhere.map((entry) => ({
+                    label: entry.label,
+                    count: entry.count,
+                    onPress: () => requestIntent(entry.intent),
+                  })),
+                ],
+              }
+            : null
+        }
+      />
+
+      {reads
+        .filter((read) => read.stale)
+        .map((read) => (
+          <View
+            key={`stale-${read.scope.id}`}
+            style={{ flexDirection: "row", alignItems: "center", gap: space[2] }}
+            accessibilityRole="text"
+          >
+            <Icon name="RefreshCwOff" size={13} color={theme.colors.foregroundMuted} />
+            <Text style={[t.meta, { flex: 1 }]}>
+              {`Couldn't refresh ${read.scope.id} (${read.stale}); showing the last read.`}
+            </Text>
+          </View>
+        ))}
+
+      {warnings.slice(0, 3).map((warning) => (
+        <Notice key={warning} theme={theme} tone="warn">
+          {warning}
+        </Notice>
+      ))}
+
+      <KpiRow
+        theme={theme}
+        phone={phone}
+        tiles={tiles}
+        selected={filter === "all" ? null : filter}
+        onPress={pressTile}
+      />
+
+      {wide ? (
+        <View style={{ flexDirection: "row", gap: space[5], alignItems: "flex-start" }}>
+          <View style={{ flex: 1.75, minWidth: 0 }}>{queueView}</View>
+          <View style={{ flex: 1, minWidth: 260, gap: space[3], paddingTop: 30 + space[3] }}>{latest}</View>
+        </View>
       ) : (
         <>
-          {scopes.length > 1 ? (
-            <View
-              accessibilityRole="toolbar"
-              accessibilityLabel="Fleet scope"
-              style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}
-            >
-              {scopes.map((entry) => (
-                <Chip
-                  key={entry.id}
-                  theme={theme}
-                  label={entry.id}
-                  count={entry.health.status === "ok" ? undefined : HEALTH_LABEL[entry.health.status]}
-                  badge={entry.unreviewed}
-                  selected={entry.id === current.id}
-                  accessibilityLabel={scopeChipLabel(entry)}
-                  onPress={() => onScope(entry.id)}
-                />
-              ))}
-            </View>
-          ) : null}
-
-          <HealthCard theme={theme} scope={current} detail={detail} compact={compact} onSelect={onSelect} />
-
-          {detail.warnings.slice(0, 3).map((warning) => (
-            <Notice key={warning} theme={theme} tone="warn">
-              {warning}
-            </Notice>
-          ))}
-
-          {detail.decisions.length > 0 ? (
-            <Section
-              theme={theme}
-              title="The fleet's decisions"
-              meta={`${detail.decisions.filter((ask) => ask.state === "open").length} open`}
-            >
-              <Text style={text.small}>
-                The fleet's own ask ledger, in {detail.askRoot}. Your answer is written there, under Maestro's ledger
-                lock (§5.5), and the fleet reads it at its next tick.
-              </Text>
-              <DecisionGroups
-                theme={theme}
-                asks={detail.decisions}
-                where={() => ({ kind: "fleet", scope: current.id })}
-                compact={compact}
-                navigation={navigation}
-                onAnswered={(answered) => applyAnswer(current.id, answered)}
-              />
-            </Section>
-          ) : null}
-
-          <Section theme={theme} title="Asks" meta={detail.asks.length > 0 ? `${detail.asks.length} open` : undefined}>
-            {detail.asks.length === 0 ? (
-              <Text style={text.muted}>The fleet has no open asks for you.</Text>
-            ) : (
-              <View style={{ gap: space[2] }}>
-                <Text style={text.small}>
-                  You answer each in the work the fleet raised for its batch: approve to acknowledge, send back a note
-                  to answer, cancel to dismiss. An ask about a session opens it; Details shows the tick that raised it.
-                </Text>
-                {detail.asks.map((ask) => (
-                  <AskRow
-                    key={`${ask.batch}-${ask.key}`}
-                    theme={theme}
-                    scope={current.id}
-                    ask={ask}
-                    compact={compact}
-                    navigation={navigation}
-                    onSelect={onSelect}
-                  />
-                ))}
-              </View>
-            )}
-            {detail.alerts.length > 0 ? (
-              <View style={{ gap: space[2] }}>
-                <Text style={text.label}>{plural(detail.alerts.length, "open alert")}</Text>
-                {detail.alerts.map((item) => (
-                  <ItemLink key={item.id} theme={theme} item={item} compact={compact} onSelect={onSelect} />
-                ))}
-              </View>
-            ) : null}
-          </Section>
-
-          <Section
-            theme={theme}
-            title="Would do"
-            meta={detail.proposals.length > 0 ? proposalsHeading(groupProposals(detail.proposals)) : undefined}
-          >
-            <Text style={text.small}>
-              {current.dryRun === true
-                ? "Under dry run nothing here was done. Your verdict is recorded for the fleet's phase-3 review; it changes nothing it does."
-                : current.dryRun === false
-                  ? "What the fleet proposes, live. Your verdict is recorded for the fleet; it changes nothing it does."
-                  : "What the fleet proposes. Your verdict is recorded for the fleet; it changes nothing it does."}
-            </Text>
-            {detail.proposals.length === 0 ? (
-              <Text style={text.muted}>The latest report proposes nothing.</Text>
-            ) : (
-              groupProposals(detail.proposals).map((group) => (
-                <ProposalCard
-                  key={group.key}
-                  theme={theme}
-                  scope={current.id}
-                  group={group}
-                  compact={compact}
-                  navigation={navigation}
-                />
-              ))
-            )}
-          </Section>
-
-          <Section theme={theme} title="Ticks" meta={`last ${plural(detail.ticks.length, "tick")}`}>
-            {detail.ticks.length === 0 ? (
-              <Text style={text.muted}>No tick has run in this scope yet.</Text>
-            ) : (
-              <View>
-                {detail.ticks.map((row) => (
-                  <TickRow
-                    key={row.tick}
-                    theme={theme}
-                    scope={current.id}
-                    tick={row}
-                    compact={compact}
-                    open={openTick === row.tick}
-                    onToggle={() => setOpenTick((now) => (now === row.tick ? null : row.tick))}
-                  />
-                ))}
-              </View>
-            )}
-          </Section>
-
-          {detail.report ? (
-            <Section
-              theme={theme}
-              title={`Report, tick ${detail.report.tick}`}
-              meta={agoText(current.lastTick?.at ?? null) ?? undefined}
-            >
-              <View style={{ flexDirection: "row" }}>
-                <Button
-                  theme={theme}
-                  icon={reportOpen ? "ChevronUp" : "ChevronDown"}
-                  label={reportOpen ? "Hide the report" : "Show the report"}
-                  compact={compact}
-                  onPress={() => setReportOpen((open) => !open)}
-                />
-              </View>
-              {reportOpen ? (
-                <Card theme={theme}>
-                  <MarkdownView source={detail.report.markdown} theme={theme} compact={compact} />
-                  {detail.report.truncated ? (
-                    <Text style={text.small}>The report is longer than this; the rest is in {detail.stateDir}.</Text>
-                  ) : null}
-                </Card>
-              ) : null}
-            </Section>
-          ) : null}
+          {queueView}
+          {latest}
         </>
       )}
+
+      <View style={{ gap: space[3] }} ref={rosterRef}>
+        <SectionHead
+          theme={theme}
+          title={filter === "out" ? "Sessions out of scope" : "Sessions in scope"}
+          right={
+            phone ? null : (
+              <RosterChips theme={theme} counts={counts} value={filter} phone={phone} onChange={chooseFilter} />
+            )
+          }
+        />
+        {phone ? (
+          <RosterChips theme={theme} counts={counts} value={filter} phone={phone} onChange={chooseFilter} />
+        ) : null}
+        {noRoster ? (
+          <Text style={t.muted}>No report has been read yet: the roster comes from the newest tick's report.</Text>
+        ) : (
+          <View style={{ flexDirection: sideBySide ? "row" : "column", gap: space[4], alignItems: "flex-start" }}>
+            <View style={{ flex: sideBySide ? 1 : undefined, alignSelf: "stretch", minWidth: 0, gap: space[2] }}>
+              <Roster
+                theme={theme}
+                rows={visibleRows}
+                proposals={proposals}
+                layout={phone || width < 700 ? "stack" : sideBySide ? "list" : "table"}
+                showScope={all && reads.length > 1}
+                selected={inspect}
+                navigation={navigation}
+                onOpen={(row) => setInspect((current) => (current === row.id ? null : row.id))}
+                onSelect={onSelect}
+              />
+              {shownRows.length > ROSTER_SHOWN ? (
+                <View style={{ flexDirection: "row" }}>
+                  <Verb
+                    theme={theme}
+                    weight="quiet"
+                    icon={rosterAll ? "ChevronUp" : "ChevronDown"}
+                    label={rosterAll ? "Show fewer" : `Show all ${shownRows.length}`}
+                    phone={phone}
+                    onPress={() => setRosterAll((open) => !open)}
+                  />
+                </View>
+              ) : null}
+            </View>
+            {sideBySide && inspected ? (
+              <View
+                style={{
+                  flex: 1.4,
+                  minWidth: 0,
+                  padding: space[5],
+                  borderRadius: radius.card + 4,
+                  borderWidth: 1,
+                  borderColor: theme.colors.border,
+                  backgroundColor: theme.colors.surface1,
+                }}
+              >
+                <SessionInspector
+                  theme={theme}
+                  row={inspected}
+                  proposal={proposals.get(inspected.id) ?? null}
+                  reportTick={reportTickOf(inspected)}
+                  dryRun={readOf(inspected.scopeId)?.scope.dryRun ?? null}
+                  phone={false}
+                  navigation={navigation}
+                  onSelect={onSelect}
+                  onClose={() => setInspect(null)}
+                />
+              </View>
+            ) : null}
+          </View>
+        )}
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
+          <Icon name={filter === "out" ? "Eye" : "EyeOff"} size={14} color={theme.colors.foregroundMuted} />
+          <Text style={[t.meta, t.tabular]}>
+            {filter === "out"
+              ? `Showing ${plural(counts.out, "session")} out of scope.`
+              : `${plural(counts.out, "session")} out of scope ${counts.out === 1 ? "is" : "are"} hidden${counts.unplaced > 0 ? ` (${counts.unplaced} unplaced)` : ""}.`}
+          </Text>
+          {counts.out > 0 ? (
+            <Verb
+              theme={theme}
+              weight="quiet"
+              label={filter === "out" ? "Back to sessions in scope" : "Show them"}
+              phone={phone}
+              onPress={() => chooseFilter(filter === "out" ? "all" : "out")}
+            />
+          ) : null}
+        </View>
+      </View>
+
+      {teachView}
+
+      <TickSheet
+        theme={theme}
+        compact={phone}
+        sheet={sheet}
+        detail={sheet ? detailOf(sheet.scope) : null}
+        openTick={sheetTick}
+        onOpenTick={setSheetTick}
+        onClose={() => setSheet(null)}
+      />
+
+      {!sideBySide ? (
+        <Modal
+          title={inspected ? (inspected.name ?? inspected.short) : "Session"}
+          icon={<Icon name="SquareTerminal" size={18} color={theme.colors.foreground} />}
+          open={inspected !== null}
+          onOpenChange={(open) => {
+            if (!open) setInspect(null);
+          }}
+        >
+          <Modal.Content>
+            {inspected ? (
+              <SessionInspector
+                theme={theme}
+                row={inspected}
+                proposal={proposals.get(inspected.id) ?? null}
+                reportTick={reportTickOf(inspected)}
+                dryRun={readOf(inspected.scopeId)?.scope.dryRun ?? null}
+                phone={phone}
+                navigation={navigation}
+                onSelect={(id) => {
+                  setInspect(null);
+                  onSelect(id);
+                }}
+              />
+            ) : null}
+          </Modal.Content>
+        </Modal>
+      ) : null}
     </View>
   );
 }
@@ -921,12 +671,8 @@ export function FleetNotices({
   compact: boolean;
   onOpen: (scope: string) => void;
 }) {
-  const read = useRpc(attentionWork);
-  const attention = useQuery({
-    queryKey: ["maestro", "attention"],
-    queryFn: () => read({}),
-    refetchInterval: POLL_MS,
-  });
+  // The one owner of the work.attention read (client/hooks.ts).
+  const attention = useAttention();
   const notices = attention.data?.fleet ?? [];
   if (notices.length === 0) return null;
   return (

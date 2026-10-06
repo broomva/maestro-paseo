@@ -20,7 +20,9 @@ import {
   proposalKey,
   REVIEW_KIND,
   reviewRecord,
+  rosterOf,
   span,
+  stepWordsOf,
   summarizeReport,
   tickLogSection,
   tickRows,
@@ -356,6 +358,75 @@ describe("a report's proposals", () => {
   });
 });
 
+describe("a report's roster", () => {
+  test("lists every session with its state, place and what the fleet would do; class 1 and another scope's are out", () => {
+    const summary = summarizeReport(
+      report(35, new Date(NOW), {
+        sessions: [
+          session("11111111-aaaa", "1", "nothing", { scope: "beta" }),
+          session("22222222-bbbb", "4", "report", { state: "failed", status: null, activity_age_s: 3600 }),
+          session("33333333-cccc", "10", "report only", { state: null, status: "idle", paseo_agent: "agent-3" }),
+          session("55555555-eeee", "5", "nothing", { scope: "beta", class: "5" }),
+          { class: "4", action: "report" },
+        ],
+      }),
+      "alpha",
+      35,
+    );
+    const rows = summary?.roster ?? [];
+    expect(rows.map((row) => [row.short, row.classId, row.state, row.inScope])).toEqual([
+      ["11111111", "1", "failed", false],
+      ["22222222", "4", "failed", true],
+      ["33333333", "10", "idle", true],
+      ["55555555", "5", "failed", false],
+    ]);
+    expect(rows[1]).toMatchObject({
+      action: "report",
+      className: "error",
+      cwd: "~/alpha",
+      agentId: null,
+      evidence: "evidence for 22222222",
+      activeAt: new Date(NOW - H).toISOString(),
+      scope: "alpha",
+    });
+    expect(rows[2]?.agentId).toBe("agent-3");
+    // No age in the report: no last activity, never a guess.
+    expect(rows[2]?.activeAt).toBeNull();
+  });
+
+  test("history is each in-scope session's class at every tick read, null where a report did not list it", () => {
+    const at35 = summarizeReport(report(35, new Date(NOW)), "alpha", 35);
+    const at34 = summarizeReport(
+      report(34, new Date(NOW - H), {
+        sessions: [session("22222222-bbbb", "9", "report", { scope: "alpha" })],
+      }),
+      "alpha",
+      34,
+    );
+    if (!at35 || !at34) throw new Error("no report");
+    const reports = new Map([
+      [35, at35],
+      [34, at34],
+    ]);
+    const roster = rosterOf(at35, reports, [35, 34, 33]);
+    expect(roster.tick).toBe(35);
+    expect(roster.at).toBe(new Date(NOW).toISOString());
+    const byShort = new Map(roster.sessions.map((row) => [row.short, row.history]));
+    expect(byShort.get("22222222")).toEqual([
+      { tick: 35, classId: "4" },
+      { tick: 34, classId: "9" },
+      { tick: 33, classId: null },
+    ]);
+    expect(byShort.get("33333333")).toEqual([
+      { tick: 35, classId: "10" },
+      { tick: 34, classId: null },
+      { tick: 33, classId: null },
+    ]);
+    // Out of scope: no history is read for it.
+    expect(byShort.get("11111111")).toEqual([]);
+  });
+});
+
 describe("a report's open asks", () => {
   test("are those still open, those new this tick and those it could not check, as report.md counts them", () => {
     const summary = summarizeReport(
@@ -623,6 +694,54 @@ describe("drilling into a tick and an ask", () => {
     // One that never finished ends where the next tick starts.
     expect(tickLogSection(log, 35)).toBe("[t] tick 35 scope alpha (dry_run=1)\n[t] step observe rc=0");
     expect(tickLogSection(log, 5)).toBeNull();
+  });
+
+  test("a tick's step words are the fleet line before each step; the config check and silent steps say nothing", () => {
+    const section = [
+      "[t] tick 108 scope broomva (dry_run=1)",
+      "fleet recover: 0 open intent(s) closed",
+      "[t] step recover rc=0",
+      "/state/ticks/00108/snapshot.json",
+      "[t] step observe rc=0",
+      "fleet core-compare: not run (prototype): compare.jsonl starts with the prototype's line",
+      "[t] step compare rc=0",
+      "fleet act ask: 0 answer(s) read back, 0 open ask(s)",
+      "[t] step ask rc=0",
+      "fleet config-check: ok (/Users/me/.config/ctx/fleet.json)",
+      "[t] tick 108 done: recover=0 observe=0 compare=0 ask=0",
+    ].join("\n");
+    expect(stepWordsOf(section)).toEqual({
+      recover: "0 open intent(s) closed",
+      compare: "not run (prototype): compare.jsonl starts with the prototype's line",
+      ask: "0 answer(s) read back, 0 open ask(s)",
+    });
+    expect(stepWordsOf("")).toEqual({});
+  });
+
+  test("a key's short id links the one session it is a prefix of, by session or agent id; two candidates link none", () => {
+    const sessions = new Map([
+      ["d4b991f0-1133-4c26-9a7e-000000000001", { name: "broomva-88", agentId: "agent-88" }],
+      ["aaaa1111-0000-4000-8000-000000000002", { name: "sri-a", agentId: null }],
+      ["aaaa1111-0000-4000-8000-000000000003", { name: "sri-b", agentId: null }],
+      ["cccc3333-0000-4000-8000-000000000004", { name: "pug", agentId: "405d8a5d-9528-43ab-bcd6-f996e7f230e4" }],
+    ]);
+    expect(askSession("prompt:d4b991f0-1133:3efecb94", sessions)).toEqual({
+      id: "d4b991f0-1133-4c26-9a7e-000000000001",
+      short: "d4b991f0",
+      name: "broomva-88",
+      agentId: "agent-88",
+    });
+    expect(askSession("prompt:405d8a5d-9528:x", sessions)?.name).toBe("pug");
+    // A blocked-session ask names its session the same way.
+    expect(askSession("blocked:d4b991f0-1133-4c26-9a7e-000000000001:f2761384", sessions)?.name).toBe("broomva-88");
+    expect(askSession("compare:move", sessions)).toBeNull();
+    // Ambiguous: not linked, the key's id kept as it is.
+    expect(askSession("prompt:aaaa1111-0000:x", sessions)).toEqual({
+      id: "aaaa1111-0000",
+      short: "aaaa1111",
+      name: null,
+      agentId: null,
+    });
   });
 
   test("an ask's session comes from its prompt key, named and opened through the report's sessions", () => {

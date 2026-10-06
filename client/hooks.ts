@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import {
   adoptAgent,
+  attentionWork,
   cancelWork,
   createWork,
   decideWork,
@@ -103,4 +104,13 @@ export function useVerbs() {
     saveConfig: useMutation({ mutationFn: rpc.saveConfig, onSettled: refresh }),
     wake: useMutation({ mutationFn: () => rpc.wake({}), onSettled: refresh }),
   };
+}
+
+/**
+ * What the header counts (work.attention): one query for the header's own
+ * pieces, read by the subtitle, the Fleet band and the notices alike.
+ */
+export function useAttention() {
+  const read = useRpc(attentionWork);
+  return useQuery({ queryKey: [...KEY, "attention"], queryFn: () => read({}), refetchInterval: 30_000 });
 }

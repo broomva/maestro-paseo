@@ -23,8 +23,9 @@ import { AskNotices, useDecisionCounts } from "./decisions";
 import { WorkDetail } from "./detail";
 import { FleetNotices, FleetView } from "./fleet";
 import { errorText, plural } from "./format";
+import { needsYouCount } from "./header-count";
 import { HistoryView } from "./history";
-import { useLoop, useWorkList } from "./hooks";
+import { useAttention, useLoop, useWorkList } from "./hooks";
 import { InitiativeNotices, InitiativesView } from "./initiatives";
 import { useIntent } from "./intent";
 import { LoopControl, LoopPanel } from "./loop";
@@ -53,6 +54,17 @@ import { Button, Card, IconButton, Notice, space, useText } from "./ui";
 
 export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps) {
   const list = useWorkList();
+  // The header's own count, Maestro-wide: the subtitle says the same number as the badge.
+  const attention = useAttention();
+  const needsYouTotal = attention.data
+    ? needsYouCount(
+        attention.data.waiting,
+        attention.data.fleet,
+        attention.data.timeline,
+        attention.data.asks,
+        attention.data.initiatives,
+      )
+    : null;
   // The same read as the loop control's (one query): whether the loop is on words the Queued hint.
   const loopOn = useLoop().data?.minutes != null;
   const text = useText(theme);
@@ -148,7 +160,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
             <Text style={text.heading} accessibilityRole="header">
               Maestro
             </Text>
-            <Text style={text.muted}>{summaryText(items)}</Text>
+            <Text style={text.muted}>{summaryText(items, needsYouTotal)}</Text>
           </View>
           <IconButton theme={theme} icon="RefreshCw" label="Refresh work" onPress={() => void list.refetch()} />
           <Button

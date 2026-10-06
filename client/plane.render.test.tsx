@@ -34,9 +34,11 @@ import type { MaestroConfig, Scoreboard, WakeEntry, WorkItem } from "../shared/c
 import {
   type AskNotice,
   type AskSession,
+  askNotice,
   type DecisionAsk,
   type FleetNotice,
   type FleetProposal,
+  type FleetSession,
   type FleetView,
   groupProposals,
 } from "../shared/fleet";
@@ -181,7 +183,7 @@ const { WorkDetail } = await import("./detail");
 const { requestIntent, resetIntents, takeIntent } = await import("./intent");
 const { MaestroSettings } = await import("./settings");
 const { attentionOf } = await import("../server/attention");
-const { headerFace, needsYou } = await import("./header-count");
+const { headerFace, needsYou, needsYouCount } = await import("./header-count");
 const { linkSettings } = await import("./settings-link");
 const { LOOP_HINT: LOOP_SETTINGS_HINT } = await import("./loop-model");
 const { focusRing } = await import("./ui");
@@ -422,6 +424,12 @@ const FLEET_REPORT =
 let fleetNotices: FleetNotice[] = [];
 /** While set, fleet.get answers only once it resolves: a refetch still on its way. */
 let fleetHeld: Promise<void> | null = null;
+/** While set, fleet.get for this scope fails: a scope that cannot be read. */
+let fleetFails: string | null = null;
+/** Sessions added to broomva's roster by a test. */
+let rosterExtra: FleetSession[] = [];
+/** Fields of broomva's ask a1 a test changes. */
+let askOverride: Record<string, unknown> = {};
 /** sri: one class and one action across three sessions, which is one decision. */
 let sriProposals: FleetProposal[] = [];
 const sriFixture = (): FleetProposal[] =>
@@ -448,6 +456,8 @@ const sriFixture = (): FleetProposal[] =>
     review: null,
   }));
 let proposalsNow = fleetProposals();
+// sri's proposals from the first test on, not only after the first reset.
+sriProposals = sriFixture();
 /** A decision ask in broomva's ask root, shaped like maestro-paseo-gaps.yaml's A10. */
 const decisionFixture = (): DecisionAsk => ({
   ledger: "maestro-paseo-gaps.yaml",
@@ -727,6 +737,7 @@ const fleetView = (scope: string | undefined): FleetView => {
                 session: askSessionNow,
                 batch: "2-1",
                 item: { id: "a", title: "Work a", state: "review", group: "review", needsYou: true },
+                ...askOverride,
               },
             ]
           : [],
@@ -734,8 +745,89 @@ const fleetView = (scope: string | undefined): FleetView => {
       askRoot: `/state/${id}/.control/asks`,
       alerts: [],
       warnings: [],
+      roster: {
+        tick: id === "broomva" ? 35 : 6,
+        at: new Date(Date.now() - 3 * H).toISOString(),
+        sessions: rosterOf(id),
+      },
+      stepWords: id === "broomva" ? { tick: 35, said: { recover: "0 open intent(s) closed" } } : null,
     },
   };
+};
+/** The newest report's sessions: each proposal's, a running Paseo agent, and one out of scope. */
+const rosterOf = (id: string): FleetSession[] => {
+  const history = (classId: string) => [
+    { tick: 35, classId },
+    { tick: 34, classId: null },
+  ];
+  const fromProposals = (id === "broomva" ? proposalsNow : sriProposals).flatMap((proposal) =>
+    proposal.session
+      ? [
+          {
+            id: proposal.session.id,
+            short: proposal.session.short,
+            name: proposal.session.name,
+            kind: proposal.session.kind,
+            state: proposal.session.status,
+            cwd: proposal.session.cwd,
+            branch: proposal.session.branch,
+            agentId: proposal.session.agentId,
+            classId: proposal.classId ?? "unknown",
+            className: proposal.className,
+            action: proposal.action,
+            evidence: proposal.evidence,
+            activeAt: new Date(Date.now() - 2 * H).toISOString(),
+            scope: id,
+            placement: "cwd",
+            inScope: true,
+            history: history(proposal.classId ?? "unknown"),
+          },
+        ]
+      : [],
+  );
+  if (id !== "broomva") return fromProposals;
+  return [
+    ...fromProposals,
+    ...rosterExtra,
+    {
+      id: "db279ca1-x",
+      short: "db279ca1",
+      name: "hanging-pug",
+      kind: "interactive",
+      state: "busy",
+      cwd: "~/.paseo/worktrees/0t10/hanging-pug",
+      branch: "hanging-pug",
+      agentId: "agent-pug",
+      classId: "5",
+      className: "running",
+      action: "nothing",
+      evidence: "busy; last activity 33s ago",
+      activeAt: new Date(Date.now() - 60_000).toISOString(),
+      scope: id,
+      placement: "cwd",
+      inScope: true,
+      history: history("5"),
+    },
+    {
+      id: "015a2e1e-x",
+      short: "015a2e1e",
+      name: "stoic-goat",
+      kind: "background",
+      state: "done",
+      cwd: "~/.paseo/worktrees/0t6j/stoic-goat",
+      branch: null,
+      agentId: null,
+      classId: "1",
+      className: "out of scope",
+      action: "nothing",
+      evidence: "cwd gone and no board row or worktree parent to place it",
+      activeAt: null,
+      scope: null,
+      placement: "unplaced",
+      inScope: false,
+      history: [],
+    },
+  ];
 };
 const scheduleRun = (at: string): TimelineRun => ({
   at,
@@ -846,7 +938,8 @@ const invoke = async (method: string, input: unknown) => {
   if (method === "work.history") return { events: history(), capped: false };
   if (method === "work.attention") {
     return {
-      waiting: [],
+      // What the header counts as work, as server/attention.ts lists it.
+      waiting: needsYou(items).map(({ id, group, flag }) => ({ id, group, flag })),
       sessions: [],
       fleet: fleetNotices,
       timeline: timelineNotices,
@@ -885,6 +978,7 @@ const invoke = async (method: string, input: unknown) => {
   }
   if (method === "fleet.get") {
     if (fleetHeld) await fleetHeld;
+    if (fleetFails && (input as { scope?: string }).scope === fleetFails) throw new Error("fleet.get timed out");
     return fleetView((input as { scope?: string }).scope);
   }
   if (method === "fleet.tick") {
@@ -956,6 +1050,7 @@ const invoke = async (method: string, input: unknown) => {
     sriProposals = mark(sriProposals);
     return { proposals: [...proposalsNow, ...sriProposals].filter((entry) => keys.includes(entry.key)) };
   }
+  if (method === "work.adopt") return { item: items.find((entry) => entry.id === "a") };
   if (method === "work.files") return { files };
   if (method === "work.file") {
     const { name } = input as { name: string };
@@ -1141,6 +1236,9 @@ afterEach(async () => {
   stopHeld = null;
   fleetNotices = [];
   fleetHeld = null;
+  fleetFails = null;
+  rosterExtra = [];
+  askOverride = {};
   timelineNotices = [];
   proposalsNow = fleetProposals();
   sriProposals = sriFixture();
@@ -1999,54 +2097,96 @@ describe("the Fleet view", () => {
   const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
   const fleetTab = (view: Awaited<ReturnType<typeof mount>>) =>
     view.tabs().find((tab) => tab.getAttribute("aria-label") === "Fleet");
+  const starting = (view: Awaited<ReturnType<typeof mount>>, label: string) =>
+    view.all("[aria-label]").find((one) => one.getAttribute("aria-label")?.startsWith(label));
 
-  test("shows the scope's health, its asks as the work raised for them, its proposals, ticks and report", async () => {
+  test("opens on every scope: the verdict, a strip per scope, the KPI tiles, Needs you, the latest tick, the sessions", async () => {
     const view = await mount(surface(false));
-    await view.press(fleetTab(view));
-    expect(sent("fleet.get")).toEqual([{ ticks: 24 }]);
+    await view.goto("Fleet");
+    for (let tries = 0; tries < 100 && !view.text().includes("Would list 4 unmanaged"); tries += 1) await settle(20);
+    // All reads each scope: the base read, then sri under its own key.
+    expect(sent("fleet.get")).toEqual([{ ticks: 24 }, { scope: "sri", ticks: 24 }]);
     const text = view.text();
-    expect(text).toContain("Missed");
+    // Every scope that is not well is named, the worst first, and the session that wants a look too.
+    expect(text).toContain("broomva missed its tick · 2 need you · 1 session wants a look · sri not scheduled");
     expect(text).toContain("No tick for 3h: the last was tick 35. It runs every hour.");
-    expect(text).toContain("report mode, dry run");
-    expect(text).toContain("13 Paseo records are not archived and have no live process.");
-    expect(text).toContain("count · since tick 2");
-    expect(text).toContain("Would report");
-    expect(text).toContain("2 · 1 to review");
-    expect(text).toContain("You accepted this 1h ago");
-    expect(text).toContain("53 out of scope · 1 error");
-    expect(text).toContain("Failed at observe");
-    // Wide windows open the report.
-    expect(text).toContain("fleet-reconcile · broomva · tick 35");
-    expect(text).toContain("out of scope");
+    expect(text).toContain("Dry run · report only");
+    // A cell per tick with its words, and the scope's missed cell last.
+    expect(starting(view, "Tick 35, passed")).toBeDefined();
+    expect(starting(view, "No tick: missed for 3h")).toBeDefined();
+    // The tile names what it counts: the missed tick and the ask; dry-run proposals are not counted.
+    expect(starting(view, "Needs you here: 2, fleet: 1 tick · 1 ask")).toBeDefined();
+    expect(starting(view, "Attention: 1, 1 failed")).toBeDefined();
+    expect(starting(view, "Running: 1")).toBeDefined();
+    expect(starting(view, "Failed: 1")).toBeDefined();
+    expect(starting(view, "Out of scope: 1, 1 unplaced")).toBeDefined();
+    expect(text).toContain("Tick missed");
+    // The ask's first sentence is its title, its tag in plain words; tick numbers wait in Details.
+    expect(text).toContain("13 Paseo records are not archived and have no live process");
+    expect(text).toContain("Count check");
+    expect(text).not.toContain("since tick 2");
+    expect(text).toContain("Would list sri-sti-2761-rce in its report — nothing is done");
+    expect(text).toContain("Would list 4 unmanaged sessions in its report — nothing is done");
+    expect(text).toContain("Teach the fleet");
+    expect(text).toContain("Your verdict teaches the fleet; it changes nothing now: the fleet runs dry.");
+    expect(text).not.toContain("phase 3");
+    // The latest tick: its steps, each with what it said, else what the report counts.
+    expect(text).toContain("Latest tick · broomva");
+    expect(text).toContain("nothing to recover");
+    // The sessions in scope, each with what the fleet would do.
+    expect(text).toContain("hanging-pug");
+    expect(text).toContain("Sessions in scope");
+    expect(text).toContain("1 session out of scope is hidden (1 unplaced).");
+    expect(text).not.toContain("stoic-goat");
+    // The workspace's decisions are the Decisions tab's (its badge reads them): none of them here.
+    expect(text).not.toContain("Workspace decisions");
+    expect(text).not.toContain("Your workspace's asks");
     // The ask is answered in the work the fleet raised: opened, not copied.
     await view.press(view.byLabel("Open the fleet's work for ask a1: Work a"));
     expect(view.text()).toContain("Approve the branch");
   });
 
-  test("Accept records your verdict; Reject asks why first, and sends the note", async () => {
+  test("only the first card's verb is filled; Agree and Disagree are never primary", async () => {
     const view = await mount(surface(false));
-    await view.press(fleetTab(view));
+    await view.goto("Fleet");
+    await settle(30);
+    // The verb's painted surface is its first child (Press): filled is the theme's accent, #5480c7.
+    const filled = (label: string) => {
+      const target = view.byLabel(label) as unknown as { firstElementChild: { style: { backgroundColor: string } } };
+      return target.firstElementChild.style.backgroundColor.includes("84, 128, 199");
+    };
+    // The first card is the missed tick: its Open log is the one filled verb.
+    expect(filled("Open tick 35's log, broomva")).toBe(true);
+    expect(filled("Agree: report, de2dd335 sri-sti-2761-rce")).toBe(false);
+    expect(filled("Open the fleet's work for ask a1: Work a")).toBe(false);
+  });
+
+  test("Agree records your verdict; Disagree asks why first, and sends the note", async () => {
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
     // The refetch that follows is held: what the card says next comes from the host's answer alone.
     let release = () => {};
     fleetHeld = new Promise<void>((resolve) => {
       release = resolve;
     });
-    await view.press(view.byLabel("Accept: report, de2dd335 sri-sti-2761-rce"));
+    await view.press(view.byLabel("Agree: report, de2dd335 sri-sti-2761-rce"));
     expect(sent("fleet.review")).toEqual([
       { scope: "broomva", keys: ["session:de2dd335:4:aaaa1111"], verdict: "accept", note: "" },
     ]);
-    // Said at once, from the host's answer: no button left reading Accept for a second tap, nothing reordered.
-    expect(view.text()).toContain("You accepted this just now");
-    expect(view.text()).toContain("2 · all reviewed");
-    expect(view.text().indexOf("Would report only")).toBeGreaterThan(view.text().indexOf("Would report"));
+    // Said at once, from the host's answer: no button left reading Agree for a second tap, the card still in place.
+    expect(view.text()).toContain("You agreed just now");
+    expect(view.byLabel("Agree: report, de2dd335 sri-sti-2761-rce")?.getAttribute("aria-disabled")).toBe("true");
     fleetHeld = null;
     release();
     await settle(30);
 
-    await view.press(view.byLabel("Reject: report only, 5dd4ed18 worried-walrus"));
+    // A verdict older than an hour is behind Show reviewed.
+    expect(view.byLabel("Disagree: report only, 5dd4ed18 worried-walrus")).toBeNull();
+    await view.press(view.byLabel("Show reviewed"));
+    await view.press(view.byLabel("Disagree: report only, 5dd4ed18 worried-walrus"));
     expect(sent("fleet.review")).toHaveLength(1);
-    await view.type(view.byLabel("Why reject: report only, 5dd4ed18 worried-walrus"), "Unmanaged sessions are mine");
-    await view.press(view.byLabel("Confirm reject: report only, 5dd4ed18 worried-walrus"));
+    await view.type(view.byLabel("Why disagree: report only, 5dd4ed18 worried-walrus"), "Unmanaged sessions are mine");
+    await view.press(view.byLabel("Confirm disagree: report only, 5dd4ed18 worried-walrus"));
     expect(sent("fleet.review").at(-1)).toEqual({
       scope: "broomva",
       keys: ["session:5dd4ed18:10:bbbb2222"],
@@ -2054,34 +2194,35 @@ describe("the Fleet view", () => {
       note: "Unmanaged sessions are mine",
     });
     await view.refetch();
-    expect(view.text()).toContain("You rejected this just now: Unmanaged sessions are mine");
+    expect(view.text()).toContain("You disagreed just now: Unmanaged sessions are mine");
   });
 
-  test("a scope chip reads that scope", async () => {
+  test("a scope in the scope control reads that scope", async () => {
     const view = await mount(surface(false));
-    await view.press(fleetTab(view));
+    await view.goto("Fleet");
     await view.press(view.byLabel("sri, Not scheduled, 1 proposal to review"));
     expect(sent("fleet.get").at(-1)).toEqual({ scope: "sri", ticks: 24 });
-    expect(view.text()).toContain("Not scheduled: no LaunchAgent runs it.");
+    expect(view.text()).toContain("sri ticks only when run by hand.");
+    expect(view.text()).not.toContain("hanging-pug");
+    await view.press(view.byLabel("All scopes"));
+    expect(view.text()).toContain("hanging-pug");
   });
 
   test("one class and one action across sessions is one card: one verdict writes every session's key", async () => {
     const view = await mount(surface(false));
-    await view.press(fleetTab(view));
+    await view.goto("Fleet");
     await view.press(view.byLabel("sri, Not scheduled, 1 proposal to review"));
-    expect(view.text()).toContain("Would report only");
-    expect(view.text()).toContain("4 sessions · Class 10, unmanaged");
-    expect(view.text()).toContain("aaaa1111 sri-aaaa1111");
-    expect(view.text()).not.toContain("dddd4444 sri-dddd4444");
-    await view.press(view.byLabel("Show all sessions: report only"));
-    expect(view.text()).toContain("dddd4444 sri-dddd4444");
-    expect(view.byLabel("sri, Not scheduled, 1 proposal to review")).not.toBeNull();
-    // The refetch after is held: the card and the chip's badge say it from the host's answer alone.
+    expect(view.text()).toContain("Would list 4 unmanaged sessions in its report — nothing is done");
+    // Every session the verdict covers, by name, before you agree.
+    expect(view.text()).toContain("sri-aaaa1111 · sri-bbbb2222 · sri-cccc3333 · sri-dddd4444");
+    await view.press(view.byLabel("See the sessions: report only"));
+    expect(view.byLabel("Hide the sessions: report only")).not.toBeNull();
+    // The refetch after is held: the card and the scope's label say it from the host's answer alone.
     let release = () => {};
     fleetHeld = new Promise<void>((resolve) => {
       release = resolve;
     });
-    await view.press(view.byLabel("Accept: report only, 4 sessions"));
+    await view.press(view.byLabel("Agree: report only, 4 sessions"));
     expect(sent("fleet.review").at(-1)).toEqual({
       scope: "sri",
       keys: [
@@ -2093,37 +2234,97 @@ describe("the Fleet view", () => {
       verdict: "accept",
       note: "",
     });
-    expect(view.text()).toContain("You accepted this just now");
+    expect(view.text()).toContain("You agreed just now");
     expect(view.byLabel("sri, Not scheduled")).not.toBeNull();
     fleetHeld = null;
     release();
     await settle(30);
   });
 
-  test("on a phone, a group's verdict sits above its sessions, each with its evidence", async () => {
-    const view = await mount(surface(true));
-    await view.goto("Fleet");
-    await view.press(view.byLabel("sri, Not scheduled, 1 proposal to review"));
-    const text = view.text();
-    expect(text.indexOf("Accept all 4")).toBeGreaterThan(-1);
-    expect(text.indexOf("Accept all 4")).toBeLessThan(text.indexOf("aaaa1111 sri-aaaa1111"));
-    expect(text).toContain("aaaa1111 sri-aaaa1111done · ~Not a Paseo sessionno fleet key, not adopted");
-  });
-
-  test("Reject's note closes on the host's answer, while the refetch after is still on its way", async () => {
+  test("Disagree's note closes on the host's answer, while the refetch after is still on its way", async () => {
     const view = await mount(surface(false));
-    await view.press(fleetTab(view));
+    await view.goto("Fleet");
     let release = () => {};
     fleetHeld = new Promise<void>((resolve) => {
       release = resolve;
     });
-    await view.press(view.byLabel("Reject: report, de2dd335 sri-sti-2761-rce"));
-    await view.press(view.byLabel("Confirm reject: report, de2dd335 sri-sti-2761-rce"));
-    expect(view.byLabel("Why reject: report, de2dd335 sri-sti-2761-rce")).toBeNull();
-    expect(view.text()).toContain("You rejected this just now");
+    await view.press(view.byLabel("Disagree: report, de2dd335 sri-sti-2761-rce"));
+    await view.press(view.byLabel("Confirm disagree: report, de2dd335 sri-sti-2761-rce"));
+    expect(view.byLabel("Why disagree: report, de2dd335 sri-sti-2761-rce")).toBeNull();
+    expect(view.text()).toContain("You disagreed just now");
     fleetHeld = null;
     release();
     await settle(30);
+  });
+
+  test("a KPI tile filters the roster, and pressed again shows every session in scope", async () => {
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await settle(30);
+    await view.press(starting(view, "Running: 1"));
+    expect(starting(view, "Running: 1")?.getAttribute("aria-pressed")).toBe("true");
+    expect(starting(view, "hanging-pug, running")).toBeDefined();
+    expect(starting(view, "sri-sti-2761-rce, failed")).toBeUndefined();
+    await view.press(starting(view, "Running: 1"));
+    expect(starting(view, "sri-sti-2761-rce, failed")).toBeDefined();
+    // Out of scope shows the sessions no scope holds; the footer brings them back.
+    await view.press(view.byLabel("Show them"));
+    expect(view.text()).toContain("stoic-goat");
+    expect(view.text()).toContain("Sessions out of scope");
+  });
+
+  test("a session row opens the inspector: facts, what the fleet saw, its verdict, evidence and verbs", async () => {
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await settle(30);
+    await view.press(starting(view, "hanging-pug, running"));
+    const text = view.text();
+    expect(text).toContain("~/.paseo/worktrees/0t10/hanging-pug");
+    expect(text).toContain("What the fleet saw, last 2 ticks");
+    expect(starting(view, "Tick 35: class 5")).toBeDefined();
+    expect(starting(view, "Tick 34: not listed")).toBeDefined();
+    expect(text).toContain("Listed at 1 of the last 2 ticks: running on 1.");
+    // The strip's legend tells running from not listed.
+    expect(starting(view, "Legend")).toBeDefined();
+    expect(text).toContain("The fleet would do nothing");
+    expect(text).toContain("It was working, last active 33 s before the report.");
+    // The raw evidence waits in Details.
+    expect(text).not.toContain("evidence: busy; last activity 33s ago");
+    await view.press(view.byLabel("Show the report's raw evidence for hanging-pug"));
+    expect(view.text()).toContain("evidence: busy; last activity 33s ago");
+    await view.press(view.byLabel("Adopt hanging-pug into Maestro"));
+    expect(sent("work.adopt")).toEqual([{ agentId: "agent-pug", title: "hanging-pug" }]);
+    await view.press(view.byLabel("Close the inspector"));
+    expect(view.text()).not.toContain("What the fleet saw");
+    // A session with a proposal takes your verdict in the inspector too.
+    await view.press(starting(view, "sri-sti-2761-rce, failed"));
+    expect(view.text()).toContain("The fleet would: list it in the report");
+    expect(view.text()).toContain("Report: the fleet lists the session in its tick report; nothing is done to it.");
+    await view.press(view.byLabel("Agree: sri-sti-2761-rce"));
+    expect(sent("fleet.review").at(-1)).toEqual({
+      scope: "broomva",
+      keys: ["session:de2dd335:4:aaaa1111"],
+      verdict: "accept",
+      note: "",
+    });
+  });
+
+  test("the row's ⋯ menu opens it in Paseo, adopts it, or copies its id", async () => {
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await settle(30);
+    await view.press(view.byLabel("More for hanging-pug"));
+    expect(view.all('[role="menuitem"]').map((item) => item.getAttribute("aria-label"))).toEqual([
+      "Open in Paseo",
+      "Adopt into Maestro",
+      "Copy session id",
+    ]);
+    await view.press(view.byLabel("Open in Paseo"));
+    expect(opened).toEqual(["agent-pug"]);
+    expect(view.all('[role="menuitem"]')).toEqual([]);
+    // A session that is not a Paseo agent can only be copied.
+    await view.press(view.byLabel("More for worried-walrus"));
+    expect(view.all('[role="menuitem"]').map((item) => item.getAttribute("aria-label"))).toEqual(["Copy session id"]);
   });
 
   test("a missed tick shows above the work, and opens the Fleet view at its scope", async () => {
@@ -2140,7 +2341,7 @@ describe("the Fleet view", () => {
     await view.press(view.byLabel("Open Fleet, broomva"));
     expect(fleetTab(view)?.getAttribute("aria-selected")).toBe("true");
     expect(sent("fleet.get").at(-1)).toEqual({ scope: "broomva", ticks: 24 });
-    // In the Fleet view the health card says it; the notice is not shown twice.
+    // In the Fleet view the health band says it; the notice is not shown twice.
     expect(view.text()).not.toContain("Fleet broomva: missed tick.");
   });
 
@@ -2152,15 +2353,270 @@ describe("the Fleet view", () => {
     expect(sent("fleet.get").at(-1)).toEqual({ scope: "sri", ticks: 24 });
   });
 
-  test("on a phone the report waits behind a button, and its table rows are cards", async () => {
+  test("a dry-run Agree is never the page's filled verb, even with nothing else to do", async () => {
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await view.press(view.byLabel("sri, Not scheduled, 1 proposal to review"));
+    const filled = (label: string) => {
+      const target = view.byLabel(label) as unknown as { firstElementChild: { style: { backgroundColor: string } } };
+      return target.firstElementChild.style.backgroundColor.includes("84, 128, 199");
+    };
+    expect(view.text()).toContain("Nothing needs you");
+    expect(filled("Agree: report only, 4 sessions")).toBe(false);
+    // Teach the fleet sits below the sessions.
+    expect(view.text().indexOf("Teach the fleet")).toBeGreaterThan(view.text().indexOf("Sessions in scope"));
+  });
+
+  test("one number: the band, the tile, the Needs-you cards and the header's fleet share agree", async () => {
+    // The shared fixture: broomva's missed tick, its ask's raised work (Work a, at your gate), one decision
+    // that waits on you and one that does not.
+    decisionsNow = [
+      { ...decisionFixture(), id: "W1", blocking: true, waiting: true },
+      { ...decisionFixture(), id: "Q1", waiting: false },
+    ];
+    // Work a is the fleet's raised batch: the wire says so (#23's display), as it does for real fleet work.
+    items = items.map((item) =>
+      item.id === "a"
+        ? { ...item, display: { title: item.title, fleet: { scope: "broomva", what: "batch 2-1", tick: "2" } } }
+        : item,
+    );
+    // work.attention as the server builds it from the same fixture: the scope's notice and the waiting ask.
+    fleetNotices = [
+      {
+        scope: "broomva",
+        status: "missed",
+        reason: "No tick since tick 35.",
+        since: new Date(Date.now() - 3 * H).toISOString(),
+      },
+    ];
+    askNoticesNow = [askNotice({ ...decisionFixture(), id: "W1", blocking: true, waiting: true }, "broomva")];
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    for (let tries = 0; tries < 100 && !view.text().includes("Would list 4 unmanaged"); tries += 1) await settle(20);
+    // The header's fleet share, as work.attention carries it: the fleet's work that needs you, the scope's
+    // notice, and each decision ask that waits on you.
+    const fleetWork = items.filter((item) => item.id === "a");
+    const notices = [{ scope: "broomva" }];
+    const asks = decisionsNow.filter((ask) => ask.waiting).map((ask) => askNotice(ask, "broomva"));
+    const fleetShare = needsYouCount(fleetWork, notices, [], asks);
+    expect(fleetShare).toBe(3);
+    // The header itself, rendered from the same pieces work.attention carries: the fleet's share and the rest.
+    const otherWork = needsYou(items).filter((item) => item.id !== "a");
+    const header = needsYouCount(needsYou(items), notices, [], asks);
+    expect(header).toBe(fleetShare + otherWork.length);
+    expect(headerFace(header).label).toBe(`${header} need you`);
+    // The band says both numbers, the rest pressable to its view.
+    for (let tries = 0; tries < 100 && !view.text().includes("in all"); tries += 1) await settle(20);
+    expect(view.text()).toContain(`${fleetShare} need you here · ${header} in all (${otherWork.length} in Work)`);
+    // The subtitle under Maestro's title says the same Maestro-wide number as the header and the band's "in all".
+    expect(view.text().startsWith(`Maestro${header} need you · `)).toBe(true);
+    expect(view.byLabel(`${otherWork.length} in Work: open Work`)).not.toBeNull();
+    expect(starting(view, `Needs you here: ${fleetShare}, fleet: 1 tick · 1 ask · 1 decision`)).toBeDefined();
+    const section = view.byLabel(`Needs you: ${fleetShare} cards`) as unknown as { children: { length: number } };
+    expect(section.children.length).toBe(fleetShare);
+    // The decision that does not wait on you is listed apart, uncounted.
+    expect(view.text()).toContain("Also open");
+    // One scope shown: the fleet's share in the other scopes is named, so the parts still add up.
+    await view.press(view.byLabel("sri, Not scheduled, 1 proposal to review"));
+    for (let tries = 0; tries < 100 && !view.text().includes("other scopes"); tries += 1) await settle(20);
+    expect(view.text()).toContain(
+      `0 need you here · ${header} in all (${fleetShare} in other scopes, ${otherWork.length} in Work)`,
+    );
+  });
+
+  test("an ask the fleet has not raised as work yet says when it will be, and can still be copied", async () => {
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await settle(30);
+    expect(view.byLabel("Copy the question of ask a1")).not.toBeNull();
+  });
+
+  test("Needs you jumps to the queue; a filter tile filters exactly what it counts and says Filtering", async () => {
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await settle(30);
+    const rows = () => view.all('[aria-label*=". The fleet would: "]').length;
+    const before = rows();
+    await view.press(starting(view, "Needs you here: "));
+    // Not a roster filter: the sessions are all still there, and the tile is not pressed.
+    expect(rows()).toBe(before);
+    expect(starting(view, "Needs you here: ")?.getAttribute("aria-pressed")).toBe("false");
+    await view.press(starting(view, "Failed: 1"));
+    expect(rows()).toBe(1);
+    expect(starting(view, "Failed: 1")?.getAttribute("aria-label")).toContain("Filtering the sessions");
+    expect(view.text()).toContain("Filtering");
+  });
+
+  test("a scope that cannot be read is named in the verdict and its strip, never dropped", async () => {
+    fleetFails = "sri";
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    for (let tries = 0; tries < 100 && !view.text().includes("Can't read sri"); tries += 1) await settle(20);
+    expect(view.text()).toContain("Can't read sri");
+    expect(view.text()).toContain("Can't read sri: fleet.get timed out");
+  });
+
+  test("tiles and tabs answer a press without scaling; buttons scale; a failed tick carries a glyph", async () => {
+    reduced = false;
+    try {
+      const view = await mount(surface(false));
+      await view.goto("Fleet");
+      await settle(30);
+      const transform = (target: Element | undefined | null) =>
+        (target as unknown as { firstElementChild: { style: { transform: string } } } | null)?.firstElementChild.style
+          .transform ?? "";
+      expect(transform(starting(view, "Running: 1"))).not.toContain("scale");
+      expect(transform(view.byLabel("All scopes"))).not.toContain("scale");
+      expect(transform(view.byLabel("Agree: report, de2dd335 sri-sti-2761-rce"))).toContain("scale");
+      expect(starting(view, "Tick 34, failed at observe")?.textContent).toBe("×");
+    } finally {
+      reduced = true;
+    }
+  });
+
+  test("Disagree's note is capped at what the review file takes", async () => {
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await view.press(view.byLabel("Disagree: report, de2dd335 sri-sti-2761-rce"));
+    expect(view.byLabel("Why disagree: report, de2dd335 sri-sti-2761-rce")?.getAttribute("maxlength")).toBe("1000");
+  });
+
+  test("the inspector says what a verdict does under the dry run", async () => {
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await settle(30);
+    await view.press(starting(view, "sri-sti-2761-rce, failed"));
+    expect(view.text()).toContain("Your verdict teaches the fleet; it changes nothing now: the fleet runs dry.");
+  });
+
+  test("an ask's short id links its session: resumed where it ran first, its question copied second", async () => {
+    const uuid = "d4b991f0-1133-4c26-9a7e-000000000001";
+    rosterExtra = [
+      {
+        id: uuid,
+        short: "d4b991f0",
+        name: "sti-2139-asvs-dast-conflicts",
+        kind: "background",
+        state: "blocked",
+        cwd: "~/work/sri",
+        branch: null,
+        agentId: null,
+        classId: "7",
+        className: "blocked on the owner",
+        action: "carry the ask forward",
+        evidence: "job file: blocked on a question",
+        activeAt: new Date(Date.now() - 2 * H).toISOString(),
+        scope: "broomva",
+        placement: "cwd",
+        inScope: true,
+        history: [{ tick: 35, classId: "7" }],
+      },
+    ];
+    askSessionNow = { id: "d4b991f0-1133", short: "d4b991f0", name: null, agentId: null };
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await settle(30);
+    // The session's name, linked by the key's short id.
+    expect(view.text()).toContain("about sti-2139-asvs-dast-conflicts");
+    const verbs = view
+      .all(
+        '[aria-label^="Copy the command that resumes"], [aria-label^="Open the fleet\'s work for ask a1"], [aria-label="Copy the question of ask a1"]',
+      )
+      .map((one) => one.getAttribute("aria-label"));
+    expect(verbs).toEqual([
+      "Copy the command that resumes sti-2139-asvs-dast-conflicts",
+      "Open the fleet's work for ask a1: Work a",
+      "Copy the question of ask a1",
+    ]);
+    // The inspector offers it too, filled: a blocked session Paseo does not hold.
+    await view.press(starting(view, "sti-2139-asvs-dast-conflicts, blocked"));
+    const resume = view
+      .all('[aria-label="Copy the command that resumes sti-2139-asvs-dast-conflicts"]')
+      .at(-1) as unknown as {
+      firstElementChild: { style: { backgroundColor: string } };
+    };
+    expect(resume.firstElementChild.style.backgroundColor).toContain("84, 128, 199");
+  });
+
+  test("a session blocked on you: a structural title, and the fleet's question as the body, byte for byte", async () => {
+    const source =
+      "Session sti-2139-asvs-dast-conflicts (bf1ee1b8) is blocked on you: job file: blocked on a question to its user (allocate disk space to run `bun test apps/app/test/authenticated-page-inventory.test.ts` (#12). Then rerun.";
+    rosterExtra = [
+      {
+        id: "bf1ee1b8-11be-4544-9f7e-143a990c3e10",
+        short: "bf1ee1b8",
+        name: "sti-2139-asvs-dast-conflicts",
+        kind: "background",
+        state: "blocked",
+        cwd: "~/work/sri",
+        branch: null,
+        agentId: null,
+        classId: "7",
+        className: "blocked on the owner",
+        action: "carry the ask forward",
+        evidence: "job file: blocked on a question",
+        activeAt: null,
+        scope: "broomva",
+        placement: "cwd",
+        inScope: true,
+        history: [],
+      },
+    ];
+    askSessionNow = { id: "bf1ee1b8-11be", short: "bf1ee1b8", name: null, agentId: null };
+    askOverride = { class: "7", className: "blocked on the owner", question: source, item: null, batch: "2-1" };
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await settle(30);
+    expect(view.text()).toContain("sti-2139-asvs-dast-conflicts is waiting on you");
+    // The body is the fleet's question as written: no stripping, no capitalising.
+    expect(view.all("div").some((node) => node.textContent === source)).toBe(true);
+    await view.press(view.byLabel("Show all of ask a1"));
+    expect(view.all("div").some((node) => node.textContent === source)).toBe(true);
+  });
+
+  test("an ask linked to a Paseo agent by its short id opens that agent", async () => {
+    askSessionNow = { id: "agent-pu", short: "agent-pu", name: null, agentId: null };
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await settle(30);
+    await view.press(view.byLabel("Open the session ask a1 is about: hanging-pug"));
+    expect(opened).toEqual(["agent-pug"]);
+  });
+
+  test("a refetch that fails while data stands is a quiet note, never 'can't read'", async () => {
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    for (let tries = 0; tries < 100 && !view.text().includes("Would list 4 unmanaged"); tries += 1) await settle(20);
+    fleetFails = "sri";
+    await view.refetch();
+    for (let tries = 0; tries < 100 && !view.text().includes("Couldn't refresh sri"); tries += 1) await settle(20);
+    expect(view.text()).toContain("Couldn't refresh sri (fleet.get timed out); showing the last read.");
+    expect(view.text()).not.toContain("Can't read sri");
+    expect(view.text()).toContain("Would list 4 unmanaged");
+  });
+
+  test("on a phone: four tiles, rows stacked, a row opens the inspector as a sheet; the report waits for Report", async () => {
     const view = await mount(surface(true));
     await view.goto("Fleet");
-    expect(view.text()).not.toContain("Report only (phase 1).");
-    await view.press(view.byLabel("Show the report"));
-    expect(view.text()).toContain("Report only (phase 1).");
-    // Each row stands alone: a bare number leads with the cell after it, the rest under their column names.
-    expect(view.text()).toContain("1 · out of scopesessions53");
-    expect(view.text()).not.toContain("classout of scope");
+    await settle(30);
+    // Every tile is reachable on the phone, in a row that scrolls sideways.
+    expect(starting(view, "Unmanaged: ")).toBeDefined();
+    expect(starting(view, "Out of scope: ")).toBeDefined();
+    expect(starting(view, "Failed: ")).toBeDefined();
+    for (let tries = 0; tries < 100 && !view.text().includes("Would list 4 unmanaged"); tries += 1) await settle(20);
+    expect(starting(view, "Needs you here: 2")).toBeDefined();
+    // The legend is on the phone too, and an Agree-all card names every session it covers and lists them.
+    expect(view.text()).toContain("no exit recorded");
+    expect(view.text()).toContain("sri-aaaa1111 · sri-bbbb2222 · sri-cccc3333 · sri-dddd4444");
+    expect(view.byLabel("See the sessions: report only")).not.toBeNull();
+    expect(view.text()).not.toContain("Report of tick 35.");
+    await view.press(view.byLabel("Open tick 35's report"));
+    await settle(50);
+    const text = view.text();
+    expect(text).toContain("Report of tick 35.");
+    expect(text.indexOf("Report of tick 35.")).toBeLessThan(text.indexOf("What tick 35 logged"));
+    await view.press(starting(view, "hanging-pug, running"));
+    expect(view.text()).toContain("What the fleet saw, last 2 ticks");
   });
 });
 
@@ -2252,6 +2708,9 @@ describe("drilling in", () => {
     decisionsNow = [decisionFixture()];
     const view = await mount(surface(false));
     await view.press(tab(view, "Fleet"));
+    // Folded in Needs you to a line per ask until opened.
+    expect(view.text()).toContain("Four small review follow-ups from #7 and #8: ticket them, or drop them?");
+    await view.press(view.byLabel("Read and answer the fleet's decisions, broomva"));
     const text = view.text();
     expect(text).toContain("Four small review follow-ups from #7 and #8: ticket them, or drop them?");
     expect(text).toContain("What waiting costsNone blocks a lane; untracked, a test gap stays invisible.");
@@ -2286,21 +2745,24 @@ describe("drilling in", () => {
     expect(opened).toEqual(["agent-asker"]);
   });
 
-  test("a fleet scope's decisions past ten open: only the ledgers with one that waits on you start open", async () => {
+  test("a fleet scope's decisions: one that waits on you is its own card; the others fold past ten open", async () => {
     decisionsNow = [
       { ...decisionFixture(), ledger: "waits.yaml", id: "W1", blocking: true, waiting: true },
-      ...Array.from({ length: 10 }, (_, at) => ({ ...decisionFixture(), ledger: `ledger-${at}.yaml`, id: `Q${at}` })),
+      ...Array.from({ length: 11 }, (_, at) => ({ ...decisionFixture(), ledger: `ledger-${at}.yaml`, id: `Q${at}` })),
     ];
     const view = await mount(surface(false));
-    await view.press(tab(view, "Fleet"));
+    await view.goto("Fleet");
+    // The one that waits on you is counted, a card of its own in Needs you.
+    expect(view.byLabel("Read and answer W1, broomva")).not.toBeNull();
+    await view.press(view.byLabel("Read and answer the fleet's decisions, broomva"));
     const heading = (ledger: string) =>
       view.all("[aria-expanded]").find((one) => one.getAttribute("aria-label")?.startsWith(`${ledger}:`));
-    expect(heading("waits.yaml")?.getAttribute("aria-expanded")).toBe("true");
     expect(heading("ledger-3.yaml")?.getAttribute("aria-expanded")).toBe("false");
     // Ten or fewer: every ledger starts open.
-    decisionsNow = decisionsNow.slice(0, 10);
+    decisionsNow = decisionsNow.slice(0, 11);
     const fewer = await mount(surface(false));
-    await fewer.press(fewer.tabs().find((one) => one.getAttribute("aria-label") === "Fleet"));
+    await fewer.goto("Fleet");
+    await fewer.press(fewer.all('[aria-label="Read and answer the fleet\'s decisions, broomva"]').at(-1));
     const fewerHeading = fewer
       .all("[aria-expanded]")
       .find((one) => one.getAttribute("aria-label")?.startsWith("ledger-3.yaml:"));
@@ -2311,6 +2773,9 @@ describe("drilling in", () => {
     decisionsNow = [{ ...decisionFixture(), refusal: "Two asks in maestro-paseo-gaps.yaml are named A10." }];
     const view = await mount(surface(false));
     await view.press(tab(view, "Fleet"));
+    // Folded in Needs you to a line per ask until opened.
+    expect(view.text()).toContain("Four small review follow-ups from #7 and #8: ticket them, or drop them?");
+    await view.press(view.byLabel("Read and answer the fleet's decisions, broomva"));
     expect(view.text()).toContain("Two asks in maestro-paseo-gaps.yaml are named A10.");
     expect(view.byLabel("Answer A10")).toBeNull();
   });
@@ -2334,7 +2799,7 @@ describe("drilling in", () => {
     expect(view.text()).not.toContain("Raised at tick 2");
   });
 
-  test("a proposal's session shows its status, folder and branch, and opens in Paseo when it is a Paseo agent", async () => {
+  test("a proposal about one Paseo session opens it in Paseo; one about a session that is not offers no Open", async () => {
     proposalsNow = fleetProposals().map((proposal) =>
       proposal.session?.short === "5dd4ed18"
         ? { ...proposal, session: { ...proposal.session, agentId: "agent-walrus", branch: "feat/walrus" } }
@@ -2342,18 +2807,18 @@ describe("drilling in", () => {
     );
     const view = await mount(surface(false));
     await view.press(tab(view, "Fleet"));
-    const text = view.text();
-    expect(text).toContain("5dd4ed18 worried-walrusidle · ~ · on feat/walrus");
-    expect(text).toContain("de2dd335 sri-sti-2761-rcefailed · ~Not a Paseo session");
     expect(view.byLabel("Open session de2dd335 sri-sti-2761-rce in Paseo")).toBeNull();
+    await view.press(view.byLabel("Show reviewed"));
     await view.press(view.byLabel("Open session 5dd4ed18 worried-walrus in Paseo"));
     expect(opened).toEqual(["agent-walrus"]);
   });
 
-  test("a tick row opens its runner's words, its log lines and its report, read only then", async () => {
+  test("a tick in All ticks opens its runner's words, its log lines and its report, read only then", async () => {
     const view = await mount(surface(false));
     await view.press(tab(view, "Fleet"));
-    const row = () => view.all('[aria-label^="Tick 34, failed at observe"]')[0];
+    await view.press(view.byLabel("All ticks, broomva"));
+    // The tick strip's cells carry the same words; the row is the one that opens.
+    const row = () => view.all('[aria-expanded][aria-label^="Tick 34, failed at observe"]')[0];
     expect(row()?.getAttribute("aria-expanded")).toBe("false");
     expect(sent("fleet.tick")).toEqual([]);
     await view.press(row());

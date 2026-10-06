@@ -257,12 +257,25 @@ export function cardLabel(item: WorkItem, now = Date.now()): string {
  * its section lists it. Stuck and flagged work is in "need you" (as in the
  * header count), and a flagged run is not counted again as running.
  */
-export function summaryText(items: readonly WorkItem[]): string {
-  const needs = needsYouOf(items).length;
+/**
+ * The subtitle: what needs you and what runs. `needsYou` is the header's own
+ * Maestro-wide count (header-count.ts needsYouCount over work.attention), so
+ * the subtitle, the Paseo header badge and the Fleet band's "in all" are one
+ * number. Without it (its read not in yet, or failed) the subtitle never
+ * shows a bare number that could disagree: it says what it counts, the work
+ * items alone ("3 work items need you").
+ */
+export function summaryText(items: readonly WorkItem[], needsYou: number | null = null): string {
+  const work = needsYouOf(items).length;
   const running = items.filter((item) => sectionOf(item) === "running").length;
-  const parts = [
-    needs ? `${needs} ${needs === 1 ? "needs" : "need"} you` : null,
-    running ? `${running} running` : null,
-  ].filter(Boolean);
-  return parts.join(" · ") || (items.length ? "Nothing needs you" : "No work yet");
+  const needs =
+    needsYou !== null
+      ? needsYou
+        ? `${needsYou} ${needsYou === 1 ? "needs" : "need"} you`
+        : null
+      : work
+        ? `${plural(work, "work item")} ${work === 1 ? "needs" : "need"} you`
+        : null;
+  const parts = [needs, running ? `${running} running` : null].filter(Boolean);
+  return parts.join(" · ") || (items.length || needsYou !== null ? "Nothing needs you" : "No work yet");
 }

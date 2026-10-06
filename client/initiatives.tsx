@@ -18,7 +18,6 @@ import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, Text, View } from "react-native";
-import { attentionWork } from "../shared/contracts";
 import { ANSWER_NOTE_CHARS, answerAsk, type DecisionAsk, homeKey } from "../shared/fleet";
 import {
   fileIdeaWork,
@@ -30,7 +29,7 @@ import {
 import { sameAsk } from "./decisions";
 import { homeText } from "./decisions-model";
 import { errorText } from "./format";
-import { useRefresh } from "./hooks";
+import { useAttention, useRefresh } from "./hooks";
 import {
   dateLine,
   defaultWake,
@@ -721,8 +720,8 @@ export function InitiativeNotices({
   compact: boolean;
   onOpen: () => void;
 }) {
-  const read = useRpc(attentionWork);
-  const attention = useQuery({ queryKey: ["maestro", "attention"], queryFn: () => read({}), refetchInterval: 30_000 });
+  // The one owner of the work.attention read (client/hooks.ts).
+  const attention = useAttention();
   const notices = attention.data?.initiatives ?? [];
   if (notices.length === 0) return null;
   return (

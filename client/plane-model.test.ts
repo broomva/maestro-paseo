@@ -281,7 +281,7 @@ describe("feed and board", () => {
     expect(applyFilter(flagged, "review").map((item) => item.id)).toEqual(feed ?? []);
     expect(countFilters(flagged).review).toBe(feed?.length ?? -1);
     expect(needsYou(flagged).map((item) => item.id)).toEqual(feed ?? []);
-    expect(summaryText(flagged)).toBe("4 need you · 1 running");
+    expect(summaryText(flagged)).toBe("4 work items need you · 1 running");
   });
 
   test("four columns, always present; Needs you holds review before stuck", () => {
@@ -401,12 +401,18 @@ describe("card words", () => {
   });
 
   test("the header puts what needs a person first", () => {
-    expect(summaryText(plane)).toBe("2 need you · 1 running");
+    // Without the header's count (not read yet, or failed), the subtitle says what it counts: work items.
+    expect(summaryText(plane)).toBe("2 work items need you · 1 running");
     // A flagged run is counted once, where it is listed: in Needs you.
-    expect(summaryText([...plane, work("z", "running", { flag: quietFlag })])).toBe("3 need you · 1 running");
-    expect(summaryText([work("b", "blocked")])).toBe("1 needs you");
-    expect(summaryText([work("x", "review"), work("y", "review")])).toBe("2 need you");
+    expect(summaryText([...plane, work("z", "running", { flag: quietFlag })])).toBe(
+      "3 work items need you · 1 running",
+    );
+    expect(summaryText([work("b", "blocked")])).toBe("1 work item needs you");
+    expect(summaryText([work("x", "review"), work("y", "review")])).toBe("2 work items need you");
     expect(summaryText([work("x", "done")])).toBe("Nothing needs you");
     expect(summaryText([])).toBe("No work yet");
+    // With the header's own count, the subtitle says that number: the badge's, Maestro-wide.
+    expect(summaryText(plane, 5)).toBe("5 need you · 1 running");
+    expect(summaryText([], 0)).toBe("Nothing needs you");
   });
 });
