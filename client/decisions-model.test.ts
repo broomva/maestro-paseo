@@ -15,6 +15,7 @@ import {
   ledgerRail,
   metaLine,
   nextAfter,
+  noticeAsk,
   progressOf,
   pruneSkipped,
   railName,
@@ -107,6 +108,10 @@ describe("Decisions, a ledger at a time", () => {
     expect(askNoticeText([notice("Send?", false), notice("Ship?", false)])).toBe(
       "2 decisions wait on you: Send? (+1 more)",
     );
+    // The notice opens the ask it names.
+    expect(noticeAsk([notice("Send?", false), notice("Merge #863?", true)])?.headline).toBe("Merge #863?");
+    expect(noticeAsk([notice("Send?", false)])?.headline).toBe("Send?");
+    expect(noticeAsk([])).toBeNull();
   });
 });
 

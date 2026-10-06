@@ -28,6 +28,7 @@ import {
   groupMeta,
   isTriaged,
   ledgerRail,
+  noticeAsk,
 } from "./decisions-model";
 import { plural } from "./format";
 import { useAttention } from "./hooks";
@@ -251,7 +252,8 @@ export function AskNotices({
   // The one owner of the work.attention read (client/hooks.ts).
   const attention = useAttention();
   const asks = attention.data?.asks ?? [];
-  const [first] = asks;
+  // The ask the line names is the ask the button opens (noticeAsk).
+  const first = noticeAsk(asks);
   if (!first) return null;
   return (
     <Notice
