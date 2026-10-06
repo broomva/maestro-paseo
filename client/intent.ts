@@ -19,9 +19,9 @@ export type MaestroIntent =
       kind: "decisions";
       /** The ledger the tab lists (null: all). */
       ledger?: string | null;
-      /** The ask to show first, and, when the tab lists every ledger, the ledger it is in (ledgerOf). */
+      /** The ask to show first: its id, and its full identity (askKey) when the caller holds the ask. */
       id?: string | null;
-      askLedger?: string | null;
+      key?: string | null;
     }
   | { kind: "timeline" }
   | { kind: "initiatives" };

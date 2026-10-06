@@ -417,7 +417,7 @@ describe("an arc's own verdict at the gate (BRO-2856)", () => {
     toReview.map((e) => (e.type === "turn.ended" ? { ...e, summary: text } : e));
   const line = (text: string) => arcStatus(text)?.at ?? -1;
 
-  test("the verdict is the last line that starts exactly `ARC-STATUS: WORD`, outside a code fence", () => {
+  test("the verdict is ctx-core's: the last line that starts exactly `ARC-STATUS: WORD`", () => {
     expect(arcStatus("x\nARC-STATUS: DONE\nmore\nARC-STATUS: HANDBACK 2\n")).toEqual({
       status: "HANDBACK",
       line: "ARC-STATUS: HANDBACK 2",
@@ -427,9 +427,13 @@ describe("an arc's own verdict at the gate (BRO-2856)", () => {
     expect(arcStatus("  ARC-STATUS: DONE")).toBeNull();
     expect(arcStatus("ARC-STATUS: done")).toBeNull();
     expect(arcStatus("it said ARC-STATUS: DONE")).toBeNull();
-    // Quoted in a fence: not this arc's verdict.
-    expect(arcStatus("Example:\n```\nARC-STATUS: CLOSED\n```\nStill working.")).toBeNull();
-    expect(arcStatus("```\nARC-STATUS: CLOSED\n```\nARC-STATUS: BLOCKED")?.status).toBe("BLOCKED");
+  });
+
+  test("a tail cut inside a code block still reads the verdict: fences are not read", () => {
+    // The kept text starts mid-block, so its first fence line is that block's closer.
+    const cut = ["…fly deploy", "```", "", "Left: redeploy.", "", "ARC-STATUS: HANDBACK 1"].join("\n");
+    expect(arcStatus(cut)?.status).toBe("HANDBACK");
+    expect(closingAbove(cut, line(cut))).toBe("…fly deploy\n```\n\nLeft: redeploy.");
   });
 
   test("the closing is the block above the verdict: back to a heading (kept), a table or a rule", () => {
@@ -452,41 +456,26 @@ describe("an arc's own verdict at the gate (BRO-2856)", () => {
     expect(closingAbove(rule, line(rule))).toBe("after");
   });
 
-  test("the closing is verbatim: indentation kept, a code fence taken whole and never read as a heading", () => {
+  test("the closing is verbatim, indentation kept; a heading or rule is one indented at most 3 spaces", () => {
     const code = ["Run this:", "", "    fly deploy", "ARC-STATUS: DONE"].join("\n");
     expect(closingAbove(code, line(code))).toBe("Run this:\n\n    fly deploy");
-    // An indented code block that opens the closing keeps its indentation too.
     const opens = ["Intro", "---", "", "    fly deploy", "", "ARC-STATUS: DONE"].join("\n");
     expect(closingAbove(opens, line(opens))).toBe("    fly deploy");
-    const fence = [
-      "## Before",
-      "Run this:",
-      "```bash",
-      "# redeploy sri",
-      "fly deploy",
-      "```",
-      "",
+    // Indented 4 spaces, `# sri` and `---` are code, not a heading or a rule.
+    const nested = [
+      "What's left:",
+      "- Redeploy:",
+      "    # sri",
+      "    ---",
+      "    fly deploy",
       "ARC-STATUS: HANDBACK 1",
     ].join("\n");
-    expect(closingAbove(fence, line(fence))).toBe("## Before\nRun this:\n```bash\n# redeploy sri\nfly deploy\n```");
+    expect(closingAbove(nested, line(nested))).toBe("What's left:\n- Redeploy:\n    # sri\n    ---\n    fly deploy");
   });
 
   test("a rule that only sets the verdict apart is passed over, not taken as the end of the closing", () => {
     const text = ["Done, PR merged.", "", "---", "", "ARC-STATUS: HANDBACK 2"].join("\n");
     expect(closingAbove(text, line(text))).toBe("Done, PR merged.");
-  });
-
-  test("a fence closes only on its own character, at least as long, with nothing after it", () => {
-    // A ``` line inside a ~~~ block does not close it, and the verdict after the block is read.
-    const tilde = ["~~~", "```", "x", "~~~", "Done.", "ARC-STATUS: CLOSED"].join("\n");
-    expect(arcStatus(tilde)?.status).toBe("CLOSED");
-    expect(closingAbove(tilde, line(tilde))).toBe("~~~\n```\nx\n~~~\nDone.");
-    // A line opening with inline ```x``` code opens no fence.
-    const inline = ["```bun test``` ran twice.", "ARC-STATUS: DONE"].join("\n");
-    expect(arcStatus(inline)?.status).toBe("DONE");
-    // A longer opener needs a closer at least as long.
-    const long = ["````", "```", "ARC-STATUS: CLOSED", "````", "ARC-STATUS: DONE"].join("\n");
-    expect(arcStatus(long)?.status).toBe("DONE");
   });
 
   test("a table right above the verdict is the closing; nothing above is none", () => {
@@ -503,33 +492,33 @@ describe("an arc's own verdict at the gate (BRO-2856)", () => {
     expect(closingAbove("ARC-STATUS: DONE", 0)).toBeNull();
   });
 
-  test("a finished arc says what it reported, never pointing at words it did not leave; an Ask section still wins", () => {
-    const closed = lookOf("review", ended("Merged.\n\nNothing left.\n\nARC-STATUS: CLOSED"), T0);
-    expect(closed).toMatchObject({
-      ask: "It reports its arc finished. Read what it left you, then approve to close the work.",
+  test("the ask says what the arc reported and nothing about where; an Ask section still wins", () => {
+    const verbs = "Approve to close the work, or send it back with a note.";
+    expect(lookOf("review", ended("Merged.\n\nNothing left.\n\nARC-STATUS: CLOSED"), T0)).toMatchObject({
+      ask: `It reports its arc finished. ${verbs}`,
       arc: { status: "CLOSED", line: "ARC-STATUS: CLOSED" },
       closing: "Merged.\n\nNothing left.",
     });
     expect(lookOf("review", ended("Left:\n1. a\n2. b\nARC-STATUS: HANDBACK 2"), T0)?.ask).toBe(
-      "It hands 2 things back to you, in what it left you. Approve to close the work once you have taken them on, or send it back with a note.",
+      "It hands 2 things back to you. Approve to close the work once you have taken them on, or send it back with a note.",
     );
-    expect(lookOf("review", ended("Left: a\nARC-STATUS: HANDBACK 1"), T0)?.ask).toStartWith(
-      "It hands 1 thing back to you, in what it left you. Approve to close the work once you have taken it on",
+    expect(lookOf("review", ended("Left: a\nARC-STATUS: HANDBACK 1"), T0)?.ask).toBe(
+      "It hands 1 thing back to you. Approve to close the work once you have taken it on, or send it back with a note.",
     );
     expect(lookOf("review", ended("Left: a\nARC-STATUS: HANDBACK 0"), T0)?.ask).toBe(
-      "It reports nothing handed back to you. Read what it left you, then approve to close the work.",
+      `It reports nothing handed back to you. ${verbs}`,
     );
     expect(lookOf("review", ended("Left: a\nARC-STATUS: HANDBACK"), T0)?.ask).toStartWith(
-      "It hands work back to you, in what it left you. Approve to close the work once you have taken it on",
+      "It hands work back to you. Approve to close the work once you have taken it on",
     );
-    expect(lookOf("review", ended("x\nARC-STATUS: PAUSED"), T0)?.ask).toStartWith(
-      "It ended with “ARC-STATUS: PAUSED”; read",
+    expect(lookOf("review", ended("x\nARC-STATUS: BLOCKED"), T0)?.ask).toBe(
+      "It reports its arc blocked. Send it back with a note, or cancel the work.",
     );
-    // Nothing above the verdict: the ask says so, and no closing is offered.
-    expect(lookOf("review", ended("ARC-STATUS: CLOSED"), T0)).toMatchObject({
-      ask: "It ended with “ARC-STATUS: CLOSED” and wrote nothing above it. Approve to close the work, or send it back with a note.",
-      closing: null,
-    });
+    expect(lookOf("review", ended("x\nARC-STATUS: PAUSED"), T0)?.ask).toBe(
+      `It ended with “ARC-STATUS: PAUSED”. ${verbs}`,
+    );
+    // Nothing above the verdict: no closing.
+    expect(lookOf("review", ended("ARC-STATUS: CLOSED"), T0)).toMatchObject({ closing: null });
     expect(lookOf("review", ended(`${summary}\nARC-STATUS: DONE`), T0)?.ask).toBe(
       "Approve the branch so reviews stop needing the live session.",
     );

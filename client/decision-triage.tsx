@@ -87,7 +87,7 @@ export const DECISIONS_ROOT_ID = "maestro-decisions";
  */
 export type DecisionsFocus = {
   ledger: string | null;
-  ask: { ledger: string | null; id: string; uid?: string | null; home?: string | null } | null;
+  ask: { ledger: string | null; id: string; uid?: string | null; home?: string | null; key?: string | null } | null;
   at: number;
 };
 

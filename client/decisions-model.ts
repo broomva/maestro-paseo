@@ -249,14 +249,19 @@ export function upNext(queue: readonly DecisionAsk[], index: number, count = 3):
 }
 
 /**
- * A focus resolved: the one ask it names; with only a ledger and an id that
- * two homes share, the one that waits on you, else the first with a note
- * saying there are more; null with no match.
+ * A focus resolved: the one ask it names. With its full identity (askKey),
+ * that ask and no other; else, with only a ledger and an id that two homes
+ * share, the one that waits on you, else the first with a note saying there
+ * are more; null with no match.
  */
 export function resolveFocus(
   queue: readonly DecisionAsk[],
-  want: { ledger: string | null; id: string; uid?: string | null; home?: string | null },
+  want: { ledger: string | null; id: string; uid?: string | null; home?: string | null; key?: string | null },
 ): { ask: DecisionAsk; note: string | null } | null {
+  if (want.key) {
+    const exact = queue.find((ask) => askKey(ask) === want.key);
+    return exact ? { ask: exact, note: null } : null;
+  }
   const found = queue.filter(
     (ask) =>
       ask.id === want.id &&

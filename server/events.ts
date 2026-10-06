@@ -351,45 +351,25 @@ export function bullets(text: string): string[] {
 export const ARCHIVED_NOTE = "The session was archived";
 
 const ARC_LINE = /^ARC-STATUS: ([A-Z]+)/;
-/** Where the closing block above an arc's verdict starts: after a heading, a table row or a rule. */
-const BLOCK_EDGE = /^\s*(?:#{1,6}\s|\||(?:-{3,}|\*{3,}|_{3,})\s*$)/;
-const HEADING = /^\s*#{1,6}\s/;
+// Markdown's own limits: a heading or a rule is indented at most 3 spaces; deeper, it is code.
+const HEADING = /^ {0,3}#{1,6}\s/;
+const RULE = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
 const TABLE_ROW = /^\s*\|/;
-/** A fence line (CommonMark): up to 3 spaces, then 3+ backticks or tildes; a closing one has nothing after. */
-const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-const RULE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/;
-/**
- * Which lines sit in a fenced code block, the fence lines included. A fence
- * closes only on its own character, at least as long, with nothing after it;
- * an unclosed fence runs to the end.
- */
-function fencedLines(lines: readonly string[]): boolean[] {
-  let open: string | null = null;
-  return lines.map((line) => {
-    const fence = FENCE.exec(line);
-    if (open === null) {
-      // A backtick fence's info string has no backtick: "```x```" is inline code, not a fence.
-      if (!fence?.[1] || (fence[1].startsWith("`") && fence[2]?.includes("`"))) return false;
-      open = fence[1];
-      return true;
-    }
-    const closes = fence?.[1] && fence[1][0] === open[0] && fence[1].length >= open.length && !fence[2]?.trim();
-    if (closes) open = null;
-    return true;
-  });
-}
+/** Where the closing block above an arc's verdict starts: after a heading, a table row or a rule. */
+const edgeOf = (line: string) => HEADING.test(line) || TABLE_ROW.test(line) || RULE.test(line);
 
 /**
- * An arc's verdict as the workspace writes it (ctx-core's grammar): the last
- * line of the text that starts exactly `ARC-STATUS: WORD`, outside a code
- * fence, the word, and the line's index. Null when no line does.
+ * An arc's verdict as the workspace writes it, ctx-core's grammar exactly
+ * (ctx.py _extract_arc): the last line of the text that starts
+ * `ARC-STATUS: WORD`, the word, and the line's index. Null when no line does.
+ * Code fences are not read: the text is a tail cut at its start, so whether a
+ * line sits inside one cannot be known.
  */
 export function arcStatus(text: string): { status: string; line: string; at: number } | null {
   const lines = text.split("\n");
-  const fenced = fencedLines(lines);
   for (let at = lines.length - 1; at >= 0; at--) {
     const line = lines[at] ?? "";
-    const word = fenced[at] ? undefined : ARC_LINE.exec(line)?.[1];
+    const word = ARC_LINE.exec(line)?.[1];
     if (word) return { status: word, line: line.trim(), at };
   }
   return null;
@@ -398,44 +378,38 @@ export function arcStatus(text: string): { status: string; line: string; at: num
 /**
  * The block just above line `at`, verbatim (blank lines around it dropped,
  * nothing else): from the nearest heading (kept), table row or rule above it,
- * else from the text's start. A code fence is taken whole, its lines never
- * read as a heading. When a table ends right above, the table is the block.
- * Null when empty.
+ * else from the text's start. When a table ends right above, the table is the
+ * block; a rule that only sets the verdict apart is passed over. Null when
+ * nothing is above. Where it starts is a reading of the text, not a claim: the
+ * card shows it as the arc's last words.
  */
 export function closingAbove(text: string, at: number): string | null {
   const lines = text.split("\n").slice(0, at);
-  const fenced = fencedLines(lines);
-  const blank = (i: number) => !fenced[i] && !(lines[i] ?? "").trim();
-  const edge = (i: number, rule: RegExp) => !fenced[i] && rule.test(lines[i] ?? "");
+  const line = (i: number) => lines[i] ?? "";
+  const blank = (i: number) => !line(i).trim();
   let end = lines.length;
-  // Blank lines and a rule that only sets the verdict apart are not the closing.
-  while (end > 0 && (blank(end - 1) || edge(end - 1, RULE))) end -= 1;
+  while (end > 0 && (blank(end - 1) || RULE.test(line(end - 1)))) end -= 1;
   let start = end;
-  if (edge(end - 1, TABLE_ROW)) while (start > 0 && edge(start - 1, TABLE_ROW)) start -= 1;
-  else while (start > 0 && !edge(start - 1, BLOCK_EDGE)) start -= 1;
-  if (start > 0 && edge(start - 1, HEADING)) start -= 1;
+  if (TABLE_ROW.test(line(end - 1))) while (start > 0 && TABLE_ROW.test(line(start - 1))) start -= 1;
+  else while (start > 0 && !edgeOf(line(start - 1))) start -= 1;
+  if (start > 0 && HEADING.test(line(start - 1))) start -= 1;
   while (start < end && blank(start)) start += 1;
   return start < end ? lines.slice(start, end).join("\n") : null;
 }
 
-/** The ask an arc's verdict makes of you, in words; `left` says whether it wrote anything above that line. */
-function arcAsk(status: string, line: string, left: boolean): string {
+/** The ask an arc's verdict makes of you, in words. It says what the arc reported, and nothing about where. */
+function arcAsk(status: string, line: string): string {
   const verbs = "Approve to close the work, or send it back with a note.";
-  if (!left) return `It ended with “${line}” and wrote nothing above it. ${verbs}`;
-  if (status === "CLOSED" || status === "DONE" || status === "MERGED") {
-    return "It reports its arc finished. Read what it left you, then approve to close the work.";
-  }
+  if (status === "CLOSED" || status === "DONE" || status === "MERGED") return `It reports its arc finished. ${verbs}`;
   if (status === "HANDBACK") {
     const count = Number(/^ARC-STATUS: HANDBACK (\d+)\b/.exec(line)?.[1]);
-    if (count === 0)
-      return "It reports nothing handed back to you. Read what it left you, then approve to close the work.";
-    const what = Number.isInteger(count) && count > 0 ? `${count} ${count === 1 ? "thing" : "things"}` : null;
-    return `It hands ${what ?? "work"} back to you, in what it left you. Approve to close the work once you have taken ${what && count > 1 ? "them" : "it"} on, or send it back with a note.`;
+    if (count === 0) return `It reports nothing handed back to you. ${verbs}`;
+    const many = Number.isInteger(count) && count > 1;
+    const what = Number.isInteger(count) && count > 0 ? `${count} ${many ? "things" : "thing"}` : "work";
+    return `It hands ${what} back to you. Approve to close the work once you have taken ${many ? "them" : "it"} on, or send it back with a note.`;
   }
-  if (status === "BLOCKED") {
-    return "It reports its arc blocked; what it left you says on what. Send it back with a note, or cancel the work.";
-  }
-  return `It ended with “${line}”; read what it left you. ${verbs}`;
+  if (status === "BLOCKED") return "It reports its arc blocked. Send it back with a note, or cancel the work.";
+  return `It ended with “${line}”. ${verbs}`;
 }
 
 export function lookOf(state: OrchState, events: readonly WorkEvent[], now: number): Look | null {
@@ -474,7 +448,7 @@ export function lookOf(state: OrchState, events: readonly WorkEvent[], now: numb
     ask: ask
       ? bullets(ask).join(" ")
       : arc
-        ? arcAsk(arc.status, arc.line, closing !== null)
+        ? arcAsk(arc.status, arc.line)
         : "Approve to close it, or send it back with a note.",
     arc: arc ? { status: arc.status, line: arc.line } : null,
     closing,

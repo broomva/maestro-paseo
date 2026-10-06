@@ -516,6 +516,20 @@ describe("a fleet scope's own asks, beside the workspace's (BRO-2856)", () => {
     expect(metaLine(scoped("sri", "sti-1.yaml", "s1"))).toStartWith("sri · sti-1 · ");
   });
 
+  test("a focus with the ask's full identity opens that ask, among asks that differ in one field each", () => {
+    const base = ask("same.yaml", "redeploy", { uid: "u1", home: { kind: "checkout", path: "/wt/a", branch: "a" } });
+    const otherHome = { ...base, home: { kind: "checkout" as const, path: "/wt/b", branch: "b" }, waiting: true };
+    const otherUid = { ...base, uid: "u2", waiting: true };
+    const otherScope = { ...base, scope: "sri", home: root("sri"), waiting: true };
+    const queue = [otherHome, otherUid, otherScope, base];
+    expect(resolveFocus(queue, { ledger: null, id: "redeploy", key: askKey(base) })?.ask).toBe(base);
+    for (const one of [otherHome, otherUid, otherScope]) {
+      expect(resolveFocus(queue, { ledger: null, id: "redeploy", key: askKey(one) })?.ask).toBe(one);
+    }
+    // A key no ask holds now opens nothing, never a near match.
+    expect(resolveFocus(queue, { ledger: null, id: "redeploy", key: askKey({ ...base, uid: "gone" }) })).toBeNull();
+  });
+
   test("a finished arc's asks link exactly: open asks in a ledger whose arc is the run's folder, nothing else", () => {
     const byArc = scoped("sri", "sti-3485.yaml", "redeploy", { arc: "sti-3485-approval-reply" });
     const twin = ask("other.yaml", "twin", { arc: "sti-3485-approval-reply" });

@@ -1,6 +1,7 @@
 // What a finished arc left you, under the Ask wherever work waits at your gate
 // (the detail view and the session's gate card): whether its session is
-// archived, the block above its ARC-STATUS line verbatim (Look.closing), and
+// archived, its last words: the block above its ARC-STATUS line verbatim
+// (Look.closing), and
 // the open decisions it handed you, linked exactly (handedAsks: a ledger whose
 // arc is the run's folder), one press
 // from the Decisions tab.
@@ -10,7 +11,7 @@ import { useState } from "react";
 import { Text, View } from "react-native";
 import type { WorkItem } from "../shared/contracts";
 import { useWorkspaceAsks } from "./decisions";
-import { decisionAsks, handedAsks, ledgerOf } from "./decisions-model";
+import { askKey, decisionAsks, handedAsks, ledgerOf } from "./decisions-model";
 import { clampedBody } from "./fleet-cockpit-model";
 import { plural } from "./format";
 import { requestIntent } from "./intent";
@@ -38,7 +39,7 @@ export function ArcReport({ item, theme, compact }: { item: WorkItem; theme: Plu
       {look.archived ? <Text style={text.small}>Its session is archived.</Text> : null}
       {closing ? (
         <View style={{ gap: space[1] }}>
-          <Text style={text.label}>{look.arc ? `What it left you · ${look.arc.line}` : "What it left you"}</Text>
+          <Text style={text.label}>{look.arc ? `Its last words · ${look.arc.line}` : "Its last words"}</Text>
           <View style={clamped ? { maxHeight: compact ? CLAMP.phone : CLAMP.desktop, overflow: "hidden" } : null}>
             <MarkdownView source={closing} theme={theme} compact={compact} />
           </View>
@@ -50,7 +51,7 @@ export function ArcReport({ item, theme, compact }: { item: WorkItem; theme: Plu
                 icon="ChevronDown"
                 label="Show all"
                 compact={compact}
-                accessibilityLabel="Show all of what the arc left you"
+                accessibilityLabel="Show all of its last words"
                 onPress={() => setAll(true)}
               />
             </View>
@@ -69,7 +70,7 @@ export function ArcReport({ item, theme, compact }: { item: WorkItem; theme: Plu
                 kind: "decisions",
                 ledger: oneLedger,
                 id: first.id,
-                askLedger: ledgerOf(first),
+                key: askKey(first),
               })
             }
           />

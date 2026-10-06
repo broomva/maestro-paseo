@@ -1463,7 +1463,7 @@ describe("a finished arc at your gate (BRO-2856)", () => {
   const arcLook = {
     ran: "2h unsupervised · 1 turn · ran to the gate",
     decided: [],
-    ask: "It hands 1 thing back to you, in what it left you. Approve to close the work once you have taken it on, or send it back with a note.",
+    ask: "It hands 1 thing back to you. Approve to close the work once you have taken it on, or send it back with a note.",
     arc: { status: "HANDBACK", line: "ARC-STATUS: HANDBACK 1" },
     closing: "What's left for you:\n1. Redeploy main to production.",
     archived: true,
@@ -1485,18 +1485,19 @@ describe("a finished arc at your gate (BRO-2856)", () => {
     const view = await mount(detail("arc"));
     for (let tries = 0; tries < 100 && !view.text().includes("Answer its"); tries += 1) await settle(20);
     const text = view.text();
-    expect(text).toContain("It hands 1 thing back to you, in what it left you.");
+    expect(text).toContain("It hands 1 thing back to you.");
     expect(text).toContain("Its session is archived.");
-    expect(text).toContain("What it left you · ARC-STATUS: HANDBACK 1");
+    expect(text).toContain("Its last words · ARC-STATUS: HANDBACK 1");
     expect(text).toContain("Redeploy main to production.");
     expect(text).toContain("Answer its 1 decision in Decisions");
     takeIntent();
     await view.press(view.byLabel("Answer its 1 decision in Decisions"));
+    // The ask's full identity (askKey: home, ledger, uid, id), so Decisions opens that ask and no other.
     expect(takeIntent()).toEqual({
       kind: "decisions",
       ledger: "broomva/sti-3485.yaml",
       id: "redeploy",
-      askLedger: "broomva/sti-3485.yaml",
+      key: JSON.stringify([root.path, "sti-3485.yaml", null, "redeploy"]),
     });
   });
 
@@ -1516,22 +1517,26 @@ describe("a finished arc at your gate (BRO-2856)", () => {
     for (let tries = 0; tries < 100 && !view.text().includes("Answer its"); tries += 1) await settle(20);
     takeIntent();
     await view.press(view.byLabel("Answer its 2 decisions in Decisions"));
-    expect(takeIntent()).toEqual({ kind: "decisions", ledger: null, id: "first", askLedger: "broomva/a.yaml" });
+    expect(takeIntent()).toEqual({
+      kind: "decisions",
+      ledger: null,
+      id: "first",
+      key: JSON.stringify([root.path, "a.yaml", null, "first"]),
+    });
   });
 
   test("with nothing left above the verdict and the session alive, the card adds nothing", async () => {
     const bare = {
       ...arcLook,
       closing: null,
-      ledgers: [],
       archived: false,
-      ask: "It ended with “ARC-STATUS: CLOSED” and wrote nothing above it.",
+      ask: "It reports its arc finished. Approve to close the work, or send it back with a note.",
     };
     items = [...fixture(), work("arc", "review", { worker: worker("arc", null), look: bare })];
     const view = await mount(detail("arc"));
     const text = view.text();
-    expect(text).toContain("It ended with “ARC-STATUS: CLOSED” and wrote nothing above it.");
-    expect(text).not.toContain("What it left you");
+    expect(text).toContain("It reports its arc finished.");
+    expect(text).not.toContain("Its last words");
     expect(text).not.toContain("Its session is archived.");
     expect(text).not.toContain("in Decisions");
   });
@@ -3249,26 +3254,35 @@ describe("the Decisions tab", () => {
     expect(view.text()).toContain("· broomva · bro-2795-local-first-agentic-canvas · answers are not undone here");
   });
 
-  test("an intent naming an ask's own ledger opens that one of two asks sharing an id, all ledgers listed", async () => {
-    const root = { kind: "root" as const, path: "/state/broomva/.control/asks", branch: null };
-    decisionsNow = [canvas("redeploy", { headline: "The fleet's redeploy", home: root })];
-    workspaceNow = [canvas("redeploy", { headline: "The workspace's redeploy", blocking: true, waiting: true })];
+  test("an intent with an ask's full identity opens that ask, of two sharing a ledger and an id in two checkouts", async () => {
+    const at = (path: string) => ({ kind: "checkout" as const, path, branch: path.slice(-1) });
+    // Two checkouts hold one ledger with the same id (control-home's copies): only the home tells them apart.
+    workspaceNow = [
+      canvas("redeploy", { headline: "Redeploy, as checkout a has it", home: at("/wt/a") }),
+      canvas("redeploy", {
+        headline: "Redeploy, as checkout b has it",
+        home: at("/wt/b"),
+        blocking: true,
+        waiting: true,
+      }),
+    ];
     const view = await open();
-    await until(view, "The workspace's redeploy");
+    await until(view, "Redeploy, as checkout b has it");
     await step(generation, () =>
       requestIntent({
         kind: "decisions",
         ledger: null,
         id: "redeploy",
-        askLedger: "broomva/bro-2795-local-first-agentic-canvas.yaml",
+        key: JSON.stringify(["/wt/a", "bro-2795-local-first-agentic-canvas.yaml", null, "redeploy"]),
       }),
     );
     // The card's own heading, not Up next, which lists both.
     const headings = () => view.all('[role="heading"]').map((el) => el.textContent);
-    for (let tries = 0; tries < 150 && !headings().includes("The fleet's redeploy"); tries += 1) await settle(20);
-    expect(headings()).toContain("The fleet's redeploy");
-    expect(headings()).not.toContain("The workspace's redeploy");
-    expect(view.byLabel("All ledgers: 2 open, 1 waits on you")?.getAttribute("aria-pressed")).toBe("true");
+    for (let tries = 0; tries < 150 && !headings().includes("Redeploy, as checkout a has it"); tries += 1) {
+      await settle(20);
+    }
+    expect(headings()).toContain("Redeploy, as checkout a has it");
+    expect(headings()).not.toContain("Redeploy, as checkout b has it");
   });
 
   test("a fleet scope's ask answered while the list cannot be read again: the list learns the answer in place", async () => {
