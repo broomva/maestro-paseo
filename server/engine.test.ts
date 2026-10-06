@@ -242,7 +242,6 @@ describe("the gate", () => {
       ask: "Ship it?",
       arc: null,
       closing: null,
-      ledgers: [],
       archived: false,
     });
   });

@@ -96,9 +96,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     else if (intent.kind === "decisions")
       openDecisions(
         intent.ledger ?? null,
-        intent.id
-          ? { ledger: intent.askLedger ?? intent.ledger ?? null, id: intent.id, home: intent.home ?? null }
-          : null,
+        intent.id ? { ledger: intent.askLedger ?? intent.ledger ?? null, id: intent.id } : null,
       );
     else if (intent.kind === "timeline") setView("timeline");
     else if (intent.kind === "initiatives") setView("initiatives");

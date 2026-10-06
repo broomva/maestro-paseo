@@ -1466,21 +1466,21 @@ describe("a finished arc at your gate (BRO-2856)", () => {
     ask: "It hands 1 thing back to you, in what it left you. Approve to close the work once you have taken it on, or send it back with a note.",
     arc: { status: "HANDBACK", line: "ARC-STATUS: HANDBACK 1" },
     closing: "What's left for you:\n1. Redeploy main to production.",
-    ledgers: ["/state/broomva/.control/asks/sti-3485.yaml"],
     archived: true,
   };
 
   test("it says what the arc reported, shows what it left verbatim, says the session is archived, and links its ask exactly", async () => {
-    items = [...fixture(), work("arc", "review", { worker: worker("arc", null), look: arcLook })];
+    // The run's folder is the arc's name: its ledger's open ask is linked, a ledger of another arc is not.
+    items = [
+      ...fixture(),
+      work("arc", "review", {
+        worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
+        look: arcLook,
+      }),
+    ];
     decisionsNow = [
-      { ...decisionFixture(), ledger: "sti-3485.yaml", id: "redeploy", home: root },
-      // The same ledger file name in the workspace: not the one the text names.
-      {
-        ...decisionFixture(),
-        ledger: "sti-3485.yaml",
-        id: "twin",
-        home: { kind: "main", path: "/repo", branch: null },
-      },
+      { ...decisionFixture(), ledger: "sti-3485.yaml", arc: "sti-3485-approval-reply", id: "redeploy", home: root },
+      { ...decisionFixture(), ledger: "sti-3485.yaml", arc: "another-arc", id: "twin", home: root },
     ];
     const view = await mount(detail("arc"));
     for (let tries = 0; tries < 100 && !view.text().includes("Answer its"); tries += 1) await settle(20);
@@ -1497,8 +1497,26 @@ describe("a finished arc at your gate (BRO-2856)", () => {
       ledger: "broomva/sti-3485.yaml",
       id: "redeploy",
       askLedger: "broomva/sti-3485.yaml",
-      home: "/state/broomva/.control/asks",
     });
+  });
+
+  test("asks of one arc in two ledgers: the link opens every ledger, at the first ask", async () => {
+    items = [
+      ...fixture(),
+      work("arc", "review", {
+        worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
+        look: arcLook,
+      }),
+    ];
+    decisionsNow = [
+      { ...decisionFixture(), ledger: "a.yaml", arc: "sti-3485-approval-reply", id: "first", home: root },
+      { ...decisionFixture(), ledger: "b.yaml", arc: "sti-3485-approval-reply", id: "second", home: root },
+    ];
+    const view = await mount(detail("arc"));
+    for (let tries = 0; tries < 100 && !view.text().includes("Answer its"); tries += 1) await settle(20);
+    takeIntent();
+    await view.press(view.byLabel("Answer its 2 decisions in Decisions"));
+    expect(takeIntent()).toEqual({ kind: "decisions", ledger: null, id: "first", askLedger: "broomva/a.yaml" });
   });
 
   test("with nothing left above the verdict and the session alive, the card adds nothing", async () => {
@@ -3229,6 +3247,28 @@ describe("the Decisions tab", () => {
     // What it answered names the scope's ledger, not the workspace's of the same name.
     await until(view, "answers are not undone here");
     expect(view.text()).toContain("· broomva · bro-2795-local-first-agentic-canvas · answers are not undone here");
+  });
+
+  test("an intent naming an ask's own ledger opens that one of two asks sharing an id, all ledgers listed", async () => {
+    const root = { kind: "root" as const, path: "/state/broomva/.control/asks", branch: null };
+    decisionsNow = [canvas("redeploy", { headline: "The fleet's redeploy", home: root })];
+    workspaceNow = [canvas("redeploy", { headline: "The workspace's redeploy", blocking: true, waiting: true })];
+    const view = await open();
+    await until(view, "The workspace's redeploy");
+    await step(generation, () =>
+      requestIntent({
+        kind: "decisions",
+        ledger: null,
+        id: "redeploy",
+        askLedger: "broomva/bro-2795-local-first-agentic-canvas.yaml",
+      }),
+    );
+    // The card's own heading, not Up next, which lists both.
+    const headings = () => view.all('[role="heading"]').map((el) => el.textContent);
+    for (let tries = 0; tries < 150 && !headings().includes("The fleet's redeploy"); tries += 1) await settle(20);
+    expect(headings()).toContain("The fleet's redeploy");
+    expect(headings()).not.toContain("The workspace's redeploy");
+    expect(view.byLabel("All ledgers: 2 open, 1 waits on you")?.getAttribute("aria-pressed")).toBe("true");
   });
 
   test("a fleet scope's ask answered while the list cannot be read again: the list learns the answer in place", async () => {

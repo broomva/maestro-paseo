@@ -463,26 +463,13 @@ export function writtenTo(ask: DecisionAsk): string {
   return home.path ? `Written to ${lastPart(home.path)}` : `Written into ${ask.ledger}`;
 }
 
-/** Where an ask's ledger file is: its root's folder for a fleet scope's, else its home's `.control/asks`. */
-export function ledgerPath(ask: Pick<DecisionAsk, "home" | "ledger">): string {
-  const dir = ask.home.kind === "root" ? ask.home.path : `${ask.home.path.replace(/\/$/, "")}/.control/asks`;
-  return `${dir.replace(/\/$/, "")}/${ask.ledger}`;
-}
-
 /**
  * The open asks a finished arc handed you, linked exactly and no other way:
- * in a ledger whose full path its last text names (Look.ledgers), or in a
- * ledger whose `arc` is the name of the folder the work ran in.
+ * in a ledger whose `arc` is the name of the folder the work ran in.
  */
-export function handedAsks(
-  asks: readonly DecisionAsk[],
-  named: readonly string[],
-  cwd: string | null | undefined,
-): DecisionAsk[] {
+export function handedAsks(asks: readonly DecisionAsk[], cwd: string | null | undefined): DecisionAsk[] {
   const folder = cwd ? lastPart(cwd) : null;
-  return asks.filter(
-    (ask) => isTriaged(ask) && (named.includes(ledgerPath(ask)) || (folder !== null && ask.arc === folder)),
-  );
+  return folder === null ? [] : asks.filter((ask) => isTriaged(ask) && ask.arc === folder);
 }
 
 /** The answered asks the tab lists, newest first. */

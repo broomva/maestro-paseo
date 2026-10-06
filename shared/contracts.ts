@@ -51,8 +51,6 @@ export const LookSchema = z.object({
   arc: z.object({ status: z.string(), line: z.string() }).nullable().optional(),
   /** With an arc verdict, the block of text just above that line, verbatim: what the arc left you. */
   closing: z.string().nullable().optional(),
-  /** The ask ledgers the last turn's text names by path (`.control/asks/<file>.yaml`): its asks, linked exactly. */
-  ledgers: z.array(z.string()).optional(),
   /** The session it ran in was archived after it reached the gate. */
   archived: z.boolean().optional(),
 });

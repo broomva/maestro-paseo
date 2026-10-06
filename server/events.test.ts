@@ -8,7 +8,6 @@ import {
   flagOf,
   formatDuration,
   lastActivityOf,
-  ledgersNamed,
   lookOf,
   parseEvents,
   pendingPermission,
@@ -65,7 +64,6 @@ describe("the look at the gate", () => {
       ask: "Approve the branch so reviews stop needing the live session.",
       arc: null,
       closing: null,
-      ledgers: [],
       archived: false,
     });
   });
@@ -473,6 +471,24 @@ describe("an arc's own verdict at the gate (BRO-2856)", () => {
     expect(closingAbove(fence, line(fence))).toBe("## Before\nRun this:\n```bash\n# redeploy sri\nfly deploy\n```");
   });
 
+  test("a rule that only sets the verdict apart is passed over, not taken as the end of the closing", () => {
+    const text = ["Done, PR merged.", "", "---", "", "ARC-STATUS: HANDBACK 2"].join("\n");
+    expect(closingAbove(text, line(text))).toBe("Done, PR merged.");
+  });
+
+  test("a fence closes only on its own character, at least as long, with nothing after it", () => {
+    // A ``` line inside a ~~~ block does not close it, and the verdict after the block is read.
+    const tilde = ["~~~", "```", "x", "~~~", "Done.", "ARC-STATUS: CLOSED"].join("\n");
+    expect(arcStatus(tilde)?.status).toBe("CLOSED");
+    expect(closingAbove(tilde, line(tilde))).toBe("~~~\n```\nx\n~~~\nDone.");
+    // A line opening with inline ```x``` code opens no fence.
+    const inline = ["```bun test``` ran twice.", "ARC-STATUS: DONE"].join("\n");
+    expect(arcStatus(inline)?.status).toBe("DONE");
+    // A longer opener needs a closer at least as long.
+    const long = ["````", "```", "ARC-STATUS: CLOSED", "````", "ARC-STATUS: DONE"].join("\n");
+    expect(arcStatus(long)?.status).toBe("DONE");
+  });
+
   test("a table right above the verdict is the closing; nothing above is none", () => {
     const text = [
       "Intro",
@@ -485,18 +501,6 @@ describe("an arc's own verdict at the gate (BRO-2856)", () => {
     ].join("\n");
     expect(closingAbove(text, line(text))).toBe("| item | evidence |\n| --- | --- |\n| Deploy | failed |");
     expect(closingAbove("ARC-STATUS: DONE", 0)).toBeNull();
-  });
-
-  test("ledgers a text names by full path, `~` read as home, each once; a bare file name names none", () => {
-    expect(
-      ledgersNamed(
-        "asks in `~/.local/state/fleet-reconcile/sri/.control/asks/sti-3165.yaml` and /repo/.control/asks/b.yml; again ~/.local/state/fleet-reconcile/sri/.control/asks/sti-3165.yaml.",
-        "/Users/me",
-      ),
-    ).toEqual(["/Users/me/.local/state/fleet-reconcile/sri/.control/asks/sti-3165.yaml", "/repo/.control/asks/b.yml"]);
-    expect(ledgersNamed("a ledger .control/asks/sti-3165.yaml with no root, or sti-3165.yaml", "/Users/me")).toEqual(
-      [],
-    );
   });
 
   test("a finished arc says what it reported, never pointing at words it did not leave; an Ask section still wins", () => {
@@ -512,7 +516,10 @@ describe("an arc's own verdict at the gate (BRO-2856)", () => {
     expect(lookOf("review", ended("Left: a\nARC-STATUS: HANDBACK 1"), T0)?.ask).toStartWith(
       "It hands 1 thing back to you, in what it left you. Approve to close the work once you have taken it on",
     );
-    expect(lookOf("review", ended("Left: a\nARC-STATUS: HANDBACK 0"), T0)?.ask).toStartWith(
+    expect(lookOf("review", ended("Left: a\nARC-STATUS: HANDBACK 0"), T0)?.ask).toBe(
+      "It reports nothing handed back to you. Read what it left you, then approve to close the work.",
+    );
+    expect(lookOf("review", ended("Left: a\nARC-STATUS: HANDBACK"), T0)?.ask).toStartWith(
       "It hands work back to you, in what it left you. Approve to close the work once you have taken it on",
     );
     expect(lookOf("review", ended("x\nARC-STATUS: PAUSED"), T0)?.ask).toStartWith(

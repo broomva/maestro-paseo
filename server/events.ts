@@ -3,7 +3,6 @@
 // is one line. Nothing here is a percentage, and nothing is stored twice:
 // the worker, the look at the gate and the scoreboard are all computed.
 
-import { homedir } from "node:os";
 import type {
   CheckResult,
   FeatureValues,
@@ -356,28 +355,26 @@ const ARC_LINE = /^ARC-STATUS: ([A-Z]+)/;
 const BLOCK_EDGE = /^\s*(?:#{1,6}\s|\||(?:-{3,}|\*{3,}|_{3,})\s*$)/;
 const HEADING = /^\s*#{1,6}\s/;
 const TABLE_ROW = /^\s*\|/;
-const FENCE = /^ {0,3}(?:```|~~~)/;
-/** A ledger a text names by its full path (`~/…` or `/…`, then `/.control/asks/<file>.yaml`). */
-const LEDGER_PATH = /(?:~\/|\/)[^\s`'"()<>[\]]*?\/\.control\/asks\/[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml\b/g;
-
+/** A fence line (CommonMark): up to 3 spaces, then 3+ backticks or tildes; a closing one has nothing after. */
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+const RULE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/;
 /**
- * The ask ledgers a text names by full path, `~/` read as the home folder,
- * each once, in order. A bare `.control/asks/<file>` names no ledger: the
- * same file name can be a workspace ledger and a fleet scope's.
+ * Which lines sit in a fenced code block, the fence lines included. A fence
+ * closes only on its own character, at least as long, with nothing after it;
+ * an unclosed fence runs to the end.
  */
-export function ledgersNamed(text: string, home: string = homedir()): string[] {
-  const paths = [...text.matchAll(LEDGER_PATH)].map(([path]) =>
-    path.startsWith("~/") ? `${home}${path.slice(1)}` : path,
-  );
-  return [...new Set(paths)];
-}
-
-/** Which lines sit in a fenced code block, the fence lines included; an unclosed fence runs to the end. */
 function fencedLines(lines: readonly string[]): boolean[] {
-  let open = false;
+  let open: string | null = null;
   return lines.map((line) => {
-    if (!FENCE.test(line)) return open;
-    open = !open;
+    const fence = FENCE.exec(line);
+    if (open === null) {
+      // A backtick fence's info string has no backtick: "```x```" is inline code, not a fence.
+      if (!fence?.[1] || (fence[1].startsWith("`") && fence[2]?.includes("`"))) return false;
+      open = fence[1];
+      return true;
+    }
+    const closes = fence?.[1] && fence[1][0] === open[0] && fence[1].length >= open.length && !fence[2]?.trim();
+    if (closes) open = null;
     return true;
   });
 }
@@ -411,7 +408,8 @@ export function closingAbove(text: string, at: number): string | null {
   const blank = (i: number) => !fenced[i] && !(lines[i] ?? "").trim();
   const edge = (i: number, rule: RegExp) => !fenced[i] && rule.test(lines[i] ?? "");
   let end = lines.length;
-  while (end > 0 && blank(end - 1)) end -= 1;
+  // Blank lines and a rule that only sets the verdict apart are not the closing.
+  while (end > 0 && (blank(end - 1) || edge(end - 1, RULE))) end -= 1;
   let start = end;
   if (edge(end - 1, TABLE_ROW)) while (start > 0 && edge(start - 1, TABLE_ROW)) start -= 1;
   else while (start > 0 && !edge(start - 1, BLOCK_EDGE)) start -= 1;
@@ -429,6 +427,8 @@ function arcAsk(status: string, line: string, left: boolean): string {
   }
   if (status === "HANDBACK") {
     const count = Number(/^ARC-STATUS: HANDBACK (\d+)\b/.exec(line)?.[1]);
+    if (count === 0)
+      return "It reports nothing handed back to you. Read what it left you, then approve to close the work.";
     const what = Number.isInteger(count) && count > 0 ? `${count} ${count === 1 ? "thing" : "things"}` : null;
     return `It hands ${what ?? "work"} back to you, in what it left you. Approve to close the work once you have taken ${what && count > 1 ? "them" : "it"} on, or send it back with a note.`;
   }
@@ -478,7 +478,6 @@ export function lookOf(state: OrchState, events: readonly WorkEvent[], now: numb
         : "Approve to close it, or send it back with a note.",
     arc: arc ? { status: arc.status, line: arc.line } : null,
     closing,
-    ledgers: ledgersNamed(summary),
     archived,
   };
 }

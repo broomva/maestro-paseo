@@ -1,14 +1,14 @@
 // What a finished arc left you, under the Ask wherever work waits at your gate
 // (the detail view and the session's gate card): whether its session is
 // archived, the block above its ARC-STATUS line verbatim (Look.closing), and
-// the open decisions it handed you, linked exactly (handedAsks), one press
+// the open decisions it handed you, linked exactly (handedAsks: a ledger whose
+// arc is the run's folder), one press
 // from the Decisions tab.
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useState } from "react";
 import { Text, View } from "react-native";
 import type { WorkItem } from "../shared/contracts";
-import { homeKey } from "../shared/fleet";
 import { useWorkspaceAsks } from "./decisions";
 import { decisionAsks, handedAsks, ledgerOf } from "./decisions-model";
 import { clampedBody } from "./fleet-cockpit-model";
@@ -26,7 +26,7 @@ export function ArcReport({ item, theme, compact }: { item: WorkItem; theme: Plu
   const [all, setAll] = useState(false);
   const look = item.look;
   if (!look) return null;
-  const handed = read.data ? handedAsks(decisionAsks(read.data), look.ledgers ?? [], item.worker?.cwd) : [];
+  const handed = read.data ? handedAsks(decisionAsks(read.data), item.worker?.cwd) : [];
   const [first] = handed;
   // One ledger: open at it. More: open at the first ask with every ledger listed, so none is filtered away.
   const oneLedger = first && handed.every((ask) => ledgerOf(ask) === ledgerOf(first)) ? ledgerOf(first) : null;
@@ -70,7 +70,6 @@ export function ArcReport({ item, theme, compact }: { item: WorkItem; theme: Plu
                 ledger: oneLedger,
                 id: first.id,
                 askLedger: ledgerOf(first),
-                home: homeKey(first.home),
               })
             }
           />
