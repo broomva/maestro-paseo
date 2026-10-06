@@ -316,8 +316,10 @@ export function DecisionCard({
         const { [askKey(ask)]: _spent, ...rest } = now;
         return rest;
       });
+      // The list learns it in whichever part holds it: the workspace's, or a fleet scope's.
+      const swap = (one: DecisionAsk) => (sameAsk(one, answered) ? answered : one);
       client.setQueriesData<WorkspaceAsksView>({ queryKey: ["maestro", "workspace-asks"] }, (view) =>
-        view ? { ...view, decisions: view.decisions.map((one) => (sameAsk(one, answered) ? answered : one)) } : view,
+        view ? { ...view, decisions: view.decisions.map(swap), fleet: view.fleet?.map(swap) } : view,
       );
       if (warning) toast.error(warning);
     },

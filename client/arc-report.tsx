@@ -8,6 +8,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { useState } from "react";
 import { Text, View } from "react-native";
 import type { WorkItem } from "../shared/contracts";
+import { homeKey } from "../shared/fleet";
 import { useWorkspaceAsks } from "./decisions";
 import { decisionAsks, handedAsks, ledgerOf } from "./decisions-model";
 import { clampedBody } from "./fleet-cockpit-model";
@@ -27,6 +28,8 @@ export function ArcReport({ item, theme, compact }: { item: WorkItem; theme: Plu
   if (!look) return null;
   const handed = read.data ? handedAsks(decisionAsks(read.data), look.ledgers ?? [], item.worker?.cwd) : [];
   const [first] = handed;
+  // One ledger: open at it. More: open at the first ask with every ledger listed, so none is filtered away.
+  const oneLedger = first && handed.every((ask) => ledgerOf(ask) === ledgerOf(first)) ? ledgerOf(first) : null;
   const closing = look.closing ?? null;
   const clamped = !all && clampedBody(closing, compact);
   if (!look.archived && !closing && !first) return null;
@@ -61,7 +64,15 @@ export function ArcReport({ item, theme, compact }: { item: WorkItem; theme: Plu
             icon="ArrowRight"
             label={`Answer its ${plural(handed.length, "decision")} in Decisions`}
             compact={compact}
-            onPress={() => requestIntent({ kind: "decisions", ledger: ledgerOf(first), id: first.id })}
+            onPress={() =>
+              requestIntent({
+                kind: "decisions",
+                ledger: oneLedger,
+                id: first.id,
+                askLedger: ledgerOf(first),
+                home: homeKey(first.home),
+              })
+            }
           />
         </View>
       ) : null}

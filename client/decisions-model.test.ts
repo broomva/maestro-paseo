@@ -16,6 +16,7 @@ import {
   homeText,
   ledgerName,
   ledgerOf,
+  ledgerPath,
   ledgerRail,
   metaLine,
   nextAfter,
@@ -516,19 +517,33 @@ describe("a fleet scope's own asks, beside the workspace's (BRO-2856)", () => {
     expect(metaLine(scoped("sri", "sti-1.yaml", "s1"))).toStartWith("sri · sti-1 · ");
   });
 
-  test("a finished arc's asks link exactly: a ledger its text names by path, or whose arc is its folder", () => {
+  test("a finished arc's asks link exactly: a ledger whose full path its text names, or whose arc is its folder", () => {
     const named = scoped("sri", "sti-3492-relationship-edges.yaml", "people-referrers");
     const byArc = scoped("sri", "sti-3485.yaml", "redeploy", { arc: "sti-3485-approval-reply" });
     const near = scoped("sri", "sti-3451-replacement-session-history.yaml", "redeploy", {
       arc: "sti-3451-replacement-session-history",
     });
     const answered = scoped("sri", "sti-3485.yaml", "old", { arc: "sti-3485-approval-reply", state: "answered" });
-    const all = [named, byArc, near, answered];
-    expect(ids(handedAsks(all, ["sti-3492-relationship-edges.yaml"], "/wt/sti-3492-relationship-edges"))).toEqual([
-      "people-referrers",
-    ]);
+    // The workspace holds a ledger of the same file name: never linked by the sri path.
+    const workspaceTwin = ask("sti-3492-relationship-edges.yaml", "twin", {
+      home: { kind: "main", path: "/repo", branch: null },
+    });
+    const all = [workspaceTwin, named, byArc, near, answered];
+    expect(ledgerPath(named)).toBe("/state/sri/.control/asks/sti-3492-relationship-edges.yaml");
+    expect(ledgerPath(workspaceTwin)).toBe("/repo/.control/asks/sti-3492-relationship-edges.yaml");
+    expect(
+      ids(
+        handedAsks(
+          all,
+          ["/state/sri/.control/asks/sti-3492-relationship-edges.yaml"],
+          "/wt/sti-3492-relationship-edges",
+        ),
+      ),
+    ).toEqual(["people-referrers"]);
+    expect(ids(handedAsks(all, ["/repo/.control/asks/sti-3492-relationship-edges.yaml"], null))).toEqual(["twin"]);
     expect(ids(handedAsks(all, [], "/wt/0t6jwuf0/sti-3485-approval-reply"))).toEqual(["redeploy"]);
-    // A near name is no link; nor is a folder with no ledger, nor no folder at all.
+    // A bare file name, a near name, a folder with no ledger, no folder at all: no link.
+    expect(handedAsks(all, ["sti-3492-relationship-edges.yaml"], null)).toEqual([]);
     expect(handedAsks(all, [], "/wt/sti-3451-session-history")).toEqual([]);
     expect(handedAsks(all, [], null)).toEqual([]);
   });

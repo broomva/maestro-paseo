@@ -83,7 +83,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     setFleetTick(tick);
     setView("fleet");
   };
-  // The workspace's asks open in Decisions, at the ask named; a fleet scope's stay in its Fleet view.
+  // Asks open in Decisions, at the ask named: the workspace's and every fleet scope's.
   const openDecisions = (ledger: string | null, ask: DecisionsFocus["ask"]) => {
     setDecisionsFocus({ ledger, ask, at: Date.now() });
     setView("decisions");
@@ -94,7 +94,12 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     else if (intent.kind === "new") setCreating(true);
     else if (intent.kind === "fleet") openFleet(intent.scope);
     else if (intent.kind === "decisions")
-      openDecisions(intent.ledger ?? null, intent.id ? { ledger: intent.ledger ?? null, id: intent.id } : null);
+      openDecisions(
+        intent.ledger ?? null,
+        intent.id
+          ? { ledger: intent.askLedger ?? intent.ledger ?? null, id: intent.id, home: intent.home ?? null }
+          : null,
+      );
     else if (intent.kind === "timeline") setView("timeline");
     else if (intent.kind === "initiatives") setView("initiatives");
     else {

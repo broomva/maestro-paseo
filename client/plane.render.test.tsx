@@ -953,6 +953,8 @@ const invoke = async (method: string, input: unknown) => {
       controlRepo: "/Users/me/broomva",
       main: { sha: "1c7740c5", fetchedAt: null },
       decisions: workspaceNow,
+      // Each fleet scope's own root asks, tagged as the server tags them (Fleet.scopeDecisions).
+      fleet: decisionsNow.map((ask) => ({ ...ask, scope: "broomva" })),
       warnings: [],
     };
   }
@@ -1039,7 +1041,8 @@ const invoke = async (method: string, input: unknown) => {
     };
     if (where.kind === "workspace") workspaceNow = workspaceNow.map((entry) => (entry.id === id ? answered : entry));
     else decisionsNow = decisionsNow.map((entry) => (entry.id === id ? answered : entry));
-    return { ask: answered, warning: null };
+    // A fleet answer comes back tagged with its scope, as index.server.ts tags it.
+    return { ask: where.kind === "fleet" ? { ...answered, scope: "broomva" } : answered, warning: null };
   }
   if (method === "fleet.review") {
     const { keys, verdict, note } = input as { keys: string[]; verdict: "accept" | "reject"; note: string };
@@ -1451,6 +1454,68 @@ describe("work the loop flagged", () => {
     await view.rerender(<WorkDetail id="d" theme={theme} compact={false} navigation={undefined} />);
     expect(view.text()).not.toContain(yours.reason);
     expect(view.all('[role="alert"]')).toHaveLength(0);
+  });
+});
+
+describe("a finished arc at your gate (BRO-2856)", () => {
+  const detail = (id: string) => <WorkDetail id={id} theme={theme} compact={false} navigation={undefined} />;
+  const root = { kind: "root" as const, path: "/state/broomva/.control/asks", branch: null };
+  const arcLook = {
+    ran: "2h unsupervised · 1 turn · ran to the gate",
+    decided: [],
+    ask: "It hands 1 thing back to you, in what it left you. Approve to close the work once you have taken it on, or send it back with a note.",
+    arc: { status: "HANDBACK", line: "ARC-STATUS: HANDBACK 1" },
+    closing: "What's left for you:\n1. Redeploy main to production.",
+    ledgers: ["/state/broomva/.control/asks/sti-3485.yaml"],
+    archived: true,
+  };
+
+  test("it says what the arc reported, shows what it left verbatim, says the session is archived, and links its ask exactly", async () => {
+    items = [...fixture(), work("arc", "review", { worker: worker("arc", null), look: arcLook })];
+    decisionsNow = [
+      { ...decisionFixture(), ledger: "sti-3485.yaml", id: "redeploy", home: root },
+      // The same ledger file name in the workspace: not the one the text names.
+      {
+        ...decisionFixture(),
+        ledger: "sti-3485.yaml",
+        id: "twin",
+        home: { kind: "main", path: "/repo", branch: null },
+      },
+    ];
+    const view = await mount(detail("arc"));
+    for (let tries = 0; tries < 100 && !view.text().includes("Answer its"); tries += 1) await settle(20);
+    const text = view.text();
+    expect(text).toContain("It hands 1 thing back to you, in what it left you.");
+    expect(text).toContain("Its session is archived.");
+    expect(text).toContain("What it left you · ARC-STATUS: HANDBACK 1");
+    expect(text).toContain("Redeploy main to production.");
+    expect(text).toContain("Answer its 1 decision in Decisions");
+    takeIntent();
+    await view.press(view.byLabel("Answer its 1 decision in Decisions"));
+    expect(takeIntent()).toEqual({
+      kind: "decisions",
+      ledger: "broomva/sti-3485.yaml",
+      id: "redeploy",
+      askLedger: "broomva/sti-3485.yaml",
+      home: "/state/broomva/.control/asks",
+    });
+  });
+
+  test("with nothing left above the verdict and the session alive, the card adds nothing", async () => {
+    const bare = {
+      ...arcLook,
+      closing: null,
+      ledgers: [],
+      archived: false,
+      ask: "It ended with “ARC-STATUS: CLOSED” and wrote nothing above it.",
+    };
+    items = [...fixture(), work("arc", "review", { worker: worker("arc", null), look: bare })];
+    const view = await mount(detail("arc"));
+    const text = view.text();
+    expect(text).toContain("It ended with “ARC-STATUS: CLOSED” and wrote nothing above it.");
+    expect(text).not.toContain("What it left you");
+    expect(text).not.toContain("Its session is archived.");
+    expect(text).not.toContain("in Decisions");
   });
 });
 
@@ -3138,6 +3203,49 @@ describe("the Decisions tab", () => {
     expect(view.text()).toContain("Answered just now: “Drop all four” · bro-2795-local-first-agentic-canvas ·");
   });
 
+  test("a fleet scope's ask is listed beside the workspace's, filed under its scope, and answered at its root", async () => {
+    const root = { kind: "root" as const, path: "/state/broomva/.control/asks", branch: null };
+    // The same file name as a workspace ledger: two ledgers, never one.
+    decisionsNow = [canvas("redeploy", { headline: "Redeploy main's tip?", home: root, hash: "bbbbbbbbbbbbbbbb" })];
+    workspaceNow = [canvas("product-name")];
+    const view = await open();
+    await until(view, "Decision ");
+    expect(view.byLabel("All ledgers: 2 open")).not.toBeNull();
+    expect(view.byLabel("bro-2795-local-first-agentic-canvas.yaml: 1 open")).not.toBeNull();
+    await view.press(view.byLabel("broomva/bro-2795-local-first-agentic-canvas.yaml: 1 open"));
+    expect(view.text()).toContain("Decision 1 of 1");
+    expect(view.text()).toContain("Redeploy main's tip?");
+    expect(view.text()).toContain("broomva · bro-2795-local-first-agentic-canvas · ");
+    await view.press(view.byLabel("File all four, recommended"));
+    await view.press(view.byLabel("Answer redeploy: File all four"));
+    expect(sent("ask.answer")).toEqual([
+      expect.objectContaining({
+        where: { kind: "fleet", scope: "broomva" },
+        ledger: "bro-2795-local-first-agentic-canvas.yaml",
+        id: "redeploy",
+        hash: "bbbbbbbbbbbbbbbb",
+      }),
+    ]);
+    // What it answered names the scope's ledger, not the workspace's of the same name.
+    await until(view, "answers are not undone here");
+    expect(view.text()).toContain("· broomva · bro-2795-local-first-agentic-canvas · answers are not undone here");
+  });
+
+  test("a fleet scope's ask answered while the list cannot be read again: the list learns the answer in place", async () => {
+    const root = { kind: "root" as const, path: "/state/broomva/.control/asks", branch: null };
+    decisionsNow = [canvas("redeploy", { headline: "Redeploy main's tip?", home: root })];
+    const view = await open();
+    await until(view, "Redeploy main's tip?");
+    // Every read after this fails: only the answer's own reply can tell the list.
+    workspaceFail = "asks.workspace timed out";
+    await view.press(view.byLabel("File all four, recommended"));
+    await view.press(view.byLabel("Answer redeploy: File all four"));
+    await until(view, "Recently answered · 1");
+    expect(view.text()).toContain("Recently answered · 1");
+    expect(view.text()).toContain("0 open");
+    expect(view.text()).toContain("Nothing to decide");
+  });
+
   test("an ask with no decision layer: its first sentence leads, the rest behind Full question; answered in words", async () => {
     workspaceNow = [
       canvas("A1", {
@@ -3277,7 +3385,7 @@ describe("the Decisions tab", () => {
     await until(view, "This ask is no longer open here");
     await view.press(view.byLabel("Next decision"));
     await until(view, "Nothing to decide");
-    expect(view.text()).toContain("No open asks in your workspace's ledgers.");
+    expect(view.text()).toContain("No open asks in your workspace's ledgers or the fleet's.");
   });
 
   test("the card is pinned to its ask: a refetch never swaps it; answered elsewhere, it stays and says so", async () => {

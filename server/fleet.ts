@@ -672,11 +672,15 @@ export class Fleet {
 
   /** Every scope's own root asks, each tagged with its scope: Decisions lists them beside the workspace's. */
   async scopeDecisions(): Promise<{ asks: DecisionAsk[]; warnings: string[] }> {
-    const { scopes } = await this.scopes();
+    const { scopes, error } = await this.scopes();
     const reads = await Promise.all(scopes.map((config) => readDecisions(join(config.stateDir, ASK_ROOT))));
     return {
       asks: reads.flatMap((read, at) => read.asks.map((ask) => ({ ...ask, scope: scopes[at]?.id ?? null }))),
-      warnings: reads.flatMap((read, at) => read.warnings.map((warning) => `Fleet ${scopes[at]?.id}: ${warning}`)),
+      warnings: [
+        // An unreadable fleet config, in scopes()'s words: the scopes are then the last read, else the state dirs found.
+        ...(error ? [error] : []),
+        ...reads.flatMap((read, at) => read.warnings.map((warning) => `Fleet ${scopes[at]?.id}: ${warning}`)),
+      ],
     };
   }
 

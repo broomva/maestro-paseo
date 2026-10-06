@@ -3,6 +3,7 @@
 // is one line. Nothing here is a percentage, and nothing is stored twice:
 // the worker, the look at the gate and the scoreboard are all computed.
 
+import { homedir } from "node:os";
 import type {
   CheckResult,
   FeatureValues,
@@ -355,60 +356,86 @@ const ARC_LINE = /^ARC-STATUS: ([A-Z]+)/;
 const BLOCK_EDGE = /^\s*(?:#{1,6}\s|\||(?:-{3,}|\*{3,}|_{3,})\s*$)/;
 const HEADING = /^\s*#{1,6}\s/;
 const TABLE_ROW = /^\s*\|/;
-/** A ledger a text names by its path: the file name after `.control/asks/`. */
-const LEDGER_PATH = /\.control\/asks\/([A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml)\b/g;
+const FENCE = /^ {0,3}(?:```|~~~)/;
+/** A ledger a text names by its full path (`~/…` or `/…`, then `/.control/asks/<file>.yaml`). */
+const LEDGER_PATH = /(?:~\/|\/)[^\s`'"()<>[\]]*?\/\.control\/asks\/[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml\b/g;
 
-/** The ask ledgers a text names by path (`.control/asks/<file>.yaml`), each once, in order. */
-export function ledgersNamed(text: string): string[] {
-  return [...new Set([...text.matchAll(LEDGER_PATH)].map((match) => match[1] as string))];
+/**
+ * The ask ledgers a text names by full path, `~/` read as the home folder,
+ * each once, in order. A bare `.control/asks/<file>` names no ledger: the
+ * same file name can be a workspace ledger and a fleet scope's.
+ */
+export function ledgersNamed(text: string, home: string = homedir()): string[] {
+  const paths = [...text.matchAll(LEDGER_PATH)].map(([path]) =>
+    path.startsWith("~/") ? `${home}${path.slice(1)}` : path,
+  );
+  return [...new Set(paths)];
+}
+
+/** Which lines sit in a fenced code block, the fence lines included; an unclosed fence runs to the end. */
+function fencedLines(lines: readonly string[]): boolean[] {
+  let open = false;
+  return lines.map((line) => {
+    if (!FENCE.test(line)) return open;
+    open = !open;
+    return true;
+  });
 }
 
 /**
  * An arc's verdict as the workspace writes it (ctx-core's grammar): the last
- * line of the text that starts exactly `ARC-STATUS: WORD`, the word, and the
- * line's index. Null when no line does.
+ * line of the text that starts exactly `ARC-STATUS: WORD`, outside a code
+ * fence, the word, and the line's index. Null when no line does.
  */
 export function arcStatus(text: string): { status: string; line: string; at: number } | null {
   const lines = text.split("\n");
+  const fenced = fencedLines(lines);
   for (let at = lines.length - 1; at >= 0; at--) {
     const line = lines[at] ?? "";
-    const word = ARC_LINE.exec(line)?.[1];
+    const word = fenced[at] ? undefined : ARC_LINE.exec(line)?.[1];
     if (word) return { status: word, line: line.trim(), at };
   }
   return null;
 }
 
 /**
- * The block just above line `at`, verbatim: from the nearest heading (kept),
- * table row or rule above it, else from the text's start. When a table ends
- * right above, the table is the block. Null when empty.
+ * The block just above line `at`, verbatim (blank lines around it dropped,
+ * nothing else): from the nearest heading (kept), table row or rule above it,
+ * else from the text's start. A code fence is taken whole, its lines never
+ * read as a heading. When a table ends right above, the table is the block.
+ * Null when empty.
  */
 export function closingAbove(text: string, at: number): string | null {
   const lines = text.split("\n").slice(0, at);
+  const fenced = fencedLines(lines);
+  const blank = (i: number) => !fenced[i] && !(lines[i] ?? "").trim();
+  const edge = (i: number, rule: RegExp) => !fenced[i] && rule.test(lines[i] ?? "");
   let end = lines.length;
-  while (end > 0 && !(lines[end - 1] ?? "").trim()) end -= 1;
+  while (end > 0 && blank(end - 1)) end -= 1;
   let start = end;
-  const row = (line: string | undefined) => TABLE_ROW.test(line ?? "");
-  if (row(lines[end - 1])) while (start > 0 && row(lines[start - 1])) start -= 1;
-  else while (start > 0 && !BLOCK_EDGE.test(lines[start - 1] ?? "")) start -= 1;
-  if (start > 0 && HEADING.test(lines[start - 1] ?? "")) start -= 1;
-  const block = lines.slice(start, end).join("\n").trim();
-  return block ? block : null;
+  if (edge(end - 1, TABLE_ROW)) while (start > 0 && edge(start - 1, TABLE_ROW)) start -= 1;
+  else while (start > 0 && !edge(start - 1, BLOCK_EDGE)) start -= 1;
+  if (start > 0 && edge(start - 1, HEADING)) start -= 1;
+  while (start < end && blank(start)) start += 1;
+  return start < end ? lines.slice(start, end).join("\n") : null;
 }
 
-/** The ask an arc's verdict makes of you, in words; the closing block under it says the rest. */
-function arcAsk(status: string, line: string): string {
+/** The ask an arc's verdict makes of you, in words; `left` says whether it wrote anything above that line. */
+function arcAsk(status: string, line: string, left: boolean): string {
+  const verbs = "Approve to close the work, or send it back with a note.";
+  if (!left) return `It ended with “${line}” and wrote nothing above it. ${verbs}`;
   if (status === "CLOSED" || status === "DONE" || status === "MERGED") {
-    return "It reports its arc finished. Read what it left you below, then approve to close the work.";
+    return "It reports its arc finished. Read what it left you, then approve to close the work.";
   }
   if (status === "HANDBACK") {
     const count = Number(/^ARC-STATUS: HANDBACK (\d+)\b/.exec(line)?.[1]);
-    const what = Number.isInteger(count) && count > 0 ? `${count} ${count === 1 ? "thing" : "things"}` : "work";
-    return `It hands ${what} back to you, below. Approve to close the work once you have taken ${count === 1 ? "it" : "them"} on, or send it back with a note.`;
+    const what = Number.isInteger(count) && count > 0 ? `${count} ${count === 1 ? "thing" : "things"}` : null;
+    return `It hands ${what ?? "work"} back to you, in what it left you. Approve to close the work once you have taken ${what && count > 1 ? "them" : "it"} on, or send it back with a note.`;
   }
-  if (status === "BLOCKED")
-    return "It reports its arc blocked; what on is below. Send it back with a note, or cancel the work.";
-  return `It ended with “${line}”; what it left you is below. Approve to close the work, or send it back with a note.`;
+  if (status === "BLOCKED") {
+    return "It reports its arc blocked; what it left you says on what. Send it back with a note, or cancel the work.";
+  }
+  return `It ended with “${line}”; read what it left you. ${verbs}`;
 }
 
 export function lookOf(state: OrchState, events: readonly WorkEvent[], now: number): Look | null {
@@ -437,19 +464,20 @@ export function lookOf(state: OrchState, events: readonly WorkEvent[], now: numb
   const body = arc ? summary.split("\n").slice(0, arc.at).join("\n") : summary;
   const decided = section(body, "Decided");
   const ask = section(body, "Ask");
-  const archived = (start === null ? events : events.filter((e) => ms(e.ts) >= start)).some(
-    (e) => e.type === "note" && e.text === ARCHIVED_NOTE,
-  );
+  const closing = arc ? closingAbove(summary, arc.at) : null;
+  // Archived since this run was bound and since the turn that brought it here: a session sent back and run again is not.
+  const since = events.findLastIndex((e) => e.type === "turn.ended" || e.type === "dispatched" || e.type === "adopted");
+  const archived = events.slice(since + 1).some((e) => e.type === "note" && e.text === ARCHIVED_NOTE);
   return {
     ran,
     decided: decided ? bullets(decided) : [],
     ask: ask
       ? bullets(ask).join(" ")
       : arc
-        ? arcAsk(arc.status, arc.line)
+        ? arcAsk(arc.status, arc.line, closing !== null)
         : "Approve to close it, or send it back with a note.",
     arc: arc ? { status: arc.status, line: arc.line } : null,
-    closing: arc ? closingAbove(summary, arc.at) : null,
+    closing,
     ledgers: ledgersNamed(summary),
     archived,
   };

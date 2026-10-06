@@ -271,7 +271,9 @@ export default function contribute(host: PluginServerContext) {
   server.handle(answerAsk, async ({ where, ...input }, { paseo }) => {
     if (where.kind === "fleet") {
       if (input.wake) throw new UserError("Only an idea in your workspace takes a wake date.");
-      return fleet.answer({ ...input, scope: where.scope });
+      // Tagged as Decisions lists it, so the card and the list name the scope it was answered in.
+      const answered = await fleet.answer({ ...input, scope: where.scope });
+      return { ...answered, ask: { ...answered.ask, scope: where.scope } };
     }
     if (!workspace) throw new UserError("Maestro reads no control repo here (MAESTRO_PASEO_CONTROL_REPO is off).");
     const answered = await workspace.answer({ ...input, home: where.home });

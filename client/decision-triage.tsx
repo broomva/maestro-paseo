@@ -887,7 +887,7 @@ export function DecisionsView({
           <Text style={text.muted}>
             {ledgerShown
               ? "Every ask in this ledger is answered."
-              : "No open asks in your workspace's ledgers. New ones show here as agents write them."}
+              : "No open asks in your workspace's ledgers or the fleet's. New ones show here as agents write them."}
           </Text>
           {ledgerShown && totalOpen > 0 ? (
             <View style={{ flexDirection: "row" }}>
