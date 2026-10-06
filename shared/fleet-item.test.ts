@@ -9,7 +9,6 @@ import {
   fleetHeading,
   fleetMarker,
   fleetMeta,
-  leadRestates,
   parseFleetBrief,
   withoutMarker,
 } from "./fleet-item";
@@ -274,13 +273,6 @@ describe("a fleet item's heading", () => {
     const title = "Rerun what failed at (tick 5)? [fleet-reconcile sri batch 7-3]";
     const brief = "## For you\n\nThe fleet has a question (tick 5).\n\n- [a1] () Rerun what failed at (tick 5)?";
     expect(fleetHeading(title, brief)?.origin.tick).toBe("7");
-  });
-
-  test("a lead that restates the scope or tick is not shown; one that says more is", () => {
-    const origin = { scope: "sri", tick: "7" };
-    expect(leadRestates("The fleet has 2 questions for you from scope sri (tick 7).", origin)).toBe(true);
-    expect(leadRestates("The fleet's tick for scope sri raised an alert (tick-observe).", origin)).toBe(true);
-    expect(leadRestates("Two sessions disagree on who owns the branch.", origin)).toBe(false);
   });
 
   test("the tick falls back to the batch id", () => {

@@ -1694,15 +1694,14 @@ describe("work the fleet raised (BRO-2839)", () => {
     expect(text).toContain("fleet · sri");
     expect(text).toContain("tick 7 · batch 7-3");
     expect(text).not.toContain("fleet-reconcile-sri / maestro-asks");
-    expect(text).toContain("The fleet asks you");
     expect(text).toContain("observe");
     expect(text).toContain("move it aside, then register.");
-    expect(text.split("The fleet asks you").length - 1).toBe(1);
+    // The producer's lead says what is asked; it is shown whole, and no heading repeats it.
+    expect(text).not.toContain("The fleet asks you");
     expect(text).not.toContain("```");
     // The producer's own verbs line, once.
     expect(text.split("Approve acknowledges them").length - 1).toBe(1);
-    // The lead only restates the scope and tick shown under the title: left out, once said is enough.
-    expect(text).not.toContain("The fleet has 1 question for you from scope sri");
+    expect(text).toContain("The fleet has 1 question for you from scope sri");
     // The run's instructions are folded until asked for.
     const fold = view.byLabel("Instructions to the run");
     expect(fold?.getAttribute("aria-expanded")).toBe("false");

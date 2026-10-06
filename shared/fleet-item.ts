@@ -114,14 +114,6 @@ export function fleetDetail(origin: FleetOrigin): string {
   return alertKind(origin) ?? [origin.tick ? `tick ${origin.tick}` : null, origin.what].filter(Boolean).join(" · ");
 }
 
-/**
- * Whether a brief's lead only restates what the detail shows above it (the
- * scope or the tick, which sit under the title): such a lead is not shown.
- */
-export function leadRestates(lead: string, origin: Pick<FleetOrigin, "scope" | "tick">): boolean {
-  return lead.includes(`scope ${origin.scope}`) || (origin.tick !== null && lead.includes(`(tick ${origin.tick})`));
-}
-
 /** The brief's lines, at most BRIEF_CAP characters, each at most LINE_CAP. */
 function linesOf(brief: string): string[] {
   return brief

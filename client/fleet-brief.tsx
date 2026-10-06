@@ -5,12 +5,13 @@
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Text, View } from "react-native";
-import { alertKind, type FleetBrief, type FleetOrigin, leadRestates } from "../shared/fleet-item";
+import { alertKind, type FleetBrief, type FleetOrigin } from "../shared/fleet-item";
 import { Disclosure, radius, size, space, Unbroken, useText } from "./ui";
 
 /**
- * Says each thing once. The lead is left out when it restates the scope or
- * tick shown under the title; an alert's message is its title, so it is not
+ * Says each thing once. The producer's lead is always shown as written (a
+ * guess at which leads only restate the scope would hide some that say more),
+ * so the heading stands in only when there is no lead; an alert's message is its title, so it is not
  * listed again (unless the title had to cut it), and its kind is the
  * detail's own line, not a tag.
  */
@@ -30,10 +31,10 @@ export function FleetBriefView({
   const alert = alertKind(origin) !== null;
   const asks = alert ? brief.asks.filter((ask) => ask.question !== title) : brief.asks;
   const many = asks.length > 1;
-  const lead = brief.lead && !leadRestates(brief.lead, origin) ? brief.lead : null;
+  const lead = brief.lead || null;
   return (
     <View style={{ gap: space[3] }}>
-      {asks.length > 0 ? (
+      {asks.length > 0 && !lead ? (
         <Text style={text.label} accessibilityRole="header">
           {alert ? "The alert" : many ? `The fleet asks you ${asks.length} things` : "The fleet asks you"}
         </Text>
