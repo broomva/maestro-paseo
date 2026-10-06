@@ -1624,7 +1624,7 @@ export class Engine {
             return { to: "blocked", reason: "The session was archived while it was asking" };
           }
           if (isTerminal(state)) return null;
-          // A finished arc at your gate closes on the next reconcile (finishedArc), which can follow through.
+          // A finished arc at your gate closes in the reconcile below (finishedArc), which can follow through.
           return { events: [this.note(ARCHIVED_NOTE)] };
         },
         item.dir,
