@@ -2404,6 +2404,8 @@ describe("the Fleet view", () => {
     // The band says both numbers, the rest pressable to its view.
     for (let tries = 0; tries < 100 && !view.text().includes("in all"); tries += 1) await settle(20);
     expect(view.text()).toContain(`${fleetShare} need you here · ${header} in all (${otherWork.length} in Work)`);
+    // The subtitle under Maestro's title says the same Maestro-wide number as the header and the band's "in all".
+    expect(view.text().startsWith(`Maestro${header} need you · `)).toBe(true);
     expect(view.byLabel(`${otherWork.length} in Work: open Work`)).not.toBeNull();
     expect(starting(view, `Needs you here: ${fleetShare}, fleet: 1 tick · 1 ask · 1 decision`)).toBeDefined();
     const section = view.byLabel(`Needs you: ${fleetShare} cards`) as unknown as { children: { length: number } };

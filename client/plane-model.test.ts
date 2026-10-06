@@ -408,5 +408,8 @@ describe("card words", () => {
     expect(summaryText([work("x", "review"), work("y", "review")])).toBe("2 need you");
     expect(summaryText([work("x", "done")])).toBe("Nothing needs you");
     expect(summaryText([])).toBe("No work yet");
+    // With the header's own count, the subtitle says that number: the badge's, Maestro-wide.
+    expect(summaryText(plane, 5)).toBe("5 need you · 1 running");
+    expect(summaryText([], 0)).toBe("Nothing needs you");
   });
 });

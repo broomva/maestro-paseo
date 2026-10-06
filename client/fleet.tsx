@@ -54,7 +54,7 @@ import { Roster, RosterChips, SessionInspector } from "./fleet-roster";
 import { LatestTick, POLL_MS, TickSheet, type TickSheetState } from "./fleet-ticks";
 import { Pill, ramp, SectionHead, Segmented, Verb } from "./fleet-ui";
 import { errorText, plural } from "./format";
-import { useWorkList } from "./hooks";
+import { useAttention, useWorkList } from "./hooks";
 import { requestIntent } from "./intent";
 import { fleetOriginOf } from "./records-text";
 import { Button, Card, Notice, radius, space, useReducedMotion, useText } from "./ui";
@@ -166,13 +166,8 @@ export function FleetView({
   const reads = useScopeReads(fleet.data, all, fleet.isError && fleet.data ? errorText(fleet.error) : null);
   const reduced = useReducedMotion();
   const workList = useWorkList();
-  // The header's own read (work.attention, one query with FleetNotices): what "N need you" counts everywhere.
-  const readAttention = useRpc(attentionWork);
-  const attention = useQuery({
-    queryKey: ["maestro", "attention"],
-    queryFn: () => readAttention({}),
-    refetchInterval: POLL_MS,
-  });
+  // The header's own read (work.attention): what "N need you" counts everywhere.
+  const attention = useAttention();
   const queueRef = useRef<View>(null);
   const rosterRef = useRef<View>(null);
   const [width, setWidth] = useState(compact ? 390 : 1100);

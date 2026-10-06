@@ -544,7 +544,7 @@ describe("the owner's words", () => {
       50,
     );
     expect(long.title).toBe("Session bf1ee1b8 is blocked on you: job file…");
-    expect(long.body).toBe("Blocked on a question to its user (allocate disk).");
+    expect(long.body).toBe("blocked on a question to its user (allocate disk).");
     expect(askTag({ class: "7", className: "blocked on the owner" })).toBe("Blocked on you");
     expect(askTag({ class: "github", className: null })).toBe("Repo setup");
     expect(askAge({ firstTick: 107 }, [tick(108, 0.5), tick(107, 49)], NOW)).toBe("2 d");
@@ -898,19 +898,18 @@ describe("round 3 words", () => {
     ).toEqual({
       title: "Repo GetStimulus/sri: no pull_request rule; no required status checks…",
       // The body goes on as a sentence of its own: never an ellipsis fragment.
-      body: "Force-push to the default branch not blocked. Its PRs get no driver.",
+      body: "force-push to the default branch not blocked. Its PRs get no driver.",
     });
   });
 
-  test("a statement then a request keeps the request in the title, naming what 'it' is", () => {
+  test("a long first sentence is cut at a clause, never rewritten: the body is the rest as written", () => {
     expect(
       askLines(
         "The core comparison (ctx doctor --compare) is not run in scope sri: compare.jsonl starts with the pre-spec prototype's line; move it aside, then register. The owner's step is in ctx-core SKILL.md.",
       ),
     ).toEqual({
-      title:
-        "The core comparison (ctx doctor --compare) is not run in scope sri: move compare.jsonl aside, then register",
-      body: "compare.jsonl starts with the pre-spec prototype's line. The owner's step is in ctx-core SKILL.md.",
+      title: "The core comparison (ctx doctor --compare) is not run in scope sri…",
+      body: "compare.jsonl starts with the pre-spec prototype's line; move it aside, then register. The owner's step is in ctx-core SKILL.md.",
     });
   });
 
