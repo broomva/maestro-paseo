@@ -187,6 +187,7 @@ export function Button({
   accessibilityLabel?: string;
 }) {
   const inactive = disabled || busy;
+  const press = usePressScale();
   const fill =
     variant === "primary" ? theme.colors.accent : variant === "secondary" ? theme.colors.surface2 : "transparent";
   const ink =
@@ -195,30 +196,40 @@ export function Button({
       : variant === "quiet"
         ? theme.colors.foregroundMuted
         : theme.colors.foreground;
+  // The press scale is the motion; the pressed opacity stays as its static cue (and the only one under reduced motion).
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel ?? label}
-      accessibilityState={{ disabled: inactive, busy }}
-      disabled={inactive}
-      onPress={onPress}
-      style={({ pressed }) => ({
-        minHeight: compact ? 44 : 36,
-        paddingHorizontal: variant === "quiet" ? space[2] : space[4],
-        borderRadius: radius.pill,
-        backgroundColor: fill,
-        borderWidth: variant === "secondary" ? 1 : 0,
-        borderColor: theme.colors.border,
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: space[2],
-        opacity: inactive ? 0.5 : pressed ? 0.8 : 1,
-      })}
-    >
-      {busy ? <ActivityIndicator size="small" color={ink} /> : icon ? <Icon name={icon} size={16} color={ink} /> : null}
-      <Text style={{ color: ink, fontSize: size.sm, fontWeight: "600" }}>{label}</Text>
-    </Pressable>
+    <Animated.View style={{ transform: [{ scale: press.scale }] }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel ?? label}
+        accessibilityState={{ disabled: inactive, busy }}
+        disabled={inactive}
+        onPress={onPress}
+        onPressIn={inactive ? undefined : press.onPressIn}
+        onPressOut={press.onPressOut}
+        style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({
+          ...focusRing(theme, focused),
+          minHeight: compact ? 44 : 40,
+          paddingHorizontal: variant === "quiet" ? space[2] : space[4],
+          borderRadius: radius.pill,
+          backgroundColor: fill,
+          borderWidth: variant === "secondary" ? 1 : 0,
+          borderColor: theme.colors.border,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: space[2],
+          opacity: inactive ? 0.5 : pressed ? 0.85 : 1,
+        })}
+      >
+        {busy ? (
+          <ActivityIndicator size="small" color={ink} />
+        ) : icon ? (
+          <Icon name={icon} size={16} color={ink} />
+        ) : null}
+        <Text style={{ color: ink, fontSize: size.sm, fontWeight: "600" }}>{label}</Text>
+      </Pressable>
+    </Animated.View>
   );
 }
 

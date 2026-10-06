@@ -16,6 +16,7 @@ import { ChangeText, WithChange } from "./changed";
 import { FilesSection } from "./files";
 import { FleetBriefView } from "./fleet-brief";
 import { ago, agoWords, basename, errorText } from "./format";
+import { LookView, VERBS_MEAN, verbsNeedSaying } from "./gate-look";
 import { useRefresh, useVerbs, useWorkDetail } from "./hooks";
 import type { MaestroIntent } from "./intent";
 import { changedVisible } from "./plane-model";
@@ -371,22 +372,8 @@ function Verbs({
         <Text style={text.label}>Needs you</Text>
         {look ? (
           <View style={{ gap: space[3] }}>
-            <Text style={text.muted}>{look.ran}</Text>
-            {look.decided.length > 0 ? (
-              <View style={{ gap: space[1] }}>
-                <Text style={text.label}>Decided</Text>
-                {look.decided.map((line) => (
-                  <View key={line} style={{ flexDirection: "row", gap: space[2] }}>
-                    <Text style={text.muted}>•</Text>
-                    <Text style={[text.body, { flex: 1 }]}>{line}</Text>
-                  </View>
-                ))}
-              </View>
-            ) : null}
-            <View style={{ gap: space[1] }}>
-              <Text style={text.label}>Ask</Text>
-              <Text style={text.body}>{look.ask}</Text>
-            </View>
+            <Text style={[text.muted, text.tabular]}>{look.ran}</Text>
+            <LookView look={look} theme={theme} compact={compact} />
             <ArcReport item={item} theme={theme} compact={compact} open={open} />
           </View>
         ) : null}
@@ -472,6 +459,7 @@ function Verbs({
             />
           </View>
         )}
+        {!sendingBack && verbsNeedSaying(look) ? <Text style={text.small}>{VERBS_MEAN}</Text> : null}
       </Card>,
     );
   }

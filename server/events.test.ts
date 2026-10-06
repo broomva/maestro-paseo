@@ -66,14 +66,25 @@ describe("the look at the gate", () => {
       arc: null,
       closing: null,
       archived: false,
+      handed: null,
     });
   });
 
-  test("a message without the sections still gives a usable ask", () => {
-    const events = toReview.map((e) => (e.type === "turn.ended" ? { ...e, summary: "Finished." } : e));
+  test("a message that asks nothing gets no invented ask: its last words are what the card shows", () => {
+    const said = "Ran the suite.\n\nAll 40 pass; the branch is pushed.";
+    const events = toReview.map((e) => (e.type === "turn.ended" ? { ...e, summary: said } : e));
+    expect(lookOf("review", events, T0)).toMatchObject({ decided: [], ask: "", closing: said, handed: null });
+  });
+
+  test("a handback's ⛔ block is the ask, its table verbatim, and its words are not repeated as last words", () => {
+    const table =
+      "| # | ask | unblocks | if you say nothing |\n|---|---|---|---|\n| 1 | Merge #12 | deploy | it waits |";
+    const said = ["## ⛔ Blocked on you — 1 item, ~2 min", "", table, "", "## ✅ Shipped", "- the fix"].join("\n");
+    const events = toReview.map((e) => (e.type === "turn.ended" ? { ...e, summary: said } : e));
     expect(lookOf("review", events, T0)).toMatchObject({
-      decided: [],
-      ask: "Approve to close it, or send it back with a note.",
+      ask: "⛔ Blocked on you — 1 item, ~2 min",
+      handed: table,
+      closing: null,
     });
   });
 

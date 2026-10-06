@@ -244,6 +244,7 @@ describe("the gate", () => {
       arc: null,
       closing: null,
       archived: false,
+      handed: null,
     });
   });
 
@@ -2946,5 +2947,124 @@ describe("a finished arc closes itself once its session is archived (BRO-2861)",
     tickMs(UNDO_MS);
     await timers.fire();
     expect((await engine.get(item.id)).item.state).toBe("canceled");
+  });
+});
+
+describe("adopted arcs land at your gate only with something to decide (BRO-2864)", () => {
+  /** An orchestrator adopting the session it just started, mid-turn, as the SRI orchestrator does. */
+  async function adopted() {
+    const s = await setup();
+    s.fake.agents.set("arc", {
+      id: "arc",
+      cwd: s.repo,
+      status: "running",
+      updatedAt: new Date(clock).toISOString(),
+      workspaceId: "ws-arc",
+      provider: "claude",
+      title: "SRI: STI-3492 organisation referrers (arc)",
+      archivedAt: null,
+      pendingPermissions: [],
+      activeTurn: null,
+    });
+    const item = await s.engine.adopt(s.fake.paseo, "arc", "");
+    expect(item.state).toBe("running");
+    const said = (text: string) => [{ type: "assistant_message" as const, text }];
+    // Each end carries its provider turn id, as Paseo's hook does: without one a second end reads as a repeat.
+    let turns = 0;
+    const end = (text: string, outcome: Parameters<Engine["onTurnEnded"]>[1] = { kind: "completed" }) =>
+      s.engine.onTurnEnded({ id: "arc" }, outcome, said(text), `turn-${++turns}`);
+    return { ...s, item, end };
+  }
+
+  test("a turn that hands nothing back is the arc between steps: it stays running, and no card is left", async () => {
+    const { engine, fake, item, end } = await adopted();
+    tick(17);
+    await end("Engine test suite is running in the background; meanwhile typechecking the touched packages.");
+    const { item: after, events } = await engine.get(item.id);
+    expect(after.state).toBe("running");
+    expect(events.at(-1)).toMatchObject({ type: "turn.ended", text: "Turn finished" });
+    expect(after.landing ?? null).toBeNull();
+    await Promise.resolve();
+    expect(fake.appended).toEqual([]);
+  });
+
+  test("a verdict lands it, in ctx-core's grammar or only meaning one, and so does an ask", async () => {
+    for (const text of [
+      "Merged #2134.\n\nARC-STATUS: CLOSED",
+      "Checks 1–6 are complete.\n\n**ARC-STATUS:** done with handback.",
+      "Built it.\n\n## Ask\n- Merge #12 or hold it for the release?",
+      "## ⛔ Blocked on you — 1 item, ~2 min\n\n| # | ask |\n|---|---|\n| 1 | Merge #12 |",
+    ]) {
+      const { engine, item, end } = await adopted();
+      tick(5);
+      await end(text);
+      expect((await engine.get(item.id)).item.state).toBe("review");
+    }
+  });
+
+  test("a canceled turn (a restart, or its orchestrator steering it) stays running; a failed one is stuck", async () => {
+    const canceled = await adopted();
+    await canceled.end("Running the live DB drill.", { kind: "canceled", reason: "interrupted" });
+    expect((await canceled.engine.get(canceled.item.id)).item.state).toBe("running");
+    const failed = await adopted();
+    await failed.end("Running the live DB drill.", { kind: "failed", error: { message: "API overloaded" } });
+    expect((await failed.engine.get(failed.item.id)).item).toMatchObject({
+      state: "blocked",
+      reason: "API overloaded",
+    });
+  });
+
+  test("work at your gate whose session goes on without a verdict leaves the gate", async () => {
+    const { engine, item, end } = await adopted();
+    await end("## Ask\n- Keep the 100-company bound?");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+    tick(3);
+    await end("Rebased onto main; re-running the touched suites.");
+    const { item: after, events } = await engine.get(item.id);
+    expect(after.state).toBe("running");
+    expect(events.at(-1)).toMatchObject({
+      type: "state",
+      detail: "The session kept working on its arc; it handed you nothing to decide",
+    });
+  });
+
+  test("replay of STI-3492: a reload finds the arc idle mid-work, keeps it running, and does not re-read it", async () => {
+    const { engine, fake, item } = await adopted();
+    // 19:54 adopted; 20:11 the plugin reloads while the session waits on a background test run.
+    tick(17);
+    const stopped = new Date(clock).toISOString();
+    const agent = fake.agents.get("arc");
+    if (agent) agent.status = "idle";
+    fake.setLastActivityAt("arc", stopped);
+    fake.timelines.set("arc", [
+      { type: "user_message", text: "Start the STI-3492 organisation-referrers arc." },
+      {
+        type: "assistant_message",
+        text: "Adding `referrerSample` to the catalog card schema, then the app card, approval route and run bound.",
+      },
+    ]);
+    fake.timelineEnd.set("arc", stopped);
+    tick(1);
+    await engine.list(fake.paseo);
+    const read = await engine.get(item.id);
+    expect(read.item.state).toBe("running");
+    expect(read.events.at(-1)).toMatchObject({ type: "turn.ended", ts: stopped });
+    expect(fake.refetched).toEqual(["arc"]);
+    // The next reconcile sees its end on record and nothing since: no second read, no second end.
+    tick(1);
+    await engine.list(fake.paseo);
+    expect(fake.refetched).toEqual(["arc"]);
+    expect((await engine.get(item.id)).events).toHaveLength(read.events.length);
+    expect(fake.appended).toEqual([]);
+  });
+
+  test("dispatched work keeps its contract: one task, so a run that asks nothing still lands, with its last words", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await endTurn(engine, fake, [{ type: "assistant_message", text: "Stored it on the Run record; tests pass." }]);
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "review",
+      look: { ask: "", closing: "Stored it on the Run record; tests pass." },
+    });
   });
 });

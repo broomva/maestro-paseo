@@ -11,10 +11,11 @@ import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useQuery } from "@tanstack/react-query";
 import { type ComponentType, type ReactNode, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
-import { getWork, type Look, type WorkItem } from "../shared/contracts";
+import { getWork, type WorkItem } from "../shared/contracts";
 import type { GateCardData } from "../shared/gate-card";
 import { ArcReport } from "./arc-report";
 import { errorText } from "./format";
+import { LookView, VERBS_MEAN, verbsNeedSaying } from "./gate-look";
 import { answerTarget, cardSettled, cardView, resolution, SUPERSEDED } from "./gate-state";
 import { useVerbs } from "./hooks";
 import type { MaestroIntent } from "./intent";
@@ -129,32 +130,6 @@ function GateBody({
   );
 }
 
-function LookView({ look, theme }: { look: Look; theme: PluginTheme }) {
-  const text = useText(theme);
-  return (
-    <View style={{ gap: space[2] }}>
-      <Text style={text.small}>{look.ran}</Text>
-      {look.decided.length > 0 ? (
-        <View style={{ gap: space[1] }}>
-          <Text style={text.label}>Decided</Text>
-          {look.decided.map((line) => (
-            <View key={line} style={{ flexDirection: "row", gap: space[2] }}>
-              <Text style={text.muted}>•</Text>
-              <Text style={[text.body, { flex: 1 }]}>{line}</Text>
-            </View>
-          ))}
-        </View>
-      ) : null}
-      {look.ask ? (
-        <View style={{ gap: space[1] }}>
-          <Text style={text.label}>Ask</Text>
-          <Text style={text.body}>{look.ask}</Text>
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
 function Deciding({
   item,
   theme,
@@ -172,10 +147,12 @@ function Deciding({
   const toast = useToast();
   const [note, setNote] = useState("");
   const [sendingBack, setSendingBack] = useState(false);
+  const text = useText(theme);
   const fail = (error: unknown) => toast.error(errorText(error));
+  // What it asks first, then its own words, then the verbs; how long it ran is the footer.
   return (
     <View style={{ gap: space[3] }}>
-      {item.look ? <LookView look={item.look} theme={theme} /> : null}
+      {item.look ? <LookView look={item.look} theme={theme} compact={compact} /> : null}
       <ArcReport item={item} theme={theme} compact={compact} open={open} />
       {sendingBack ? (
         <View style={{ gap: space[2] }}>
@@ -250,6 +227,8 @@ function Deciding({
           {after}
         </View>
       )}
+      {!sendingBack && verbsNeedSaying(item.look) ? <Text style={text.small}>{VERBS_MEAN}</Text> : null}
+      {item.look ? <Text style={[text.small, text.tabular]}>{item.look.ran}</Text> : null}
     </View>
   );
 }

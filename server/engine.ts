@@ -45,6 +45,8 @@ import {
   type FlaggedEvent,
   finishedArc,
   flagOf,
+  handsBack,
+  isAdopted,
   keptSummary,
   lastOf,
   latestChecks,
@@ -159,6 +161,8 @@ const QUEUE_MS = 120_000;
 const INDEX_MS = 15_000;
 const RECONCILE_MS = 10_000;
 const MISSED_END_MS = 90_000;
+/** Why adopted work left your gate: its session went on with its arc, handing you nothing (engine.ts endTurn). */
+const KEPT_WORKING = "The session kept working on its arc; it handed you nothing to decide";
 
 /** How long a decision at the gate waits before it takes effect. */
 export const UNDO_MS = 10_000;
@@ -1688,9 +1692,14 @@ export class Engine {
           turnId: options.turnId ?? null,
         };
         const state = fresh.contract.state;
+        // A session Maestro adopted runs its own arc over many turns: a turn that hands you nothing (handsBack:
+        // no verdict, no ask) is the arc between steps, not work at your gate. It stays running, and the loop
+        // names it if it goes quiet. One that failed still stops it: that is something to look at.
+        const between = isAdopted(fresh.events) && outcome.kind !== "failed" && !handsBack(ended.summary);
         if (state !== "running") {
           // The session worked again after landing (its turn start was missed): the gate must show that turn.
           if (state === "review" && !pendingPermission(fresh.events)) {
+            if (between) return { at, to: "running", actor: "agent", reason: KEPT_WORKING, events: [ended] };
             if (outcome.kind === "failed") {
               return { at, to: "blocked", reason: outcome.error.message, events: [ended] };
             }
@@ -1710,6 +1719,7 @@ export class Engine {
           }
           return { events: [ended] };
         }
+        if (between) return { events: [ended] };
         if (outcome.kind === "failed") return { at, to: "blocked", reason: outcome.error.message, events: [ended] };
         if (outcome.kind === "canceled") {
           return { at, to: "blocked", reason: "Stopped before finishing", events: [ended] };
@@ -1951,6 +1961,16 @@ export class Engine {
     const last = lastOf(item.events, "dispatched", "adopted", "state", "turn.started");
     const since = last ? this.now().getTime() - Date.parse(last.ts) : Number.POSITIVE_INFINITY;
     if (since <= MISSED_END_MS) return false;
+    // Its end is on record and its session has done nothing since, by the daemon's word: an adopted arc between
+    // turns (endTurn kept it running), not a missed end. Reading its timeline again would change nothing.
+    const recorded = lastOf(item.events, "turn.ended");
+    if (
+      recorded &&
+      isDuplicateEnd(item.events, null) &&
+      Date.parse(agent.updatedAt) <= Date.parse(recorded.ts) + MISSED_END_MS
+    ) {
+      return false;
+    }
     // The end was missed. Read what happened instead of assuming it went well; if it cannot be read, try later.
     const page = await paseo.agents
       .ref(agent.id)

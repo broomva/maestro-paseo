@@ -42,6 +42,7 @@ export type Worker = z.infer<typeof WorkerSchema>;
 export const LookSchema = z.object({
   ran: z.string(),
   decided: z.array(z.string()),
+  /** What it asks of you in its own words; empty when it asked nothing (the card then says what the verbs do). */
   ask: z.string(),
   /**
    * The arc's own verdict, when the last turn's text ends one the workspace's
@@ -53,6 +54,8 @@ export const LookSchema = z.object({
   closing: z.string().nullable().optional(),
   /** The session it ran in was archived after it reached the gate. */
   archived: z.boolean().optional(),
+  /** What it handed you, verbatim: the body of its `## ⛔ Blocked on you` block (a table, as the handback skill writes it). */
+  handed: z.string().nullable().optional(),
 });
 export type Look = z.infer<typeof LookSchema>;
 

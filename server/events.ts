@@ -445,6 +445,41 @@ export function finishedArc(events: readonly WorkEvent[]): string | null {
 /** The receipt of work that closed itself (finishedArc). */
 export const closedItself = (line: string) => `Its arc reported “${line}” and its session was archived`;
 
+/**
+ * Whether a turn's text hands something to you: an arc verdict (arcStatus) or
+ * an `## Ask` section, the workspace's two handback forms. A session Maestro
+ * adopted runs its own arc over many turns, so only such a turn lands it at
+ * your gate; any other turn end is the arc between steps (engine.ts endTurn).
+ */
+export const handsBack = (text: string): boolean =>
+  ANY_ARC.test(text) || section(text, "Ask") !== null || blockedOnYou(text) !== null;
+
+/** An arc verdict line however it is dressed (`**ARC-STATUS:** …`): whether one was meant, not its word (arcStatus). */
+const ANY_ARC = /^[\s>*_`-]*ARC-STATUS\b/m;
+const BLOCKED_HEADING = /^ {0,3}#{1,6}\s*(?:⛔\s*)?Blocked on you\b.*$/i;
+
+/**
+ * The handback skill's `## ⛔ Blocked on you — N items` block: its heading
+ * without the #s, and its body verbatim (a table, as the skill writes it) up
+ * to the next heading. Null when the text has none.
+ */
+export function blockedOnYou(text: string): { heading: string; body: string | null } | null {
+  const lines = text.split("\n");
+  const at = lines.findIndex((line) => BLOCKED_HEADING.test(line));
+  if (at < 0) return null;
+  let end = at + 1;
+  while (end < lines.length && !HEADING.test(lines[end] ?? "")) end += 1;
+  const body = lines
+    .slice(at + 1, end)
+    .join("\n")
+    .trim();
+  return { heading: (lines[at] ?? "").replace(/^ {0,3}#{1,6}\s*/, "").trim(), body: body || null };
+}
+
+/** Whether the run was adopted (a session running its own arc), not dispatched by Maestro with one task. */
+export const isAdopted = (events: readonly WorkEvent[]): boolean =>
+  lastOf(events, "dispatched", "adopted")?.type === "adopted";
+
 export function lookOf(state: OrchState, events: readonly WorkEvent[], now: number): Look | null {
   if (state !== "review") return null;
   const permission = pendingPermission(events);
@@ -471,16 +506,22 @@ export function lookOf(state: OrchState, events: readonly WorkEvent[], now: numb
   const body = arc ? summary.split("\n").slice(0, arc.at).join("\n") : summary;
   const decided = section(body, "Decided");
   const ask = section(body, "Ask");
-  const closing = arc ? closingAbove(summary, arc.at) : null;
+  const blocked = ask ? null : blockedOnYou(body);
+  // Its last words: above the verdict for an arc; with no verdict and nothing asked, the end of what it said,
+  // so the card always shows what you would be answering. An ask is itself the content, so it is not repeated.
+  const asked = ask !== null || blocked !== null;
+  const closing = arc
+    ? closingAbove(summary, arc.at)
+    : asked
+      ? null
+      : closingAbove(summary, summary.split("\n").length);
   const archived = archivedSince(events);
   return {
     ran,
     decided: decided ? bullets(decided) : [],
-    ask: ask
-      ? bullets(ask).join(" ")
-      : arc
-        ? arcAsk(arc.status, arc.line)
-        : "Approve to close it, or send it back with a note.",
+    // Empty when the session asked nothing: the card says what the verbs do instead of inventing a question.
+    ask: ask ? bullets(ask).join(" ") : arc ? arcAsk(arc.status, arc.line) : (blocked?.heading ?? ""),
+    handed: blocked?.body ?? null,
     arc: arc ? { status: arc.status, line: arc.line } : null,
     closing,
     archived,

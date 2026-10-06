@@ -179,6 +179,12 @@ The eight system states are Maestro's; the UI speaks the six plain labels.
   or starts a fresh run if the session is gone.
 - A **permission request** parks the item at Needs you as a question. Answer it from Maestro or
   in the session; the run resumes.
+- **Adopted sessions** (a session running its own arc, such as one an orchestrator started) land
+  at Needs you only when a turn hands you something: an `ARC-STATUS:` line, an `## Ask` section, or
+  the handback skill's `## ⛔ Blocked on you` block. Any other turn end is the arc between steps:
+  the work stays Running, and the loop names it if it goes quiet. A dispatched run is one task, so
+  its turn end still lands. The card shows the ask in the session's own words, or its last words
+  and what Approve and Send back do; it never invents a question.
 
 Two edges differ from the Maestro runtime because Paseo owns execution: review can return to
 running (send back, answered question), and queued or stuck work can be canceled directly. Both
@@ -805,8 +811,8 @@ It is pinned to 0.8.0 so one build serves 0.8 and 0.9 hosts.
 - Hook events are live and best effort. Every list reconciles bound work against the agent's real
   status, so a turn end missed while the plugin was stopped is recovered on the next look. A
   recovered end reads the session's timeline for its real outcome, is stamped when the agent
-  actually stopped, and always lands at your gate: work never closes itself on an end Maestro did
-  not see. A correction is dropped if anything was recorded after reconcile looked.
+  actually stopped, and lands at your gate under the same rule as a live one (an adopted arc only
+  with something to decide): work never closes itself on an end Maestro did not see. A correction is dropped if anything was recorded after reconcile looked.
 - The scoreboard counts from state changes in the event log; a run started before the plugin was
   installed does not appear until it is tracked.
 - Cancel does not stop or archive the Paseo session. Stop it from the session if it is still
