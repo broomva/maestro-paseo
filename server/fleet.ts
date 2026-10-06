@@ -19,7 +19,7 @@
 
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { type FileHandle, lstat, open, readdir, stat } from "node:fs/promises";
+import { type FileHandle, lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import type { WorkItem } from "../shared/contracts";
@@ -671,30 +671,30 @@ export class Fleet {
   }
 
   /**
-   * Every scope's own root asks, each tagged with its scope and each listed
-   * once: two scopes configured with one state dir read one ledger file, whose
-   * asks are one ask each (by root, ledger, uid and id), under the first scope.
-   * Decisions lists these (scopeDecisions) and the header counts the waiting
+   * Every scope's own root asks, each tagged with its scope. A root is read
+   * once: two scopes configured with one state dir (however reached: the
+   * root is resolved) read one set of ledgers, listed under the first scope.
+   * Within a root every ask is listed as the ledger reader gives it, refused
+   * twins included. Decisions lists these and the header counts the waiting
    * ones (waitingAsks), so both count the same asks.
    */
   async scopeDecisions(): Promise<{ asks: DecisionAsk[]; warnings: string[] }> {
     const { scopes, error } = await this.scopes();
-    const reads = await Promise.all(scopes.map((config) => readDecisions(join(config.stateDir, ASK_ROOT))));
-    const seen = new Set<string>();
-    const asks = reads.flatMap((read, at) =>
-      read.asks.flatMap((ask) => {
-        const key = JSON.stringify([ask.home.path, ask.ledger, ask.uid, ask.id]);
-        if (seen.has(key)) return [];
-        seen.add(key);
-        return [{ ...ask, scope: scopes[at]?.id ?? null }];
+    const roots = await Promise.all(
+      scopes.map((config) => {
+        const root = join(config.stateDir, ASK_ROOT);
+        return realpath(root).catch(() => root);
       }),
     );
+    const firsts = scopes.filter((_, at) => roots.indexOf(roots[at] as string) === at);
+    const reads = await Promise.all(firsts.map((config) => readDecisions(join(config.stateDir, ASK_ROOT))));
+    const asks = reads.flatMap((read, at) => read.asks.map((ask) => ({ ...ask, scope: firsts[at]?.id ?? null })));
     return {
       asks,
       warnings: [
         // An unreadable fleet config, in scopes()'s words: the scopes are then the last read, else the state dirs found.
         ...(error ? [error] : []),
-        ...reads.flatMap((read, at) => read.warnings.map((warning) => `Fleet ${scopes[at]?.id}: ${warning}`)),
+        ...reads.flatMap((read, at) => read.warnings.map((warning) => `Fleet ${firsts[at]?.id}: ${warning}`)),
       ],
     };
   }
