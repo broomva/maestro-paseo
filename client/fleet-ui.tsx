@@ -433,7 +433,8 @@ export function Kpi({
       ring={radius.card}
       accessibilityLabel={accessibilityLabel}
       selected={selected}
-      outer={{ flexGrow: 1, flexBasis: phone ? 0 : 128, minWidth: phone ? 0 : 120 }}
+      // On the phone a tile has its own width in a row that scrolls sideways; on the desktop the row shares it.
+      outer={phone ? { width: 96 } : { flexGrow: 1, flexBasis: 128, minWidth: 120 }}
       style={(pressed) => ({
         minHeight: phone ? 64 : 96,
         padding: phone ? space[2] : space[3],
@@ -458,7 +459,6 @@ export function Kpi({
               t.meta,
               { flex: 1, fontWeight: "600", color: quiet ? theme.colors.foregroundMuted : theme.colors.foreground },
             ]}
-            numberOfLines={1}
           >
             {label}
           </Text>
@@ -483,9 +483,7 @@ export function Kpi({
         {value}
       </Text>
       {phone ? (
-        <Text style={[t.meta, { color: theme.colors.foreground }]} numberOfLines={1}>
-          {selected ? `${label} · filtering` : label}
-        </Text>
+        <Text style={[t.meta, { color: theme.colors.foreground }]}>{selected ? `${label} · filtering` : label}</Text>
       ) : sub ? (
         <Text style={t.meta} numberOfLines={2}>
           {sub}

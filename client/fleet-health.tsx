@@ -5,7 +5,7 @@
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import {
   CELL_GLYPH,
   CELL_LEGEND,
@@ -156,6 +156,7 @@ export function HealthBand({
   badge,
   meta,
   onOpenTick,
+  relation = null,
 }: {
   theme: PluginTheme;
   phone: boolean;
@@ -166,9 +167,40 @@ export function HealthBand({
   badge?: string | null;
   meta?: string | null;
   onOpenTick: (scope: string, tick: number) => void;
+  /**
+   * The header's count beside the fleet's part of it: `2 need you here · 5 in all (3 in Work)`, each other
+   * surface pressable to its view. Null until the header's read is in.
+   */
+  relation?: {
+    here: number;
+    all: number;
+    elsewhere: readonly { label: string; count: number; onPress: () => void }[];
+  } | null;
 }) {
   const t = ramp(theme);
   const ink = toneInk(theme, verdict.tone as Tone);
+  const relationLine =
+    relation && relation.all > 0 ? (
+      <Text style={[t.muted, t.tabular]} accessibilityLabel={`${relation.here} need you here, ${relation.all} in all`}>
+        <Text style={[t.body, { fontWeight: "600" }]}>{`${relation.here} need you here`}</Text>
+        {` · ${relation.all} in all`}
+        {relation.elsewhere.length > 0 ? " (" : ""}
+        {relation.elsewhere.map((entry, index) => (
+          <Text key={entry.label}>
+            {index > 0 ? ", " : ""}
+            <Text
+              accessibilityRole="link"
+              accessibilityLabel={`${entry.count} in ${entry.label}: open ${entry.label}`}
+              onPress={entry.onPress}
+              style={{ textDecorationLine: "underline" }}
+            >
+              {`${entry.count} in ${entry.label}`}
+            </Text>
+          </Text>
+        ))}
+        {relation.elsewhere.length > 0 ? ")" : ""}
+      </Text>
+    ) : null;
   const axis = cellAxis(strips.find((strip) => !strip.error)?.cells ?? []);
   const head = (
     <View style={{ flexDirection: "row", alignItems: "center", gap: space[2] }}>
@@ -283,6 +315,7 @@ export function HealthBand({
     >
       <View style={{ gap: space[2], flex: wide ? 1 : undefined }}>
         {head}
+        {relationLine}
         {phone ? null : <Text style={t.muted}>{verdict.sentence}</Text>}
       </View>
       {stripsView}
@@ -318,31 +351,40 @@ export function KpiRow({
   selected: string | null;
   onPress: (id: KpiValue["id"]) => void;
 }) {
-  const shown = phone ? tiles.filter((tile) => ["needs", "attention", "running", "idle"].includes(tile.id)) : tiles;
-  return (
-    <View style={{ flexDirection: "row", gap: phone ? space[2] : space[3], flexWrap: phone ? "nowrap" : "wrap" }}>
-      {shown.map((tile) => (
-        <Kpi
-          key={tile.id}
-          theme={theme}
-          label={tile.label}
-          value={tile.value}
-          sub={tile.sub}
-          tone={tile.tone}
-          quiet={tile.quiet}
-          phone={phone}
-          jumps={tile.id === "needs"}
-          selected={selected === tile.id}
-          accessibilityLabel={`${tile.label}: ${tile.value}${tile.sub ? `, ${tile.sub}` : ""}. ${
-            tile.id === "needs"
-              ? "Go to Needs you"
-              : selected === tile.id
-                ? "Filtering the sessions"
-                : "Show these sessions"
-          }`}
-          onPress={() => onPress(tile.id)}
-        />
-      ))}
-    </View>
+  const tile = (entry: KpiValue) => (
+    <Kpi
+      key={entry.id}
+      theme={theme}
+      label={entry.label}
+      value={entry.value}
+      sub={entry.sub}
+      tone={entry.tone}
+      quiet={entry.quiet}
+      phone={phone}
+      jumps={entry.id === "needs"}
+      selected={selected === entry.id}
+      accessibilityLabel={`${entry.label}: ${entry.value}${entry.sub ? `, ${entry.sub}` : ""}. ${
+        entry.id === "needs"
+          ? "Go to Needs you"
+          : selected === entry.id
+            ? "Filtering the sessions"
+            : "Show these sessions"
+      }`}
+      onPress={() => onPress(entry.id)}
+    />
   );
+  if (phone) {
+    // Every tile on the phone too: a row that scrolls sideways, never one silently dropped.
+    return (
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        accessibilityLabel="Fleet counts"
+        contentContainerStyle={{ gap: space[2], paddingRight: space[2] }}
+      >
+        {tiles.map(tile)}
+      </ScrollView>
+    );
+  }
+  return <View style={{ flexDirection: "row", gap: space[3], flexWrap: "wrap" }}>{tiles.map(tile)}</View>;
 }

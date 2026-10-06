@@ -5,6 +5,7 @@
 // and tick numbers stay in Details and the inspector's facts. No React here,
 // so every rule is tested (client/fleet-cockpit-model.test.ts).
 
+import type { Attention } from "../shared/contracts";
 import {
   type DecisionAsk,
   FLEET_CLASSES,
@@ -23,6 +24,7 @@ import {
 } from "../shared/fleet";
 import { agoText, tickWhen } from "./fleet-model";
 import { ago, plural } from "./format";
+import { needsYouCount } from "./header-count";
 
 /** One scope as the cockpit reads it: its summary, its detail once read, and why its read failed. */
 export interface ScopeRead {
@@ -283,6 +285,55 @@ export function fleetNeedsYou(reads: readonly ScopeRead[]): FleetNeeds {
     total: ticks + alerts + asks + decisions,
     sessions,
   };
+}
+
+/**
+ * The header's "N need you", split the way the Fleet view says it: the
+ * fleet's share (here) and each other surface's, from the very pieces the
+ * header counts (header-count.ts needsYouCount over work.attention): work
+ * that needs you, fleet notices, timeline notices, decision asks that wait
+ * (a fleet root's are the fleet's, the workspace's are Decisions'), and
+ * initiatives. `fleetItems`: the ids of the fleet's own work (its alerts and
+ * raised asks), which the header counts among the work.
+ */
+export interface HeaderShares {
+  total: number;
+  fleet: number;
+  work: number;
+  decisions: number;
+  timeline: number;
+  initiatives: number;
+}
+
+export function headerShares(
+  attention: Pick<Attention, "waiting" | "fleet" | "timeline" | "asks" | "initiatives">,
+  fleetItems: ReadonlySet<string>,
+): HeaderShares {
+  const waiting = attention.waiting;
+  const fleetNotices = attention.fleet ?? [];
+  const timeline = attention.timeline ?? [];
+  const asks = attention.asks ?? [];
+  const initiatives = attention.initiatives ?? [];
+  const total = needsYouCount(waiting, fleetNotices, timeline, asks, initiatives);
+  const fleetWork = needsYouCount(waiting.filter((item) => fleetItems.has(item.id)));
+  const fleetAsks = asks.filter((ask) => ask.scope !== null);
+  return {
+    total,
+    fleet: fleetWork + fleetNotices.length + fleetAsks.length,
+    work: needsYouCount(waiting.filter((item) => !fleetItems.has(item.id))),
+    decisions: asks.length - fleetAsks.length,
+    timeline: timeline.length,
+    initiatives: initiatives.length,
+  };
+}
+
+/** The fleet's own work items in Needs you: what the header counts among the work as the fleet's. */
+export function fleetItemIds(needs: Pick<FleetNeeds, "cards">): Set<string> {
+  return new Set(
+    needs.cards.flatMap((card) =>
+      card.kind === "alert" ? [card.item.id] : card.kind === "ask" && card.ask.item ? [card.ask.item.id] : [],
+    ),
+  );
 }
 
 /**

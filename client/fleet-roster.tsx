@@ -376,11 +376,12 @@ function historyPaint(theme: PluginTheme, kind: HistoryKind) {
     case "quiet":
       return { backgroundColor: tint(theme.colors.statusSuccess, 0.55) };
     default:
+      // Not listed: a dotted outline in the muted ink, visible on either theme (the border token is not).
       return {
         backgroundColor: "transparent",
-        borderWidth: 1,
-        borderStyle: "dashed" as const,
-        borderColor: theme.colors.border,
+        borderWidth: 1.5,
+        borderStyle: "dotted" as const,
+        borderColor: theme.colors.foregroundMuted,
       };
   }
 }

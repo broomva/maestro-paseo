@@ -357,7 +357,9 @@ Top to bottom:
   needs you, an ask batch raised as work that needs you (one per item, however many asks it
   carries), and a decision ask in the fleet's own root that waits on you (`waiting`: blocking, or
   recommending what cannot be undone). Sessions that want a look are named beside it (*6 sessions
-  want a look*), never in it: the header does not count them.
+  want a look*), never in it: the header does not count them. The band says how it relates to the
+  header's own count, from the header's pieces (needsYouCount over work.attention): *2 need you here
+  · 5 in all (3 in Work)*, each other surface pressable to its view.
 - **The health band.** A verdict that leads with the problem and never overclaims. It is *healthy*
   only when every scope was read, ticks on time, nothing needs you and no session wants a look.
   Otherwise it names, worst first: a scope that cannot be read (no data at all; a refetch that
@@ -370,7 +372,7 @@ Top to bottom:
   scope ends on a dashed missed cell (!). There is no "late": a wall-clock gap between two ticks
   includes sleep, and the server judges a stall in awake time. Every cell carries its words for a
   screen reader, and on the desktop a cell opens its tick.
-- **KPI tiles.** *Needs you* jumps to the queue and says what it counts (`fleet: 1 tick · 2 asks ·
+- **KPI tiles.** *Needs you here* jumps to the queue and says what it counts (`fleet: 1 tick · 2 asks ·
   1 decision`). *Attention* (sessions that want a look, with how many failed and blocked),
   *Running*, *Idle*, *Failed*, *Unmanaged* (the fleet's class 10) and a muted *Out of scope* each
   filter the roster to exactly what they count, bring it into view, and say *Filtering* while they
@@ -382,9 +384,11 @@ Top to bottom:
   the folder always single-quoted, a leading `~/` as `"$HOME"`, a canonical UUID only). Answering
   the raised work and *Copy question* follow. A title keeps the request: a blocked-session ask
   reads *<session> is waiting on you* with the request as its body; a long first sentence is cut at
-  a clause, the body going on from it. Then, apart and uncounted, **Also open**: asks not raised as
-  work yet (each says when it will be: *raised at the next tick, ~21:18*), alerts at rest, and the
-  scope's decisions that do not wait on you (answered ones stay findable). *Latest tick* shows the
+  a clause (a statement then a request keeps the request: *…not run in scope sri: move compare.jsonl
+  aside, then register*), the body going on as a sentence of its own. Then, apart and uncounted,
+  **Not raised to you yet**: asks the fleet raises as work at its next tick (*~21:18*), with their
+  tags and verbs; and **Also open**: alerts at rest and the scope's decisions that do not wait on
+  you (answered ones stay findable). *Latest tick* shows the
   failing or missed scope's tick (else the newest) with each step and one plain line, and under
   *All scopes* every other scope's latest tick as a compact row that opens its log. *Report*, *Log*
   and *All ticks* open the tick in a sheet.
@@ -410,7 +414,7 @@ sessions in its report — nothing is done*), each naming every session it cover
 the fleet and changes nothing now, so *Agree* is never the page's filled verb.
 
 On a phone the same reads stack in one column: a full-width scope control, a compact health card,
-four tiles, the queue with 44 pt verbs, the latest tick, then the roster.
+every tile in a row that scrolls sideways, the queue with 44 pt verbs, the latest tick, then the roster.
 
 The parts, in detail:
 

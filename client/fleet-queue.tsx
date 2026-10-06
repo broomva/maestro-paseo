@@ -46,6 +46,7 @@ import { groupSubject, keysFor, proposalSubject } from "./fleet-model";
 import { TickDetail, type TickSheetState } from "./fleet-ticks";
 import { copy, isDark, Pill, ramp, type Tone, tint, Verb } from "./fleet-ui";
 import { errorText, plural } from "./format";
+import { timeText } from "./history-model";
 import { useRefresh } from "./hooks";
 import { titleText } from "./records-text";
 import { radius, space, Unbroken } from "./ui";
@@ -985,6 +986,14 @@ export function NeedsYouQueue({
   onOpenTick: (sheet: TickSheetState) => void;
 }) {
   const t = ramp(theme);
+  // Asks the fleet has not raised as work yet are said apart, with when it will.
+  const notRaised = also.filter((card) => card.kind === "ask");
+  const rest = also.filter((card) => card.kind !== "ask");
+  const next =
+    notRaised
+      .map((card) => context.next(card.scope))
+      .filter((at): at is number => at !== null)
+      .sort((a, b) => a - b)[0] ?? null;
   const view = (card: QueueCard, lead: boolean) => (
     <QueueCardView
       key={card.key}
@@ -1017,18 +1026,30 @@ export function NeedsYouQueue({
         ) : null}
         {cards.map((card, index) => view(card, index === 0))}
       </View>
-      {also.length > 0 ? (
+      {notRaised.length > 0 ? (
+        <View style={{ gap: space[3], paddingTop: space[2] }}>
+          <View style={{ gap: 2 }}>
+            <Text style={t.cardTitle} accessibilityRole="header">
+              Not raised to you yet
+            </Text>
+            <Text style={t.meta}>
+              {`The fleet raises these as work at its next tick${next ? ` (~${timeText(new Date(next).toISOString())})` : ""}; until then they aren't counted.`}
+            </Text>
+          </View>
+          {notRaised.map((card) => view(card, false))}
+        </View>
+      ) : null}
+      {rest.length > 0 ? (
         <View style={{ gap: space[3], paddingTop: space[2] }}>
           <View style={{ gap: 2 }}>
             <Text style={[t.cardTitle, { color: theme.colors.foregroundMuted }]} accessibilityRole="header">
               Also open
             </Text>
             <Text style={t.meta}>
-              What the fleet holds open that does not need you now: asks not raised as work yet, alerts at rest,
-              decisions that do not wait on you. Not counted.
+              Alerts the fleet holds at rest and decisions that do not wait on you. Not counted.
             </Text>
           </View>
-          {also.map((card) => view(card, false))}
+          {rest.map((card) => view(card, false))}
         </View>
       ) : null}
     </View>

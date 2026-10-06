@@ -72,13 +72,41 @@ export function askLines(question: string, max = 110): { title: string; body: st
   const first = end ? text.slice(0, end.index + 1) : text;
   const sentence = first.replace(/[.:]$/, "");
   if (sentence.length <= max) return { title: sentence, body: text.slice(first.length).trim() || null };
-  // Too long for a title: cut at the last clause (`; `, `, `, `: `) that keeps the request, else a word.
+  const after = text.slice(first.length).trim();
+  // A sentence starts with a capital, unless it starts with a name (a file, a path, a command) as written.
+  const capital = (part: string) =>
+    /^\S*[./_`]/.test(part) ? part : `${part.charAt(0).toUpperCase()}${part.slice(1)}`;
+  // Too long for a title. A statement then a request (`<what>: <why>; <do this>`): the title keeps the what
+  // and the request, the why goes to the body.
+  const colon = sentence.indexOf(": ");
+  const semi = sentence.lastIndexOf("; ");
+  const request = semi > colon ? sentence.slice(semi + 2) : "";
+  // An imperative last clause is the request: `move it aside, then register`.
+  const asks =
+    /^(move|run|add|set|enable|register|allocate|delete|approve|merge|answer|pick|choose|rerun|reply|open|start|stop|fix|rename|remove|install|update|grant|give|pin|create|re-?run|sign|rotate|review)\b/i.test(
+      request,
+    );
+  if (colon > 0 && semi > colon && asks) {
+    const why = capital(sentence.slice(colon + 2, semi).trim()).replace(/[.;,]?$/, ".");
+    // "move it aside": the request names what "it" is, when the why starts with a name.
+    const name = /^(\S*[./_]\S*)\s/.exec(why)?.[1];
+    const named = name ? request.replace(/\bit\b/, name) : request;
+    const title = `${sentence.slice(0, colon)}: ${named}`;
+    if (title.length <= max) {
+      return { title, body: [why, after].filter(Boolean).join(" ") };
+    }
+  }
+  // Else cut at the last clause (`; `, `, `, `: `) within the limit, else a word; the body goes on from
+  // the cut as a sentence of its own, never an ellipsis fragment.
   const head = sentence.slice(0, max);
   const clause = Math.max(head.lastIndexOf("; "), head.lastIndexOf(", "), head.lastIndexOf(": "));
   const kept = clause > max * 0.4 ? sentence.slice(0, clause) : cutWords(sentence, max).slice(0, -1);
-  // The body goes on from the cut, so nothing is said twice.
-  const rest = text.slice(kept.length).replace(/^[\s,;:.-]+/, "");
-  return { title: `${kept}…`, body: rest ? `…${rest}` : null };
+  const rest = sentence
+    .slice(kept.length)
+    .replace(/^[\s,;:.-]+/, "")
+    .trim();
+  const body = [rest ? capital(rest).replace(/[.;,]?$/, ".") : null, after || null].filter(Boolean).join(" ");
+  return { title: `${kept}…`, body: body || null };
 }
 
 /** An ask's tag, in the owner's words: blocked on you, repo setup, an owner step. */

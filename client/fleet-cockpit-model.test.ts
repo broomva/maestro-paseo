@@ -33,6 +33,7 @@ import {
   featuredScope,
   filterRoster,
   fleetNeedsYou,
+  headerShares,
   healthCells,
   historyKind,
   historyText,
@@ -543,7 +544,7 @@ describe("the owner's words", () => {
       50,
     );
     expect(long.title).toBe("Session bf1ee1b8 is blocked on you: job file…");
-    expect(long.body).toBe("…blocked on a question to its user (allocate disk).");
+    expect(long.body).toBe("Blocked on a question to its user (allocate disk).");
     expect(askTag({ class: "7", className: "blocked on the owner" })).toBe("Blocked on you");
     expect(askTag({ class: "github", className: null })).toBe("Repo setup");
     expect(askAge({ firstTick: 107 }, [tick(108, 0.5), tick(107, 49)], NOW)).toBe("2 d");
@@ -896,7 +897,20 @@ describe("round 3 words", () => {
       ),
     ).toEqual({
       title: "Repo GetStimulus/sri: no pull_request rule; no required status checks…",
-      body: "…force-push to the default branch not blocked. Its PRs get no driver.",
+      // The body goes on as a sentence of its own: never an ellipsis fragment.
+      body: "Force-push to the default branch not blocked. Its PRs get no driver.",
+    });
+  });
+
+  test("a statement then a request keeps the request in the title, naming what 'it' is", () => {
+    expect(
+      askLines(
+        "The core comparison (ctx doctor --compare) is not run in scope sri: compare.jsonl starts with the pre-spec prototype's line; move it aside, then register. The owner's step is in ctx-core SKILL.md.",
+      ),
+    ).toEqual({
+      title:
+        "The core comparison (ctx doctor --compare) is not run in scope sri: move compare.jsonl aside, then register",
+      body: "compare.jsonl starts with the pre-spec prototype's line. The owner's step is in ctx-core SKILL.md.",
     });
   });
 
@@ -923,5 +937,31 @@ describe("round 3 words", () => {
     expect(evidenceSentence(null)).toBe("The report gives no evidence for it.");
     expect(placedWords("cwd")).toBe("by its folder");
     expect(placedWords("worktree-parent")).toBe("by its worktree's parent");
+  });
+});
+
+describe("the header's count, split", () => {
+  test("the fleet's share and each other surface's, from the header's own pieces, add up to its total", () => {
+    const attention = {
+      waiting: [
+        { id: "w-ask", group: "review" as const, flag: null },
+        { id: "w-alert", group: "review" as const, flag: null },
+        { id: "mine", group: "review" as const, flag: null },
+        { id: "stuck", group: "blocked" as const, flag: null },
+      ],
+      fleet: [{ scope: "sri", status: "missed" as const, reason: "", since: null }],
+      timeline: [{ id: "launchd:x", name: "x", status: "failed" as const, reason: "", since: null }],
+      asks: [
+        { scope: "sri", ledger: "a.yaml", uid: null, id: "D1", headline: "D1", blocking: true, askedAt: null },
+        { scope: null, ledger: "b.yaml", uid: null, id: "W1", headline: "W1", blocking: true, askedAt: null },
+      ],
+      initiatives: [],
+    };
+    const shares = headerShares(
+      attention as unknown as Parameters<typeof headerShares>[0],
+      new Set(["w-ask", "w-alert"]),
+    );
+    expect(shares).toEqual({ total: 8, fleet: 4, work: 2, decisions: 1, timeline: 1, initiatives: 0 });
+    expect(shares.fleet + shares.work + shares.decisions + shares.timeline + shares.initiatives).toBe(shares.total);
   });
 });

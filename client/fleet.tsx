@@ -28,7 +28,9 @@ import {
   cadenceText,
   featuredScope,
   filterRoster,
+  fleetItemIds,
   fleetNeedsYou,
+  headerShares,
   healthCells,
   linkSession,
   modeBadge,
@@ -52,6 +54,9 @@ import { Roster, RosterChips, SessionInspector } from "./fleet-roster";
 import { LatestTick, POLL_MS, TickSheet, type TickSheetState } from "./fleet-ticks";
 import { Pill, ramp, SectionHead, Segmented, Verb } from "./fleet-ui";
 import { errorText, plural } from "./format";
+import { useWorkList } from "./hooks";
+import { requestIntent } from "./intent";
+import { fleetOriginOf } from "./records-text";
 import { Button, Card, Notice, radius, space, useReducedMotion, useText } from "./ui";
 
 const TICKS = 24;
@@ -160,6 +165,14 @@ export function FleetView({
   const all = scope === null;
   const reads = useScopeReads(fleet.data, all, fleet.isError && fleet.data ? errorText(fleet.error) : null);
   const reduced = useReducedMotion();
+  const workList = useWorkList();
+  // The header's own read (work.attention, one query with FleetNotices): what "N need you" counts everywhere.
+  const readAttention = useRpc(attentionWork);
+  const attention = useQuery({
+    queryKey: ["maestro", "attention"],
+    queryFn: () => readAttention({}),
+    refetchInterval: POLL_MS,
+  });
   const queueRef = useRef<View>(null);
   const rosterRef = useRef<View>(null);
   const [width, setWidth] = useState(compact ? 390 : 1100);
@@ -225,6 +238,23 @@ export function FleetView({
   // One selector for what needs you: the band, the tile, the section and the header's fleet share agree.
   const needs = fleetNeedsYou(reads);
   const teach = teachQueue(reads, now);
+  // The header's count, split into the fleet's share (here) and each other surface's.
+  // The fleet's own work, every scope's (an item's fleet marker, as #23 reads it), then what this read holds.
+  const fleetWork = new Set([
+    ...(workList.data?.items ?? []).filter((item) => fleetOriginOf(item) !== null).map((item) => item.id),
+    ...fleetItemIds(needs),
+  ]);
+  const shares = attention.data ? headerShares(attention.data, fleetWork) : null;
+  const elsewhere = shares
+    ? [
+        { label: "Work", count: shares.work, intent: { kind: "filter", group: "review" } as const },
+        { label: "Decisions", count: shares.decisions, intent: { kind: "decisions" } as const },
+        { label: "Timeline", count: shares.timeline, intent: { kind: "timeline" } as const },
+        { label: "Initiatives", count: shares.initiatives, intent: { kind: "initiatives" } as const },
+      ].filter((entry) => entry.count > 0)
+    : [];
+  // One scope shown: the fleet's share in the other scopes, so the parts add up to the header's total.
+  const otherScopes = shares ? Math.max(0, shares.fleet - needs.total) : 0;
   const reviewed = reviewedGroups(reads, now);
   const roster = rosterRows(reads);
   const asked = askedSessions(reads);
@@ -245,7 +275,7 @@ export function FleetView({
     // The fleet's own: the header's count is all of Maestro's, so the tile names what it counts.
     {
       id: "needs",
-      label: "Needs you",
+      label: "Needs you here",
       value: needs.total,
       sub: needs.total > 0 ? `fleet: ${needsText(needs)}` : needsText(needs),
       tone: "warn",
@@ -441,6 +471,24 @@ export function FleetView({
           setSheetTick(null);
           setSheet({ scope: id, tick: at, first: "log" });
         }}
+        relation={
+          shares
+            ? {
+                here: needs.total,
+                all: shares.total,
+                elsewhere: [
+                  ...(otherScopes > 0
+                    ? [{ label: "other scopes", count: otherScopes, onPress: () => onScope(null) }]
+                    : []),
+                  ...elsewhere.map((entry) => ({
+                    label: entry.label,
+                    count: entry.count,
+                    onPress: () => requestIntent(entry.intent),
+                  })),
+                ],
+              }
+            : null
+        }
       />
 
       {reads

@@ -935,7 +935,8 @@ const invoke = async (method: string, input: unknown) => {
   if (method === "work.history") return { events: history(), capped: false };
   if (method === "work.attention") {
     return {
-      waiting: [],
+      // What the header counts as work, as server/attention.ts lists it.
+      waiting: needsYou(items).map(({ id, group, flag }) => ({ id, group, flag })),
       sessions: [],
       fleet: fleetNotices,
       timeline: timelineNotices,
@@ -2110,7 +2111,7 @@ describe("the Fleet view", () => {
     expect(starting(view, "Tick 35, passed")).toBeDefined();
     expect(starting(view, "No tick: missed for 3h")).toBeDefined();
     // The tile names what it counts: the missed tick and the ask; dry-run proposals are not counted.
-    expect(starting(view, "Needs you: 2, fleet: 1 tick · 1 ask")).toBeDefined();
+    expect(starting(view, "Needs you here: 2, fleet: 1 tick · 1 ask")).toBeDefined();
     expect(starting(view, "Attention: 1, 1 failed")).toBeDefined();
     expect(starting(view, "Running: 1")).toBeDefined();
     expect(starting(view, "Failed: 1")).toBeDefined();
@@ -2369,6 +2370,22 @@ describe("the Fleet view", () => {
       { ...decisionFixture(), id: "W1", blocking: true, waiting: true },
       { ...decisionFixture(), id: "Q1", waiting: false },
     ];
+    // Work a is the fleet's raised batch: the wire says so (#23's display), as it does for real fleet work.
+    items = items.map((item) =>
+      item.id === "a"
+        ? { ...item, display: { title: item.title, fleet: { scope: "broomva", what: "batch 2-1", tick: "2" } } }
+        : item,
+    );
+    // work.attention as the server builds it from the same fixture: the scope's notice and the waiting ask.
+    fleetNotices = [
+      {
+        scope: "broomva",
+        status: "missed",
+        reason: "No tick since tick 35.",
+        since: new Date(Date.now() - 3 * H).toISOString(),
+      },
+    ];
+    askNoticesNow = [askNotice({ ...decisionFixture(), id: "W1", blocking: true, waiting: true }, "broomva")];
     const view = await mount(surface(false));
     await view.goto("Fleet");
     for (let tries = 0; tries < 100 && !view.text().includes("Would list 4 unmanaged"); tries += 1) await settle(20);
@@ -2377,14 +2394,28 @@ describe("the Fleet view", () => {
     const fleetWork = items.filter((item) => item.id === "a");
     const notices = [{ scope: "broomva" }];
     const asks = decisionsNow.filter((ask) => ask.waiting).map((ask) => askNotice(ask, "broomva"));
-    const header = needsYouCount(fleetWork, notices, [], asks);
-    expect(header).toBe(3);
-    expect(view.text()).toContain(`${header} need you`);
-    expect(starting(view, `Needs you: ${header}, fleet: 1 tick · 1 ask · 1 decision`)).toBeDefined();
-    const section = view.byLabel(`Needs you: ${header} cards`) as unknown as { children: { length: number } };
-    expect(section.children.length).toBe(header);
+    const fleetShare = needsYouCount(fleetWork, notices, [], asks);
+    expect(fleetShare).toBe(3);
+    // The header itself, rendered from the same pieces work.attention carries: the fleet's share and the rest.
+    const otherWork = needsYou(items).filter((item) => item.id !== "a");
+    const header = needsYouCount(needsYou(items), notices, [], asks);
+    expect(header).toBe(fleetShare + otherWork.length);
+    expect(headerFace(header).label).toBe(`${header} need you`);
+    // The band says both numbers, the rest pressable to its view.
+    for (let tries = 0; tries < 100 && !view.text().includes("in all"); tries += 1) await settle(20);
+    expect(view.text()).toContain(`${fleetShare} need you here · ${header} in all (${otherWork.length} in Work)`);
+    expect(view.byLabel(`${otherWork.length} in Work: open Work`)).not.toBeNull();
+    expect(starting(view, `Needs you here: ${fleetShare}, fleet: 1 tick · 1 ask · 1 decision`)).toBeDefined();
+    const section = view.byLabel(`Needs you: ${fleetShare} cards`) as unknown as { children: { length: number } };
+    expect(section.children.length).toBe(fleetShare);
     // The decision that does not wait on you is listed apart, uncounted.
     expect(view.text()).toContain("Also open");
+    // One scope shown: the fleet's share in the other scopes is named, so the parts still add up.
+    await view.press(view.byLabel("sri, Not scheduled, 1 proposal to review"));
+    for (let tries = 0; tries < 100 && !view.text().includes("other scopes"); tries += 1) await settle(20);
+    expect(view.text()).toContain(
+      `0 need you here · ${header} in all (${fleetShare} in other scopes, ${otherWork.length} in Work)`,
+    );
   });
 
   test("an ask the fleet has not raised as work yet says when it will be, and can still be copied", async () => {
@@ -2400,10 +2431,10 @@ describe("the Fleet view", () => {
     await settle(30);
     const rows = () => view.all('[aria-label*=". The fleet would: "]').length;
     const before = rows();
-    await view.press(starting(view, "Needs you: "));
+    await view.press(starting(view, "Needs you here: "));
     // Not a roster filter: the sessions are all still there, and the tile is not pressed.
     expect(rows()).toBe(before);
-    expect(starting(view, "Needs you: ")?.getAttribute("aria-pressed")).toBe("false");
+    expect(starting(view, "Needs you here: ")?.getAttribute("aria-pressed")).toBe("false");
     await view.press(starting(view, "Failed: 1"));
     expect(rows()).toBe(1);
     expect(starting(view, "Failed: 1")?.getAttribute("aria-label")).toContain("Filtering the sessions");
@@ -2526,9 +2557,12 @@ describe("the Fleet view", () => {
     const view = await mount(surface(true));
     await view.goto("Fleet");
     await settle(30);
-    expect(starting(view, "Unmanaged: ")).toBeUndefined();
+    // Every tile is reachable on the phone, in a row that scrolls sideways.
+    expect(starting(view, "Unmanaged: ")).toBeDefined();
+    expect(starting(view, "Out of scope: ")).toBeDefined();
+    expect(starting(view, "Failed: ")).toBeDefined();
     for (let tries = 0; tries < 100 && !view.text().includes("Would list 4 unmanaged"); tries += 1) await settle(20);
-    expect(starting(view, "Needs you: 2")).toBeDefined();
+    expect(starting(view, "Needs you here: 2")).toBeDefined();
     // The legend is on the phone too, and an Agree-all card names every session it covers and lists them.
     expect(view.text()).toContain("no exit recorded");
     expect(view.text()).toContain("sri-aaaa1111 · sri-bbbb2222 · sri-cccc3333 · sri-dddd4444");
