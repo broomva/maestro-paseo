@@ -1451,7 +1451,10 @@ export class Engine {
     return toWire(await store.load(stopped.dir), this.now().getTime(), config);
   }
 
-  /** Track a session that was started by hand, so its end lands at the gate. */
+  /**
+   * Track a session that is already running. Adopted by you, its end lands at the gate; adopted by an agent (an
+   * orchestrator tracking its arc), only a turn that hands you something does (events.ts onItsOwnArc).
+   */
   async adopt(paseo: Paseo, agentId: string, title: string, origin: Origin = BY_HUMAN): Promise<WorkItem> {
     // Scan-then-create is not atomic: a retry or a second caller must not bind one session twice.
     if (this.adopting.has(agentId)) throw new UserError("This session is already being tracked.");

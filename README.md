@@ -179,13 +179,14 @@ The eight system states are Maestro's; the UI speaks the six plain labels.
   or starts a fresh run if the session is gone.
 - A **permission request** parks the item at Needs you as a question. Answer it from Maestro or
   in the session; the run resumes.
-- **Adopted sessions** (a session running its own arc, such as one an orchestrator started) land
+- **Arcs an orchestrator tracks** (a session an agent adopted, running an arc of its own) land
   at Needs you only when a turn hands you something: an `ARC-STATUS:` line, an `## Ask` section, or
   the handback skill's `## ⛔ Blocked on you` block. Any other turn end is the arc between steps:
   the work stays Running. With the loop on, it is named in Needs you once it goes quiet; with the
   loop off (the default) an arc that stops without handing anything back stays Running until it
-  does, you stop it, or its session is archived (then it is Stuck). A session that is idle when it
-  is tracked is read the same way: its last turn lands it only if that turn handed you something.
+  does, you stop it, or its session is archived (then it is Stuck). One that is idle when it is
+  tracked is read the same way: its last turn lands it only if that turn handed you something. A
+  session you adopt by hand is work you handed Maestro, so every turn end lands it, as before.
   Only what the session said counts: a heading or verdict it quotes in a code fence, or mentions in
   passing, is not a handback. A long handback keeps its ask when its text is cut to the last 8000
   characters, so it still lands. A dispatched run is one task, so its turn end still lands, and so

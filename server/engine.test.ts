@@ -398,11 +398,23 @@ describe("reconcile", () => {
   });
   const said = (text: string) => [{ type: "assistant_message", text }];
 
-  test("adopting an idle session whose last turn handed you something puts it at the gate", async () => {
+  test("adopting an idle session puts it at the gate", async () => {
+    const { engine, fake, repo } = await setup();
+    fake.agents.set("manual", idleSession(repo));
+    fake.timelines.set("manual", said("Fixed it; the tests pass."));
+    const item = await engine.adopt(fake.paseo, "manual", "");
+    expect(item).toMatchObject({ state: "review", title: "Fix the flaky test" });
+    expect((await engine.adopt(fake.paseo, "manual", "")).id).toBe(item.id);
+    expect((await engine.forAgent("manual"))?.id).toBe(item.id);
+  });
+
+  const BY_ORCHESTRATOR = { actor: "agent" as const, by: "orchestrator" };
+
+  test("an orchestrator adopting an idle arc whose last turn handed you something puts it at the gate", async () => {
     const { engine, fake, repo } = await setup();
     fake.agents.set("manual", idleSession(repo));
     fake.timelines.set("manual", said("Fixed it.\n\n## Ask\n- Merge #12?"));
-    const item = await engine.adopt(fake.paseo, "manual", "");
+    const item = await engine.adopt(fake.paseo, "manual", "", BY_ORCHESTRATOR);
     expect(item).toMatchObject({ state: "review", title: "Fix the flaky test" });
     expect(item.look?.ask).toBe("Merge #12?");
     const landed = (await engine.get(item.id)).events.findLast((e) => e.type === "state");
@@ -411,11 +423,11 @@ describe("reconcile", () => {
     expect((await engine.forAgent("manual"))?.id).toBe(item.id);
   });
 
-  test("adopting an idle arc between steps keeps it running; one whose timeline cannot be read too", async () => {
+  test("an orchestrator adopting an idle arc between steps keeps it running; one it cannot read too", async () => {
     const { engine, fake, repo } = await setup();
     fake.agents.set("manual", idleSession(repo));
     fake.timelines.set("manual", said("Waiting on the background test run, then the approval route."));
-    const between = await engine.adopt(fake.paseo, "manual", "");
+    const between = await engine.adopt(fake.paseo, "manual", "", BY_ORCHESTRATOR);
     expect(between.state).toBe("running");
     expect((await engine.get(between.id)).events.filter((e) => e.type === "turn.ended")).toHaveLength(1);
     fake.agents.set("other", { ...idleSession(repo), id: "other" });
@@ -426,7 +438,7 @@ describe("reconcile", () => {
         ? { ...ref, timeline: { ...ref.timeline, refetch: () => Promise.reject(new Error("not loaded")) } }
         : ref;
     };
-    expect((await engine.adopt(fake.paseo, "other", "")).state).toBe("running");
+    expect((await engine.adopt(fake.paseo, "other", "", BY_ORCHESTRATOR)).state).toBe("running");
   });
 });
 
@@ -1352,7 +1364,6 @@ describe("archive on approve", () => {
       pendingPermissions: [],
       activeTurn: null,
     });
-    fake.timelines.set("manual", [{ type: "assistant_message", text: "Done.\n\nARC-STATUS: HANDBACK" }]);
     const item = await engine.adopt(fake.paseo, "manual", "");
     expect((await decide(item.id, "approve")).state).toBe("done");
     expect(fake.archivedWorkspaces).toEqual([]);
@@ -2992,7 +3003,8 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
       pendingPermissions: [],
       activeTurn: null,
     });
-    const item = await s.engine.adopt(s.fake.paseo, "arc", "");
+    // An orchestrator tracks the arc it started (fleet tick-prompt: `maestro track`), as the SRI orchestrator does.
+    const item = await s.engine.adopt(s.fake.paseo, "arc", "", { actor: "agent", by: "orchestrator" });
     expect(item.state).toBe("running");
     const said = (text: string) => [{ type: "assistant_message" as const, text }];
     // Each end carries its provider turn id, as Paseo's hook does: without one a second end reads as a repeat.
