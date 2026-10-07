@@ -425,17 +425,18 @@ describe("round 1, Strata B (P20)", () => {
     ]);
   });
 
-  test("an ask removed from main after it landed is superseded; one in a ledger that could not be read waits", async () => {
+  test("an ask no ledger holds by its name is a stop for you (held work), never superseded; one unreadable waits", async () => {
     const answered = receipt("A1", "main", { answerOption: "ship", answer: "Ship." });
     const removed = await setup({
       home: "main",
       after: [answered],
       asksAre: (asks) => asks.filter((ask) => ask.id !== "A1"),
     });
-    const [gone] = await removed.router.route();
-    expect([gone?.route, removed.created.length]).toEqual(["superseded", 0]);
-    expect((await removed.log()).routed.get(answerKey(answered as never))?.reason).toBe(
-      `No ledger holds the ask now: it was removed from ${LEDGER}, and that stands; yours is kept in its receipt.`,
+    const [stopped] = await removed.router.route();
+    // Not guessed removed: a stop for you, as held work the loop flags in Needs you.
+    expect([stopped?.route, removed.created.length]).toEqual(["work", 1]);
+    expect(String(removed.created[0]?.hold)).toContain(
+      `No ledger holds the ask A1 in ${LEDGER} now (moved, renamed or removed: Maestro does not guess which).`,
     );
     const unread = await setup({ home: "main", after: [answered], asksAre: () => [] });
     const reads = unread.router as unknown as { options: { asks: { read: () => Promise<unknown> } } };

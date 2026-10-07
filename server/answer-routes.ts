@@ -162,10 +162,11 @@ export function askFor(all: readonly DecisionAsk[], receipt: AnsweredReceipt): D
   return own ?? named.find((ask) => ask.home.kind === "main") ?? named[0] ?? null;
 }
 
+/** A receipt's ask: by its uid when it has one; one answered without a uid by ledger and id (a uid main stamped since is the same ask). */
 const sameAsk = (
   ask: Pick<DecisionAsk, "ledger" | "uid" | "id">,
   ref: { ledger: string; uid: string | null; id: string },
-) => ask.ledger === ref.ledger && (ref.uid ? ask.uid === ref.uid : !ask.uid && ask.id === ref.id);
+) => ask.ledger === ref.ledger && (ref.uid ? ask.uid === ref.uid : ask.id === ref.id);
 
 /** The message an asking session gets: your answer, verbatim, quoted, and where it is written. */
 export function deliveryText(receipt: AnsweredReceipt, ask: DecisionAsk | null): string {
@@ -340,23 +341,17 @@ export class AnswerRouter {
   ): Promise<RouteOutcome> {
     const key = answerKey(receipt);
     if (receipt.homeKind === "main" && !ask) {
-      // A read that failed (no main read, or this ledger unreadable) is no evidence: look again. One read whole
-      // without the ask: it was removed.
-      // Its id still held on main under another handle (a uid stamped since): the same ask, not removed; it waits.
-      const held = read.all.some((entry) => entry.ledger === receipt.ledger && entry.id === receipt.id);
-      if (read.main === null || held || read.warnings.some((warning) => warning.includes(receipt.ledger))) {
+      // A read that failed (no main read, or this ledger unreadable) is no evidence: look again.
+      if (read.main === null || read.warnings.some((warning) => warning.includes(receipt.ledger))) {
         return this.wait(
           receipt,
           "unlanded",
           `${receipt.ledger} could not be read; Maestro looks again at its next check.`,
         );
       }
-      return this.routed(receipt, {
-        route: "superseded",
-        agentId,
-        work: null,
-        reason: `No ledger holds the ask now: it was removed from ${receipt.ledger}, and that stands; yours is kept in its receipt.`,
-      });
+      // No ledger holds the ask by its name now (moved, renamed, removed: Maestro does not guess which): a stop for
+      // you, as held work in Needs you, never a discard.
+      return this.stop(receipt, agentId);
     }
     if (receipt.homeKind === "main" && ask?.batched) {
       return this.wait(receipt, "unlanded", "It waits to land on origin/main.");
@@ -459,6 +454,39 @@ export class AnswerRouter {
       work: { id: item.id, title: item.title },
       reason: `${why} Filed as work, queued, for your gate.`,
     });
+  }
+
+  /**
+   * An answer whose ask no ledger holds by its name now: held work at your
+   * gate, which the loop flags in Needs you as yours to start, briefed from
+   * the receipt alone. Filed once (Contract.answer).
+   */
+  private async stop(receipt: AnsweredReceipt, agentId: string | null): Promise<RouteOutcome> {
+    const key = answerKey(receipt);
+    const why = `No ledger holds the ask ${receipt.id} in ${receipt.ledger} now (moved, renamed or removed: Maestro does not guess which).`;
+    const existing = (await this.options.engine.answered()).get(key);
+    const work = existing
+      ? { id: existing.id, title: existing.title }
+      : await (async () => {
+          const { title, brief } = routedWork(receipt, null, why);
+          const item = await this.options.engine.create(
+            this.options.client(),
+            {
+              title,
+              brief,
+              repo: this.options.controlRepo,
+              gate: "human",
+              check: "",
+              initiative: "",
+              dispatch: false,
+              answer: key,
+              hold: `${why} Start it if your answer still needs acting on, or cancel it.`,
+            },
+            LOOP,
+          );
+          return { id: item.id, title: item.title };
+        })();
+    return this.routed(receipt, { route: "work", agentId, work, reason: `${why} Held for you as work.` });
   }
 
   /** The asking session's folder when it is still there, else the control repo. */

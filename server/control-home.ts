@@ -1036,20 +1036,13 @@ export class WorkspaceAsks {
       () => false,
     );
     if (!current) {
-      await git(
-        path,
-        ["merge", "--quiet", "--no-edit", "-m", `Merge ${MAIN_REF} into ${ANSWERS_BRANCH}`, mainSha],
-        60_000,
-      ).catch(async (error) => {
-        const conflicted = (await git(path, ["diff", "--name-only", "--diff-filter=U"]).catch(() => ""))
-          .split("\n")
-          .filter(Boolean);
-        await git(path, ["merge", "--abort"]).catch(() => undefined);
+      const conflicted = await mergeInto(path, mainSha, `Merge ${MAIN_REF} into ${ANSWERS_BRANCH}`);
+      if (conflicted) {
         const where = conflicted.length > 0 ? ` (it conflicts in ${conflicted.join(", ")})` : "";
         throw new UserError(
-          `${ANSWERS_BRANCH} could not take ${MAIN_REF}'s latest${where}: ${(error as Error).message}. No answer was written, and no answer whose home is ${MAIN_REF} is, until that is settled by hand in ${path}.`,
+          `${ANSWERS_BRANCH} could not take ${MAIN_REF}'s latest${where}. No answer was written, and no answer whose home is ${MAIN_REF} is, until that is settled by hand in ${path}.`,
         );
-      });
+      }
     }
     return path;
   }
@@ -1085,6 +1078,47 @@ export class WorkspaceAsks {
       return message;
     }
   }
+}
+
+/**
+ * Merges `rev` into the checkout at `path`, never resolving anything: a merge
+ * that conflicts is aborted, and one git made cleanly whose ledgers no longer
+ * read (both sides answered one entry: two `answer` keys) is undone. Either
+ * way the checkout is as it was, and the files are named (repo-relative); null when merged.
+ */
+export async function mergeInto(path: string, rev: string, message: string): Promise<string[] | null> {
+  const before = (await git(path, ["rev-parse", "HEAD"])).trim();
+  const clean = await git(path, ["merge", "--quiet", "--no-edit", "-m", message, rev], 60_000).then(
+    () => true,
+    () => false,
+  );
+  if (!clean) {
+    const files = (await git(path, ["diff", "--name-only", "--diff-filter=U"]).catch(() => ""))
+      .split("\n")
+      .filter(Boolean);
+    await git(path, ["merge", "--abort"]).catch(() => undefined);
+    return files;
+  }
+  const merged = (await git(path, ["diff", "--name-only", before, "HEAD", "--", `${ASKS_DIR}/`]))
+    .split("\n")
+    .filter(Boolean);
+  const blobs = await catFiles(
+    path,
+    merged.map((file) => `HEAD:${file}`),
+  );
+  const unreadable = merged.filter((file) => {
+    const bytes = blobs.get(`HEAD:${file}`);
+    if (!bytes || !LEDGER.test(file.split("/").pop() ?? "")) return false;
+    try {
+      parsed(bytes.toString("utf8"));
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  if (unreadable.length === 0) return null;
+  await git(path, ["reset", "--quiet", "--hard", before]);
+  return unreadable;
 }
 
 /** Whether `path` is a worktree of `repo`'s own (one git common dir) with maestro/answers checked out. */

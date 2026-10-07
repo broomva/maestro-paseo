@@ -30,7 +30,8 @@ export const AnswersLandingSchema = z.object({
   pending: z.number().int().min(0),
   asks: z.array(AskRefSchema),
   pr: PrRefSchema.nullable(),
-  conflict: z.object({ ledgers: z.array(z.string()), path: z.string() }).nullable(),
+  /** The ledgers a merge conflicted in, where to settle it, and what it merged (origin/main unless it says). */
+  conflict: z.object({ ledgers: z.array(z.string()), path: z.string(), with: z.string().optional() }).nullable(),
   error: z.string().nullable(),
   landed: z.object({ pr: PrRefSchema.nullable(), at: z.string() }).nullable(),
   checkedAt: z.string(),
@@ -89,7 +90,8 @@ export function landingWords(landing: AnswersLanding): string | null {
   if (landing.stage === "conflict") {
     const where = landing.conflict ? ` in ${landing.conflict.ledgers.join(", ") || "its files"}` : "";
     const path = landing.conflict ? ` Settle it by hand in ${landing.conflict.path}.` : "";
-    return `${waits}, but maestro/answers conflicts with origin/main${where}. Every answer is kept.${path}`;
+    const other = landing.conflict?.with ?? "origin/main";
+    return `${waits}, but maestro/answers conflicts with ${other}${where}. Every answer is kept.${path}`;
   }
   if (landing.stage === "blocked") {
     const why = landing.error ?? "no reason given";

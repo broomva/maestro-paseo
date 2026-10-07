@@ -225,15 +225,20 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
 - **It lands your answers, and acts on them.** When Maestro reads a control repo, each wake brings
   the answers batch (below, *Answering a decision ask*) toward origin/main and routes each answer
   once it is where it belongs. It decides no ask: the answers are yours.
-  - *Landing.* It fetches origin/main and counts the answers `maestro/answers` records that main
-    does not. None: the batch has landed (by Maestro's PR, squashed or not, or by any other), so the
-    branch is brought level with main, and a PR of Maestro's left with nothing in it is closed with a
-    word. Some: it merges origin/main into the branch, pushes it (a fast-forward of origin's batch,
-    or over one every answer of which main records: never over answers main lacks), and opens ONE PR on the control
-    repo's origin titled `answers: N answers from Maestro wait to land`, or updates the one open. The
-    PR is gated like any other; Maestro never merges it and never bypasses a gate. A merge that
-    conflicts is aborted: the batch is kept whole, Needs you names the ledgers and where to settle
-    it, and an answer to an ask whose home is main is refused until it is settled, so none is lost.
+  - *Landing.* It decides nothing from what is missing: it merges, and stops for you where a merge
+    or a difference cannot be settled without a person. It fetches origin/main, merges origin's own
+    `maestro/answers` into the branch (another daemon's push, GitHub's Update branch, a reviewer's
+    commit), then origin/main, so every push after is a fast-forward, never forced. A merge that
+    conflicts, or that git makes cleanly but leaves a ledger that no longer reads (two answers to one
+    entry), is undone: the batch is kept whole, Needs you names the ledgers and where to settle them,
+    and an answer to an ask whose home is main is refused until it is settled, so none is lost.
+    When the branch's tree is then main's, every answer on it has landed (by Maestro's PR, squashed or
+    not, or by any other): the branch is level, reset to main while that is still a fast-forward for
+    origin, and a PR of Maestro's left with nothing in it is closed with a word. Otherwise it counts
+    the answers the branch records that main holds open or does not hold, pushes, and opens ONE PR on
+    the control repo's origin titled `answers: N answers from Maestro wait to land`, or updates the one
+    open. A branch that differs from main yet records no such answer is a stop for you, never dropped.
+    The PR is gated like any other; Maestro never merges it and never bypasses a gate.
     The batch's state is kept in `answers-landing.json` beside the receipts.
   - *Routing.* Each answer Maestro wrote (an `ask.answered` receipt) is routed once, once it is
     where it belongs: landed on origin/main, or at once in its checkout. The session that asked,
@@ -244,7 +249,10 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
     whose option the ledger marks `status_quo: true` needs no work, nor does an idea's (develop
     files its own). Only that key says an option changes nothing, never its words. An ask that by
     then records another outcome where it lives (main's wins) is *superseded*: never acted on, your
-    words kept in the receipt. Each routing is an `ask.routed` line in the receipts. Answers given
+    words kept in the receipt. An answer whose ask no
+    ledger holds by its name any more (moved, renamed, removed: Maestro does not guess which) is a stop
+    for you: held work, which the loop flags in Needs you as yours to start or cancel. An answer given
+    without a uid matches its ask by ledger and id, so a uid main stamps on the ask since changes nothing. Each routing is an `ask.routed` line in the receipts. Answers given
     before routing first ran (a `routing.began` line, by time) are never routed. A fleet scope's own
     asks are the fleet's to act on.
   - *In Maestro.* While answers wait to land, or the batch cannot take main, Needs you says so
