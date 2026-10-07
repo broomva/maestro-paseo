@@ -63,6 +63,9 @@ test("the plugin's handlers and hooks hand the agent socket its daemon client", 
     // Nor the owner's control repo, whose ledgers a test never reads or writes.
     "MAESTRO_PASEO_CONTROL_REPO",
     "MAESTRO_PASEO_CONTROL_ANSWERS",
+    // Nor the owner's ask receipts and locks: routing marks where it begins there (server/answer-routes.ts).
+    "MAESTRO_PASEO_ASK_RECEIPTS",
+    "MAESTRO_PASEO_ASK_LOCKS",
   ] as const;
   const savedFleet = fleet.map((key) => [key, process.env[key]] as const);
   for (const key of fleet) process.env[key] = join(root, "no-fleet", key);
@@ -140,6 +143,9 @@ test("undo, stop and the default gate are wired through the plugin's handlers", 
     // Nor the owner's control repo, whose ledgers a test never reads or writes.
     "MAESTRO_PASEO_CONTROL_REPO",
     "MAESTRO_PASEO_CONTROL_ANSWERS",
+    // Nor the owner's ask receipts and locks: routing marks where it begins there (server/answer-routes.ts).
+    "MAESTRO_PASEO_ASK_RECEIPTS",
+    "MAESTRO_PASEO_ASK_LOCKS",
   ] as const;
   const savedFleet = fleet.map((key) => [key, process.env[key]] as const);
   for (const key of fleet) process.env[key] = join(root, "no-fleet", key);
@@ -258,6 +264,9 @@ test("decisions left from before a restart apply on load, or once a client arriv
     // Nor the owner's control repo, whose ledgers a test never reads or writes.
     "MAESTRO_PASEO_CONTROL_REPO",
     "MAESTRO_PASEO_CONTROL_ANSWERS",
+    // Nor the owner's ask receipts and locks: routing marks where it begins there (server/answer-routes.ts).
+    "MAESTRO_PASEO_ASK_RECEIPTS",
+    "MAESTRO_PASEO_ASK_LOCKS",
   ] as const;
   const savedFleet = fleet.map((key) => [key, process.env[key]] as const);
   for (const key of fleet) process.env[key] = join(root, "no-fleet", key);
@@ -321,6 +330,12 @@ test("the loop is wired: off by default, Settings arm and disarm it, a wake now 
     socket: process.env.MAESTRO_PASEO_SOCKET,
     wakeLog: process.env.MAESTRO_PASEO_WAKE_LOG,
   };
+  // A wake lands and routes answers (BRO-2827): never in the owner's control repo, answers worktree or receipts.
+  const owner = ["MAESTRO_PASEO_CONTROL_REPO", "MAESTRO_PASEO_ASK_RECEIPTS", "MAESTRO_PASEO_ASK_LOCKS"] as const;
+  const savedOwner = owner.map((key) => [key, process.env[key]] as const);
+  process.env.MAESTRO_PASEO_CONTROL_REPO = "off";
+  process.env.MAESTRO_PASEO_ASK_RECEIPTS = join(root, "asks.jsonl");
+  process.env.MAESTRO_PASEO_ASK_LOCKS = join(root, "locks");
   process.env.MAESTRO_PASEO_CONFIG = config;
   process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
   delete process.env.MAESTRO_PASEO_WAKE_LOG;
@@ -372,6 +387,7 @@ test("the loop is wired: off by default, Settings arm and disarm it, a wake now 
       ["MAESTRO_PASEO_CONFIG", saved.config],
       ["MAESTRO_PASEO_SOCKET", saved.socket],
       ["MAESTRO_PASEO_WAKE_LOG", saved.wakeLog],
+      ...savedOwner,
     ] as const) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;

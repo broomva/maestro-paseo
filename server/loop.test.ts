@@ -2,7 +2,9 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type AnswersLanding, answersNotice } from "../shared/answers";
 import type { MaestroConfig, WakeEntry } from "../shared/contracts";
+import type { RouteOutcome } from "./answer-routes";
 import { attentionOf } from "./attention";
 import { defaultConfig } from "./config";
 import { type CreateInput, Engine, MODED_BY_YOU, NOT_QUIET, PROMPT_FREE, type Timer } from "./engine";
@@ -1147,5 +1149,123 @@ describe("dispatch as the loop", () => {
     const plain = await queue("Plain");
     await expect(engine.dispatch(fake.paseo, plain.id, LOOP)).rejects.toThrow(PROMPT_FREE);
     expect(fake.created).toEqual([]);
+  });
+});
+
+describe("step 5: your answers, landed and routed", () => {
+  const landing = (over: Partial<AnswersLanding> = {}): AnswersLanding => ({
+    stage: "waiting",
+    pending: 3,
+    asks: [],
+    pr: { number: 915, url: "https://example.invalid/pull/915" },
+    conflict: null,
+    error: null,
+    landed: null,
+    checkedAt: new Date(clock).toISOString(),
+    ...over,
+  });
+  const routed = (id: string, status: RouteOutcome["status"]): RouteOutcome => ({
+    key: `l.yaml#${id}@x`,
+    ledger: "l.yaml",
+    id,
+    status,
+    route: status === "routed" ? "delivered" : null,
+    words: status === "routed" ? "Acted on: sent to the session that asked." : "waits",
+  });
+
+  test("a wake lands the batch, then routes; the entry and its words say both, Needs you first", async () => {
+    const { engine, client, wakeLog, timers } = await setup();
+    const order: string[] = [];
+    const loop = new Loop({
+      engine,
+      client: () => client.paseo,
+      now: () => new Date(clock),
+      timer: timers.timer,
+      wakeLog,
+      log: () => {},
+      askMs: 100,
+      answers: {
+        land: async () => {
+          order.push("land");
+          return landing();
+        },
+        route: async () => {
+          order.push("route");
+          return [routed("A1", "routed"), routed("A2", "queued")];
+        },
+      },
+    });
+    const entry = await loop.wake("manual");
+    expect(order).toEqual(["land", "route"]);
+    expect(entry.answers).toEqual({
+      landing: landing(),
+      routed: [{ ledger: "l.yaml", id: "A1", route: "delivered", words: "Acted on: sent to the session that asked." }],
+      waiting: 1,
+    });
+    expect(entry.narrative).toEqual([
+      "Woke because you asked.",
+      "Needs you:",
+      "  3 answers wait to land: PR #915",
+      "Did:",
+      "  Your answer to A1 (l.yaml): Acted on: sent to the session that asked.",
+    ]);
+    const [logged] = await wakeLog.recent(1);
+    expect(logged?.answers?.landing?.pr?.number).toBe(915);
+  });
+
+  test("a batch that cannot take main is named, with where to settle it; a step that throws never stops the wake", async () => {
+    const { engine, client, wakeLog, timers } = await setup();
+    const logs: string[] = [];
+    const conflicted = new Loop({
+      engine,
+      client: () => client.paseo,
+      now: () => new Date(clock),
+      timer: timers.timer,
+      wakeLog,
+      log: (message) => logs.push(message),
+      answers: {
+        land: async () =>
+          landing({ stage: "conflict", pr: null, conflict: { ledgers: ["a.yaml"], path: "/state/control-answers" } }),
+        route: async () => {
+          throw new Error("receipts unreadable");
+        },
+      },
+    });
+    const entry = await conflicted.wake("manual");
+    expect(entry.narrative).toContain(
+      "  3 answers wait to land, but maestro/answers conflicts with origin/main in a.yaml. Every answer is kept. Settle it by hand in /state/control-answers.",
+    );
+    expect([entry.answers?.routed, entry.answers?.waiting]).toEqual([[], 0]);
+    expect(logs).toContain("the loop could not route the answers: receipts unreadable");
+  });
+
+  test("a step that failed with nothing waiting is a note, never Needs you", async () => {
+    const { engine, client, wakeLog, timers } = await setup();
+    const offline = new Loop({
+      engine,
+      client: () => client.paseo,
+      now: () => new Date(clock),
+      timer: timers.timer,
+      wakeLog,
+      log: () => {},
+      answers: {
+        land: async () => landing({ stage: "failed", pending: 0, pr: null, error: "origin/main could not be fetched" }),
+        route: async () => [],
+      },
+    });
+    const entry = await offline.wake("manual");
+    expect(entry.narrative).toEqual([
+      "Woke because you asked.",
+      "Could not check the answers batch: origin/main could not be fetched",
+      "Did nothing new this tick.",
+    ]);
+    expect(answersNotice(entry.answers?.landing ?? null)).toBeNull();
+  });
+
+  test("without a control repo there is no step 5, and the entry keeps its old shape", async () => {
+    const { loop } = await setup();
+    const entry = await loop.wake("manual");
+    expect(entry.answers).toBeUndefined();
+    expect(entry.narrative).toEqual(["Woke because you asked.", "Did nothing new this tick."]);
   });
 });

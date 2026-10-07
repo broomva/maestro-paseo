@@ -292,8 +292,8 @@ export function fleetNeedsYou(reads: readonly ScopeRead[]): FleetNeeds {
  * fleet's share (here) and each other surface's, from the very pieces the
  * header counts (header-count.ts needsYouCount over work.attention): work
  * that needs you, fleet notices, timeline notices, decision asks that wait
- * (a fleet root's are the fleet's, the workspace's are Decisions'), and
- * initiatives. `fleetItems`: the ids of the fleet's own work (its alerts and
+ * (a fleet root's are the fleet's, the workspace's are Decisions'),
+ * initiatives, and the answers batch (Decisions'). `fleetItems`: the ids of the fleet's own work (its alerts and
  * raised asks), which the header counts among the work.
  */
 export interface HeaderShares {
@@ -306,7 +306,7 @@ export interface HeaderShares {
 }
 
 export function headerShares(
-  attention: Pick<Attention, "waiting" | "fleet" | "timeline" | "asks" | "initiatives">,
+  attention: Pick<Attention, "waiting" | "fleet" | "timeline" | "asks" | "initiatives" | "answers">,
   fleetItems: ReadonlySet<string>,
 ): HeaderShares {
   const waiting = attention.waiting;
@@ -314,14 +314,15 @@ export function headerShares(
   const timeline = attention.timeline ?? [];
   const asks = attention.asks ?? [];
   const initiatives = attention.initiatives ?? [];
-  const total = needsYouCount(waiting, fleetNotices, timeline, asks, initiatives);
+  const answers = attention.answers ?? [];
+  const total = needsYouCount(waiting, fleetNotices, timeline, asks, initiatives, answers);
   const fleetWork = needsYouCount(waiting.filter((item) => fleetItems.has(item.id)));
   const fleetAsks = asks.filter((ask) => ask.scope !== null);
   return {
     total,
     fleet: fleetWork + fleetNotices.length + fleetAsks.length,
     work: needsYouCount(waiting.filter((item) => !fleetItems.has(item.id))),
-    decisions: asks.length - fleetAsks.length,
+    decisions: asks.length - fleetAsks.length + answers.length,
     timeline: timeline.length,
     initiatives: initiatives.length,
   };

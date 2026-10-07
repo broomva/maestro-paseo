@@ -30,6 +30,7 @@ import { afterAll, afterEach, describe, expect, mock, setDefaultTimeout, spyOn, 
 import type { PluginClientStateSource } from "@getpaseo/plugin/client/host";
 import { Window } from "happy-dom";
 import type { ComponentProps, ReactNode } from "react";
+import type { AnswersNotice } from "../shared/answers";
 import type { MaestroConfig, Scoreboard, WakeEntry, WorkItem } from "../shared/contracts";
 import {
   type AskNotice,
@@ -512,6 +513,8 @@ let answerHeld: Promise<void> | null = null;
 let answerFail: string | null = null;
 /** The asks work.attention says wait on you: none unless a test says. */
 let askNoticesNow: AskNotice[] = [];
+/** The answers batch work.attention says waits on you: none unless a test says. */
+let answersNoticesNow: AnswersNotice[] = [];
 /** The session broomva's ask a1 is about: none unless a test says. */
 let askSessionNow: AskSession | null = null;
 /** Paseo sessions the surface asked the host to open. */
@@ -947,6 +950,7 @@ const invoke = async (method: string, input: unknown) => {
       timeline: timelineNotices,
       asks: askNoticesNow,
       initiatives: initiativeNoticesNow,
+      answers: answersNoticesNow,
     };
   }
   if (method === "asks.workspace") {
@@ -1260,6 +1264,7 @@ afterEach(async () => {
   answerHeld = null;
   answerFail = null;
   askNoticesNow = [];
+  answersNoticesNow = [];
   askSessionNow = null;
   opened = [];
   initiativesNow = initiativesFixture();
@@ -3230,6 +3235,49 @@ describe("the Decisions tab", () => {
   const untilGone = async (view: Awaited<ReturnType<typeof mount>>, text: string) => {
     for (let tries = 0; tries < 150 && view.text().includes(text); tries += 1) await settle(20);
   };
+
+  test("your answers on their way: the batch waits in Needs you with its PR; each answered card says landed or acted on", async () => {
+    const fate = (stage: "unlanded" | "acted", words: string) => ({
+      stage,
+      words,
+      route: null,
+      pr: stage === "unlanded" ? { number: 915, url: "https://github.com/broomva/workspace/pull/915" } : null,
+      work: null,
+      agentId: null,
+    });
+    const answered = { state: "answered" as const, answeredAt: new Date(Date.now() - H).toISOString() };
+    workspaceNow = [
+      canvas("product-name"),
+      canvas("stranded", {
+        ...answered,
+        answer: "Ship it.",
+        batched: true,
+        fate: fate("unlanded", "Waits to land: PR #915."),
+      }),
+      canvas("delivered", {
+        ...answered,
+        answer: "Hold it.",
+        fate: fate("acted", "Acted on: sent to the session that asked."),
+      }),
+    ];
+    answersNoticesNow = [
+      {
+        kind: "waiting",
+        pending: 1,
+        pr: { number: 915, url: "https://github.com/broomva/workspace/pull/915" },
+        words: "1 answer waits to land: PR #915",
+      },
+    ];
+    const view = await open();
+    await until(view, "1 answer waits to land: PR #915");
+    expect(view.byLabel("Open the answers PR, #915")).not.toBeNull();
+    await view.press(view.byLabel("Recently answered · 2"));
+    const text = view.text();
+    expect(text).toContain("Ship it.Waits to land: PR #915.");
+    expect(text).toContain("Hold it.Acted on: sent to the session that asked.");
+    // The stranded one is never written as done: no "written to" line stands in for its fate.
+    expect(text).not.toContain("In the answers batch on maestro/answers");
+  });
 
   test("one decision at a time, blocking first: its count and bar, the card's layers, the rail, up next", async () => {
     workspaceNow = [

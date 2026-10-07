@@ -21,15 +21,20 @@
 // - Identity. The uid; an ask without one is (ledger, id), under the same-ask
 //   test: W's entry existed at B, or equals main's, or (beyond the spec's
 //   letter, for §5.2's squash-merged worktree that outlives the merge) W added
-//   it and main holds it asked at the same time in the same words. Two entries
-//   with one handle that fail it are an id collision: both shown, neither
-//   answered. So is a handle two entries of one copy share, and an id with a uid
-//   in one copy and none in another.
+//   it and main holds it asked at the same time in the same words. Such an
+//   ask's B, for step 2, is its entry as it first landed: the oldest of main's
+//   last 200 first-parent commits to that ledger whose entry passes that test.
+//   When that window does not reach the landing, W's copy counts only for an
+//   outcome it records and main does not. Two entries with one handle that
+//   fail it are an id collision: both shown, neither answered. So is a handle
+//   two entries of one copy share, and an id with a uid in one copy and none
+//   in another.
 // - The main checkout is never a fallback: it is one checkout under the rule.
 //
-// Not here: landing the answers batch (a gated work item, §5.2 "The answers
-// batch"), re-application from receipts, and routing an answer to the session
-// that asked. An answer on maestro/answers is committed there and waits.
+// An answer on maestro/answers is committed there and waits for the loop: it
+// lands the batch through one gated PR (server/answers-landing.ts) and routes
+// each answer once it is where it belongs (server/answer-routes.ts). Not here:
+// re-application from receipts.
 
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -66,6 +71,8 @@ const LEDGER_LIMIT = 1024 * 1024;
 const CAT_FILE_MS = 30_000;
 /** An answer fetches origin/main first, unless it was fetched this recently. */
 const ANSWER_FETCH_FRESH_MS = 30_000;
+/** How far back main's history of a ledger is read for where a squash-merged ask first landed. */
+export const LANDED_WINDOW = 200;
 
 /** One ledger as parsed: its top level (for `arc`) and its asks list, in order. */
 export interface Ledger {
@@ -83,6 +90,13 @@ export interface CheckoutCopy {
   base: Ledgers;
 }
 
+/** A ledger's copies on origin/main's first-parent history, oldest first; null where a commit removed it or it reads as no ledger. */
+export interface MainHistory {
+  copies: (Ledger | null)[];
+  /** The oldest copy is the one that made the ledger, so nothing before it held an ask. */
+  complete: boolean;
+}
+
 export interface Sources {
   controlRepo: string;
   /** Every ledger on origin/main. */
@@ -90,6 +104,8 @@ export interface Sources {
   checkouts: CheckoutCopy[];
   /** The answers worktree's ledgers that differ from main's. */
   answers: Ledgers;
+  /** Main's history (the last LANDED_WINDOW commits to it) of each ledger landedLedgers names. */
+  landed: Map<string, MainHistory>;
 }
 
 // ── The rule (pure) ──────────────────────────────────────────────────────────
@@ -175,6 +191,45 @@ function landedAndEdited(mine: Row, main: Row): boolean {
   return words.length > 0 && words.every((key) => same(mine[key], main[key]));
 }
 
+/**
+ * The ledgers whose history main's must be read for: some checkout holds an
+ * ask without a uid that B lacks, that landed and was edited on main since,
+ * and that reads unlike main's. Scan reads those, and only those.
+ */
+export function landedLedgers(sources: Pick<Sources, "main" | "checkouts">): string[] {
+  const names = new Set<string>();
+  for (const checkout of sources.checkouts) {
+    for (const [name, ledger] of checkout.tree) {
+      const mainLedger = sources.main.get(name);
+      if (names.has(name) || !mainLedger) continue;
+      const landed = ledger.rows.some((mine) => {
+        const id = mine ? text(mine.id) : null;
+        if (!mine || !id || text(mine.uid)) return false;
+        const [main] = entriesOf(mainLedger, null, id);
+        const [base] = entriesOf(checkout.base.get(name), null, id);
+        return main !== undefined && base === undefined && !same(mine, main) && landedAndEdited(mine, main);
+      });
+      if (landed) names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+
+/**
+ * W's added ask as it first landed on main: the entry in the oldest copy of
+ * main's history that passes landedAndEdited. Null when none does, or when the
+ * oldest that does is the window's first and the window does not reach the
+ * ledger's making, so an older copy may hold it.
+ */
+function firstLanded(history: MainHistory | undefined, id: string, mine: Row): Row | null {
+  const copies = history?.copies ?? [];
+  for (const [at, copy] of copies.entries()) {
+    const row = entriesOf(copy ?? undefined, null, id).find((entry) => landedAndEdited(mine, entry));
+    if (row) return at > 0 || history?.complete ? row : null;
+  }
+  return null;
+}
+
 /** One ledger's copy in one source: its rows that go by a handle, and where an answer to them would go. */
 interface Held {
   ledger: Ledger;
@@ -235,7 +290,7 @@ function resolveOne(
   const mainRows = entriesOf(mainLedger, uid, id);
   const [main = null] = mainRows;
   // Step 1: main's outcome wins, for the same ask, whatever any checkout holds (a doubled copy included). A
-  // different ask under its id in a checkout is still listed, below, as a collision.
+  // different ask under its id in a checkout, beside a copy of main's or alone, is still listed, below, as a collision.
   const closedOnMain = main !== null && mainLedger !== undefined && mainRows.length === 1 && stateOf(main) !== "open";
   const held: Held[] = [
     ...(mainLedger ? [{ ledger: mainLedger, rows: mainRows, home: mainHome }] : []),
@@ -266,19 +321,31 @@ function resolveOne(
   const collisions: Copy[] = [];
   sources.checkouts.forEach((checkout, at) => {
     const ledger = checkout.tree.get(name);
-    const [mine] = entriesOf(ledger, uid, id);
-    if (!ledger || !mine) return;
+    const rows = entriesOf(ledger, uid, id);
+    if (!ledger) return;
     const [base = null] = entriesOf(checkout.base.get(name), uid, id);
-    // The same-ask test, for an ask without a uid: W inherited it from B, or W's added ask has landed.
-    const edited = uid === null && main !== null && base === null && landedAndEdited(mine, main);
-    const sameAsk = uid !== null || main === null || base !== null || same(mine, main) || edited;
-    // Landed and edited on main since, with no B to tell W's edits from main's: W's copy counts only for an
-    // outcome it records and main does not. An edit W made to another field after its ask landed is not told
-    // apart from main's edit, and reads as main's; it shows once W lands it.
-    const local = edited ? stateOf(mine) !== "open" && stateOf(main as Row) === "open" : isLocal(base, mine, main);
-    const copy = { at, row: mine, ledger, local };
-    if (sameAsk) copies.push(copy);
-    else collisions.push(copy);
+    // Two rows by one handle in one copy reach here only when main's outcome wins (else refused above). Each is
+    // judged, whatever their order, so main's answer never hides a different ask added beside the one W inherited.
+    for (const mine of rows) {
+      // The same-ask test, for an ask without a uid: W inherited it from B, or W's added ask has landed. Of two
+      // rows, only one that equals B's or main's entry, or was asked at the same time in the same words, is it.
+      const edited = uid === null && main !== null && base === null && landedAndEdited(mine, main);
+      const sameAsk =
+        rows.length > 1
+          ? uid !== null || [base, main].some((ref) => ref !== null && (same(mine, ref) || landedAndEdited(mine, ref)))
+          : uid !== null || main === null || base !== null || same(mine, main) || edited;
+      // Landed and edited on main since: its B is its entry as it first landed on main, which tells W's edits since
+      // from main's. With none in main's history window, W's copy counts only for an outcome it records and main
+      // does not; an edit W made to another field after its ask landed then reads as main's until W lands it.
+      const landed = edited ? firstLanded(sources.landed.get(name), id, mine) : null;
+      const local =
+        edited && !landed
+          ? stateOf(mine) !== "open" && stateOf(main as Row) === "open"
+          : isLocal(landed ?? base, mine, main);
+      const copy = { at, row: mine, ledger, local };
+      if (sameAsk) copies.push(copy);
+      else collisions.push(copy);
+    }
   });
 
   const asks: DecisionAsk[] = [];
@@ -479,6 +546,7 @@ export class WorkspaceAsks {
   private readonly parsedBlobs = new Map<string, Ledger | Error>();
   private readonly trees = new Map<string, Map<string, string>>();
   private readonly bases = new Map<string, string | null>();
+  private readonly histories = new Map<string, MainHistory>();
   private readonly files = new Map<string, { stamp: string; id: string; bytes: Buffer }>();
   private format: "sha1" | "sha256" | null = null;
   private lastFetch = 0;
@@ -561,6 +629,27 @@ export class WorkspaceAsks {
   /** For a test: waits for a fetch in flight. */
   async settled(): Promise<void> {
     await this.fetching;
+  }
+
+  /** origin/main fetched now (one fetch at a time, shared with reads): why it failed, or null. Off for a test without a remote. */
+  fetchMain(): Promise<string | null> {
+    return this.options.fetch === false ? Promise.resolve(null) : this.fetchNow();
+  }
+
+  /**
+   * Runs `run` in the answers' own queue, so nothing else writes the answers
+   * worktree meanwhile (the landing step, server/answers-landing.ts), and the
+   * next read is fresh.
+   */
+  exclusive<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.writes
+      .catch(() => undefined)
+      .then(run)
+      .finally(() => {
+        this.cached = null;
+      });
+    this.writes = next;
+    return next;
   }
 
   private async scan(): Promise<WorkspaceRead> {
@@ -656,13 +745,70 @@ export class WorkspaceAsks {
         );
       } else answers.set(name, ledger);
     }
+    // A second pass, only for a ledger holding a squash-merged ask a checkout has edited since: main's history of it.
+    const landed = new Map<string, MainHistory>();
+    for (const name of landedLedgers({ main, checkouts: copies })) {
+      try {
+        landed.set(name, await this.historyOf(name, mainSha));
+      } catch (error) {
+        warnings.push(`The history of ${name} on ${MAIN_REF} could not be read: ${(error as Error).message}`);
+      }
+    }
     this.trimCaches();
     return {
       controlRepo: repo,
       main: { sha: mainSha, fetchedAt: this.fetchedAt },
-      all: resolveHomes({ controlRepo: await realpath(repo).catch(() => repo), main, checkouts: copies, answers }),
+      all: resolveHomes({
+        controlRepo: await realpath(repo).catch(() => repo),
+        main,
+        checkouts: copies,
+        answers,
+        landed,
+      }),
       warnings,
     };
+  }
+
+  /**
+   * A ledger's copies on main's first-parent history, the last LANDED_WINDOW
+   * commits to it, oldest first; read once per (ledger, main sha), its blobs by id.
+   */
+  private async historyOf(name: string, mainSha: string): Promise<MainHistory> {
+    const key = `${mainSha}:${name}`;
+    const known = this.histories.get(key);
+    if (known) return known;
+    const repo = this.options.controlRepo;
+    // Each commit, then its raw diff line against its first parent: `:mode mode old new status\tpath`.
+    const log = await git(repo, [
+      "log",
+      "--first-parent",
+      "--no-abbrev",
+      "--format=%H",
+      "--raw",
+      "-n",
+      String(LANDED_WINDOW),
+      mainSha,
+      "--",
+      `${ASKS_DIR}/${name}`,
+    ]);
+    const changes = log
+      .split("\n")
+      .filter((line) => line.startsWith(":"))
+      .map((line) => {
+        const [, , before = "", after = ""] = line.slice(1).split("\t")[0]?.split(" ") ?? [];
+        const none = (id: string) => /^0+$/.test(id);
+        return { before: none(before) ? null : before, after: none(after) ? null : after };
+      })
+      .reverse();
+    const ids = changes.flatMap((change) => (change.after ? [change.after] : []));
+    await this.loadBlobs(repo, ids);
+    const copies = changes.map((change) => {
+      const ledger = change.after ? this.parsedBlobs.get(change.after) : undefined;
+      return ledger && !(ledger instanceof Error) ? ledger : null;
+    });
+    const history = { copies, complete: changes.length > 0 && changes[0]?.before === null };
+    this.histories.set(key, history);
+    return history;
   }
 
   private parseFile(file: { id: string; bytes: Buffer }): Ledger | Error {
@@ -744,6 +890,7 @@ export class WorkspaceAsks {
     if (this.parsedBlobs.size > 4000) this.parsedBlobs.clear();
     if (this.trees.size > 200) this.trees.clear();
     if (this.bases.size > 500) this.bases.clear();
+    if (this.histories.size > 200) this.histories.clear();
     if (this.files.size > 8000) this.files.clear();
   }
 
@@ -872,29 +1019,16 @@ export class WorkspaceAsks {
         );
       });
     }
-    const [ours, theirs, onBranch] = await Promise.all([
-      git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(() => ""),
-      git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(() => ""),
-      git(path, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => ""),
-    ]);
-    const [oursReal, theirsReal] = await Promise.all([
-      realpath(ours.trim()).catch(() => ours.trim()),
-      realpath(theirs.trim()).catch(() => theirs.trim()),
-    ]);
-    if (!oursReal || oursReal !== theirsReal || onBranch.trim() !== ANSWERS_BRANCH) {
+    if (!(await isAnswersWorktree(repo, path))) {
       throw new UserError(
         `${path} is not ${repo}'s answers worktree on ${ANSWERS_BRANCH}, so no answer was written there.`,
       );
     }
     // Anything uncommitted there (an earlier answer whose commit failed, a hand edit) is never swept into this answer's commit.
-    // Each line is `XY path`; X may be a space, so lines are never trimmed before the cut.
-    const dirty = (await git(path, ["status", "--porcelain", "--untracked-files=all"]))
-      .split("\n")
-      .filter((line) => line.length > 3);
+    const dirty = await uncommitted(path);
     if (dirty.length > 0) {
-      const files = dirty.map((line) => line.slice(3)).join(", ");
       throw new UserError(
-        `Maestro's answers worktree has changes not committed (${files}), so no answer was written. Commit or discard them in ${path} first.`,
+        `Maestro's answers worktree has changes not committed (${dirty.join(", ")}), so no answer was written. Commit or discard them in ${path} first.`,
       );
     }
     const current = await git(path, ["merge-base", "--is-ancestor", mainSha, "HEAD"]).then(
@@ -902,20 +1036,13 @@ export class WorkspaceAsks {
       () => false,
     );
     if (!current) {
-      await git(
-        path,
-        ["merge", "--quiet", "--no-edit", "-m", `Merge ${MAIN_REF} into ${ANSWERS_BRANCH}`, mainSha],
-        60_000,
-      ).catch(async (error) => {
-        const conflicted = (await git(path, ["diff", "--name-only", "--diff-filter=U"]).catch(() => ""))
-          .split("\n")
-          .filter(Boolean);
-        await git(path, ["merge", "--abort"]).catch(() => undefined);
+      const conflicted = await mergeInto(path, mainSha, `Merge ${MAIN_REF} into ${ANSWERS_BRANCH}`);
+      if (conflicted) {
         const where = conflicted.length > 0 ? ` (it conflicts in ${conflicted.join(", ")})` : "";
         throw new UserError(
-          `${ANSWERS_BRANCH} could not take ${MAIN_REF}'s latest${where}: ${(error as Error).message}. No answer was written, and no answer whose home is ${MAIN_REF} is, until that is settled by hand in ${path}.`,
+          `${ANSWERS_BRANCH} could not take ${MAIN_REF}'s latest${where}. No answer was written, and no answer whose home is ${MAIN_REF} is, until that is settled by hand in ${path}.`,
         );
-      });
+      }
     }
     return path;
   }
@@ -951,6 +1078,69 @@ export class WorkspaceAsks {
       return message;
     }
   }
+}
+
+/**
+ * Merges `rev` into the checkout at `path`, never resolving anything: a merge
+ * that conflicts is aborted, and one git made cleanly whose ledgers no longer
+ * read (both sides answered one entry: two `answer` keys) is undone. Either
+ * way the checkout is as it was, and the files are named (repo-relative); null when merged.
+ */
+export async function mergeInto(path: string, rev: string, message: string): Promise<string[] | null> {
+  const before = (await git(path, ["rev-parse", "HEAD"])).trim();
+  const clean = await git(path, ["merge", "--quiet", "--no-edit", "-m", message, rev], 60_000).then(
+    () => true,
+    () => false,
+  );
+  if (!clean) {
+    const files = (await git(path, ["diff", "--name-only", "--diff-filter=U"]).catch(() => ""))
+      .split("\n")
+      .filter(Boolean);
+    await git(path, ["merge", "--abort"]).catch(() => undefined);
+    return files;
+  }
+  const merged = (await git(path, ["diff", "--name-only", before, "HEAD", "--", `${ASKS_DIR}/`]))
+    .split("\n")
+    .filter(Boolean);
+  const blobs = await catFiles(
+    path,
+    merged.map((file) => `HEAD:${file}`),
+  );
+  const unreadable = merged.filter((file) => {
+    const bytes = blobs.get(`HEAD:${file}`);
+    if (!bytes || !LEDGER.test(file.split("/").pop() ?? "")) return false;
+    try {
+      parsed(bytes.toString("utf8"));
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  if (unreadable.length === 0) return null;
+  await git(path, ["reset", "--quiet", "--hard", before]);
+  return unreadable;
+}
+
+/** Whether `path` is a worktree of `repo`'s own (one git common dir) with maestro/answers checked out. */
+export async function isAnswersWorktree(repo: string, path: string): Promise<boolean> {
+  const [ours, theirs, onBranch] = await Promise.all([
+    git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(() => ""),
+    git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(() => ""),
+    git(path, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => ""),
+  ]);
+  const [oursReal, theirsReal] = await Promise.all([
+    realpath(ours.trim()).catch(() => ours.trim()),
+    realpath(theirs.trim()).catch(() => theirs.trim()),
+  ]);
+  return Boolean(oursReal) && oursReal === theirsReal && onBranch.trim() === ANSWERS_BRANCH;
+}
+
+/** A checkout's files not committed, by path. Each line is `XY path`; X may be a space, so lines are never trimmed before the cut. */
+export async function uncommitted(path: string): Promise<string[]> {
+  return (await git(path, ["status", "--porcelain", "--untracked-files=all"]))
+    .split("\n")
+    .filter((line) => line.length > 3)
+    .map((line) => line.slice(3));
 }
 
 export function homeWords(home: AskHome): string {

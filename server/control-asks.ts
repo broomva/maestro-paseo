@@ -19,8 +19,9 @@
 //   minimal byte edits inside the entry (from the Asks plugin's ledger.ts), so
 //   the diff stays within the entry's map. A receipt line records it.
 //
-// Not here: routing the answer to the session that asked (Send or Spawn). The
-// writer reads the answer from its own file, the spec's "Record only".
+// Not here: routing the answer to the session that asked. A workspace answer
+// is routed by the loop (server/answer-routes.ts); a fleet root's writer reads
+// the answer from its own file, the spec's "Record only".
 
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -73,6 +74,7 @@ export function optionsOf(raw: unknown): DecisionOption[] {
         consequence: text(option.consequence),
         reversible: typeof option.reversible === "boolean" ? option.reversible : null,
         recommended: option.recommended === true,
+        ...(option.status_quo === true ? { statusQuo: true } : {}),
       },
     ];
   });
@@ -251,6 +253,8 @@ export function decisionOf(
     waiting: isWaiting({ state, blocking, options }),
     idea: ideaOf(row),
     audit: auditOf(row),
+    initiative: text(row.initiative) ?? text(data.initiative),
+    fate: null,
   };
 }
 
@@ -590,6 +594,15 @@ function upsertKey(
     if (!valueRange || valueRange[0] === valueRange[1]) end = Math.max(end, source.indexOf(":", name.range[1]) + 1);
     while (end > start && /\s/.test(source[end - 1] ?? "")) end--;
     return { start, end, text: `${key}: ${renderScalar(value)}`, seq };
+  }
+  // A new key goes on its own line right after the entry's `id:` line (any comment there stays on it), so the
+  // answer never touches the entry's end, where writers append the next ask (BRO-2827): the two merge cleanly.
+  const id = map.items.find((pair) => String((pair.key as { value?: unknown } | null)?.value ?? "") === "id");
+  const idEnd = (id?.value as { range?: Range } | null)?.range?.[1];
+  if (!map.flow && idEnd !== undefined) {
+    const eol = source.indexOf("\n", idEnd);
+    const at = eol < 0 ? source.length : source[eol - 1] === "\r" ? eol - 1 : eol;
+    return { start: at, end: at, text: `${newline}${indent}${key}: ${renderScalar(value)}`, seq };
   }
   let at = map.range?.[1] ?? source.length;
   while (at > 0 && /\s/.test(source[at - 1] ?? "")) at--;
