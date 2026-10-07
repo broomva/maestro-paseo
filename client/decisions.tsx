@@ -34,6 +34,7 @@ import {
 import { plural } from "./format";
 import { useAttention } from "./hooks";
 import { requestIntent } from "./intent";
+import { useOpenUrl } from "./open-url";
 import { Button, Notice, Section, space, useText } from "./ui";
 
 export { DecisionCard } from "./decision-card";
@@ -241,6 +242,40 @@ export function WorkspaceDecisions({
  * Decisions goes to the Decisions tab at the first one, the workspace's and a
  * fleet scope's alike.
  */
+/**
+ * The answers batch in Needs you (shared/answers.ts): answers that wait to
+ * land on origin/main through Maestro's PR, which Maestro never merges, or a
+ * batch that cannot take main. Shown above every view, Decisions included:
+ * no card there stands for the batch itself.
+ */
+export function AnswersNotices({ theme, compact }: { theme: PluginTheme; compact: boolean }) {
+  const attention = useAttention();
+  const openUrl = useOpenUrl();
+  const [notice] = attention.data?.answers ?? [];
+  if (!notice) return null;
+  const pr = notice.pr;
+  return (
+    <Notice
+      theme={theme}
+      tone="warn"
+      action={
+        pr ? (
+          <Button
+            theme={theme}
+            icon="GitPullRequest"
+            label={`Open PR #${pr.number}`}
+            compact={compact}
+            accessibilityLabel={`Open the answers PR, #${pr.number}`}
+            onPress={() => openUrl(pr.url)}
+          />
+        ) : undefined
+      }
+    >
+      {notice.words}
+    </Notice>
+  );
+}
+
 export function AskNotices({
   theme,
   compact,

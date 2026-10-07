@@ -159,3 +159,16 @@ describe("initiatives past their date", () => {
     expect(needsYouTarget([], [], [], [{ scope: null }], stale)).toEqual({ kind: "decisions" });
   });
 });
+
+describe("the answers batch in the count (BRO-2827)", () => {
+  const batch = [{ kind: "waiting" as const }];
+  test("it counts, and with nothing else waiting the count opens Decisions", () => {
+    expect(needsYouCount([], [], [], [], [], batch)).toBe(1);
+    expect(needsYouTarget([], [], [], [], [], batch)).toEqual({ kind: "decisions" });
+    // With work waiting too, it is one more notice: the one item no longer opens alone.
+    expect(needsYouTarget([fakeWork("r", "review")], [], [], [], [], batch)).toEqual({
+      kind: "filter",
+      group: "review",
+    });
+  });
+});

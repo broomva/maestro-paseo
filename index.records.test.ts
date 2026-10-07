@@ -37,6 +37,9 @@ test("work.list and work.get carry the changed line; History and files are serve
     // Nor the owner's control repo, whose ledgers a test never reads or writes.
     "MAESTRO_PASEO_CONTROL_REPO",
     "MAESTRO_PASEO_CONTROL_ANSWERS",
+    // Nor the owner's ask receipts and locks: routing marks where it begins there (server/answer-routes.ts).
+    "MAESTRO_PASEO_ASK_RECEIPTS",
+    "MAESTRO_PASEO_ASK_LOCKS",
   ] as const;
   const savedFleet = fleet.map((key) => [key, process.env[key]] as const);
   for (const key of fleet) process.env[key] = join(root, "no-fleet", key);
