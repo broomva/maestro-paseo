@@ -138,7 +138,7 @@ async function setup(options: {
     asks: {
       read: async () => {
         reads += 1;
-        return { controlRepo: root, main: null, all: asks, warnings: [] };
+        return { controlRepo: root, main: { sha: "f00", fetchedAt: null }, all: asks, warnings: [] };
       },
     },
     engine: engine as never,
@@ -446,6 +446,15 @@ describe("round 1, Strata B (P20)", () => {
     });
     const [waits] = await unread.router.route();
     expect([waits?.status, (await unread.log()).routed.size]).toEqual(["unlanded", 0]);
+  });
+
+  test("round 3: a read that failed whole (no main read) is no evidence: answers wait, none is retired", async () => {
+    const answered = receipt("A1", "main", { answerOption: "ship", answer: "Ship." });
+    const failed = await setup({ home: "main", after: [answered], asksAre: () => [] });
+    const reads = failed.router as unknown as { options: { asks: { read: () => Promise<unknown> } } };
+    reads.options.asks.read = async () => ({ controlRepo: "/r", main: null, all: [], warnings: [] });
+    const [waits] = await failed.router.route();
+    expect([waits?.status, (await failed.log()).routed.size]).toEqual(["unlanded", 0]);
   });
 
   test("the ask a receipt answered is the one at its own home, not another of its handle", () => {

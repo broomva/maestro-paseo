@@ -38,9 +38,12 @@ describe("which answers wait to land (pure)", () => {
     const main = `asks:\n${entry("A1")}${answered("A2")}${entry("A3")}`;
     expect(unlandedAnswers(LEDGER, batch, main)).toEqual([{ ledger: LEDGER, uid: null, id: "A1" }]);
   });
-  test("an ask main lacks altogether waits; a uid is the handle when there is one", () => {
+  test("an ask main no longer holds was removed there, and does not wait; a uid is the handle", () => {
     const batch = `asks:\n${answered("A1")}    uid: u-1\n`;
-    expect(unlandedAnswers(LEDGER, batch, null)).toEqual([{ ledger: LEDGER, uid: "u-1", id: "A1" }]);
+    expect(unlandedAnswers(LEDGER, batch, null)).toEqual([]);
+    expect(unlandedAnswers(LEDGER, batch, `asks:\n${entry("A1")}    uid: u-1\n`)).toEqual([
+      { ledger: LEDGER, uid: "u-1", id: "A1" },
+    ]);
     // main holds the same uid under another id, answered: landed.
     const main = `asks:\n${answered("B9")}    uid: u-1\n`;
     expect(unlandedAnswers(LEDGER, batch, main)).toEqual([]);
@@ -319,7 +322,7 @@ describe("landing the answers batch", () => {
     // Here, a new answer moves the local batch on.
     await answer("A2", "ship");
     const landing = await lander.land();
-    expect(landing.stage).toBe("failed");
+    expect(landing.stage).toBe("blocked");
     expect(landing.error).toContain(`holds 1 answer this batch does not record and main does not close (${LEDGER} A2)`);
     expect(run(origin, "rev-parse", ANSWERS_BRANCH)).toBe(theirs);
     expect(run(answersPath, "rev-parse", "HEAD")).not.toBe(theirs);
@@ -363,7 +366,7 @@ describe("landing the answers batch", () => {
     run(other, "push", "--quiet", "origin", "main");
     run(repo, "fetch", "--quiet", "origin");
     const landing = await lander.land();
-    expect(landing.stage).toBe("failed");
+    expect([landing.stage, landing.pending]).toEqual(["blocked", 0]);
     expect(landing.error).toContain(`holds changes that are not answers (.control/asks/${LEDGER}, notes.md)`);
     expect(run(answersPath, "rev-parse", "HEAD")).toBe(kept);
   });
@@ -393,7 +396,7 @@ describe("landing the answers batch", () => {
     expect([
       landing.stage,
       landing.error?.includes(`holds changes that are not answers (.control/asks/${LEDGER})`),
-    ]).toEqual(["failed", true]);
+    ]).toEqual(["blocked", true]);
   });
 
   test("a merge that leaves no answer to land (main merged the PR, then dropped the ask) levels; no empty PR", async () => {
@@ -412,6 +415,91 @@ describe("landing the answers batch", () => {
     const landing = await lander.land();
     expect([landing.stage, landing.pr, prs.length]).toEqual(["none", null, 1]);
     expect(run(answersPath, "rev-parse", "HEAD")).toBe(run(repo, "rev-parse", "origin/main"));
+  });
+
+  test("round 3: a landed answer whose row main then removes levels, never a standing conflict", async () => {
+    const { repo, other, answersPath, lander, answer, prs } = await workspace();
+    await answer("A1");
+    await lander.land();
+    run(other, "fetch", "--quiet", "origin");
+    run(other, "merge", "--quiet", "--squash", `origin/${ANSWERS_BRANCH}`);
+    run(other, "commit", "--quiet", "-m", "answers (#915)");
+    const path = join(other, ".control", "asks", LEDGER);
+    const text = await readFile(path, "utf8");
+    await writeFile(path, `arc: bro-9000\nasks:\n${text.slice(text.indexOf("  - id: A2"))}`);
+    run(other, "commit", "--quiet", "-am", "A1 moved elsewhere");
+    run(other, "push", "--quiet", "origin", "main");
+    run(repo, "fetch", "--quiet", "origin");
+    (prs[0] as { state: string }).state = "MERGED";
+    const landing = await lander.land();
+    expect([landing.stage, landing.pending, landing.error]).toEqual(["none", 0, null]);
+    expect(run(answersPath, "rev-parse", "HEAD")).toBe(run(repo, "rev-parse", "origin/main"));
+  });
+
+  test("round 3: a conflict settled keeping the batch's side, then squash-merged, levels: main holds what it changed", async () => {
+    const { repo, other, answersPath, lander, answer, onMain } = await workspace();
+    await answer("A1");
+    await onMain(
+      (text) => text.replace("    asked_at: 2026-10-06T10:00Z\n", "    asked_at: 2026-10-06T10:05Z\n"),
+      "move A1",
+    );
+    expect((await lander.land()).stage).toBe("conflict");
+    try {
+      run(answersPath, "merge", "--quiet", "origin/main");
+    } catch {
+      run(answersPath, "checkout", "--ours", "--", `.control/asks/${LEDGER}`);
+      run(answersPath, "add", ".");
+      run(answersPath, "commit", "--quiet", "--no-edit");
+    }
+    expect((await lander.land()).stage).toBe("waiting");
+    run(other, "pull", "--quiet", "--ff-only");
+    run(other, "merge", "--quiet", "--squash", `origin/${ANSWERS_BRANCH}`);
+    run(other, "commit", "--quiet", "-m", "answers (#915)");
+    run(other, "push", "--quiet", "origin", "main");
+    run(repo, "fetch", "--quiet", "origin");
+    const landed = await lander.land();
+    expect([landed.stage, landed.error]).toEqual(["none", null]);
+    expect(run(answersPath, "rev-parse", "HEAD")).toBe(run(repo, "rev-parse", "origin/main"));
+  });
+
+  test("round 3: a commit on origin's batch that is not an answer (a reviewer's edit) is never pushed over", async () => {
+    const { origin, other, lander, answer } = await workspace();
+    await answer("A1");
+    await lander.land();
+    run(other, "fetch", "--quiet", "origin");
+    run(other, "switch", "--quiet", "-c", "review", `origin/${ANSWERS_BRANCH}`);
+    await writeFile(join(other, "REVIEW.md"), "a reviewer's note\n");
+    run(other, "add", ".");
+    run(other, "commit", "--quiet", "-m", "review note");
+    run(other, "push", "--quiet", "origin", `HEAD:${ANSWERS_BRANCH}`);
+    const theirs = run(origin, "rev-parse", ANSWERS_BRANCH);
+    await answer("A2");
+    const landing = await lander.land();
+    expect([landing.stage, landing.pending]).toEqual(["blocked", 2]);
+    expect(landing.error).toContain(
+      "holds changes that are not answers and neither this batch nor main holds (REVIEW.md)",
+    );
+    expect(run(origin, "rev-parse", ANSWERS_BRANCH)).toBe(theirs);
+  });
+
+  test("round 3: an old batch whose ask main closed another way is pushed over: main's outcome stands", async () => {
+    const { origin, other, answersPath, lander, answer, onMain } = await workspace();
+    await answer("A1");
+    await lander.land();
+    // main closes A1 its own way; the batch levels (nothing of it waits), and a later answer pushes over the old batch.
+    await onMain(
+      (text) =>
+        text.replace(
+          "  - id: A1\n",
+          '  - id: A1\n    answer: "Hold"\n    answer_option: "hold"\n    answered_at: "2026-10-06T12:00:00Z"\n',
+        ),
+      "A1 held",
+    );
+    await lander.land();
+    await answer("A2");
+    const landing = await lander.land();
+    expect([landing.stage, landing.pending]).toEqual(["waiting", 1]);
+    expect(run(origin, "rev-parse", ANSWERS_BRANCH)).toBe(run(answersPath, "rev-parse", "HEAD"));
   });
 
   test("changes not committed in the answers worktree: the step fails in words, and the batch is untouched", async () => {

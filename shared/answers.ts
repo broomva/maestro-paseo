@@ -19,11 +19,13 @@ export type AskRef = z.infer<typeof AskRefSchema>;
  * - `waiting`: answers wait to land, through `pr` once it is open;
  * - `conflict`: maestro/answers could not take origin/main's latest; the
  *   batch is kept as it was, and `conflict` names the ledgers;
- * - `failed`: a step failed (a push, the PR), in `error`; the batch is kept.
+ * - `blocked`: Maestro stopped for you, in `error` (the branch holds more than
+ *   answers, origin's batch holds what this one lacks); the batch is kept;
+ * - `failed`: a step failed (a fetch, gh), in `error`; the batch is kept.
  * `landed`: the last PR of Maestro's that landed, and when it was seen merged.
  */
 export const AnswersLandingSchema = z.object({
-  stage: z.enum(["none", "waiting", "conflict", "failed"]),
+  stage: z.enum(["none", "waiting", "conflict", "blocked", "failed"]),
   /** Answers on maestro/answers that origin/main does not record. */
   pending: z.number().int().min(0),
   asks: z.array(AskRefSchema),
@@ -68,7 +70,7 @@ export type AnswerFate = z.infer<typeof AnswerFateSchema>;
 
 /** The batch in Needs you: answers that wait to land, or a batch that cannot take main. */
 export const AnswersNoticeSchema = z.object({
-  kind: z.enum(["waiting", "conflict", "failed"]),
+  kind: z.enum(["waiting", "conflict", "blocked", "failed"]),
   pending: z.number().int().min(0),
   pr: PrRefSchema.nullable(),
   /** The notice in a sentence: "3 answers wait to land: PR #915". */
@@ -88,6 +90,10 @@ export function landingWords(landing: AnswersLanding): string | null {
     const where = landing.conflict ? ` in ${landing.conflict.ledgers.join(", ") || "its files"}` : "";
     const path = landing.conflict ? ` Settle it by hand in ${landing.conflict.path}.` : "";
     return `${waits}, but maestro/answers conflicts with origin/main${where}. Every answer is kept.${path}`;
+  }
+  if (landing.stage === "blocked") {
+    const why = landing.error ?? "no reason given";
+    return landing.pending > 0 ? `${waits}, but Maestro stopped: ${why}.` : `Maestro stopped landing answers: ${why}.`;
   }
   if (landing.stage === "failed") return `${waits}, but the last step failed: ${landing.error ?? "no reason given"}`;
   return null;

@@ -340,8 +340,9 @@ export class AnswerRouter {
   ): Promise<RouteOutcome> {
     const key = answerKey(receipt);
     if (receipt.homeKind === "main" && !ask) {
-      // A ledger that could not be read is no evidence: look again. One read whole without the ask: it was removed.
-      if (read.warnings.some((warning) => warning.includes(receipt.ledger))) {
+      // A read that failed (no main read, or this ledger unreadable) is no evidence: look again. One read whole
+      // without the ask: it was removed.
+      if (read.main === null || read.warnings.some((warning) => warning.includes(receipt.ledger))) {
         return this.wait(
           receipt,
           "unlanded",
@@ -540,10 +541,19 @@ export class AnswerRouter {
     if (!log) return [...asks];
     return asks.map((ask) => {
       if (ask.state !== "answered" || ask.scope) return ask;
+      // The newest receipt for this ask at its own kind of home (its checkout's, by path), else any for its handle.
+      const own = (receipt: AnsweredReceipt) =>
+        ask.home.kind === "main"
+          ? receipt.homeKind === "main"
+          : receipt.homeKind === "checkout" && receipt.home.startsWith(`${ask.home.path.replace(/[\\/]+$/, "")}/`);
       let at = -1;
+      let any = -1;
       log.answered.forEach((receipt, index) => {
-        if (sameAsk(ask, receipt)) at = index;
+        if (!sameAsk(ask, receipt)) return;
+        any = index;
+        if (own(receipt)) at = index;
       });
+      if (at < 0) at = any;
       const receipt = log.answered[at];
       if (!receipt) return ask;
       return { ...ask, fate: this.fateOf(receipt, log, ask, landing) };
@@ -569,11 +579,13 @@ export class AnswerRouter {
       const words =
         landing?.stage === "conflict"
           ? "Waits to land: maestro/answers conflicts with origin/main, and Needs you says where."
-          : landing?.stage === "failed"
-            ? `Waits to land: the last landing step failed (${landing.error ?? "no reason given"}).`
-            : pr
-              ? `Waits to land: PR #${pr.number}.`
-              : "Waits to land: Maestro opens its PR at its next check.";
+          : landing?.stage === "blocked"
+            ? `Waits to land: Maestro stopped (${landing.error ?? "no reason given"}), and Needs you says why.`
+            : landing?.stage === "failed"
+              ? `Waits to land: the last landing step failed (${landing.error ?? "no reason given"}).`
+              : pr
+                ? `Waits to land: PR #${pr.number}.`
+                : "Waits to land: Maestro opens its PR at its next check.";
       // Given before routing began: it lands like any other, and nothing acts on it after.
       const after = afterBegan(receipt, log.began)
         ? ""

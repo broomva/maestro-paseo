@@ -84,8 +84,8 @@ const handleOf = (row: Row): string | null => {
 
 /**
  * The answers one ledger's batch copy records and main's does not: each
- * entry answered (or otherwise closed) on the branch whose handle main lacks,
- * or holds open. Pure.
+ * entry answered (or otherwise closed) on the branch that main holds open.
+ * One main no longer holds was removed there, and the removal stands. Pure.
  */
 export function unlandedAnswers(ledger: string, batch: string, main: string | null): AskRef[] {
   const mainRows = main ? rowsOf(parsed(main)) : [];
@@ -99,7 +99,8 @@ export function unlandedAnswers(ledger: string, batch: string, main: string | nu
     const handle = row ? handleOf(row) : null;
     if (!row || !handle || stateOf(row) === "open") continue;
     const there = onMain.get(handle);
-    if (there && stateOf(there) !== "open") continue;
+    // Main lacks it: main removed the ask (an answer is only ever written to an ask main held), and that stands.
+    if (!there || stateOf(there) !== "open") continue;
     out.push({ ledger, uid: text(row.uid), id: text(row.id) ?? "" });
   }
   return out;
@@ -150,6 +151,7 @@ export function withoutAnswers(source: string, answered: ReadonlySet<string>): s
  * the same (option and words) and `main` does not close. Pure.
  */
 export function unkeptAnswers(ledger: string, theirs: string, here: string | null, main: string | null): AskRef[] {
+  // Each answered entry of theirs that here does not answer the same, and main holds open.
   const index = (source: string | null) => {
     const map = new Map<string, Row>();
     for (const row of source ? rowsOf(parsed(source)) : []) {
@@ -173,7 +175,7 @@ export function unkeptAnswers(ledger: string, theirs: string, here: string | nul
     )
       continue;
     const closed = onMain.get(handle);
-    if (closed && stateOf(closed) !== "open") continue;
+    if (!closed || stateOf(closed) !== "open") continue;
     out.push({ ledger, uid: text(row.uid), id: text(row.id) ?? "" });
   }
   return out;
@@ -195,6 +197,15 @@ export function batchPr(asks: readonly AskRef[]): { title: string; body: string 
     "Once it lands, Maestro brings `maestro/answers` level with main and acts on each answer once.",
   ].join("\n");
   return { title, body };
+}
+
+/** A step that stopped for you: not transient, it stands until you settle it. `asks`: the answers still waiting. */
+class Blocked extends Error {
+  readonly asks: AskRef[];
+  constructor(message: string, asks: AskRef[]) {
+    super(message);
+    this.asks = asks;
+  }
 }
 
 export class AnswersLander {
@@ -230,13 +241,19 @@ export class AnswersLander {
     } catch (error) {
       const message = (error as Error).message;
       this.options.log?.(`answers: landing the batch: ${message}`);
-      next = {
-        ...(before ?? BLANK(at)),
-        stage: "failed",
-        error: message,
-        conflict: null,
-        checkedAt: at,
-      };
+      // Stopped for you: what still waits, counted now. Failed (a fetch, gh): the last count stands.
+      next =
+        error instanceof Blocked
+          ? {
+              ...(before ?? BLANK(at)),
+              stage: "blocked",
+              pending: error.asks.length,
+              asks: error.asks,
+              error: message,
+              conflict: null,
+              checkedAt: at,
+            }
+          : { ...(before ?? BLANK(at)), stage: "failed", error: message, conflict: null, checkedAt: at };
     }
     await this.save(next);
     return next;
@@ -355,32 +372,51 @@ export class AnswersLander {
   private async level(path: string, mainSha: string): Promise<{ kind: "level"; mainSha: string }> {
     const base = (await git(path, ["merge-base", mainSha, "HEAD"])).trim();
     const own = (await git(path, ["diff", "--name-only", base, "HEAD"])).split("\n").filter(Boolean);
-    const ledgers = own.filter((file) => file.startsWith(`${ASKS_DIR}/`));
-    const blobs = await catFiles(
-      path,
-      ledgers.flatMap((file) => [`${base}:${file}`, `HEAD:${file}`]),
-    );
-    const foreign = own.filter((file) => {
-      if (!file.startsWith(`${ASKS_DIR}/`)) return true;
-      const before = blobs.get(`${base}:${file}`);
-      const after = blobs.get(`HEAD:${file}`);
-      if (!before || !after) return true;
-      try {
-        // The entries the branch closes are where an answer was written; in them alone the answer's keys differ.
-        const answered = closedHandles(after.toString("utf8"));
-        return withoutAnswers(before.toString("utf8"), answered) !== withoutAnswers(after.toString("utf8"), answered);
-      } catch {
-        return true;
-      }
-    });
+    // What the branch changed that neither its merge-base nor main holds as it does, answers aside, would be lost.
+    const foreign = await this.stray(path, "HEAD", own, [base, mainSha]);
     if (foreign.length > 0) {
-      throw new Error(
+      throw new Blocked(
         `${ANSWERS_BRANCH} holds changes that are not answers (${foreign.join(", ")}), so it was not brought level with main; land or remove them in ${path}`,
+        [],
       );
     }
     const head = (await git(path, ["rev-parse", "HEAD"])).trim();
     if (head !== mainSha) await git(path, ["reset", "--quiet", "--hard", mainSha]);
     return { kind: "level", mainSha };
+  }
+
+  /**
+   * Of `files`, those whose copy at `rev` no copy in `against` holds, answers
+   * aside: a ledger that differs from each only in the keys answers wrote in
+   * the entries `rev` closes is held; any other file must match one exactly,
+   * and one `rev` lacks must be missing from one too.
+   */
+  private async stray(
+    path: string,
+    rev: string,
+    files: readonly string[],
+    against: readonly string[],
+  ): Promise<string[]> {
+    const revs = [rev, ...against];
+    const blobs = await catFiles(
+      path,
+      files.flatMap((file) => revs.map((at) => `${at}:${file}`)),
+    );
+    return files.filter((file) => {
+      const mine = blobs.get(`${rev}:${file}`) ?? null;
+      const others = against.map((at) => blobs.get(`${at}:${file}`) ?? null);
+      if (!mine) return !others.some((other) => other === null);
+      if (others.some((other) => other?.equals(mine))) return false;
+      if (!file.startsWith(`${ASKS_DIR}/`)) return true;
+      try {
+        // The entries `rev` closes are where an answer was written; in them alone the answer's keys may differ.
+        const answered = closedHandles(mine.toString("utf8"));
+        const held = withoutAnswers(mine.toString("utf8"), answered);
+        return !others.some((other) => other !== null && withoutAnswers(other.toString("utf8"), answered) === held);
+      } catch {
+        return true;
+      }
+    });
   }
 
   /** The answers HEAD records that main does not, over the ledgers the two hold differently. */
@@ -446,9 +482,20 @@ export class AnswersLander {
         // Not a fast-forward (GitHub's Update branch, an old batch that landed, another's push): only over a
         // batch every answer of which this one records the same, or main closed.
         const theirs = await this.unkept(path, remote, head, mainSha);
+        const changed = (await git(path, ["diff", "--name-only", head, remote])).split("\n").filter(Boolean);
+        // Held where it came from main (their merge-base: main's edits since, a removal included, stand) or is here.
+        const from = (await git(path, ["merge-base", remote, mainSha]).catch(() => "")).trim();
+        const stray = await this.stray(path, remote, changed, from ? [head, mainSha, from] : [head, mainSha]);
+        if (stray.length > 0 && theirs.length === 0) {
+          throw new Blocked(
+            `origin's ${ANSWERS_BRANCH} (${remote.slice(0, 9)}) holds changes that are not answers and neither this batch nor main holds (${stray.join(", ")}); Maestro never pushes over them. Merge it into ${path}, or remove them on origin`,
+            await this.unlanded(path, mainSha),
+          );
+        }
         if (theirs.length > 0) {
-          throw new Error(
+          throw new Blocked(
             `origin's ${ANSWERS_BRANCH} (${remote.slice(0, 9)}) holds ${answersWord(theirs.length)} this batch does not record and main does not close (${theirs.map((ask) => `${ask.ledger} ${ask.id}`).join(", ")}); Maestro never pushes over them. Merge it into ${path}, or remove it on origin`,
+            await this.unlanded(path, mainSha),
           );
         }
       }
