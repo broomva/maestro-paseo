@@ -342,7 +342,9 @@ export class AnswerRouter {
     if (receipt.homeKind === "main" && !ask) {
       // A read that failed (no main read, or this ledger unreadable) is no evidence: look again. One read whole
       // without the ask: it was removed.
-      if (read.main === null || read.warnings.some((warning) => warning.includes(receipt.ledger))) {
+      // Its id still held on main under another handle (a uid stamped since): the same ask, not removed; it waits.
+      const held = read.all.some((entry) => entry.ledger === receipt.ledger && entry.id === receipt.id);
+      if (read.main === null || held || read.warnings.some((warning) => warning.includes(receipt.ledger))) {
         return this.wait(
           receipt,
           "unlanded",

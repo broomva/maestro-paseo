@@ -457,6 +457,35 @@ describe("round 1, Strata B (P20)", () => {
     expect([waits?.status, (await failed.log()).routed.size]).toEqual(["unlanded", 0]);
   });
 
+  test("round 4: an ask main holds under a uid stamped since is not removed: the answer waits", async () => {
+    const answered = receipt("A1", "main", { answerOption: "ship", answer: "Ship." });
+    const { router, log } = await setup({
+      home: "main",
+      after: [answered],
+      asksAre: (asks) => asks.map((ask) => (ask.id === "A1" ? { ...ask, uid: "u-1", state: "open" as const } : ask)),
+    });
+    const [waits] = await router.route();
+    expect([waits?.status, (await log()).routed.size]).toEqual(["unlanded", 0]);
+  });
+
+  test("round 4: a card's fate reads the receipt at its own home, not a later one for its handle elsewhere", async () => {
+    const atHome = receipt("A1", "checkout", { at: "2026-10-06T12:00:01Z", answerOption: "ship", answer: "Ship." });
+    const elsewhere = {
+      ...receipt("A1", "checkout", { at: "2026-10-06T12:00:09Z", answerOption: "ship", answer: "Ship." }),
+      home: "/x/.control/asks/x",
+    };
+    const { router, asks } = await setup({ after: [atHome, elsewhere] });
+    await writeFile(
+      router["options" as never]["receipts" as never],
+      `${await readFile(router["options" as never]["receipts" as never], "utf8")}${JSON.stringify({ kind: "ask.routed", actor: "maestro", at: "x", key: answerKey(atHome as never), ledger: LEDGER, uid: null, id: "A1", route: "delivered", agentId: "a", work: null, reason: "r" })}\n`,
+    );
+    const [fated] = await router.fates(
+      asks.filter((ask) => ask.id === "A1"),
+      null,
+    );
+    expect(fated?.fate?.route).toBe("delivered");
+  });
+
   test("the ask a receipt answered is the one at its own home, not another of its handle", () => {
     const [mine] = decisionsOf(SOURCE, LEDGER);
     const main = {

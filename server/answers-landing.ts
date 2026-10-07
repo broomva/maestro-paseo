@@ -90,6 +90,7 @@ const handleOf = (row: Row): string | null => {
 export function unlandedAnswers(ledger: string, batch: string, main: string | null): AskRef[] {
   const mainRows = main ? rowsOf(parsed(main)) : [];
   const onMain = new Map<string, Row>();
+  const ids = idsOf(mainRows);
   for (const row of mainRows) {
     const handle = row ? handleOf(row) : null;
     if (row && handle && !onMain.has(handle)) onMain.set(handle, row);
@@ -99,8 +100,10 @@ export function unlandedAnswers(ledger: string, batch: string, main: string | nu
     const handle = row ? handleOf(row) : null;
     if (!row || !handle || stateOf(row) === "open") continue;
     const there = onMain.get(handle);
-    // Main lacks it: main removed the ask (an answer is only ever written to an ask main held), and that stands.
-    if (!there || stateOf(there) !== "open") continue;
+    // Main closed it: landed, or its outcome wins. Main holds no entry by its id at all: main removed the ask (an
+    // answer is only ever written to an ask main held), and that stands. Its id still there under another handle (a
+    // uid main stamped since): not landed, so it waits, never dropped.
+    if (there ? stateOf(there) !== "open" : !ids.has(text(row.id) ?? "")) continue;
     out.push({ ledger, uid: text(row.uid), id: text(row.id) ?? "" });
   }
   return out;
@@ -162,6 +165,7 @@ export function unkeptAnswers(ledger: string, theirs: string, here: string | nul
   };
   const mine = index(here);
   const onMain = index(main);
+  const ids = idsOf(main ? rowsOf(parsed(main)) : []);
   const out: AskRef[] = [];
   for (const row of rowsOf(parsed(theirs))) {
     const handle = row ? handleOf(row) : null;
@@ -175,11 +179,15 @@ export function unkeptAnswers(ledger: string, theirs: string, here: string | nul
     )
       continue;
     const closed = onMain.get(handle);
-    if (!closed || stateOf(closed) !== "open") continue;
+    if (closed ? stateOf(closed) !== "open" : !ids.has(text(row.id) ?? "")) continue;
     out.push({ ledger, uid: text(row.uid), id: text(row.id) ?? "" });
   }
   return out;
 }
+
+/** Every id a ledger's entries carry, whatever their uid. */
+const idsOf = (rows: readonly (Row | null)[]) =>
+  new Set(rows.flatMap((row) => (row && text(row.id) ? [text(row.id) as string] : [])));
 
 const same = (a: unknown, b: unknown) => JSON.stringify(canonical(a ?? null)) === JSON.stringify(canonical(b ?? null));
 
@@ -333,7 +341,7 @@ export class AnswersLander {
         await forge.closePr(
           path,
           open.number,
-          `Everything in this batch is on ${MAIN_REF} now, so it has nothing left to land. Maestro brought ${ANSWERS_BRANCH} level with main.`,
+          `Nothing in this batch waits to land any more: each answer is on ${MAIN_REF}, or ${MAIN_REF} closed or removed its ask, whose outcome stands. Maestro brought ${ANSWERS_BRANCH} level with main.`,
         );
         if (!landed || landed.pr?.number !== open.number) landed = { pr: null, at };
       }

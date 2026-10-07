@@ -38,6 +38,13 @@ describe("which answers wait to land (pure)", () => {
     const main = `asks:\n${entry("A1")}${answered("A2")}${entry("A3")}`;
     expect(unlandedAnswers(LEDGER, batch, main)).toEqual([{ ledger: LEDGER, uid: null, id: "A1" }]);
   });
+  test("an id main still holds under a uid it stamped since is not removed: the answer waits", () => {
+    const batch = `asks:\n${answered("A1")}`;
+    expect(unlandedAnswers(LEDGER, batch, `asks:\n${entry("A1")}    uid: u-1\n`)).toEqual([
+      { ledger: LEDGER, uid: null, id: "A1" },
+    ]);
+  });
+
   test("an ask main no longer holds was removed there, and does not wait; a uid is the handle", () => {
     const batch = `asks:\n${answered("A1")}    uid: u-1\n`;
     expect(unlandedAnswers(LEDGER, batch, null)).toEqual([]);
@@ -234,7 +241,7 @@ describe("landing the answers batch", () => {
     expect(landing.stage).toBe("none");
     expect([prs[0]?.state, prs[0]?.comment]).toEqual([
       "CLOSED",
-      `Everything in this batch is on origin/main now, so it has nothing left to land. Maestro brought ${ANSWERS_BRANCH} level with main.`,
+      `Nothing in this batch waits to land any more: each answer is on origin/main, or origin/main closed or removed its ask, whose outcome stands. Maestro brought ${ANSWERS_BRANCH} level with main.`,
     ]);
     expect(run(answersPath, "rev-parse", "HEAD")).toBe(run(repo, "rev-parse", "origin/main"));
   });
@@ -500,6 +507,19 @@ describe("landing the answers batch", () => {
     const landing = await lander.land();
     expect([landing.stage, landing.pending]).toEqual(["waiting", 1]);
     expect(run(origin, "rev-parse", ANSWERS_BRANCH)).toBe(run(answersPath, "rev-parse", "HEAD"));
+  });
+
+  test("round 4: main stamps a uid on an answered ask while its answer waits: the answer still waits, never dropped", async () => {
+    const { answersPath, lander, answer, onMain, prs } = await workspace();
+    await answer("A1");
+    await lander.land();
+    await onMain((text) => text.replace("  - id: A1\n", "  - id: A1\n    uid: u-1\n"), "stamp A1");
+    const landing = await lander.land();
+    expect(landing.stage === "waiting" || landing.stage === "conflict").toBe(true);
+    expect(landing.pending).toBe(1);
+    expect(prs[0]?.state).toBe("OPEN");
+    expect(run(answersPath, "log", "--format=%s")).toContain("answer(bro-9000-landing.yaml): A1 -> ship");
+    expect(await readFile(join(answersPath, ".control", "asks", LEDGER), "utf8")).toContain('answer_option: "ship"');
   });
 
   test("changes not committed in the answers worktree: the step fails in words, and the batch is untouched", async () => {
