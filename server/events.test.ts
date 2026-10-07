@@ -9,11 +9,13 @@ import {
   flagOf,
   formatDuration,
   handsBack,
+  keptSummary,
   lastActivityOf,
   lookOf,
   parseEvents,
   pendingPermission,
   runningIntervals,
+  SUMMARY_MAX,
   scoreboard,
   section,
   verdictOf,
@@ -101,6 +103,39 @@ describe("the look at the gate", () => {
     // ctx-core reads a line that starts `ARC-STATUS: WORD` wherever it sits, a fence included (ctx.py
     // _extract_arc), and the session's own stop hook takes it as its verdict: Maestro reads it the same way.
     expect(handsBack("Example:\n```\nARC-STATUS: CLOSED\n```")).toBe(true);
+  });
+
+  test("a heading or a dressed verdict the session only quotes or mentions hands nothing back", () => {
+    for (const text of [
+      "The brief ends like this:\n```\n## Ask\n- Merge #12?\n```\nNext, the approval route.",
+      "The template opens with:\n~~~md\n## ⛔ Blocked on you — 1 item\n~~~\nContinuing.",
+      "**ARC-STATUS:** is what the hook reads; continuing…",
+      "The verdict goes last:\n```\n**ARC-STATUS:** done\n```",
+      "**ARC-STATUS:** HANDBACK was the old form.\n\nNext, the approval route.",
+      // A message cut inside a fence ends in the fence: its last line is still quoted, not said.
+      "The verdict goes last, like this:\n```md\n**ARC-STATUS:** DONE",
+    ]) {
+      expect(handsBack(text)).toBe(false);
+    }
+    // The same forms, said and not quoted, still hand back.
+    expect(handsBack("Done.\n\n## Ask\n- Merge #12?")).toBe(true);
+    expect(handsBack("Checks done.\n\n**ARC-STATUS:** HANDBACK 2")).toBe(true);
+  });
+
+  test("a long handback keeps its ask when its turn's text is cut, so it still lands and shows what it asked", () => {
+    const receipt = Array.from({ length: 400 }, (_, i) => `${i + 1}. A receipt line about the work done.`).join("\n");
+    const table =
+      "| # | Ask | Unblocks | If you say nothing |\n|---|---|---|---|\n| 1 | Merge #12 | deploy | it waits |";
+    const text = ["## ⛔ Blocked on you — 1 item, ~1 min", "", table, "", "## 📋 Receipt", "", receipt].join("\n");
+    expect(text.length).toBeGreaterThan(SUMMARY_MAX);
+    const kept = keptSummary(text);
+    expect(handsBack(kept)).toBe(true);
+    expect(kept.startsWith("## ⛔ Blocked on you — 1 item, ~1 min")).toBe(true);
+    expect(kept.endsWith("400. A receipt line about the work done.")).toBe(true);
+    const events = toReview.map((e) => (e.type === "turn.ended" ? { ...e, summary: kept } : e));
+    expect(lookOf("review", events, T0)).toMatchObject({ ask: "⛔ Blocked on you — 1 item, ~1 min", handed: table });
+    // One that is cut but asked nothing is kept as its end, as before.
+    expect(keptSummary(receipt).includes("Blocked on you")).toBe(false);
   });
 
   test("a handback's ⛔ block is the ask, its table verbatim, and its words are not repeated as last words", () => {

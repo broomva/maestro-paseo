@@ -359,6 +359,33 @@ export const ARCHIVED_NOTE = "The session was archived";
 const ARC_LINE = /^ARC-STATUS: ([A-Z]+)/;
 // Markdown's own limits: a heading or a rule is indented at most 3 spaces; deeper, it is code.
 const HEADING = /^ {0,3}#{1,6}\s/;
+
+const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+
+/**
+ * The text a session said in prose: every line inside a fenced code block
+ * (``` or ~~~) blanked, so line numbers still match. A heading or a verdict
+ * quoted in a fence is the session showing the grammar, not using it, so the
+ * handback readers (handsBack, lookOf) read this, never the raw text.
+ */
+export function proseOnly(text: string): string {
+  const lines = text.split("\n");
+  let open: string | null = null;
+  for (let at = 0; at < lines.length; at++) {
+    const line = lines[at] ?? "";
+    const fence = FENCE.exec(line)?.[1] ?? null;
+    if (open === null) {
+      if (fence) {
+        open = fence;
+        lines[at] = "";
+      }
+    } else {
+      lines[at] = "";
+      if (fence && fence[0] === open[0] && fence.length >= open.length && line.trim() === fence) open = null;
+    }
+  }
+  return lines.join("\n");
+}
 const RULE = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
 const TABLE_ROW = /^\s*\|/;
 /** Where the closing block above an arc's verdict starts: after a heading, a table row or a rule. */
@@ -451,8 +478,10 @@ export const closedItself = (line: string) => `Its arc reported “${line}” an
  * adopted runs its own arc over many turns, so only such a turn lands it at
  * your gate; any other turn end is the arc between steps (engine.ts endTurn).
  */
-export const handsBack = (text: string): boolean =>
-  verdictLine(text) !== null || section(text, "Ask") !== null || blockedOnYou(text) !== null;
+export const handsBack = (text: string): boolean => {
+  const prose = proseOnly(text);
+  return verdictLine(text) !== null || section(prose, "Ask") !== null || blockedOnYou(prose) !== null;
+};
 
 /**
  * A line that starts an arc verdict dressed in emphasis (`**ARC-STATUS:** …`,
@@ -460,7 +489,11 @@ export const handsBack = (text: string): boolean =>
  * verdict (arcStatus); a code span, a quote, a list item, an indented line or
  * a plain mention is how a session talks about the grammar, so none is read.
  */
-const ANY_ARC = /^[*_]+ARC-STATUS[*_]*\s*:/;
+const ANY_ARC = /^[*_]+ARC-STATUS[*_]*\s*:[*_\s]*([A-Za-z]+)/;
+
+/** A dressed line is a verdict only when a verdict word follows the colon: a word in capitals, or one of ctx-core's. */
+const VERDICT_WORDS = new Set(["merged", "closed", "done", "blocked", "handback", "other"]);
+const isVerdictWord = (word: string) => /^[A-Z][A-Z_-]+$/.test(word) || VERDICT_WORDS.has(word.toLowerCase());
 
 /**
  * The arc verdict a text ends with, as the gate reads it: ctx-core's grammar
@@ -473,12 +506,14 @@ const ANY_ARC = /^[*_]+ARC-STATUS[*_]*\s*:/;
 export function verdictLine(text: string): { status: string; line: string; at: number } | null {
   const strict = arcStatus(text);
   if (strict) return strict;
-  const lines = text.split("\n");
-  for (let at = lines.length - 1; at >= 0; at--) {
-    const line = lines[at] ?? "";
-    if (ANY_ARC.test(line)) return { status: "", line: inlinePlain(line).trim(), at };
-  }
-  return null;
+  // Dressed, only the turn's last line of prose, with a verdict word after the colon, is one: a mention
+  // mid-message ("**ARC-STATUS:** is what the hook reads") or one quoted in a fence is talk about it.
+  const lines = proseOnly(text).split("\n");
+  let at = lines.length - 1;
+  while (at >= 0 && !(lines[at] ?? "").trim()) at -= 1;
+  const word = ANY_ARC.exec(lines[at] ?? "")?.[1];
+  if (!word || !isVerdictWord(word)) return null;
+  return { status: "", line: inlinePlain(lines[at] ?? "").trim(), at };
 }
 const BLOCKED_HEADING = /^ {0,3}#{1,6}\s*(?:⛔\s*)?Blocked on you\b.*$/i;
 
@@ -537,7 +572,8 @@ export function lookOf(state: OrchState, events: readonly WorkEvent[], now: numb
   const summary = lastOf(events, "turn.ended")?.summary ?? "";
   const arc = verdictLine(summary);
   // The sections are read above the verdict line, so a last `## Ask` never takes the verdict in.
-  const body = arc ? summary.split("\n").slice(0, arc.at).join("\n") : summary;
+  // Read in prose only, as landing does (handsBack): a heading quoted in a fence is not the session's own.
+  const body = proseOnly(arc ? summary.split("\n").slice(0, arc.at).join("\n") : summary);
   const decided = section(body, "Decided");
   const ask = section(body, "Ask");
   const blocked = ask ? null : blockedOnYou(body);
@@ -584,9 +620,35 @@ function shorten(text: string, max = 280): string {
  */
 export const SUMMARY_MAX = 8000;
 
-/** A turn's text as kept: its last SUMMARY_MAX characters, starting at a line, sentence or word, with "…". */
+const ASK_HEADING = /^ {0,3}#{1,4}\s*Ask\s*:?\s*$/i;
+
+/**
+ * A turn's text as kept: its last SUMMARY_MAX characters, starting at a line,
+ * sentence or word, with "…". A handback opens with its ask (the handback
+ * template puts `## ⛔ Blocked on you` first, the receipt after it), so when
+ * the cut would drop the ask, that block is kept ahead of the tail, cut at the
+ * next heading: a long handback still hands back (handsBack) and its card
+ * still shows what it asked.
+ */
 export function keptSummary(text: string): string {
-  return tailWords(text.trim(), SUMMARY_MAX);
+  const whole = text.trim();
+  const tail = tailWords(whole, SUMMARY_MAX);
+  if (tail === whole) return tail;
+  const kept = proseOnly(tail);
+  if (section(kept, "Ask") !== null || blockedOnYou(kept) !== null) return tail;
+  const lines = whole.split("\n");
+  const prose = proseOnly(whole).split("\n");
+  const from = prose.findIndex((line) => ASK_HEADING.test(line) || BLOCKED_HEADING.test(line));
+  if (from < 0) return tail;
+  let to = from + 1;
+  while (to < prose.length && !HEADING.test(prose[to] ?? "")) to += 1;
+  // Whole lines, so its table stays a table; a block longer than the cap keeps its first SUMMARY_MAX characters.
+  let block = "";
+  for (const line of lines.slice(from, to)) {
+    if (block.length + line.length + 1 > SUMMARY_MAX) break;
+    block += `${line}\n`;
+  }
+  return `${block.trim()}\n\n### …\n\n${tail}`;
 }
 
 /**
