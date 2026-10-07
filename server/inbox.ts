@@ -12,6 +12,7 @@
 // still unread when the next landing comes is archived and a fresh one pushes
 // (Inbox.session), so the channel never goes quiet on its own.
 
+import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type {
@@ -93,7 +94,7 @@ const CAPABILITIES = ["prompt.message", "session.persistence", "timeline.plugin"
 
 function inboxConnection(): ProviderConnection {
   const listeners = new Set<(event: ProviderEvent) => void>();
-  const open = new Map<string, { turns: number }>();
+  const open = new Set<string>();
   let closed = false;
   const emit = (event: ProviderEvent) => {
     if (!closed) for (const listener of listeners) listener(event);
@@ -117,7 +118,7 @@ function inboxConnection(): ProviderConnection {
   };
 }
 
-function answer(input: ProviderInput, open: Map<string, { turns: number }>, emit: (event: ProviderEvent) => void) {
+function answer(input: ProviderInput, open: Set<string>, emit: (event: ProviderEvent) => void) {
   switch (input.type) {
     case "catalog":
       emit({
@@ -130,7 +131,7 @@ function answer(input: ProviderInput, open: Map<string, { turns: number }>, emit
       emit({ type: "sessions", requestId: input.requestId, sessions: [] });
       return;
     case "session.open": {
-      open.set(input.sessionId, { turns: 0 });
+      open.add(input.sessionId);
       // Nothing of its own to restore: Paseo keeps the timeline, and a notice is never replayed.
       const persistence = input.persistence ?? { version: 1, data: { inbox: input.sessionId } };
       emit({
@@ -148,8 +149,7 @@ function answer(input: ProviderInput, open: Map<string, { turns: number }>, emit
     }
     case "session.prompt": {
       const { prompt } = input;
-      const session = open.get(input.sessionId);
-      if (!session) {
+      if (!open.has(input.sessionId)) {
         emit({
           type: "session.prompt_result",
           sessionId: input.sessionId,
@@ -166,8 +166,9 @@ function answer(input: ProviderInput, open: Map<string, { turns: number }>, emit
       const text = parts
         .flatMap((part) => (part.type === "text" && !("mimeType" in part) ? [part.text] : []))
         .join("\n");
-      session.turns += 1;
-      const turnId = `inbox-${session.turns}`;
+      // The prompt's own id, never a count: the inbox session persists, and a count restarts when Paseo
+      // reopens it, so a later notice would reuse an earlier turn's and card's ids. A redelivered prompt keeps its id.
+      const turnId = `inbox-${prompt.clientMessageId || randomUUID()}`;
       const sessionId = input.sessionId;
       emit({
         type: "session.prompt_result",

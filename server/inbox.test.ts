@@ -131,6 +131,29 @@ describe("the provider", () => {
     },
   });
 
+  test("a notice after Paseo reopens the inbox gets ids of its own, never an earlier turn's or card's", async () => {
+    const ids = (events: ProviderEvent[]) =>
+      events.flatMap((e) => (e.type === "timeline.item" ? [e.item.id] : e.type === "session.turn" ? [e.turnId] : []));
+    const notice: InboxNotice = {
+      title: "Fix the flaky test",
+      ask: "Merge #12?",
+      card: { workId: "w", landing: 3, agentId: "a" },
+    };
+    const before = await connected();
+    await before.send(noticed(notice));
+    // A restart: a new connection reopens the same persisted session, and the next notice is a new prompt.
+    const after = await connected();
+    const next = noticed(notice);
+    if (next.type === "session.prompt") next.prompt.clientMessageId = "c2";
+    await after.send(next);
+    const first = new Set(ids(before.events));
+    expect(ids(after.events).filter((id) => first.has(id))).toEqual([]);
+    // The same prompt delivered again keeps its ids: a redelivery is not a second notice.
+    const again = await connected();
+    await again.send(noticed(notice));
+    expect(ids(again.events)).toEqual(ids(before.events));
+  });
+
   test("it opens a session and says a notice in one finished turn, with the gate card under it", async () => {
     const { events, send } = await connected();
     expect(events.map((e) => e.type)).toEqual(["session.opened", "session.ready"]);
@@ -147,27 +170,27 @@ describe("the provider", () => {
         type: "session.prompt_result",
         sessionId: "s1",
         clientMessageId: "c1",
-        result: { type: "turn", turnId: "inbox-1" },
+        result: { type: "turn", turnId: "inbox-c1" },
       },
-      { type: "session.turn", sessionId: "s1", turnId: "inbox-1", state: "started" },
+      { type: "session.turn", sessionId: "s1", turnId: "inbox-c1", state: "started" },
       {
         type: "timeline.item",
         sessionId: "s1",
-        item: { type: "assistant_message", id: "inbox-1-notice", text: noticeText(notice) },
+        item: { type: "assistant_message", id: "inbox-c1-notice", text: noticeText(notice) },
       },
       {
         type: "timeline.item",
         sessionId: "s1",
         item: {
           type: "plugin",
-          id: "inbox-1-card",
+          id: "inbox-c1-card",
           pluginId: "maestro",
           kind: GATE_CARD_KIND,
           version: 1,
           data: notice.card,
         },
       },
-      { type: "session.turn", sessionId: "s1", turnId: "inbox-1", state: "completed" },
+      { type: "session.turn", sessionId: "s1", turnId: "inbox-c1", state: "completed" },
     ]);
   });
 
