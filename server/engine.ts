@@ -241,6 +241,8 @@ export type CreateInput = RunChoices & {
   hold?: string;
   /** The idea it was filed for (`<ledger>#<id>`): set by Maestro itself, never by an RPC's input. */
   idea?: string;
+  /** The answer it was filed for (server/answer-routes.ts): set by Maestro itself, never by an RPC's input. */
+  answer?: string;
 };
 
 /** Only the run choices that were made: an absent one means Settings at dispatch. */
@@ -529,6 +531,18 @@ export class Engine {
     return found;
   }
 
+  /** The work filed for each answer (Contract.answer): the first found, by id, wins. */
+  async answered(): Promise<Map<string, { id: string; title: string; path: string }>> {
+    const { store } = await this.store();
+    const { items } = await store.scan();
+    const found = new Map<string, { id: string; title: string; path: string }>();
+    for (const item of [...items].sort((a, b) => a.contract.id.localeCompare(b.contract.id))) {
+      const answer = item.contract.answer;
+      if (answer && !found.has(answer)) found.set(answer, { id: item.contract.id, title: item.title, path: item.rel });
+    }
+    return found;
+  }
+
   async get(id: string) {
     const { store, config } = await this.store();
     const item = await store.findById(id);
@@ -667,6 +681,7 @@ export class Engine {
       run,
       hold: input.hold,
       idea: input.idea,
+      answer: input.answer,
     });
     if (input.dispatch) {
       if (!paseo) throw new UserError(`Created ${item.contract.id}, but it cannot be dispatched yet: ${NO_HANDLE}`);

@@ -1,7 +1,7 @@
 // Where Maestro keeps host-local state. Node built-ins only: the `maestro` CLI
 // imports this, and it must run from a plugin install without dev packages.
 
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 /** `~` and `~/x` name the home folder; anything else is returned as written. */
@@ -43,11 +43,26 @@ export function fleetPaths(env: NodeJS.ProcessEnv = process.env): {
 }
 
 /**
+ * Under `bun test` (NODE_ENV=test), a test that names no control repo or
+ * receipts gets none of the owner's: the loop lands and routes answers
+ * (BRO-2827), and a test that booted the plugin once reached ~/broomva's
+ * answers worktree and receipts. A test names its own, or gets these.
+ */
+const underTest = (env: NodeJS.ProcessEnv) => env.NODE_ENV === "test";
+
+/**
  * Where a ledger answer takes its lock and leaves its receipt (the control
  * interface spec §5.5): the lock directory every ledger writer shares, and
  * Maestro's receipts of the answers it wrote.
  */
 export function controlAskPaths(env: NodeJS.ProcessEnv = process.env): { locks: string; receipts: string } {
+  if (underTest(env)) {
+    const scratch = join(tmpdir(), `maestro-test-asks-${process.pid}`);
+    return {
+      locks: env.MAESTRO_PASEO_ASK_LOCKS ?? join(scratch, "locks"),
+      receipts: env.MAESTRO_PASEO_ASK_RECEIPTS ?? join(scratch, "asks.jsonl"),
+    };
+  }
   return {
     locks: env.MAESTRO_PASEO_ASK_LOCKS ?? join(homedir(), ".local", "state", "control-asks", "locks"),
     receipts: env.MAESTRO_PASEO_ASK_RECEIPTS ?? join(homedir(), ".local", "state", "maestro-paseo", "asks.jsonl"),
@@ -61,11 +76,14 @@ export function controlAskPaths(env: NodeJS.ProcessEnv = process.env): { locks: 
  * origin/main is written, on maestro/answers. `off` reads no control repo.
  */
 export function controlRepoPaths(env: NodeJS.ProcessEnv = process.env): { repo: string | null; answers: string } {
-  const repo = env.MAESTRO_PASEO_CONTROL_REPO ?? join(homedir(), "broomva");
+  const repo = env.MAESTRO_PASEO_CONTROL_REPO ?? (underTest(env) ? "off" : join(homedir(), "broomva"));
   return {
     repo: repo === "off" ? null : expandHome(repo),
     answers: expandHome(
-      env.MAESTRO_PASEO_CONTROL_ANSWERS ?? join(homedir(), ".local", "state", "maestro-paseo", "control-answers"),
+      env.MAESTRO_PASEO_CONTROL_ANSWERS ??
+        (underTest(env)
+          ? join(tmpdir(), `maestro-test-asks-${process.pid}`, "control-answers")
+          : join(homedir(), ".local", "state", "maestro-paseo", "control-answers")),
     ),
   };
 }

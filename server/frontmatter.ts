@@ -11,6 +11,8 @@
 // `hold`, in words, says the work waits for you to start it: neither the loop
 // nor a session starts it (an idea you chose to develop, BRO-2802). `idea`,
 // `<ledger>#<id>`, names the idea a develop answer filed it for: one item per idea.
+// `answer` names the answer routing filed it for (server/answer-routes.ts,
+// BRO-2827): one item per answer.
 
 import YAML from "yaml";
 import { type CheckSpec, FEATURE_LIMITS, type FeatureValues, ISOLATIONS, type Isolation } from "../shared/contracts";
@@ -42,6 +44,8 @@ export interface Contract {
   hold: string | null;
   /** The idea this work was filed for (`<ledger>#<id>`), or null. */
   idea: string | null;
+  /** The answer routing filed this work for (server/answer-routes.ts answerKey), or null. */
+  answer: string | null;
 }
 
 export interface CheckRun extends CheckSpec {
@@ -154,6 +158,7 @@ export function readContract(work: WorkDoc): Contract {
     checks: readChecks(done.check),
     hold: str(data.hold),
     idea: str(data.idea),
+    answer: str(data.answer),
   };
 }
 
@@ -223,6 +228,8 @@ export interface NewWork {
   hold?: string;
   /** The idea it was filed for (Contract.idea). */
   idea?: string;
+  /** The answer it was filed for (Contract.answer). */
+  answer?: string;
 }
 
 /** How the work's runs start, as stored. Absent or empty means Settings decides at dispatch. */
@@ -253,6 +260,7 @@ export function newWorkSource(input: NewWork): string {
   if (run.featureValues && Object.keys(run.featureValues).length > 0) data.features = { ...run.featureValues };
   if (input.hold?.trim()) data.hold = input.hold.trim();
   if (input.idea?.trim()) data.idea = input.idea.trim();
+  if (input.answer?.trim()) data.answer = input.answer.trim();
   const yaml = YAML.stringify(data, { lineWidth: 0 }).replace(/\n+$/, "");
   const brief = input.brief.trim();
   const body = brief ? `\n# ${input.title}\n\n${brief}\n` : `\n# ${input.title}\n`;

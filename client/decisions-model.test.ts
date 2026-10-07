@@ -9,6 +9,7 @@ import {
   cutAtWord,
   decisionAsks,
   fallbackOption,
+  fateLine,
   groupDecisions,
   groupMeta,
   handedAsks,
@@ -544,5 +545,32 @@ describe("a fleet scope's own asks, beside the workspace's (BRO-2856)", () => {
     expect(handedAsks(all, "/wt/sti-3451-session-history")).toEqual([]);
     expect(handedAsks(all, "/wt/rustic-rat")).toEqual([]);
     expect(handedAsks(all, null)).toEqual([]);
+  });
+});
+
+describe("what became of your answer (BRO-2827)", () => {
+  const fate = (stage: "unlanded" | "unrouted" | "acted" | "before", words: string) => ({
+    stage,
+    words,
+    route: null,
+    pr: null,
+    work: null,
+    agentId: null,
+  });
+  test("only an answer acted on reads as done; one in the batch or landed and waiting never does", () => {
+    const answered = { state: "answered" as const, answeredAt: "2026-10-06T12:00:00Z" };
+    expect(fateLine(ask("l", "A", { ...answered, fate: fate("unlanded", "Waits to land: PR #915.") }))).toEqual({
+      words: "Waits to land: PR #915.",
+      tone: "waiting",
+    });
+    expect(fateLine(ask("l", "A", { ...answered, fate: fate("unrouted", "Landed on origin/main; …") }))?.tone).toBe(
+      "waiting",
+    );
+    expect(fateLine(ask("l", "A", { ...answered, fate: fate("acted", "Acted on: sent.") }))?.tone).toBe("done");
+    expect(fateLine(ask("l", "A", { ...answered, fate: fate("before", "Answered before …") }))?.tone).toBe("plain");
+  });
+  test("an older daemon sends no fate: an answer in the batch still never reads as done", () => {
+    expect(fateLine(ask("l", "A", { state: "answered", batched: true }))?.tone).toBe("waiting");
+    expect(fateLine(ask("l", "A", { state: "answered" }))).toBeNull();
   });
 });

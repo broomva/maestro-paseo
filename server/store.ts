@@ -238,6 +238,8 @@ export class WorkStore {
     hold?: string;
     /** The idea it was filed for (Contract.idea). */
     idea?: string;
+    /** The answer it was filed for (Contract.answer). */
+    answer?: string;
   }): Promise<StoredWork> {
     const now = input.now ?? this.now();
     const parent = input.initiative.trim() ? join(this.root, slugify(input.initiative)) : this.root;
@@ -262,6 +264,7 @@ export class WorkStore {
         run: input.run,
         hold: input.hold,
         idea: input.idea,
+        answer: input.answer,
       }),
       "utf8",
     );

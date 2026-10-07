@@ -31,6 +31,8 @@ async function withPlugin(
     fleet: { config: string; state: string; agents: string };
     /** Where Paseo's schedule files go, for the Timeline. */
     schedules: string;
+    /** The ask receipts, the asks' event log routing reads (server/answer-routes.ts). */
+    receipts: string;
   }) => Promise<void>,
 ) {
   const root = await mkdtemp(join(tmpdir(), "maestro-plugin-integrations-"));
@@ -97,6 +99,7 @@ async function withPlugin(
         agents: fleetEnv.MAESTRO_PASEO_FLEET_AGENTS,
       },
       schedules: timelineEnv.MAESTRO_PASEO_SCHEDULES,
+      receipts: timelineEnv.MAESTRO_PASEO_ASK_RECEIPTS,
     });
   } finally {
     await cleanup();
@@ -153,6 +156,7 @@ test("work.attention reads the files and reconciles no session; work.list does",
       timeline: [],
       asks: [],
       initiatives: [],
+      answers: [],
     });
     const agent = fake.agents.get("agent-1");
     if (agent) agent.status = "idle";
@@ -169,6 +173,57 @@ test("work.attention reads the files and reconciles no session; work.list does",
     expect(fake.refreshed).toEqual([]);
     await call("work.list", {});
     expect(fake.refreshed).toEqual(["agent-1"]);
+  });
+});
+
+test("an answer that waited for its session goes to it when its turn ends, through the plugin's hook", async () => {
+  await withPlugin(async ({ call, hook, repo, fake, receipts }) => {
+    await call("work.create", {
+      title: "Asker",
+      brief: "",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "",
+      dispatch: true,
+    });
+    // Routing has begun (the plugin marks it at startup); an answer given since names the session that asked.
+    for (
+      let tries = 0;
+      tries < 100 && !(await readFile(receipts, "utf8").catch(() => "")).includes("routing.began");
+      tries += 1
+    )
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    const at = new Date(Date.now() + 2000).toISOString().replace(/\.\d+Z$/, "Z");
+    const answered = {
+      kind: "ask.answered",
+      actor: "human",
+      at,
+      home: `${repo}/.control/asks/l.yaml`,
+      homeKind: "checkout",
+      ledger: "l.yaml",
+      uid: null,
+      id: "A1",
+      originAgentId: "agent-1",
+      answerOption: null,
+      answer: "Go ahead.",
+    };
+    await writeFile(receipts, `${await readFile(receipts, "utf8")}${JSON.stringify(answered)}\n`);
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    await hook("agent.turn_ended", {
+      agent: { id: "agent-1" },
+      outcome: { kind: "completed" },
+      timeline: [],
+      asks: [],
+      turnId: "t1",
+    });
+    for (let tries = 0; tries < 200 && !fake.sent.some((entry) => entry.text.includes("> Go ahead.")); tries += 1)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fake.sent.filter((entry) => entry.text.includes("> Go ahead.")).map((entry) => entry.agentId)).toEqual([
+      "agent-1",
+    ]);
+    expect(await readFile(receipts, "utf8")).toContain('"kind":"ask.routed"');
   });
 });
 
