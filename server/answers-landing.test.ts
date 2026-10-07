@@ -483,7 +483,7 @@ describe("landing the answers batch", () => {
   });
 
   test("round 3: an old batch whose ask main closed another way is pushed over: main's outcome stands", async () => {
-    const { origin, other, answersPath, lander, answer, onMain } = await workspace();
+    const { origin, answersPath, lander, answer, onMain } = await workspace();
     await answer("A1");
     await lander.land();
     // main closes A1 its own way; the batch levels (nothing of it waits), and a later answer pushes over the old batch.
