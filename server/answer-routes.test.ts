@@ -391,16 +391,25 @@ describe("round 1, Strata B (P20)", () => {
     expect([outcome?.route, sent.length]).toEqual(["delivered", 1]);
   });
 
-  test("an ask archived where it lives is superseded; one open there again waits, never superseded", async () => {
+  test("an ask archived with another outcome is superseded; archived still holding yours is acted on; open again waits", async () => {
     const answered = receipt("A1", "main", { answerOption: "ship", answer: "Ship." });
     const archived = await setup({
       home: "main",
       after: [answered],
-      asksAre: (asks) => asks.map((ask) => (ask.id === "A1" ? { ...ask, state: "archived" as const } : ask)),
+      asksAre: (asks) =>
+        asks.map((ask) => (ask.id === "A1" ? { ...ask, state: "archived" as const, answerOption: "hold" } : ask)),
     });
     const [gone] = await archived.router.route();
     expect([gone?.route, archived.created.length]).toEqual(["superseded", 0]);
     expect((await archived.log()).routed.get(answerKey(answered as never))?.reason).toContain("(archived)");
+    // Archived after your answer landed, still holding it: your answer stands, and is acted on.
+    const kept = await setup({
+      home: "main",
+      after: [answered],
+      asksAre: (asks) => asks.map((ask) => (ask.id === "A1" ? { ...ask, state: "archived" as const } : ask)),
+    });
+    const [acted] = await kept.router.route();
+    expect([acted?.route, kept.created.length]).toEqual(["work", 1]);
     const reopened = await setup({
       home: "main",
       after: [answered],
@@ -485,6 +494,14 @@ describe("round 1, Strata B (P20)", () => {
       null,
     );
     expect(fated?.fate?.route).toBe("delivered");
+  });
+
+  test("a held stop filed before its receipt was written (a crash between) is not filed again", async () => {
+    const answered = receipt("A1", "main", { answerOption: "ship", answer: "Ship." });
+    const { router, created, filed } = await setup({ home: "main", after: [answered], asksAre: () => [] });
+    filed.set(answerKey(answered as never), { id: "work-held", title: "Held", path: "p" });
+    const [outcome] = await router.route();
+    expect([outcome?.route, created.length]).toEqual(["work", 0]);
   });
 
   test("the ask a receipt answered is the one at its own home, not another of its handle", () => {

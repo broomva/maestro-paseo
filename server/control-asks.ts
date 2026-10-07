@@ -595,6 +595,15 @@ function upsertKey(
     while (end > start && /\s/.test(source[end - 1] ?? "")) end--;
     return { start, end, text: `${key}: ${renderScalar(value)}`, seq };
   }
+  // A new key goes on its own line right after the entry's `id:` line (any comment there stays on it), so the
+  // answer never touches the entry's end, where writers append the next ask (BRO-2827): the two merge cleanly.
+  const id = map.items.find((pair) => String((pair.key as { value?: unknown } | null)?.value ?? "") === "id");
+  const idEnd = (id?.value as { range?: Range } | null)?.range?.[1];
+  if (!map.flow && idEnd !== undefined) {
+    const eol = source.indexOf("\n", idEnd);
+    const at = eol < 0 ? source.length : source[eol - 1] === "\r" ? eol - 1 : eol;
+    return { start: at, end: at, text: `${newline}${indent}${key}: ${renderScalar(value)}`, seq };
+  }
   let at = map.range?.[1] ?? source.length;
   while (at > 0 && /\s/.test(source[at - 1] ?? "")) at--;
   return { start: at, end: at, text: `${newline}${indent}${key}: ${renderScalar(value)}`, seq };

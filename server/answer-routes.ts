@@ -105,7 +105,8 @@ export function records(
   ask: Pick<DecisionAsk, "state" | "answerOption" | "answer">,
   receipt: AnsweredReceipt,
 ): boolean {
-  if (ask.state !== "answered") return false;
+  // Archived since it was answered still records the answer it holds; open records none.
+  if (ask.state === "open") return false;
   return receipt.answerOption ? ask.answerOption === receipt.answerOption : ask.answer === receipt.answer;
 }
 
@@ -316,7 +317,6 @@ export class AnswerRouter {
     for (const receipt of due) {
       const ask = askFor(read.all, receipt);
       const agentId = receipt.originAgentId ?? ask?.origin?.agentId ?? null;
-      if (only.agentId && agentId !== only.agentId) continue;
       const outcome =
         latest.get(handleKey(receipt)) !== receipt
           ? await this.routed(receipt, {

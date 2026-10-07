@@ -467,8 +467,9 @@ describe("landing the answers batch", () => {
     const { repo, other, answersPath, lander, answer, onMain } = await workspace();
     await answer("A1");
     await onMain(
-      (text) => text.replace("    asked_at: 2026-10-06T10:00Z\n", "    asked_at: 2026-10-06T10:05Z\n"),
-      "move A1",
+      // The line beside A1's id, where the answer is written: a conflict.
+      (text) => text.replace('  - id: A1\n    headline: "Ship A1?"', '  - id: A1\n    headline: "Ship A1, now?"'),
+      "reword A1",
     );
     expect((await lander.land()).stage).toBe("conflict");
     try {
@@ -547,7 +548,15 @@ describe("landing the answers batch", () => {
     await router.begin();
     await answer("A1");
     await lander.land();
-    await onMain((text) => text.replace("  - id: A1\n", "  - id: A1\n    uid: u-1\n"), "stamp A1");
+    // Stamped at the entry's end (one stamped beside the id conflicts with the answer there: the round 4 test).
+    await onMain(
+      (text) =>
+        text.replace(
+          "    asked_at: 2026-10-06T10:00Z\n  - id: A2",
+          "    asked_at: 2026-10-06T10:00Z\n    uid: u-1\n  - id: A2",
+        ),
+      "stamp A1",
+    );
     const waiting = await lander.land();
     expect([waiting.stage, waiting.pending]).toEqual(["waiting", 1]);
     run(other, "pull", "--quiet", "--ff-only");
@@ -583,6 +592,45 @@ describe("landing the answers batch", () => {
     // Still on the branch, in whichever ledger now carries it.
     expect(run(answersPath, "log", "--format=%s")).toContain(`answer(${LEDGER}): A1 -> ship`);
     expect(run(answersPath, "grep", "-c", 'answer_option: "ship"', "HEAD", "--", ".control/asks/")).toContain(":1");
+  });
+
+  test("round 6 (Medium): the last ask answered, then a new ask appended on main: it lands, no conflict", async () => {
+    const { answersPath, lander, answer, onMain, prs } = await workspace();
+    await answer("A2");
+    await lander.land();
+    await onMain((text) => `${text}${entry("A3")}`, "a new ask, appended");
+    const landing = await lander.land();
+    expect([landing.stage, landing.pending, landing.conflict]).toEqual(["waiting", 1, null]);
+    expect(prs[0]?.state).toBe("OPEN");
+    const ledger = await readFile(join(answersPath, ".control", "asks", LEDGER), "utf8");
+    expect([ledger.includes("  - id: A3"), ledger.includes('answer_option: "ship"')]).toEqual([true, true]);
+  });
+
+  test("origin/main that cannot be fetched stops the step in words; nothing is compared or pushed", async () => {
+    const { origin, asks, lander, answer } = await workspace();
+    await answer("A1");
+    (asks as unknown as { fetchMain: () => Promise<string | null> }).fetchMain = async () => "offline";
+    const landing = await lander.land();
+    expect([landing.stage, landing.error]).toEqual([
+      "failed",
+      "origin/main could not be fetched (offline), so the batch was not compared with it",
+    ]);
+    expect(() => run(origin, "rev-parse", "--verify", ANSWERS_BRANCH)).toThrow();
+  });
+
+  test("squash-merged and its branch deleted on origin (p9 deletes it): the batch is reset to main itself", async () => {
+    const { repo, other, answersPath, lander, answer, prs } = await workspace();
+    await answer("A1");
+    await lander.land();
+    run(other, "fetch", "--quiet", "origin");
+    run(other, "merge", "--quiet", "--squash", `origin/${ANSWERS_BRANCH}`);
+    run(other, "commit", "--quiet", "-m", "answers (#915)");
+    run(other, "push", "--quiet", "origin", "main");
+    run(other, "push", "--quiet", "origin", "--delete", ANSWERS_BRANCH);
+    run(repo, "fetch", "--quiet", "origin");
+    (prs[0] as { state: string }).state = "MERGED";
+    expect((await lander.land()).stage).toBe("none");
+    expect(run(answersPath, "rev-parse", "HEAD")).toBe(run(repo, "rev-parse", "origin/main"));
   });
 
   test("changes not committed in the answers worktree: the step fails in words, and the batch is untouched", async () => {

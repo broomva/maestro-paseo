@@ -121,7 +121,7 @@ export function batchPr(asks: readonly AskRef[]): { title: string; body: string 
     "",
     ...lines,
     "",
-    "Each was answered by you in Maestro's Decisions; the diff touches only those entries' answer keys.",
+    "Each was answered by you in Maestro's Decisions.",
     "This PR lands through its checks and the merge gate like any other. Maestro keeps it current and never merges it.",
     "Once it lands, Maestro brings `maestro/answers` level with main and acts on each answer once.",
   ].join("\n");

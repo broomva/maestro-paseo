@@ -273,7 +273,10 @@ describe("writing an answer", () => {
     // k = 5 keys, m = 1 line, r = 0 keys there before: added <= k + (m - 1), removed <= r.
     expect(before.filter((line) => !after.includes(line))).toEqual([]);
     expect(out.indexOf('status: "resolved"')).toBeLessThan(out.indexOf("  - id: A11"));
-    expect(out.indexOf('answer: "Drop')).toBeGreaterThan(out.indexOf("asked_at:      2026-10-01T03:27Z"));
+    // Right after the entry's id line, never at its end, where a writer appends the next ask (BRO-2827).
+    expect(after[after.findIndex((line) => /^ {2}- id: +A10$/.test(line)) + 1]).toBe(
+      '    answer: "Drop all four: They stay in this ledger, with no ticket."',
+    );
     const [ask] = decisionsOf(out, "test-arc.yaml");
     expect([ask?.state, ask?.answerOption, ask?.answeredAt]).toEqual(["answered", "drop", "2026-10-03T17:00:00Z"]);
   });
@@ -337,9 +340,21 @@ describe("writing an answer", () => {
   });
 
   test("an edit that would change anything but the answer's keys is refused, and nothing is written", () => {
-    // A keep-chomped block scalar owns the blank lines after it: an append there would change its value.
+    // A flow-style entry has no line to write beside: an append after it would not read back as it was.
+    const flow = "asks:\n  - { id: a, ask: q }\n  - id: b\n";
+    expect(() => answered(flow, { id: "a", note: "yes" })).toThrow("without changing anything else");
+  });
+
+  test("a comment on the id line stays on it: the answer goes on the line after", () => {
+    const out = answered("asks:\n  - id: a  # keep me\n    ask: q\n", { id: "a", note: "yes" });
+    expect(out).toContain('  - id: a  # keep me\n    answer: "yes"\n');
+  });
+
+  test("a keep-chomped block scalar at the entry's end is left as it was: the answer is written beside the id", () => {
     const keep = "asks:\n  - id: a\n    ask: |+\n      q\n\n\n  - id: b\n";
-    expect(() => answered(keep, { id: "a", note: "yes" })).toThrow("without changing anything else");
+    const out = answered(keep, { id: "a", note: "yes" });
+    expect(out).toContain('  - id: a\n    answer: "yes"\n');
+    expect(out).toContain("    ask: |+\n      q\n\n\n  - id: b\n");
   });
 
   test("refuses an ask already answered, changed since you read it, an option it no longer offers, or gone", () => {
@@ -476,13 +491,14 @@ describe("an idea's answer", () => {
     const { out, ask } = idea({ option: "park", wake: "2026-11-20" });
     const before = IDEAS.split("\n");
     const after = out.split("\n");
+    // New keys go beside the id; the wake and answered_at the idea held are rewritten where they were.
     expect(after.filter((line) => !before.includes(line))).toEqual([
-      '    wake: "2026-11-20"',
-      '    answered_at: "2026-10-03T17:00:00Z"',
       '    answer: "Park until 2026-11-02: Comes back\\nWake: 2026-11-20."',
       '    answer_option: "park"',
       '    answered_by: "owner:maestro"',
       '    status: "resolved"',
+      '    wake: "2026-11-20"',
+      '    answered_at: "2026-10-03T17:00:00Z"',
     ]);
     expect(before.filter((line) => !after.includes(line))).toEqual(["    wake: 2026-11-02", "    answered_at: null"]);
     expect([ask.state, ask.answerOption, ask.idea?.wake]).toEqual(["answered", "park", "2026-11-20"]);
