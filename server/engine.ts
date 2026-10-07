@@ -84,6 +84,9 @@ export class UserError extends Error {
 /** A dispatch refused at the concurrency cap. The work is unchanged: it stays queued (or stuck). */
 export class AtCapacity extends UserError {}
 
+/** Why work adopted from an idle session is at your gate: its last turn handed you something (adoptOnce). */
+export const IDLE_WHEN_TRACKED = "The session was idle when tracked";
+
 /**
  * The agent's text since the last user message. Consecutive assistant items
  * are chunks of one message and join as-is; a tool call or anything else
@@ -1502,12 +1505,21 @@ export class Engine {
     );
     this.dirs(store.root).set(agentId, running.dir);
     if (agent.status === "running") return toWire(running, this.now().getTime(), config);
-    const landed = await store.mutate(
-      id,
-      () => ({ to: "review", reason: "The session was idle when tracked" }),
-      running.dir,
-    );
-    return toWire(landed, this.now().getTime(), config);
+    // Idle when tracked: its last turn decides, by the one landing rule every turn end goes through (endTurn).
+    // An arc that handed you something lands; one between steps stays running. Unreadable now: it stays
+    // running and reconcile reads it later, as it does any missed end.
+    const page = await paseo.agents
+      .ref(agentId)
+      .timeline.refetch({ direction: "tail", limit: 60 })
+      .catch(() => null);
+    if (!page) return toWire(running, this.now().getTime(), config);
+    const timeline = page.entries.map((entry) => entry.item);
+    this.readAt.set(agentId, agent.updatedAt);
+    await this.endTurn(store, running, agentId, outcomeOf(timeline), timeline, {
+      landedReason: IDLE_WHEN_TRACKED,
+      turnId: page.entries.at(-1)?.turnId ?? null,
+    });
+    return toWire(await store.load(running.dir), this.now().getTime(), config);
   }
 
   /** Prompt the session of work that just moved to running; a failed send parks it as stuck. */
@@ -1691,7 +1703,7 @@ export class Engine {
     agentId: string,
     outcome: Outcome,
     timeline: readonly AgentTimelineItem[],
-    options: { recovered?: boolean; seen?: number; endedAt?: string; turnId?: string | null },
+    options: { recovered?: boolean; seen?: number; endedAt?: string; turnId?: string | null; landedReason?: string },
   ): Promise<void> {
     let token: string | null = null;
     const updated = await store.mutate(
@@ -1760,7 +1772,7 @@ export class Engine {
           };
           return { events: [ended, started] };
         }
-        const reason = options.recovered ? "Recovered after a missed event" : null;
+        const reason = options.landedReason ?? (options.recovered ? "Recovered after a missed event" : null);
         return { at, to: landingState(fresh.contract.gate, "none"), reason, events: [ended] };
       },
       item.dir,

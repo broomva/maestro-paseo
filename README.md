@@ -192,9 +192,14 @@ The eight system states are Maestro's; the UI speaks the six plain labels.
   the handback skill's `## ⛔ Blocked on you` block. Any other turn end is the arc between steps:
   the work stays Running. With the loop on, it is named in Needs you once it goes quiet; with the
   loop off (the default) an arc that stops without handing anything back stays Running until it
-  does, you stop it, or its session is archived (then it is Stuck). A dispatched run is one task,
-  so its turn end still lands, and so does the first turn to end after your Send back or Unblock. The card shows the ask in the session's own words, or its last words
-  and what Approve and Send back do; it never invents a question.
+  does, you stop it, or its session is archived (then it is Stuck). A session that is idle when it
+  is tracked is read the same way: its last turn lands it only if that turn handed you something.
+  Only what the session said counts: a heading or verdict it quotes in a code fence, or mentions in
+  passing, is not a handback. A long handback keeps its ask when its text is cut to the last 8000
+  characters, so it still lands. A dispatched run is one task, so its turn end still lands, and so
+  does the first turn to end after your Send back or Unblock. The card shows the ask in the
+  session's own words, or its last words and what Approve and Send back do; it never invents a
+  question.
 
 Two edges differ from the Maestro runtime because Paseo owns execution: review can return to
 running (send back, answered question), and queued or stuck work can be canceled directly. Both
