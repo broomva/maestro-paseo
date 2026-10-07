@@ -536,15 +536,18 @@ export function blockedOnYou(text: string): { heading: string; body: string | nu
 }
 
 /**
- * Whether the session is on its own arc: adopted (running an arc of its own,
- * not one task from Maestro), with no task of yours outstanding. A Send back's
+ * Whether the session is on its own arc: adopted by an agent (running an arc
+ * of its own, not one task from Maestro), with no task of yours outstanding. A Send back's
  * note or an Unblock is a task, as a dispatched run is: the first turn to end
  * after it answers it and lands at your gate like one (engine.ts endTurn);
  * the turns after that are the arc's again.
  */
 export function onItsOwnArc(events: readonly WorkEvent[]): boolean {
   const bound = events.findLastIndex((e) => e.type === "dispatched" || e.type === "adopted");
-  if (events[bound]?.type !== "adopted") return false;
+  const binding = events[bound];
+  // Only an agent's adoption (an orchestrator tracking an arc it started) is an arc of its own. A session you
+  // adopt by hand is work you handed Maestro: its end lands at your gate, whatever it says (engine.ts adopt).
+  if (binding?.type !== "adopted" || binding.actor !== "agent") return false;
   const task = events.findLastIndex((e) => e.type === "unblocked" || (e.type === "gate" && e.verdict === "revise"));
   return task < bound || events.slice(task + 1).some((e) => e.type === "turn.ended");
 }
