@@ -286,6 +286,13 @@ describe("partial reads are unread, never gone", () => {
     expect(row?.unread).toBe(true);
     expect(row?.drift).toEqual([]);
   });
+  test("a schedule file in a shape not read is said, and the other Paseo rows are still judged", async () => {
+    const { options, root } = await world();
+    await writeFile(join(root, "schedules", "deadbeef.json"), JSON.stringify({ id: "deadbeef", status: "weird" }));
+    const view = await new Loops(options).get();
+    expect(view.warnings.join(" ")).toContain("deadbeef.json is in a shape the Loops tab does not read");
+    expect(view.rows.find((one) => one.id === "coordinator-tick")?.unread).toBe(false);
+  });
   test("a Timeline that could not read launchd leaves the launchd rows unread", async () => {
     const { options, view: timeline } = await world();
     const broken = {

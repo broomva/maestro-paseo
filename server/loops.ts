@@ -390,7 +390,13 @@ export class Loops {
     ]);
     if (!timeline) unread.add("launchd").add("maestro-loop");
     // A Timeline that read but could not read launchd or the fleet leaves those jobs out: unread, not gone.
-    if (timeline?.warnings.some((line) => /^(launchd|the fleet) could not be read/i.test(line))) unread.add("launchd");
+    // Only when no launchd source came back: a kept last read still judges.
+    if (
+      timeline?.warnings.some((line) => /^(launchd|the fleet) could not be read/i.test(line)) &&
+      !timeline.sources.some((one) => one.kind === "launchd")
+    ) {
+      unread.add("launchd");
+    }
     if (!schedules) unread.add("paseo-heartbeat").add("paseo-schedule");
     if (gha.unread === "all") unread.add("gha-schedule");
     else for (const repo of gha.unread) unread.add(`gha-schedule:${repo}`);
@@ -424,10 +430,13 @@ export class Loops {
       const source = sources.find((one) => one.id === `heartbeat:${id}` || one.id === `schedule:${id}`) ?? null;
       return scheduleObservation(raw, file, source, now);
     });
-    // A schedule file that would not read or parse leaves its loop out: the Paseo substrates are unread this time.
-    if (schedulesBroken.value || scheduleObservations.some((one) => one === null)) {
-      unread.add("paseo-heartbeat").add("paseo-schedule");
-    }
+    // A schedule file that would not read (a torn write) leaves its loop out: the Paseo substrates are unread this
+    // time. A file in a shape this reader does not take is persistent, so it is said, and the rest are judged.
+    if (schedulesBroken.value) unread.add("paseo-heartbeat").add("paseo-schedule");
+    scheduleObservations.forEach((one, index) => {
+      if (!one)
+        warnings.push(`Paseo schedule ${(schedules ?? [])[index]?.file} is in a shape the Loops tab does not read.`);
+    });
     const observations = [
       ...fromTimeline,
       ...extraLaunchd,
