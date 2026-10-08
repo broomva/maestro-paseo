@@ -445,7 +445,7 @@ export function FeedSectionsView({ sections, loopOn, ...pick }: Pick & { section
             theme={pick.theme}
             title="Handled for you"
             count={handled.count}
-            hint="closed by their orchestrator this week"
+            hint="closed without you this week"
           />
           {handled.groups.map((group) => (
             <HandledCard key={group.by} theme={pick.theme} group={group} onSelect={pick.onSelect} />
