@@ -364,6 +364,8 @@ export class Engine {
   private lastReconcile = 0;
   /** Per agent, the daemon's `updatedAt` when reconcile last read its timeline for a missed end. */
   private readonly readAt = new Map<string, string>();
+  /** An adopter's session title by its agent id, once read; null when the daemon had no such session (BRO-2938). */
+  private readonly adopterNames = new Map<string, string | null>();
   private readonly client: () => Paseo | null;
   private readonly timer: Timer;
   private readonly claimWaitMs: number;
@@ -490,6 +492,31 @@ export class Engine {
    * whose undo window has closed; a session's read never does, so no session
    * can make one of your decisions land.
    */
+  /**
+   * An adoption records its orchestrator by agent id (agent-socket.ts origin):
+   * the Feed says its session title instead, read once per id. Unread or gone,
+   * it says nothing rather than the id (BRO-2938).
+   */
+  private async namedAdopters(wire: WorkItem[], paseo?: Paseo): Promise<WorkItem[]> {
+    const ids = [...new Set(wire.flatMap((item) => (item.adoptedBy?.by ? [item.adoptedBy.by] : [])))];
+    const unread = ids.filter((id) => !this.adopterNames.has(id));
+    if (paseo && unread.length > 0) {
+      await Promise.all(
+        unread.map(async (id) => {
+          const title = await within(() => paseo.agents.ref(id).refresh(), this.claimWaitMs).then(
+            (snapshot) => (snapshot ? snapshot.agent.title?.trim() || null : null),
+            () => undefined,
+          );
+          // A failed read is retried next list; only an answer is kept.
+          if (title !== undefined) this.adopterNames.set(id, title);
+        }),
+      );
+    }
+    return wire.map((item) =>
+      item.adoptedBy?.by ? { ...item, adoptedBy: { by: this.adopterNames.get(item.adoptedBy.by) ?? null } } : item,
+    );
+  }
+
   async list(
     paseo?: Paseo,
     options: { decide?: boolean } = {},
@@ -516,7 +543,10 @@ export class Engine {
     const now = this.now();
     const dayStart = new Date(now);
     dayStart.setHours(0, 0, 0, 0);
-    const wire = items.map((item) => toWire(item, now.getTime(), config));
+    const wire = await this.namedAdopters(
+      items.map((item) => toWire(item, now.getTime(), config)),
+      paseo,
+    );
     wire.sort(
       (a, b) => GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group) || b.updatedAt.localeCompare(a.updatedAt),
     );

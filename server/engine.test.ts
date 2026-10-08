@@ -430,6 +430,27 @@ describe("reconcile", () => {
     expect((await engine.forAgent("manual"))?.id).toBe(item.id);
   });
 
+  test("the list names an adopter by its session title, never its id, and reads each once (BRO-2938)", async () => {
+    const { engine, fake, repo } = await setup();
+    fake.agents.set("manual", idleSession(repo));
+    fake.timelines.set("manual", said("Fixed it.\n\n## Ask\n- Merge #12?"));
+    fake.agents.set("orchestrator", { ...idleSession(repo), id: "orchestrator", title: "SRI Orchestrator" });
+    const item = await engine.adopt(fake.paseo, "manual", "", BY_ORCHESTRATOR);
+    const listed = async () => (await engine.list(fake.paseo)).items.find((entry) => entry.id === item.id);
+    expect((await listed())?.adoptedBy).toEqual({ by: "SRI Orchestrator" });
+    // Read once: the session can go and the name stays.
+    fake.agents.delete("orchestrator");
+    expect((await listed())?.adoptedBy).toEqual({ by: "SRI Orchestrator" });
+    // Without a daemon, or for a session it never had, the list says nothing rather than the id.
+    const { engine: other, fake: otherFake, repo: otherRepo } = await setup();
+    otherFake.agents.set("manual", idleSession(otherRepo));
+    otherFake.timelines.set("manual", said("Fixed it.\n\n## Ask\n- Merge #12?"));
+    const orphan = await other.adopt(otherFake.paseo, "manual", "", BY_ORCHESTRATOR);
+    const byList = async (paseo?: typeof otherFake.paseo) =>
+      (await other.list(paseo)).items.find((entry) => entry.id === orphan.id)?.adoptedBy;
+    expect([await byList(), await byList(otherFake.paseo)]).toEqual([{ by: null }, { by: null }]);
+  });
+
   test("an orchestrator adopting an idle arc between steps keeps it running; one it cannot read too", async () => {
     const { engine, fake, repo } = await setup();
     fake.agents.set("manual", idleSession(repo));
