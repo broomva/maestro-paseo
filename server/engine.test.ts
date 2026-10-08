@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { MaestroConfig } from "../shared/contracts";
 import { nextRunCopy } from "../shared/run";
 import type { Verdict } from "../shared/states";
+import { NAME_RETRY_MS } from "./adopter-names";
 import { defaultConfig } from "./config";
 import {
   CHECKING,
@@ -444,6 +445,24 @@ describe("reconcile", () => {
     expect(await listed(fake.paseo)).toEqual({ by: "SRI Orchestrator" });
     // Known: a list without the daemon still names it.
     expect(await listed()).toEqual({ by: "SRI Orchestrator" });
+  });
+
+  test("a daemon that never answers a name read is given up on after the claim wait, and asked again (BRO-2938)", async () => {
+    const { engine, fake, repo } = await setup({}, { claimWaitMs: 20 });
+    fake.agents.set("manual", idleSession(repo));
+    fake.timelines.set("manual", said("Fixed it.\n\n## Ask\n- Merge #12?"));
+    await engine.adopt(fake.paseo, "manual", "", BY_ORCHESTRATOR);
+    const ref = fake.paseo.agents.ref;
+    let reads = 0;
+    fake.paseo.agents.ref = (id: string) =>
+      id === "orchestrator" ? { ...ref(id), refresh: () => (reads++, new Promise<never>(() => {})) } : ref(id);
+    await engine.list(fake.paseo);
+    // Bounded: the hung read is let go, so the id is not stuck behind it.
+    await engine.adoptersSettled();
+    tickMs(NAME_RETRY_MS);
+    await engine.list(fake.paseo);
+    await engine.adoptersSettled();
+    expect(reads).toBe(2);
   });
 
   test("an orchestrator adopting an idle arc between steps keeps it running; one it cannot read too", async () => {

@@ -90,4 +90,24 @@ describe("an adopter's name (BRO-2938)", () => {
     await names.settled();
     expect(names("a1")).toBe("SRI Orchestrator");
   });
+
+  test("a session that went loses the name it had; a blank title is no name", async () => {
+    const t = clock();
+    const names = adopterNames(t.now);
+    let answer: () => Promise<string | null> = async () => "SRI Orchestrator";
+    const { read } = reader(() => answer());
+    names("a1", read);
+    await names.settled();
+    answer = async () => {
+      throw new Error("Agent not found: a1");
+    };
+    t.tick(NAME_EVERY_MS);
+    names("a1", read);
+    await names.settled();
+    const blank = adopterNames(t.now);
+    const { read: blankRead } = reader(async () => "   ");
+    blank("b1", blankRead);
+    await blank.settled();
+    expect([names("a1"), blank("b1")]).toEqual([null, null]);
+  });
 });
