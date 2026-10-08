@@ -44,6 +44,7 @@ import {
   groupProposals,
 } from "../shared/fleet";
 import type { Initiative, InitiativeNotice, InitiativesView } from "../shared/initiatives";
+import type { LoopNotice, LoopRow, LoopsView } from "../shared/loops";
 import type { HistoryEvent } from "../shared/records";
 import { groupOf, type OrchState } from "../shared/states";
 import type { TimelineNotice, TimelineRun, TimelineSource, TimelineView } from "../shared/timeline";
@@ -515,6 +516,81 @@ let answerFail: string | null = null;
 let askNoticesNow: AskNotice[] = [];
 /** The answers batch work.attention says waits on you: none unless a test says. */
 let answersNoticesNow: AnswersNotice[] = [];
+/** Loop drift work.attention says needs you: none unless a test says. */
+let loopNoticesNow: LoopNotice[] = [];
+/** The Loops tab's read (loops.get): two standing rows, one drifting, and a p9 watcher. */
+const loopRow = (extra: Partial<LoopRow>): LoopRow => ({
+  subject: "loop:kg-lint",
+  id: "kg-lint",
+  name: "Knowledge-graph weekly lint",
+  kind: "launchd",
+  ref: "com.broomva.kg-lint",
+  scope: "broomva",
+  owner: "owner",
+  purpose: "Lint every entity page.",
+  desired: "paused",
+  section: "loops",
+  intent: null,
+  observed: null,
+  unread: false,
+  drift: [],
+  ...extra,
+});
+const loopsView = (): LoopsView => ({
+  now: "2026-10-08T16:00:00.000Z",
+  ledger: { repo: "/Users/me/broomva", sha: "4c744b7071", path: "origin/main:.broomva/loops" },
+  rows: [
+    loopRow({
+      observed: {
+        subject: "loop:launchd/com.broomva.kg-lint",
+        kind: "launchd",
+        ref: "com.broomva.kg-lint",
+        name: "kg-lint",
+        scope: "broomva",
+        presence: "on",
+        status: "ok",
+        reason: "On schedule.",
+        since: null,
+        cadence: "Sundays at 02:30",
+        next: null,
+        last: null,
+        runs: [],
+        ephemeral: false,
+        where: "/tmp/kg-lint.log",
+      },
+      drift: [
+        {
+          kind: "paused_but_running",
+          detail: "It is paused in the ledger, and launchd will run it.",
+          fix: "launchctl bootout gui/$UID/com.broomva.kg-lint && launchctl disable gui/$UID/com.broomva.kg-lint",
+          needsYou: true,
+        },
+      ],
+    }),
+    loopRow({
+      subject: "loop:maestro-wake",
+      id: "maestro-wake",
+      name: "Maestro loop wake",
+      kind: "maestro-loop",
+      ref: "wake",
+      desired: "active",
+      purpose: "Every 30 min, Maestro wakes.",
+    }),
+    loopRow({
+      subject: "loop:p9/w1",
+      id: null,
+      name: "p9 PR #11 broomva/skene",
+      kind: "p9",
+      ref: "w1",
+      owner: null,
+      purpose: null,
+      desired: null,
+      section: "ephemeral",
+    }),
+  ],
+  ledgerErrors: [{ file: ".broomva/loops/bad.yaml", error: "unknown key colour" }],
+  warnings: [],
+});
 /** The session broomva's ask a1 is about: none unless a test says. */
 let askSessionNow: AskSession | null = null;
 /** Paseo sessions the surface asked the host to open. */
@@ -951,8 +1027,10 @@ const invoke = async (method: string, input: unknown) => {
       asks: askNoticesNow,
       initiatives: initiativeNoticesNow,
       answers: answersNoticesNow,
+      loops: loopNoticesNow,
     };
   }
+  if (method === "loops.get") return loopsView();
   if (method === "asks.workspace") {
     if (workspaceFail) throw new Error(workspaceFail);
     return {
@@ -1266,6 +1344,7 @@ afterEach(async () => {
   answerHeld = null;
   answerFail = null;
   askNoticesNow = [];
+  loopNoticesNow = [];
   answersNoticesNow = [];
   askSessionNow = null;
   opened = [];
@@ -1971,9 +2050,10 @@ describe("views and filters", () => {
       "Decisions",
       "Timeline",
       "Initiatives",
+      "Loops",
     ]);
     expect(view.text()).toContain("WORKFeedBoardListHistory");
-    expect(view.text()).toContain("SYSTEMFleetDecisionsTimelineInitiatives");
+    expect(view.text()).toContain("SYSTEMFleetDecisionsTimelineInitiativesLoops");
   });
 
   test("compact picks a view from one menu: the feed, History and the system views, in their groups", async () => {
@@ -1991,8 +2071,9 @@ describe("views and filters", () => {
       "Decisions",
       "Timeline",
       "Initiatives",
+      "Loops",
     ]);
-    expect(view.text()).toContain("WORKFeedHistorySYSTEMFleetDecisionsTimelineInitiatives");
+    expect(view.text()).toContain("WORKFeedHistorySYSTEMFleetDecisionsTimelineInitiativesLoops");
     expect(view.byLabel("Feed")?.getAttribute("aria-current")).toBe("true");
     await view.press(view.byLabel("Feed"));
     expect(view.all('[role="menuitem"]')).toEqual([]);
@@ -4466,5 +4547,58 @@ describe("the Feed home (BRO-2906)", () => {
     expect(view.byLabel("Scope: genesis")).not.toBeNull();
     expect(view.text()).toContain("Work c");
     expect(view.text()).not.toContain("Work a");
+  });
+});
+
+describe("Loops", () => {
+  const tab = (view: Awaited<ReturnType<typeof mount>>, label: string) =>
+    view.tabs().find((one) => one.getAttribute("aria-label") === label);
+  const until = async (view: Awaited<ReturnType<typeof mount>>, text: string) => {
+    for (let tries = 0; tries < 150 && !view.text().includes(text); tries += 1) await settle(20);
+  };
+
+  test("one row per loop: intent beside observed, a drift badge, owner and purpose; a row opens its pinned fix", async () => {
+    const view = await mount(surface(false));
+    await view.press(tab(view, "Loops"));
+    await until(view, "kg-lint");
+    const text = view.text();
+    for (const part of [
+      "origin/main:.broomva/loops @ 4c744b7",
+      "2 loops; 1 needs you, 1 drifting.",
+      ".broomva/loops/bad.yaml: unknown key colour",
+      "kg-lint",
+      "Paused but running",
+      "Paused · owner",
+      "On · ok",
+      "Lint every entity page.",
+      "maestro-wake",
+      "Session & watchers",
+      "p9 PR #11 broomva/skene",
+    ]) {
+      expect(text).toContain(part);
+    }
+    expect(text).not.toContain("launchctl bootout");
+    await view.press(view.byLabel("Knowledge-graph weekly lint. Paused · owner. On · ok. Drift: PAUSED_BUT_RUNNING."));
+    expect(view.text()).toContain(
+      "launchctl bootout gui/$UID/com.broomva.kg-lint && launchctl disable gui/$UID/com.broomva.kg-lint",
+    );
+  });
+
+  test("loop drift that needs you sits above the other views and opens the tab", async () => {
+    loopNoticesNow = [
+      {
+        id: "loop:kg-lint#paused_but_running",
+        subject: "loop:kg-lint",
+        loop: "kg-lint",
+        kind: "paused_but_running",
+        detail: "It is paused in the ledger, and launchd will run it.",
+        fix: "launchctl bootout gui/$UID/com.broomva.kg-lint",
+      },
+    ];
+    const view = await mount(surface(false));
+    await until(view, "kg-lint: Paused but running.");
+    await view.press(view.byLabel("Open Loops, kg-lint"));
+    await until(view, "Session & watchers");
+    expect(view.text()).toContain("Session & watchers");
   });
 });

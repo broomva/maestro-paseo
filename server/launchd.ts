@@ -38,6 +38,7 @@ import {
   logStartArg,
   logTime,
   type PrintedJob,
+  parseDisabled,
   parseExits,
   parseList,
   parsePrint,
@@ -65,7 +66,11 @@ export const PS = "/bin/ps";
 
 /** The commands the timeline may run, each only with the verb that reads. */
 const READS: Record<string, (args: readonly string[]) => boolean> = {
-  [LAUNCHCTL]: (args) => (args[0] === "list" && args.length === 1) || (args[0] === "print" && args.length === 2),
+  [LAUNCHCTL]: (args) =>
+    (args[0] === "list" && args.length === 1) ||
+    (args[0] === "print" && args.length === 2) ||
+    // The loop layer's presence rule (BRO-2911 spec §6): which jobs are disabled, for the user's own domain only.
+    (args[0] === "print-disabled" && args.length === 2 && /^gui\/\d+$/.test(args[1] ?? "")),
   [PLUTIL]: (args) => args.length === 5 && args[0] === "-convert" && args[2] === "-o" && args[3] === "-",
   [LOG]: (args) => args[0] === "show",
   [PS]: (args) => args[0] === "-o" && args[1] === "etime=" && args[2] === "-p" && args.length === 4,
@@ -482,4 +487,39 @@ async function readTail(path: string): Promise<{ text: string; mtimeMs: number; 
   } finally {
     await handle?.close();
   }
+}
+
+/**
+ * Each label's presence (BRO-2911 spec §2), for any label, broomva or not:
+ * on, listed by `launchctl list` and not disabled; off, its plist is in
+ * LaunchAgents but it is not loaded, or it is disabled; gone, neither. A
+ * failed list or print-disabled throws: no presence is guessed.
+ */
+export async function launchdPresence(
+  labels: readonly string[],
+  options: { run?: Runner; uid?: number; agentsDir?: string } = {},
+): Promise<Map<string, "on" | "off" | "gone">> {
+  const run = readOnly(options.run ?? execRunner);
+  const uid = options.uid ?? process.getuid?.() ?? 501;
+  const agentsDir = options.agentsDir ?? expandHome("~/Library/LaunchAgents");
+  const out = async (args: readonly string[]) => {
+    const result = await run(LAUNCHCTL, args, { timeoutMs: SHORT_MS });
+    if (result.code !== 0) throw new Error(`launchctl ${args[0]} exited ${result.code ?? "on a signal"}`);
+    return result.stdout;
+  };
+  const [listed, disabled, plists] = await Promise.all([
+    out(["list"]).then((text) => new Set(parseList(text, "").map((job) => job.label))),
+    out(["print-disabled", `gui/${uid}`]).then(parseDisabled),
+    readdir(agentsDir).then(
+      (names) =>
+        new Set(names.filter((name) => name.endsWith(".plist")).map((name) => name.slice(0, -".plist".length))),
+      () => new Set<string>(),
+    ),
+  ]);
+  return new Map(
+    labels.map((label) => [
+      label,
+      listed.has(label) && !disabled.has(label) ? "on" : listed.has(label) || plists.has(label) ? "off" : "gone",
+    ]),
+  );
 }

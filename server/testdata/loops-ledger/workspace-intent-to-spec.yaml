@@ -1,0 +1,11 @@
+id: workspace-intent-to-spec
+title: Intent to spec (daily)
+purpose: List accepted intents in intent/ with no spec yet, with the command that drafts one (P3 artifact chain).
+owner: owner
+scope: broomva
+substrate: {kind: gha-schedule, ref: broomva/workspace/.github/workflows/intent-to-spec.yml}
+cadence: daily 06:23 UTC
+desired: active
+retires: {none: a new trigger; no earlier loop did this}
+contract: {produces: a daily job summary listing every accepted intent without a spec}
+review_by: '2026-10-21'

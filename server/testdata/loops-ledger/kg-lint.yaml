@@ -1,0 +1,15 @@
+id: kg-lint
+title: Knowledge-graph weekly lint
+purpose: Lint every entity page (bookkeeping lint).
+owner: owner
+scope: broomva
+substrate: {kind: launchd, ref: com.broomva.kg-lint}
+cadence: Sundays 02:30
+desired: paused
+desired_since: '2026-10-04'
+reason: 'Owner 2026-10-04: ''fix the broken ones or pause/remove them''. Audit: 0 errors, blind to the junk pages
+  (noise). Paused until the BRO-2806 evals and the BRO-2807 kg fixes land.'
+contract: {produces: a planted bad page is flagged}
+review_by: '2026-10-21'
+links:
+  linear: [BRO-2806, BRO-2807]

@@ -1,0 +1,11 @@
+id: workspace-bands
+title: Control bands (daily)
+purpose: Deterministic drift detection over control metrics; 2-3 sigma opens a diagnosis PR (P11 rule 10).
+owner: owner
+scope: broomva
+substrate: {kind: gha-schedule, ref: broomva/workspace/.github/workflows/bands.yml}
+cadence: daily 06:41 UTC
+desired: active
+retires: {none: a new detector; no earlier loop did this}
+contract: {produces: a daily band report; a 2-sigma excursion opens a PR}
+review_by: '2026-10-21'

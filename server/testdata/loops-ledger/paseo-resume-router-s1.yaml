@@ -1,0 +1,11 @@
+id: paseo-resume-router-s1
+title: 'One-shot: resume role-x router and ctx S1 decisions'
+purpose: One-shot Paseo schedule that started the router + ctx S1 shadow-decisions session on 2026-10-06.
+owner: coordinator:f5307ce7
+scope: broomva
+substrate: {kind: paseo-schedule, ref: 8f7efc61}
+cadence: once, 2026-10-06 09:07
+desired: retired
+desired_since: '2026-10-06'
+reason: One-shot; it ran and completed on 2026-10-06.
+review_by: '2026-10-21'

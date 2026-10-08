@@ -22,6 +22,7 @@ export const VIEWS = [
   { id: "decisions", label: "Decisions", icon: "Inbox", group: "system" },
   { id: "timeline", label: "Timeline", icon: "CalendarClock", group: "system" },
   { id: "initiatives", label: "Initiatives", icon: "Target", group: "system" },
+  { id: "loops", label: "Loops", icon: "Repeat", group: "system" },
 ] as const;
 export type PlaneView = (typeof VIEWS)[number]["id"];
 export type ViewOption = (typeof VIEWS)[number];

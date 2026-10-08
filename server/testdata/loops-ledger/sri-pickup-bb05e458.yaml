@@ -1,0 +1,8 @@
+id: sri-pickup-bb05e458
+title: SRI handoff pickup (one-shot)
+purpose: 'An SRI one-shot pickup schedule. Read-only row: not ours to change.'
+owner: sri-orchestrator
+scope: sri
+substrate: {kind: paseo-schedule, ref: bb05e458}
+cadence: once (completed)
+review_by: '2026-10-21'

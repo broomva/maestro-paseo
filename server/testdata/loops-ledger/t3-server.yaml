@@ -1,0 +1,10 @@
+id: t3-server
+title: T3 code server
+purpose: Third-party agent coding server (KeepAlive).
+owner: owner
+scope: external
+substrate: {kind: launchd, ref: codes.t3.server}
+cadence: keepalive daemon
+desired: active
+retires: {none: 'a third-party daemon the owner installed; it is not a broomva loop and replaces none'}
+review_by: '2026-10-21'

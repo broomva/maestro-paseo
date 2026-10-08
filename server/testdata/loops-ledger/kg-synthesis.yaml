@@ -1,0 +1,15 @@
+id: kg-synthesis
+title: Knowledge-graph weekly synthesis
+purpose: Write Layer-4 synthesis notes from >=3 entity pages (bookkeeping synthesis).
+owner: owner
+scope: broomva
+substrate: {kind: launchd, ref: com.broomva.kg-synthesis}
+cadence: Sundays 02:45
+desired: paused
+desired_since: '2026-10-04'
+reason: 'Owner 2026-10-04: ''fix the broken ones or pause/remove them''. Audit: 0 synthesis notes written (noise).
+  Paused until the BRO-2806 evals and the BRO-2807 kg fixes land.'
+contract: {produces: '>=1 synthesis note per week citing >=3 entities that exist on main'}
+review_by: '2026-10-21'
+links:
+  linear: [BRO-2806, BRO-2807]

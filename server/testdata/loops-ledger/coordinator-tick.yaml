@@ -1,0 +1,19 @@
+id: coordinator-tick
+title: Fleet coordinator tick (Paseo heartbeat)
+purpose: 'Every 2 h, prompt the fleet coordinator session to run its tick: fleet, asks, initiatives, PRs, Maestro.'
+owner: coordinator
+scope: broomva
+initiative: fleet-autonomy
+substrate: {kind: paseo-heartbeat, ref: 'name:coordinator-tick'}
+cadence: cron 13 */2 * * * (America/Bogota)
+desired: active
+retires: ['session cron e852dd28 (and 42152ef6 before it): session-only, it died with its session on 2026-10-06
+    unseen']
+contract:
+  produces: a loop.tick.started/loop.tick.ended pair per fire in ~/.broomva/ledger/loops/ticks.jsonl, and a rewritten
+    ~/.broomva/notes/loops/coordinator-tick/state.yaml
+prompt: .broomva/loops/prompts/coordinator-tick.md
+session: bound
+review_by: '2026-10-21'
+links:
+  linear: [BRO-2911]

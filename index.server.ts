@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { agentMethods, keepServing } from "./server/agent-socket";
@@ -10,10 +11,13 @@ import { Engine, UserError } from "./server/engine";
 import { AwakeClock, Fleet, wallClock } from "./server/fleet";
 import { inspectFolder as inspect } from "./server/folders";
 import { GateCards } from "./server/gate-card";
+import { GhaSchedules } from "./server/gha";
 import { createInboxProvider, Inbox } from "./server/inbox";
 import { agentIds, driverRelay, ghRun, ideaWork, prStates, workspaceInitiatives } from "./server/initiatives";
-import { Launchd } from "./server/launchd";
+import { Launchd, launchdPresence } from "./server/launchd";
 import { Loop } from "./server/loop";
+import { homeWriter, Loops } from "./server/loops";
+import { gitLedger, loopPaths } from "./server/loops-ledger";
 import {
   controlAskPaths,
   controlRepoPaths,
@@ -58,6 +62,7 @@ import {
   reviewProposal,
 } from "./shared/fleet";
 import { fileIdeaWork, getInitiatives, ideaRef, type WorkRef } from "./shared/initiatives";
+import { getLoops } from "./shared/loops";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
 import { getTimeline, getTimelineLog } from "./shared/timeline";
 
@@ -255,6 +260,40 @@ export default function contribute(host: PluginServerContext) {
     clock,
     log,
   });
+  // Every loop beside its intent (BRO-2911): the ledger on the control repo's origin/main, the Timeline's own
+  // observations plus GitHub Actions and p9, reconciled; drift transitions go to ~/.broomva/ledger/loops/drift.jsonl.
+  const loopHome = loopPaths();
+  const loops = new Loops({
+    ledger: control.repo ? gitLedger(control.repo, { fetch: true, log }) : null,
+    timeline,
+    schedulesDir: paseoSchedulesDir(),
+    presence: prefix ? (labels) => launchdPresence(labels) : null,
+    gha: control.repo ? new GhaSchedules() : null,
+    p9Dir: join(homedir(), ".config", "broomva", "p9"),
+    streams: loopHome.streams,
+    notes: loopHome.notes,
+    // A bound loop's session, as Paseo has it now: one that will not read is not judged (no false gone).
+    agents: async (ids) => {
+      const paseo = latest;
+      const found = new Map<string, { found: boolean; archivedAt: string | null }>();
+      if (!paseo) return found;
+      for (const id of ids) {
+        try {
+          const agent = (await paseo.agents.ref(id).refresh())?.agent ?? null;
+          // An empty answer (a client reconnecting) says nothing: only a session read is judged.
+          if (agent) found.set(id, { found: true, archivedAt: agent.archivedAt ?? null });
+        } catch (error) {
+          const said = (error as Error).message;
+          // Only Paseo's own word that the session does not exist is "not found".
+          if (/not found|unknown agent|no such agent/i.test(said)) found.set(id, { found: false, archivedAt: null });
+          else log(`loops: reading session ${id}: ${said}`);
+        }
+      }
+      return found;
+    },
+    writer: control.repo ? homeWriter(control.repo) : null,
+    log,
+  });
   // No client handed to list: the header count and pills poll this, and must not reconcile sessions.
   // A fleet or a timeline that cannot be read costs the count its notices, never the work's.
   server.handle(attentionWork, async () => {
@@ -282,17 +321,26 @@ export default function contribute(host: PluginServerContext) {
       }),
       (lander?.state() ?? Promise.resolve(null)).catch(() => null),
     ]);
+    // Loop drift with its pinned fix (loopNeeds()), beside what attentionOf counts: BRO-2909 folds it into needs.list.
+    const loopNotices = await loops.notices().catch((error) => {
+      log(`reading the loops for the header count: ${(error as Error).message}`);
+      return [];
+    });
     const batch = answersNotice(landing);
-    return attentionOf(
-      items,
-      Date.now(),
-      notices,
-      scheduled,
-      [...workspaceAsks, ...fleetAsks],
-      initiativeNotices,
-      batch ? [batch] : [],
-    );
+    return {
+      ...attentionOf(
+        items,
+        Date.now(),
+        notices,
+        scheduled,
+        [...workspaceAsks, ...fleetAsks],
+        initiativeNotices,
+        batch ? [batch] : [],
+      ),
+      loops: loopNotices,
+    };
   });
+  server.handle(getLoops, () => loops.get());
   server.handle(getTimeline, () => timeline.get());
   // A launchd job's log end, only when you open its row: never in the polled view.
   server.handle(getTimelineLog, ({ id }) => timeline.logOf(id));

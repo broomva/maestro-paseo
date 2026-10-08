@@ -1,0 +1,11 @@
+id: life-ci-weekly
+title: Life CI (weekly)
+purpose: Weekly full CI on broomva/life, catching drift from toolchain and dependency updates between pushes.
+owner: owner
+scope: broomva
+substrate: {kind: gha-schedule, ref: broomva/life/.github/workflows/ci.yml}
+cadence: Mondays 06:00 UTC
+desired: active
+retires: {none: a scheduled regression net; it replaces nothing}
+contract: {produces: 'a green weekly run on main, or a red one that names the break'}
+review_by: '2026-10-21'

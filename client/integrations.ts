@@ -100,6 +100,7 @@ export function startIntegrations(
   let asks: Attention["asks"] = [];
   let initiatives: Attention["initiatives"] = [];
   let answers: Attention["answers"] = [];
+  let loops: Attention["loops"] = [];
   let workspaces: string[] = [];
   /** What the last good read showed, and for how many reads in a row it has held. */
   let shown: string | null = null;
@@ -123,7 +124,7 @@ export function startIntegrations(
             ...headerFace(spec.count),
             behavior: {
               kind: "action",
-              onPress: () => open(needsYouTarget(waiting, fleet, timeline, asks, initiatives, answers)),
+              onPress: () => open(needsYouTarget(waiting, fleet, timeline, asks, initiatives, answers, loops)),
             },
           },
         }),
@@ -188,13 +189,15 @@ export function startIntegrations(
         initiatives = read.value.initiatives ?? [];
         // Nor the answers batch, from a daemon before it landed answers.
         answers = read.value.answers ?? [];
+        // Nor loop drift, from a daemon before the Loops tab.
+        loops = read.value.loops ?? [];
         const next = JSON.stringify(read.value);
         calm = next === shown ? calm + 1 : 0;
         shown = next;
         pills.sync(pillSpecs(read.value.sessions));
       }
       report(read.status === "rejected" ? read.reason : spaces.status === "rejected" ? spaces.reason : null);
-      headers.sync(headerSpecs(workspaces, needsYouCount(waiting, fleet, timeline, asks, initiatives, answers)));
+      headers.sync(headerSpecs(workspaces, needsYouCount(waiting, fleet, timeline, asks, initiatives, answers, loops)));
     } finally {
       busy = false;
       if (!stopped) schedule();

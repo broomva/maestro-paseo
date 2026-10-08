@@ -70,3 +70,12 @@ browser is on the daemon's own origin: no host to add, and no Local Network Acce
 
 More than one checkout can run a sandbox at once: each records its own under a pointer keyed by its path. Pass
 `--state <dir>` or set `MAESTRO_DOGFOOD_STATE` to act on a specific one.
+
+## The Loops read on this machine
+
+`bun scripts/dogfood/loops-live.ts` runs the Loops read end to end without a daemon: the ledger (from
+`~/broomva` origin/main, or `--ledger <dir>`), the real launchd, Paseo schedule files, GitHub Actions
+and p9, then the reconcile, and prints the row table and the UNREGISTERED count. It writes nothing
+unless `--drift-home <tmp>` is given; then transitions go through `broomva_home.py` into that home,
+never `~/.broomva`. Put a canary row in a temp copy of the ledger to make a drift appear, then remove
+it to clear it. Never change a real substrate to do this.
