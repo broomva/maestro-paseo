@@ -655,13 +655,17 @@ describe("work its orchestrator took back leaves your gate once archived (BRO-29
   });
 
   test("an orchestrator's arc that handed it something, archived since, untouched by you: handled", () => {
-    expect(adopterClosed([...byAgent("e2b10dcc-dd32"), archived])).toEqual({ by: "e2b10dcc-dd32", handedBack: true });
-    expect(adopterClosed([...byAgent(null), archived])).toEqual({ by: "", handedBack: true });
+    expect(adopterClosed([...byAgent("e2b10dcc-dd32"), archived])).toBe("e2b10dcc-dd32");
+    expect(adopterClosed([...byAgent(null), archived])).toBe("");
   });
 
-  test("one whose last turn handed nothing back (its session died) was only archived", () => {
+  test("how its arc ended is not Maestro's to judge: a close-out in plain words, or a session that died", () => {
+    // A finished arc's report with no ARC-STATUS line or ## Ask, and the error a dead session ended on: both
+    // were the orchestrator's to read, and it archived them.
+    const closeOut = "STI-3558 merged to dev; the remote branch was deleted on merge. What remains: nothing.";
+    expect(adopterClosed([...byAgent("orch", closeOut), archived])).toBe("orch");
     const died = "Your organization has disabled Claude subscription access for Claude Code";
-    expect(adopterClosed([...byAgent("orch", died), archived])).toEqual({ by: "orch", handedBack: false });
+    expect(adopterClosed([...byAgent("orch", died), archived])).toBe("orch");
   });
 
   test("not archived, adopted by you, dispatched, or acted on by you since it landed: null", () => {
@@ -706,10 +710,7 @@ describe("work its orchestrator took back leaves your gate once archived (BRO-29
       turnEnded(160, "Second pass done.\n\nARC-STATUS: HANDBACK 1"),
       landing(160),
     ];
-    expect(adopterClosed([...byAgent("orch", "Working."), ...again, archived])).toEqual({
-      by: "orch",
-      handedBack: true,
-    });
+    expect(adopterClosed([...byAgent("orch", "Working."), ...again, archived])).toBe("orch");
   });
 });
 

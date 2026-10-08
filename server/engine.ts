@@ -47,7 +47,6 @@ import {
   type FlaggedEvent,
   finishedArc,
   flagOf,
-  handledByOrchestrator,
   handsBack,
   keptSummary,
   lastOf,
@@ -1965,23 +1964,14 @@ export class Engine {
         const archived = agent?.archivedAt && !archivedSince(item.events) ? [this.note(ARCHIVED_NOTE)] : [];
         const seen = [...item.events, ...archived];
         const line = finishedArc(seen);
-        // An orchestrator's child leaves your gate once the orchestrator archived it (BRO-2903): done if its
-        // last turn handed the orchestrator something, canceled if it handed nothing (its session ended).
+        // An orchestrator's child leaves your gate once the orchestrator took it back and archived it (BRO-2903).
         const adopter = line ? null : adopterClosed(seen);
-        if (adopter && !adopter.handedBack) {
-          return guarded({
-            to: "canceled",
-            actor: "maestro",
-            reason: archivedByOrchestrator(adopter.by),
-            events: archived,
-          });
-        }
-        if (line || adopter) {
+        if (line || adopter !== null) {
           const closed = await guarded({
             to: "done",
             actor: "maestro",
             ctx: line ? { arcFinished: true } : { adopterClosed: true },
-            reason: line ? closedItself(line) : handledByOrchestrator(adopter?.by ?? ""),
+            reason: line ? closedItself(line) : archivedByOrchestrator(adopter ?? ""),
             events: archived,
           });
           // As an approval would: the workspace a run created goes when Settings says archive on approve.

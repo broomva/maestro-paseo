@@ -477,36 +477,31 @@ export const closedItself = (line: string) => `Its arc reported “${line}” an
  * adopted the session (an orchestrator tracking an arc it started), the turn
  * that landed it was the arc's own (not an answer to a note or an unblock of
  * yours: onItsOwnArc), and the orchestrator archived the session since, with
- * you having done nothing with it. Null otherwise, and under the same guards
- * as finishedArc: never while a question, a decision of yours or checks are
- * open, never over failed checks. A session you adopted is yours to close.
- * `handedBack` says whether that turn handed the orchestrator something
- * (handsBack): if it did, the orchestrator handled it; if not (a session that
- * died, say), it only archived it, and the receipt says no more than that.
+ * you having done nothing with it. The adopter's session id ("" when
+ * unrecorded), else null; under the same guards as finishedArc: never while a
+ * question, a decision of yours or checks are open, never over failed checks.
+ * A session you adopted is yours to close. Maestro does not judge how the arc
+ * ended (finished, or its session died and was replaced): the orchestrator
+ * read it, and its archive is the only thing Maestro saw, so the receipt says
+ * no more than that.
  */
-export function adopterClosed(events: readonly WorkEvent[]): { by: string; handedBack: boolean } | null {
+export function adopterClosed(events: readonly WorkEvent[]): string | null {
   if (pendingPermission(events) || pendingDecision(events) || pendingChecks(events)) return null;
   if (checkOutcome(latestChecks(events)) === "failed" || !archivedSince(events)) return null;
   const bind = events.findLast((e) => e.type === "dispatched" || e.type === "adopted");
-  if (bind?.type !== "adopted" || bind.actor !== "agent") return null;
+  // Adopted by an agent: onItsOwnArc, below, is false for a session you adopted.
+  if (bind?.type !== "adopted") return null;
   const landed = events.findLastIndex((e) => e.type === "state" && e.to === "review");
   if (landed < 0 || events.slice(landed + 1).some((e) => e.actor === "human")) return null;
   const turn = events.slice(0, landed).findLastIndex((e) => e.type === "turn.ended");
   // The turn that landed it answered a task of yours (a Send back, an Unblock): that answer is yours to read.
   if (turn < 0 || !onItsOwnArc(events.slice(0, turn))) return null;
-  const ended = events[turn];
-  const summary = ended?.type === "turn.ended" ? ended.summary : "";
-  return { by: bind.by ?? "", handedBack: handsBack(summary) };
+  return bind.by ?? "";
 }
 
-const orchestrator = (by: string) => `Its orchestrator${by ? ` (session ${by.slice(0, 8)})` : ""}`;
-
-/** The receipt of work its orchestrator handled: its last turn handed it something, and it archived it. */
-export const handledByOrchestrator = (by: string) => `${orchestrator(by)} handled it and archived its session`;
-
-/** The receipt of work its orchestrator archived with nothing handed back (its session ended, say). */
+/** The receipt of work its orchestrator took back (adopterClosed): what Maestro saw, and nothing more. */
 export const archivedByOrchestrator = (by: string) =>
-  `${orchestrator(by)} archived its session; the last turn Maestro saw handed nothing back`;
+  `Its orchestrator${by ? ` (session ${by.slice(0, 8)})` : ""} took it back and archived its session`;
 
 /**
  * Whether a turn's text hands something to you: an arc verdict (arcStatus) or

@@ -25,7 +25,7 @@
 // done without an approve verdict, but for two named causes, with nothing of
 // yours open: arcFinished, the work's own arc reported itself finished and its
 // session was archived (server/events.ts finishedArc); and adopterClosed, an
-// orchestrator that adopted the work was handed something by its last turn and
+// orchestrator that adopted the work took back its own arc's landing and
 // archived its session, with you having done nothing with it since it landed
 // (server/events.ts adopterClosed, BRO-2903).
 
@@ -147,9 +147,9 @@ export interface TransitionContext {
    */
   arcFinished?: boolean;
   /**
-   * True when an orchestrator that adopted the work was handed something by
-   * its last turn and archived its session since, untouched by you (server/
-   * events.ts adopterClosed): its handback was the orchestrator's to take.
+   * True when an orchestrator that adopted the work took back its own arc's
+   * landing and archived its session since, untouched by you (server/events.ts
+   * adopterClosed): that landing was the orchestrator's to read.
    */
   adopterClosed?: boolean;
 }
@@ -169,7 +169,7 @@ export function transition(from: OrchState, to: OrchState, ctx: TransitionContex
     throw new IllegalTransitionError(
       from,
       to,
-      "only an approve verdict, an arc that reported itself finished and was archived, or an orchestrator that took back what it was handed and archived it, closes gated work",
+      "only an approve verdict, an arc that reported itself finished and was archived, or an orchestrator that took back its arc and archived it, closes gated work",
     );
   }
   if (from === "running" && to === "done" && !(ctx.gate === "auto" && ctx.checksPassed === true)) {

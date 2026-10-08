@@ -3053,11 +3053,11 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
       type: "state",
       actor: "maestro",
       text: "Done",
-      detail: "Its orchestrator (session orchestr) handled it and archived its session",
+      detail: "Its orchestrator (session orchestr) took it back and archived its session",
     });
   });
 
-  test("its orchestrator archiving an arc that landed with nothing handed back (it died) cancels it (BRO-2903)", async () => {
+  test("its orchestrator archiving an arc whose session died closes it with the same plain receipt (BRO-2903)", async () => {
     const { engine, fake, item, store } = await adopted();
     // Landed before the handback rule (or recovered), its last words the error the session died on.
     await store.mutate(item.id, () => ({
@@ -3082,11 +3082,11 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
     }
     await engine.onArchived({ id: "arc" }, fake.paseo);
     const { item: after, events } = await engine.get(item.id);
-    expect(after.state).toBe("canceled");
+    expect(after.state).toBe("done");
     expect(events.at(-1)).toMatchObject({
       type: "state",
       actor: "maestro",
-      detail: "Its orchestrator (session orchestr) archived its session; the last turn Maestro saw handed nothing back",
+      detail: "Its orchestrator (session orchestr) took it back and archived its session",
     });
   });
 
