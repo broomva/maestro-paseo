@@ -8,6 +8,7 @@ import {
   finishedArc,
   flagOf,
   formatDuration,
+  handledByAdopter,
   handsBack,
   keptSummary,
   lastActivityOf,
@@ -620,6 +621,33 @@ describe("an arc's own verdict at the gate (BRO-2856)", () => {
       { ts: at(150), type: "state", actor: "maestro", from: "running", to: "review", reason: null },
     ];
     expect(lookOf("review", again, T0)?.archived).toBe(false);
+  });
+});
+
+describe("work its orchestrator handled closes once archived (BRO-2903)", () => {
+  const archived: WorkEvent = { ts: at(135), type: "note", actor: "maestro", text: ARCHIVED_NOTE };
+  // The same run, adopted by an orchestrator instead of dispatched, its last turn a handback.
+  const byAgent = (by: string | null): WorkEvent[] =>
+    toReview.map((e) =>
+      e.type === "dispatched"
+        ? { ...e, type: "adopted", actor: "agent", by }
+        : e.type === "turn.ended"
+          ? { ...e, summary: "Merged.\n\nARC-STATUS: HANDBACK 1" }
+          : e,
+    ) as WorkEvent[];
+
+  test("an orchestrator's arc, archived since it landed, untouched by you: its adopter", () => {
+    expect(handledByAdopter([...byAgent("e2b10dcc-dd32"), archived])).toBe("e2b10dcc-dd32");
+    expect(handledByAdopter([...byAgent(null), archived])).toBe("");
+  });
+
+  test("not archived, adopted by you, dispatched, or acted on by you since it landed: null", () => {
+    expect(handledByAdopter(byAgent("orch"))).toBeNull();
+    const byYou = byAgent("orch").map((e) => (e.type === "adopted" ? { ...e, actor: "human" } : e)) as WorkEvent[];
+    expect(handledByAdopter([...byYou, archived])).toBeNull();
+    expect(handledByAdopter([...toReview, archived])).toBeNull();
+    const yours: WorkEvent = { ts: at(134.5), type: "note", actor: "human", text: "Looking at this one." };
+    expect(handledByAdopter([...byAgent("orch"), yours, archived])).toBeNull();
   });
 });
 

@@ -187,6 +187,9 @@ The eight system states are Maestro's; the UI speaks the six plain labels.
   does, you stop it, or its session is archived (then it is Stuck). One that is idle when it is
   tracked is read the same way: its last turn lands it only if that turn handed you something. A
   session you adopt by hand is work you handed Maestro, so every turn end lands it, as before.
+  When an orchestrator archives a child it adopted, and you have not acted on it since it landed,
+  the child closes as Done with a receipt naming the orchestrator: its handback was the
+  orchestrator's to take, and the orchestrator raises what needs you as an ask.
   Only what the session said counts: a heading or verdict it quotes in a code fence, or mentions in
   passing, is not a handback. A long handback keeps its ask when its text is cut to the last 8000
   characters, so it still lands. A dispatched run is one task, so its turn end still lands, and so

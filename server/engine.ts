@@ -45,6 +45,8 @@ import {
   type FlaggedEvent,
   finishedArc,
   flagOf,
+  handledByAdopter,
+  handledByOrchestrator,
   handsBack,
   keptSummary,
   lastOf,
@@ -1960,13 +1962,16 @@ export class Engine {
       // note or as the daemon now says (a missed hook, whose note is written with it).
       if (state === "review") {
         const archived = agent?.archivedAt && !archivedSince(item.events) ? [this.note(ARCHIVED_NOTE)] : [];
-        const line = finishedArc([...item.events, ...archived]);
-        if (line) {
+        const seen = [...item.events, ...archived];
+        const line = finishedArc(seen);
+        // An orchestrator's child closes the same way once the orchestrator archived it (BRO-2903).
+        const adopter = line ? null : handledByAdopter(seen);
+        if (line || adopter !== null) {
           const closed = await guarded({
             to: "done",
             actor: "maestro",
             ctx: { arcFinished: true },
-            reason: closedItself(line),
+            reason: line ? closedItself(line) : handledByOrchestrator(adopter ?? ""),
             events: archived,
           });
           // As an approval would: the workspace a run created goes when Settings says archive on approve.

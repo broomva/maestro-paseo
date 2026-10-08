@@ -473,6 +473,29 @@ export function finishedArc(events: readonly WorkEvent[]): string | null {
 export const closedItself = (line: string) => `Its arc reported “${line}” and its session was archived`;
 
 /**
+ * Work at your gate that its orchestrator handled (BRO-2903): an agent adopted
+ * the session (an orchestrator tracking an arc it started), the turn that
+ * landed it was the orchestrator's to read, and the orchestrator archived the
+ * session since, with you having done nothing with it. The adopter's session
+ * id ("" when unrecorded), else null. The same guards as finishedArc: never
+ * while a question, a decision of yours or checks are open, never over failed
+ * checks. A session you adopted is yours to close; so is one you acted on.
+ */
+export function handledByAdopter(events: readonly WorkEvent[]): string | null {
+  if (pendingPermission(events) || pendingDecision(events) || pendingChecks(events)) return null;
+  if (checkOutcome(latestChecks(events)) === "failed" || !archivedSince(events)) return null;
+  const bind = events.findLast((e) => e.type === "dispatched" || e.type === "adopted");
+  if (bind?.type !== "adopted" || bind.actor !== "agent") return null;
+  const landed = events.findLastIndex((e) => e.type === "state" && e.to === "review");
+  if (landed < 0 || events.slice(landed + 1).some((e) => e.actor === "human")) return null;
+  return bind.by ?? "";
+}
+
+/** The receipt of work its orchestrator handled (handledByAdopter). */
+export const handledByOrchestrator = (by: string) =>
+  `Its orchestrator${by ? ` (session ${by.slice(0, 8)})` : ""} handled it and archived its session`;
+
+/**
  * Whether a turn's text hands something to you: an arc verdict (arcStatus) or
  * an `## Ask` section, the workspace's two handback forms. A session Maestro
  * adopted runs its own arc over many turns, so only such a turn lands it at
