@@ -33,7 +33,7 @@ those, and nothing Paseo already does.
   follow the sections: each counts exactly what it shows, Stuck narrows Needs you to its stuck
   work, and Needs you, Running, Queued and Done add up to All.
 - **Two groups of views.** *Work*: Feed, Board, List, History. *System*: Fleet, Decisions, Timeline,
-  Initiatives. A wide window shows them as tabs under their group's label; Decisions carries its open
+  Initiatives, Loops. A wide window shows them as tabs under their group's label; Decisions carries its open
   count, in the warning color (and the words "wait on you" for a screen reader) when an ask waits on
   you. A phone shows one button naming the view you are on, which opens every view, grouped, as a
   menu of 44 pt rows.
@@ -46,6 +46,8 @@ those, and nothing Paseo already does.
 - **Initiatives**, a view beside the Timeline: your workspace's initiatives, one card each, and the
   ideas agent sessions left for them, each answered develop / park / kill (see
   [Initiatives](#initiatives)).
+- **Loops**, every loop on this machine beside its intent in the loop ledger, with a badge per drift
+  and the drift that needs you in Needs you (see [Loops](#loops)).
 - **Work** panel beside any agent: the work it is running, or a button to track it.
 - **Command Center**: *Open Maestro*, and *Track this session in Maestro* on an agent.
 - **`/maestro [title]`** in the composer: track the current session as work.
@@ -807,6 +809,7 @@ now and the next 24 to its right. It reads four kinds of source:
 | ![The Timeline](docs/timeline-view.png) | ![A failed run, opened, on the phone](docs/timeline-phone.png) |
 
 It only reads. Every command goes through a guard that runs `launchctl list`, `launchctl print`,
+`launchctl print-disabled gui/<uid>` (for the Loops tab's presence rule),
 `plutil -convert json -o -`, `log show` and `ps -o etime=` and refuses anything else, so it can
 never load, unload, kickstart or kill a job. It never starts, pauses or edits a schedule.
 
@@ -820,6 +823,40 @@ For a second daemon or a test:
   `~/.paseo/schedules`).
 - `MAESTRO_PASEO_LAUNCHD` names another label prefix (letters, digits, `.`, `_`, `-`), or `off` to
   read no launchd job. Anything else reads none.
+
+## Loops
+
+The **Loops** tab (BRO-2911, spec `docs/specs/2026-10-07-unified-loop-layer.html` in the workspace)
+shows one row per loop: its intent beside what runs. A loop is anything that runs again without
+being asked: a launchd job, a Paseo schedule or heartbeat, Maestro's wake, a GitHub Actions
+schedule, a p9 watcher.
+
+- **Intent** is the loop ledger, `.broomva/loops/<id>.yaml` on the control repo's origin/main
+  (never a working tree), read strictly: an unknown key, a duplicate key or a value outside its set
+  makes that row an error, listed at the top of the tab, and the other rows still read.
+- **Observed** reuses the Timeline's reads (launchd, fleet ticks, Maestro's wake), Paseo's
+  schedule files whole (name, target agent, prompt, runs), launchd presence (`launchctl list` and
+  `print-disabled`), GitHub Actions (`gh api`, GETs only, cached 10 minutes per repo) and p9's
+  `state.jsonl` and `waits.jsonl`.
+- **Drift** is a pure reconcile (`server/loops-model.ts`) with the spec's classes: PAUSED_BUT_RUNNING,
+  ACTIVE_BUT_ABSENT, FAILING, MISSED, UNREGISTERED, ORPHANED, EXPIRING, BOUND_SESSION_GONE,
+  PROMPT_MISMATCH, TICK_UNCLOSED, TICK_MISSING, SKIPPED_BUSY, DUPLICATE_BINDING, TARGET_CHANGED and
+  STATE_LOST. Opening a row shows each drift's pinned fix to copy. Maestro runs none of it.
+- **Needs you.** A drift that needs you sits above every other view, with *Open Loops*, and counts in
+  the header. A scope `sri` row gets badges and never Needs you. A failed or missed launchd or Paseo
+  loop is the Timeline's notice, so it is not counted twice. A one-off (a session's `/loop`, a p9
+  watcher, a `maxRuns: 1` schedule) is listed under *Session & watchers* and is never UNREGISTERED.
+- **Transitions only.** Each drift detected or cleared appends one line to
+  `~/.broomva/ledger/loops/drift.jsonl` through the workspace's own writer, `scripts/broomva_home.py`
+  as origin/main has it (actor `daemon:maestro`), and never a line per read. A substrate that could
+  not be read clears nothing.
+- **What it does not do.** It schedules nothing and runs no substrate verb. Rolling over a bound
+  session is BRO-2933's; a BOUND_SESSION_GONE carries that seam's key and steps.
+
+![The Loops tab, a row open](docs/loops-tab.png)
+
+To see the read on this machine without the daemon, and to make a drift appear and clear in a temp
+ledger copy, use `bun scripts/dogfood/loops-live.ts --ledger <dir> [--drift-home <tmp>]`.
 
 ## Initiatives
 
