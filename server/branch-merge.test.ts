@@ -4,7 +4,16 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { IllegalTransitionError, transition } from "../shared/states";
-import { branchMerged, gitOf, MERGED_EVERY_MS, mergedPrs, repoOf, WATCH_STUCK_MS, watchedBranch } from "./branch-merge";
+import {
+  archivedBetweenTurns,
+  branchMerged,
+  gitOf,
+  MERGED_EVERY_MS,
+  mergedPrs,
+  repoOf,
+  WATCH_STUCK_MS,
+  watchedBranch,
+} from "./branch-merge";
 import type { WorkEvent } from "./events";
 
 const ADOPTED = "2026-10-08T00:00:00Z";
@@ -256,4 +265,65 @@ test("git that echoes --path-format back (older than 2.31) records nothing", asy
   } finally {
     process.env.PATH = before;
   }
+});
+
+describe("an orchestrator's child archived between turns (BRO-2928)", () => {
+  const turn = (type: "turn.started" | "turn.ended", ts: string, outcome = "completed"): WorkEvent =>
+    (type === "turn.started"
+      ? { ts, type, actor: "agent", agentId: "a" }
+      : {
+          ts,
+          type,
+          actor: "agent",
+          agentId: "a",
+          outcome,
+          error: null,
+          summary: "Step done.",
+          turnId: null,
+        }) as WorkEvent;
+  const ended = turn("turn.ended", "2026-10-08T00:50:00Z");
+  const started = turn("turn.started", "2026-10-08T00:40:00Z");
+
+  test("closes only an agent's adoption, archived after a turn that reported no error, untouched by you", () => {
+    expect(archivedBetweenTurns([bind(), started, ended, stopped(ENDED)], NOW)).toBe(true);
+    // Archived mid-turn: a turn started after the last end, so something was cut off.
+    expect(
+      archivedBetweenTurns([bind(), ended, turn("turn.started", "2026-10-08T00:55:00Z"), stopped(ENDED)], NOW),
+    ).toBe(false);
+    // The last turn failed or was stopped: that is a reason to look, not a close.
+    expect(
+      archivedBetweenTurns(
+        [bind(), started, turn("turn.ended", "2026-10-08T00:50:00Z", "failed"), stopped(ENDED)],
+        NOW,
+      ),
+    ).toBe(false);
+    // A run of yours started after the adoption makes it your dispatch, not the orchestrator's arc.
+    const yours = { ...bind(), type: "dispatched", actor: "agent", ts: "2026-10-08T00:30:00Z" } as unknown as WorkEvent;
+    expect(archivedBetweenTurns([bind(), yours, started, ended, stopped(ENDED)], NOW)).toBe(false);
+    // Only the turn before the archive is judged: a turn the record shows after it does not change that.
+    const late = turn("turn.started", "2026-10-08T01:10:00Z");
+    expect(archivedBetweenTurns([bind(), started, ended, stopped(ENDED), late], NOW)).toBe(true);
+    // Interrupted (canceled): not a clean end either.
+    const interrupted = turn("turn.ended", "2026-10-08T00:50:00Z", "canceled");
+    expect(archivedBetweenTurns([bind(), started, interrupted, stopped(ENDED)], NOW)).toBe(false);
+    // No turn since the adoption: nothing says it was between turns, whatever ended before it was adopted.
+    expect(archivedBetweenTurns([bind(), stopped(ENDED)], NOW)).toBe(false);
+    const before = turn("turn.ended", "2026-10-07T23:00:00Z");
+    expect(archivedBetweenTurns([before, bind(), stopped(ENDED)], NOW)).toBe(false);
+  });
+
+  test("never your own work, never once you touched it, never a session that merely ended, never a stale card", () => {
+    expect(archivedBetweenTurns([bind({ actor: "human", by: null }), started, ended, stopped(ENDED)], NOW)).toBe(false);
+    expect(
+      archivedBetweenTurns([{ ...bind(), type: "dispatched" } as WorkEvent, started, ended, stopped(ENDED)], NOW),
+    ).toBe(false);
+    const note = { ts: "2026-10-08T00:45:00Z", type: "note", actor: "human", text: "mine" } as WorkEvent;
+    expect(archivedBetweenTurns([bind(), started, note, ended, stopped(ENDED)], NOW)).toBe(false);
+    expect(
+      archivedBetweenTurns([bind(), started, ended, stopped("The session ended before the run finished")], NOW),
+    ).toBe(false);
+    expect(archivedBetweenTurns([bind(), started, ended, stopped(ENDED)], Date.parse(STOPPED) + WATCH_STUCK_MS)).toBe(
+      false,
+    );
+  });
 });

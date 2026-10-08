@@ -328,7 +328,11 @@ export function verdictOf(state: OrchState, events: readonly WorkEvent[]): strin
     }
     return checks;
   }
-  if (state === "canceled") return "You canceled it";
+  if (state === "canceled") {
+    // Closed by Maestro (an orchestrator's arc archived between turns): its receipt says why, never "You".
+    const closed = lastOf(events, "state");
+    return closed?.actor === "maestro" && closed.reason ? closed.reason : "You canceled it";
+  }
   return checks;
 }
 

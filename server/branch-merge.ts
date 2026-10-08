@@ -61,6 +61,51 @@ export function watchedBranch(events: readonly WorkEvent[], now: number): { repo
   return { repo: bind.githubRepo, branch: bind.branch };
 }
 
+/**
+ * Why a card closes when its session was archived between turns (archivedBetweenTurns). Who archived it is not
+ * on record (the hook names only the session; an owner's archive, or one cascading from its parent's, reads the
+ * same), so the receipt says what is: when it was archived, and whose arc it is.
+ */
+export const ARCHIVED_BETWEEN_TURNS =
+  "Its session was archived between turns, after a turn that reported no error: an orchestrator's arc, closed, not stuck";
+
+/**
+ * Whether an orchestrator's child was archived between turns (BRO-2928): an
+ * adopted arc stays running between its turns (engine.ts endTurn), so when its
+ * session is archived after a turn that reported no error, the card read "archived
+ * before it finished" though no turn was cut off. Maestro records it as
+ * canceled, never as done: it has no evidence the work landed, and a clean
+ * turn is not a finished arc (STI-2944 was archived 3.5 h after a turn whose
+ * push was still in flight). Canceled says only that the arc ended. A child
+ * whose branch is watched is not closed this way at all: it stays with
+ * branchMerged, which closes it Done if the branch merges (engine.ts).
+ *
+ * As narrow as watchedBranch: an agent's adoption, untouched by you since,
+ * stuck only because the session was archived (not ended, not failed), within
+ * WATCH_STUCK_MS, and the last turn before the archive a completed end with no
+ * turn started after it. Pure.
+ */
+export function archivedBetweenTurns(events: readonly WorkEvent[], now: number): boolean {
+  const at = events.findLastIndex((event) => event.type === "state");
+  const last = events[at];
+  if (
+    last?.type !== "state" ||
+    last.to !== "blocked" ||
+    last.reason !== "The session was archived before it finished"
+  ) {
+    return false;
+  }
+  if (!(now - Date.parse(last.ts) < WATCH_STUCK_MS)) return false;
+  const bound = events.findLastIndex((event) => event.type === "dispatched" || event.type === "adopted");
+  const bind = events[bound];
+  if (bind?.type !== "adopted" || bind.actor !== "agent") return false;
+  if (events.slice(bound + 1).some((event) => "actor" in event && event.actor === "human")) return false;
+  const turn = events
+    .slice(bound + 1, at)
+    .findLast((event) => event.type === "turn.started" || event.type === "turn.ended");
+  return turn?.type === "turn.ended" && turn.outcome === "completed";
+}
+
 /** The receipt for closing a watched card whose branch merged after its adoption; null otherwise. Pure. */
 export function branchMerged(
   events: readonly WorkEvent[],

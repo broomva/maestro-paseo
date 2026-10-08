@@ -11,6 +11,7 @@ import {
   matchesQuery,
   sectionsOf,
   ticketOf,
+  UNNAMED,
 } from "./feed-model";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
@@ -83,8 +84,25 @@ describe("the feed's sections", () => {
       "Nothing needs you",
     ]);
     expect(handledTitle({ by: "SRI Orchestrator", items: sections.handled.groups[0]?.items ?? [] })).toBe(
-      "SRI Orchestrator closed 1 arc",
+      "From SRI Orchestrator: 1 arc closed",
     );
+  });
+});
+
+describe("Handled for you's group titles (BRO-2928)", () => {
+  test("name who handed the arcs over, never who closed them; Maestro's own read in the singular too", () => {
+    const one = [fakeWork("h", "done", null)];
+    expect([
+      handledTitle({ by: "Maestro", items: one }),
+      handledTitle({ by: "Maestro", items: [...one, ...one] }),
+      handledTitle({ by: "SRI Orchestrator", items: [...one, ...one] }),
+    ]).toEqual([
+      "Maestro closed 1 arc that finished on its own",
+      "Maestro closed 2 arcs that finished on their own",
+      "From SRI Orchestrator: 2 arcs closed",
+    ]);
+    // An adopter that gave no name reads in the sentence's case.
+    expect(handledTitle({ by: UNNAMED, items: one })).toBe("From their orchestrators: 1 arc closed");
   });
 });
 

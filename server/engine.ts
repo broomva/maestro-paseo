@@ -34,7 +34,15 @@ import {
 } from "../shared/states";
 import { TICKET, ticketOf } from "../shared/text";
 import { adopterNames } from "./adopter-names";
-import { branchMerged, gitOf, type MergedPr, mergedPrs, watchedBranch } from "./branch-merge";
+import {
+  ARCHIVED_BETWEEN_TURNS,
+  archivedBetweenTurns,
+  branchMerged,
+  gitOf,
+  type MergedPr,
+  mergedPrs,
+  watchedBranch,
+} from "./branch-merge";
 import { runChecks } from "./checks";
 import { loadConfig } from "./config";
 import {
@@ -2098,7 +2106,16 @@ export class Engine {
       );
       return applied;
     };
-    if (state === "blocked") return this.closeIfBranchMerged(item, guarded);
+    if (state === "blocked") {
+      if (await this.closeIfBranchMerged(item, guarded)) return true;
+      // Archived between turns (BRO-2928): an orchestrator's arc that ended, not stuck. Canceled, never done.
+      const now = this.now().getTime();
+      if (!archivedBetweenTurns(item.events, now)) return false;
+      // One whose branch is watched stays with branchMerged, which closes it Done if the branch merges within
+      // WATCH_STUCK_MS: a pushed branch may still land, and a canceled card is never looked at again.
+      if (watchedBranch(item.events, now)) return false;
+      return guarded({ to: "canceled", actor: "maestro", reason: ARCHIVED_BETWEEN_TURNS });
+    }
     const worker = workerOf(item.events);
     if (!worker) {
       return state === "running" ? guarded({ to: "blocked", reason: "No session is recorded for this run" }) : false;

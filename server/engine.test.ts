@@ -3234,6 +3234,45 @@ describe("a finished arc closes itself once its session is archived (BRO-2861)",
   });
 });
 
+describe("an orchestrator archiving its child between turns closes it, not as stuck (BRO-2928)", () => {
+  const said = (text: string) => [{ type: "assistant_message" as const, text }];
+  const session = (repo: string) => ({
+    id: "child",
+    cwd: repo,
+    status: "idle" as const,
+    workspaceId: "ws-x",
+    provider: "claude",
+    title: "SRI: STI-3605 bypass per member",
+    archivedAt: null as string | null,
+    pendingPermissions: [],
+    activeTurn: null,
+  });
+
+  test("an arc between steps, archived by its orchestrator: canceled, by Maestro, Handled for you, never done", async () => {
+    const { engine, fake, repo } = await setup();
+    fake.agents.set("child", session(repo));
+    fake.timelines.set("child", said("Opened the PR; waiting for its checks."));
+    const item = await engine.adopt(fake.paseo, "child", "", { actor: "agent", by: "orchestrator" });
+    expect(item.state).toBe("running");
+    const agent = fake.agents.get("child");
+    if (agent) agent.archivedAt = new Date(clock).toISOString();
+    await engine.onArchived({ id: "child" }, fake.paseo);
+    const { item: closed } = await engine.get(item.id);
+    expect([closed.state, closed.closed?.by]).toEqual(["canceled", "maestro"]);
+    // The card says what happened, never "You canceled it".
+    expect(closed.verdict).toBe(
+      "Its session was archived between turns, after a turn that reported no error: an orchestrator's arc, closed, not stuck",
+    );
+    const { events } = await engine.get(item.id);
+    expect(events.at(-1)).toMatchObject({
+      type: "state",
+      text: "Canceled",
+      detail:
+        "Its session was archived between turns, after a turn that reported no error: an orchestrator's arc, closed, not stuck",
+    });
+  });
+});
+
 describe("adopted arcs land at your gate only with something to decide (BRO-2864)", () => {
   /** An orchestrator adopting the session it just started, mid-turn, as the SRI orchestrator does. */
   async function adopted() {
@@ -3531,6 +3570,40 @@ describe("an orchestrator's child whose branch merged after its session ended (B
     await engine.onArchived({ id: "child" });
     return item;
   };
+
+  test("archived between turns with a watched branch: never canceled; it closes Done when the branch merges (BRO-2928)", async () => {
+    let answer: { number: number; mergedAt: string } | null = null;
+    const env = await setup({}, { ...recorded, merged: async () => answer });
+    const { engine, fake, repo } = env;
+    fake.agents.set("child", {
+      id: "child",
+      cwd: repo,
+      status: "idle",
+      workspaceId: null,
+      provider: "claude",
+      title: "Child arc",
+      archivedAt: null,
+      pendingPermissions: [],
+      activeTurn: null,
+    } as never);
+    fake.timelines.set("child", [{ type: "assistant_message", text: "Pushed; the PR is open." }]);
+    const item = await engine.adopt(fake.paseo, "child", "", ORCHESTRATOR);
+    expect(item.state).toBe("running");
+    const agent = fake.agents.get("child");
+    if (agent) agent.archivedAt = new Date(clock).toISOString();
+    await engine.onArchived({ id: "child" }, fake.paseo);
+    // No merge seen, however long: its branch may still land, so it stays stuck (gh unknown or not merged alike).
+    for (const minutes of [3, 60, 24 * 60]) {
+      tick(minutes);
+      await engine.list(fake.paseo);
+      expect((await engine.get(item.id)).item.state).toBe("blocked");
+    }
+    // The merge comes: Done, by branchMerged's receipt.
+    answer = { number: 7, mergedAt: new Date(clock).toISOString() };
+    tick(1);
+    await engine.list(fake.paseo);
+    expect((await engine.get(item.id)).item.state).toBe("done");
+  });
 
   test("it closes Done once its branch merged, the PR as its receipt; the adoption recorded branch and repo", async () => {
     const asked: string[][] = [];

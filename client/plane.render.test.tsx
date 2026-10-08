@@ -4459,7 +4459,7 @@ describe("the Feed home (BRO-2906)", () => {
     expect(order.every((at) => at >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(view.text()).toContain("3 need you · 1 running · 1 handled for you");
-    expect(view.text()).toContain("SRI Orchestrator closed 1 arc");
+    expect(view.text()).toContain("From SRI Orchestrator: 1 arc closed");
     // Maestro's own closes (an auto gate, a finished arc) are handled for you too: not "by their orchestrator".
     expect(view.text()).toContain("closed without you this week");
     expect(view.text()).toContain("STI-3569 typography cap");
