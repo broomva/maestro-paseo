@@ -175,6 +175,14 @@ The eight system states are Maestro's; the UI speaks the six plain labels.
 - **gate: human** (the default): a finished run always lands at Needs you, whatever the checks
   say. Only Approve moves it to Done.
 - **gate: auto**: requires a check. Passing checks close it; failing checks leave it Stuck.
+- **Finished by another session.** Work that is Stuck only because its session ended unfinished
+  (archived, or gone) closes as Done when its branch merged after the work was bound: another
+  session took it to the finish, as when an orchestrator replaces a dead session in the same
+  worktree. The branch and its remote are recorded when the work is dispatched or adopted, while
+  the worktree exists, and the merged PR is looked up with `gh` (cached 10 minutes); the receipt
+  names it ("Its branch … merged as #N; another session finished it"). Nothing else closes Stuck
+  work: no recorded branch, no merged PR, a PR merged before the bind, another reason for being
+  Stuck, or anything you did since, and it stays (`server/branch-merge.ts`, BRO-2923).
 - **Send back** wakes the same session with your note. **Unblock** does the same for stuck work,
   or starts a fresh run if the session is gone.
 - **Notifications.** Paseo pushes to your phone only when a top-level session finishes a turn, and

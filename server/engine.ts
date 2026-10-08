@@ -32,6 +32,7 @@ import {
   type Verdict,
   verdictTarget,
 } from "../shared/states";
+import { branchMerged, gitOf, type MergedPr, mergedPrs, repoOf } from "./branch-merge";
 import { runChecks } from "./checks";
 import { loadConfig } from "./config";
 import {
@@ -230,6 +231,10 @@ export interface EngineOptions {
   timer?: Timer;
   /** The longest one daemon call made while holding an item's claim may take. Tests pass a short one. */
   claimWaitMs?: number;
+  /** A worktree's branch and remote, read when work is bound (server/branch-merge.ts gitOf). Tests pass their own. */
+  git?: (cwd: string | null) => Promise<{ branch: string | null; remote: string | null }>;
+  /** A branch's merged PR (server/branch-merge.ts mergedPrs). Tests pass their own. */
+  merged?: (repo: string, branch: string) => Promise<MergedPr | null>;
 }
 
 /** What work.create takes: the work, where it runs, how it is judged, and optionally how its runs start. */
@@ -362,6 +367,8 @@ export class Engine {
   private readonly client: () => Paseo | null;
   private readonly timer: Timer;
   private readonly claimWaitMs: number;
+  private readonly gitOf: (cwd: string | null) => Promise<{ branch: string | null; remote: string | null }>;
+  private readonly merged: (repo: string, branch: string) => Promise<MergedPr | null>;
   /** Pending decisions with a timer armed, by token, to the timer's cancel. */
   private readonly armed = new Map<string, () => void>();
   /** Decisions being applied right now, by token, so a timer and a sweep never apply one twice. */
@@ -378,6 +385,8 @@ export class Engine {
     this.client = options.client ?? (() => null);
     this.timer = options.timer ?? realTimer;
     this.claimWaitMs = options.claimWaitMs ?? CLAIM_WAIT_MS;
+    this.gitOf = options.git ?? gitOf;
+    this.merged = options.merged ?? mergedPrs();
   }
 
   /** The settings runs start from, as this engine reads them. */
@@ -737,6 +746,7 @@ export class Engine {
         await store.mutate(id, () => ({ events: [this.note(`Dispatch failed: ${message}`)] }), item.dir);
         throw new UserError(`Could not start the run: ${message}`);
       }
+      const { remote } = await this.gitOf(worker.cwd).catch(() => ({ remote: null }));
       let bound: StoredWork;
       try {
         // Re-check under the lock: the work may have been canceled or resumed while the run started.
@@ -748,7 +758,7 @@ export class Engine {
             return {
               to: "running",
               actor: origin.actor,
-              events: [{ ts: this.stamp(), type: "dispatched", ...worker, ...origin }],
+              events: [{ ts: this.stamp(), type: "dispatched", ...worker, remote, ...origin }],
             };
           },
           item.dir,
@@ -1477,6 +1487,8 @@ export class Engine {
     const snapshot = await paseo.agents.ref(agentId).refresh();
     if (!snapshot) throw new UserError("That session no longer exists.");
     const agent = snapshot.agent;
+    // Read while the worktree exists: by the time its session ends, the worktree may be gone (BRO-2923).
+    const bound = await this.gitOf(agent.cwd).catch(() => ({ branch: null, remote: null }));
     const created = await store.create({
       title: title.trim() || agent.title || `Session ${agentId.slice(0, 8)}`,
       brief: "",
@@ -1501,7 +1513,8 @@ export class Engine {
             agentId,
             workspaceId: agent.workspaceId ?? null,
             provider: agent.provider,
-            branch: null,
+            branch: bound.branch,
+            remote: bound.remote,
             cwd: agent.cwd,
           },
         ],
@@ -1919,9 +1932,37 @@ export class Engine {
     return results.some(Boolean);
   }
 
+  /**
+   * Work blocked only because its session ended unfinished closes Done when
+   * its branch, recorded at bind, merged after that (server/branch-merge.ts):
+   * another session finished it. Anything else about it stays blocked.
+   */
+  private async closeIfBranchMerged(
+    item: StoredWork,
+    guarded: (change: Mutation) => Promise<boolean>,
+  ): Promise<boolean> {
+    const bind = lastOf(item.events, "dispatched", "adopted");
+    const repo = repoOf(bind?.remote);
+    if (!bind?.branch || !repo || !branchMerged(item.events, { number: 0, mergedAt: "9999-12-31T00:00:00Z" })) {
+      return false;
+    }
+    const merged = await this.merged(repo, bind.branch).catch((error) => {
+      this.log(`reading ${repo} for ${bind.branch}: ${(error as Error).message}`);
+      return null;
+    });
+    const close = branchMerged(item.events, merged);
+    if (!close) return false;
+    return guarded({
+      to: "done",
+      actor: "maestro",
+      ctx: { branchMerged: true },
+      reason: `Its branch ${close.branch} merged as #${close.number}; another session finished it`,
+    });
+  }
+
   private async reconcileOne(paseo: Paseo, store: WorkStore, item: StoredWork): Promise<boolean> {
     const state = item.contract.state;
-    if (state !== "running" && state !== "review") return false;
+    if (state !== "running" && state !== "review" && state !== "blocked") return false;
     const seen = item.events.length;
     /** Apply a change only if nothing was recorded since this item was read. */
     const guarded = async (change: Mutation): Promise<boolean> => {
@@ -1937,6 +1978,7 @@ export class Engine {
       );
       return applied;
     };
+    if (state === "blocked") return this.closeIfBranchMerged(item, guarded);
     const worker = workerOf(item.events);
     if (!worker) {
       return state === "running" ? guarded({ to: "blocked", reason: "No session is recorded for this run" }) : false;
