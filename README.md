@@ -179,6 +179,20 @@ The eight system states are Maestro's; the UI speaks the six plain labels.
   or starts a fresh run if the session is gone.
 - A **permission request** parks the item at Needs you as a question. Answer it from Maestro or
   in the session; the run resumes.
+- **Arcs an orchestrator tracks** (a session an agent adopted, running an arc of its own) land
+  at Needs you only when a turn hands you something: an `ARC-STATUS:` line, an `## Ask` section, or
+  the handback skill's `## ⛔ Blocked on you` block. Any other turn end is the arc between steps:
+  the work stays Running. With the loop on, it is named in Needs you once it goes quiet; with the
+  loop off (the default) an arc that stops without handing anything back stays Running until it
+  does, you stop it, or its session is archived (then it is Stuck). One that is idle when it is
+  tracked is read the same way: its last turn lands it only if that turn handed you something. A
+  session you adopt by hand is work you handed Maestro, so every turn end lands it, as before.
+  Only what the session said counts: a heading or verdict it quotes in a code fence, or mentions in
+  passing, is not a handback. A long handback keeps its ask when its text is cut to the last 8000
+  characters, so it still lands. A dispatched run is one task, so its turn end still lands, and so
+  does the first turn to end after your Send back or Unblock. The card shows the ask in the
+  session's own words, or its last words and what Approve and Send back do; it never invents a
+  question.
 
 Two edges differ from the Maestro runtime because Paseo owns execution: review can return to
 running (send back, answered question), and queued or stuck work can be canceled directly. Both
@@ -852,8 +866,8 @@ It is pinned to 0.8.0 so one build serves 0.8 and 0.9 hosts.
 - Hook events are live and best effort. Every list reconciles bound work against the agent's real
   status, so a turn end missed while the plugin was stopped is recovered on the next look. A
   recovered end reads the session's timeline for its real outcome, is stamped when the agent
-  actually stopped, and always lands at your gate: work never closes itself on an end Maestro did
-  not see. A correction is dropped if anything was recorded after reconcile looked.
+  actually stopped, and lands at your gate under the same rule as a live one (an adopted arc only
+  with something to decide): work never closes itself on an end Maestro did not see. A correction is dropped if anything was recorded after reconcile looked.
 - The scoreboard counts from state changes in the event log; a run started before the plugin was
   installed does not appear until it is tracked.
 - Cancel does not stop or archive the Paseo session. Stop it from the session if it is still

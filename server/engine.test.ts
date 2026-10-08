@@ -244,6 +244,7 @@ describe("the gate", () => {
       arc: null,
       closing: null,
       archived: false,
+      handed: null,
     });
   });
 
@@ -384,23 +385,60 @@ describe("reconcile", () => {
     });
   });
 
+  const idleSession = (repo: string) => ({
+    id: "manual",
+    cwd: repo,
+    status: "idle" as const,
+    workspaceId: "ws-x",
+    provider: "codex",
+    title: "Fix the flaky test",
+    archivedAt: null,
+    pendingPermissions: [],
+    activeTurn: null,
+  });
+  const said = (text: string) => [{ type: "assistant_message", text }];
+
   test("adopting an idle session puts it at the gate", async () => {
     const { engine, fake, repo } = await setup();
-    fake.agents.set("manual", {
-      id: "manual",
-      cwd: repo,
-      status: "idle",
-      workspaceId: "ws-x",
-      provider: "codex",
-      title: "Fix the flaky test",
-      archivedAt: null,
-      pendingPermissions: [],
-      activeTurn: null,
-    });
+    fake.agents.set("manual", idleSession(repo));
+    fake.timelines.set("manual", said("Fixed it; the tests pass."));
     const item = await engine.adopt(fake.paseo, "manual", "");
     expect(item).toMatchObject({ state: "review", title: "Fix the flaky test" });
     expect((await engine.adopt(fake.paseo, "manual", "")).id).toBe(item.id);
     expect((await engine.forAgent("manual"))?.id).toBe(item.id);
+  });
+
+  const BY_ORCHESTRATOR = { actor: "agent" as const, by: "orchestrator" };
+
+  test("an orchestrator adopting an idle arc whose last turn handed you something puts it at the gate", async () => {
+    const { engine, fake, repo } = await setup();
+    fake.agents.set("manual", idleSession(repo));
+    fake.timelines.set("manual", said("Fixed it.\n\n## Ask\n- Merge #12?"));
+    const item = await engine.adopt(fake.paseo, "manual", "", BY_ORCHESTRATOR);
+    expect(item).toMatchObject({ state: "review", title: "Fix the flaky test" });
+    expect(item.look?.ask).toBe("Merge #12?");
+    const landed = (await engine.get(item.id)).events.findLast((e) => e.type === "state");
+    expect(landed).toMatchObject({ text: "Waiting on you", detail: "The session was idle when tracked" });
+    expect((await engine.adopt(fake.paseo, "manual", "")).id).toBe(item.id);
+    expect((await engine.forAgent("manual"))?.id).toBe(item.id);
+  });
+
+  test("an orchestrator adopting an idle arc between steps keeps it running; one it cannot read too", async () => {
+    const { engine, fake, repo } = await setup();
+    fake.agents.set("manual", idleSession(repo));
+    fake.timelines.set("manual", said("Waiting on the background test run, then the approval route."));
+    const between = await engine.adopt(fake.paseo, "manual", "", BY_ORCHESTRATOR);
+    expect(between.state).toBe("running");
+    expect((await engine.get(between.id)).events.filter((e) => e.type === "turn.ended")).toHaveLength(1);
+    fake.agents.set("other", { ...idleSession(repo), id: "other" });
+    const original = fake.paseo.agents.ref;
+    fake.paseo.agents.ref = (id: string) => {
+      const ref = original(id);
+      return id === "other"
+        ? { ...ref, timeline: { ...ref.timeline, refetch: () => Promise.reject(new Error("not loaded")) } }
+        : ref;
+    };
+    expect((await engine.adopt(fake.paseo, "other", "", BY_ORCHESTRATOR)).state).toBe("running");
   });
 });
 
@@ -2946,5 +2984,223 @@ describe("a finished arc closes itself once its session is archived (BRO-2861)",
     tickMs(UNDO_MS);
     await timers.fire();
     expect((await engine.get(item.id)).item.state).toBe("canceled");
+  });
+});
+
+describe("adopted arcs land at your gate only with something to decide (BRO-2864)", () => {
+  /** An orchestrator adopting the session it just started, mid-turn, as the SRI orchestrator does. */
+  async function adopted() {
+    const s = await setup();
+    s.fake.agents.set("arc", {
+      id: "arc",
+      cwd: s.repo,
+      status: "running",
+      updatedAt: new Date(clock).toISOString(),
+      workspaceId: "ws-arc",
+      provider: "claude",
+      title: "SRI: STI-3492 organisation referrers (arc)",
+      archivedAt: null,
+      pendingPermissions: [],
+      activeTurn: null,
+    });
+    // An orchestrator tracks the arc it started (fleet tick-prompt: `maestro track`), as the SRI orchestrator does.
+    const item = await s.engine.adopt(s.fake.paseo, "arc", "", { actor: "agent", by: "orchestrator" });
+    expect(item.state).toBe("running");
+    const said = (text: string) => [{ type: "assistant_message" as const, text }];
+    // Each end carries its provider turn id, as Paseo's hook does: without one a second end reads as a repeat.
+    let turns = 0;
+    const end = (text: string, outcome: Parameters<Engine["onTurnEnded"]>[1] = { kind: "completed" }) => {
+      const agent = s.fake.agents.get("arc");
+      if (agent) agent.status = "idle";
+      return s.engine.onTurnEnded({ id: "arc" }, outcome, said(text), `turn-${++turns}`);
+    };
+    return { ...s, item, end };
+  }
+
+  test("a turn that hands nothing back is the arc between steps: it stays running, and no card is left", async () => {
+    const { engine, fake, item, end } = await adopted();
+    tick(17);
+    await end("Engine test suite is running in the background; meanwhile typechecking the touched packages.");
+    const { item: after, events } = await engine.get(item.id);
+    expect(after.state).toBe("running");
+    expect(events.at(-1)).toMatchObject({ type: "turn.ended", text: "Turn finished" });
+    expect(after.landing ?? null).toBeNull();
+    await Promise.resolve();
+    expect(fake.appended).toEqual([]);
+  });
+
+  test("a verdict lands it, in ctx-core's grammar or only meaning one, and so does an ask; the card shows each", async () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      [
+        "Merged #2134.\n\nARC-STATUS: CLOSED",
+        { arc: { status: "CLOSED", line: "ARC-STATUS: CLOSED" }, closing: "Merged #2134." },
+      ],
+      [
+        "Checks 1–6 are complete.\n\n**ARC-STATUS:** done with handback.",
+        {
+          ask: "It ended with “ARC-STATUS: done with handback.”. Approve to close the work, or send it back with a note.",
+          arc: { status: "", line: "ARC-STATUS: done with handback." },
+          closing: "Checks 1–6 are complete.",
+        },
+      ],
+      [
+        "Built it.\n\n## Ask\n- Merge #12 or hold it for the release?",
+        { ask: "Merge #12 or hold it for the release?" },
+      ],
+      [
+        "## ⛔ Blocked on you — 1 item, ~2 min\n\n| # | ask |\n|---|---|\n| 1 | Merge #12 |",
+        { ask: "⛔ Blocked on you — 1 item, ~2 min", handed: "| # | ask |\n|---|---|\n| 1 | Merge #12 |" },
+      ],
+    ];
+    for (const [text, look] of cases) {
+      const { engine, item, end } = await adopted();
+      tick(5);
+      await end(text);
+      const { item: landed } = await engine.get(item.id);
+      expect(landed.state).toBe("review");
+      expect(landed.look).toMatchObject(look);
+    }
+  });
+
+  test("a canceled turn (a restart, or its orchestrator steering it) stays running; a failed one is stuck", async () => {
+    const canceled = await adopted();
+    await canceled.end("Running the live DB drill.", { kind: "canceled", reason: "interrupted" });
+    expect((await canceled.engine.get(canceled.item.id)).item.state).toBe("running");
+    const failed = await adopted();
+    await failed.end("Running the live DB drill.", { kind: "failed", error: { message: "API overloaded" } });
+    expect((await failed.engine.get(failed.item.id)).item).toMatchObject({
+      state: "blocked",
+      reason: "API overloaded",
+    });
+  });
+
+  test("work at your gate whose session goes on without a verdict leaves the gate", async () => {
+    const { engine, item, end } = await adopted();
+    await end("## Ask\n- Keep the 100-company bound?");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+    tick(3);
+    await end("Rebased onto main; re-running the touched suites.");
+    const { item: after, events } = await engine.get(item.id);
+    expect(after.state).toBe("running");
+    expect(events.at(-1)).toMatchObject({
+      type: "state",
+      detail: "The session kept working on its arc; it handed you nothing to decide",
+    });
+  });
+
+  test("with no turn ids at all, a later turn that says something else is new: its handback lands", async () => {
+    const { engine, item } = await adopted();
+    const said = (text: string) => [{ type: "assistant_message" as const, text }];
+    await engine.onTurnEnded({ id: "arc" }, { kind: "completed" }, said("Typechecking the touched packages."), null);
+    expect((await engine.get(item.id)).item.state).toBe("running");
+    // Its start hook was missed and the end carries no id: only its words tell it from a repeat.
+    await engine.onTurnEnded({ id: "arc" }, { kind: "completed" }, said("Typechecking the touched packages."), null);
+    expect((await engine.get(item.id)).events.filter((e) => e.type === "turn.ended")).toHaveLength(1);
+    await engine.onTurnEnded({ id: "arc" }, { kind: "completed" }, said("PR open.\n\nARC-STATUS: HANDBACK 1"), null);
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "review",
+      look: { arc: { status: "HANDBACK", line: "ARC-STATUS: HANDBACK 1" } },
+    });
+  });
+
+  test("your Send back is a task: the session's answer to your note lands, whatever it says", async () => {
+    const { engine, item, end, decide } = await adopted();
+    await end("## Ask\n- Keep the 100-company bound?");
+    expect((await decide(item.id, "revise", "Why 100? explain")).state).toBe("running");
+    tick(2);
+    const answer = "100 matches the upstream page size; lowering it doubles the calls. I kept it.";
+    await end(answer);
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "review", look: { ask: "", closing: answer } });
+    // Answered, it is the arc's again: sent back to carry on, its answer lands, and the turns after it do not.
+    await decide(item.id, "revise", "Use 50, then carry on with the arc");
+    await end("Set it to 50.");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+    await decide(item.id, "revise", "Good, carry on");
+    await end("Carrying on: rebased, the engine suite runs in the background.");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+    await end("Typechecking the touched packages next.");
+    expect((await engine.get(item.id)).item.state).toBe("running");
+  });
+
+  test("an Unblock is a task too: the turn that answers it lands, the arc's turns after it do not", async () => {
+    const { engine, fake, item, end } = await adopted();
+    await end("Running the live DB drill.", { kind: "failed", error: { message: "API overloaded" } });
+    expect((await engine.get(item.id)).item.state).toBe("blocked");
+    expect((await engine.unblock(fake.paseo, item.id, "")).state).toBe("running");
+    await end("Picked up where I stopped: the drill passes on the branch.");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+  });
+
+  test("after an answered Unblock, the arc's own turns stay running", async () => {
+    const { engine, fake, item, end } = await adopted();
+    await end("Running the live DB drill.", { kind: "failed", error: { message: "API overloaded" } });
+    await engine.unblock(fake.paseo, item.id, "");
+    await end("Picked up where I stopped: the drill passes on the branch.");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+    // You leave it to its arc: the session goes on, and its next turns are the arc between steps.
+    const agent = fake.agents.get("arc");
+    if (agent) agent.status = "running";
+    await engine.onTurnStarted({ id: "arc" });
+    expect((await engine.get(item.id)).item.state).toBe("running");
+    await end("Rebased onto main; re-running the touched suites.");
+    await end("Typechecking the touched packages next.");
+    expect((await engine.get(item.id)).item.state).toBe("running");
+  });
+
+  test("replay of STI-3492: a reload finds the arc idle mid-work, keeps it running, and does not re-read it", async () => {
+    const { engine, fake, item } = await adopted();
+    // 19:54 adopted; 20:11 the plugin reloads while the session waits on a background test run.
+    tick(17);
+    const stopped = new Date(clock).toISOString();
+    const agent = fake.agents.get("arc");
+    if (agent) agent.status = "idle";
+    fake.setLastActivityAt("arc", stopped);
+    fake.timelines.set("arc", [
+      { type: "user_message", text: "Start the STI-3492 organisation-referrers arc." },
+      {
+        type: "assistant_message",
+        text: "Adding `referrerSample` to the catalog card schema, then the app card, approval route and run bound.",
+      },
+    ]);
+    fake.timelineEnd.set("arc", stopped);
+    fake.timelineTurn.set("arc", "turn-before-reload");
+    tick(1);
+    await engine.list(fake.paseo);
+    const read = await engine.get(item.id);
+    expect(read.item.state).toBe("running");
+    expect(read.events.at(-1)).toMatchObject({ type: "turn.ended", ts: stopped });
+    expect(fake.refetched).toEqual(["arc"]);
+    // The next reconcile sees its end on record and nothing since: no second read, no second end.
+    tick(1);
+    await engine.list(fake.paseo);
+    expect(fake.refetched).toEqual(["arc"]);
+    expect((await engine.get(item.id)).events).toHaveLength(read.events.length);
+    expect(fake.appended).toEqual([]);
+    // It works again, and its hooks are missed once more: the daemon's word that it changed reads it again, and
+    // the turn that hands you something lands, as it would have live.
+    tick(20);
+    fake.setLastActivityAt("arc", new Date(clock).toISOString());
+    fake.timelines.set("arc", [
+      { type: "assistant_message", text: "PR #2134 is open.\n\n## Ask\n- Merge #2134 once its checks pass?" },
+    ]);
+    fake.timelineTurn.set("arc", "turn-after-restart");
+    fake.timelineEnd.set("arc", new Date(clock).toISOString());
+    tick(2);
+    await engine.list(fake.paseo);
+    expect(fake.refetched).toEqual(["arc", "arc"]);
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "review",
+      look: { ask: "Merge #2134 once its checks pass?" },
+    });
+  });
+
+  test("dispatched work keeps its contract: one task, so a run that asks nothing still lands, with its last words", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await endTurn(engine, fake, [{ type: "assistant_message", text: "Stored it on the Run record; tests pass." }]);
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "review",
+      look: { ask: "", closing: "Stored it on the Run record; tests pass." },
+    });
   });
 });

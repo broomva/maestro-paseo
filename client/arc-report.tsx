@@ -35,7 +35,6 @@ export function ArcReport({
 }) {
   const text = useText(theme);
   const read = useWorkspaceAsks();
-  const [all, setAll] = useState(false);
   const look = item.look;
   if (!look) return null;
   const handed = read.data ? handedAsks(decisionAsks(read.data), item.worker?.cwd) : [];
@@ -43,31 +42,18 @@ export function ArcReport({
   // One ledger: open at it. More: open at the first ask with every ledger listed, so none is filtered away.
   const oneLedger = first && handed.every((ask) => ledgerOf(ask) === ledgerOf(first)) ? ledgerOf(first) : null;
   const closing = look.closing ?? null;
-  const clamped = !all && clampedBody(closing, compact);
   if (!look.archived && !closing && !first) return null;
   return (
     <View style={{ gap: space[2] }}>
       {look.archived ? <Text style={text.small}>Its session is archived.</Text> : null}
       {closing ? (
-        <View style={{ gap: space[1] }}>
-          <Text style={text.label}>{look.arc ? `Its last words · ${look.arc.line}` : "Its last words"}</Text>
-          <View style={clamped ? { maxHeight: compact ? CLAMP.phone : CLAMP.desktop, overflow: "hidden" } : null}>
-            <MarkdownView source={closing} theme={theme} compact={compact} />
-          </View>
-          {clamped ? (
-            <View style={{ flexDirection: "row" }}>
-              <Button
-                theme={theme}
-                variant="quiet"
-                icon="ChevronDown"
-                label="Show all"
-                compact={compact}
-                accessibilityLabel="Show all of its last words"
-                onPress={() => setAll(true)}
-              />
-            </View>
-          ) : null}
-        </View>
+        <ClampedMarkdown
+          label={look.arc ? `Its last words · ${look.arc.line}` : "Its last words"}
+          source={closing}
+          what="its last words"
+          theme={theme}
+          compact={compact}
+        />
       ) : null}
       {first ? (
         <View style={{ flexDirection: "row" }}>
@@ -84,6 +70,51 @@ export function ArcReport({
                 key: askKey(first),
               })
             }
+          />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * Text a session wrote, verbatim, under a label: clamped when long, with Show
+ * all. Its last words (ArcReport) and what it handed you (the gate's ask) both
+ * read this way, so neither is ever rewritten for display.
+ */
+export function ClampedMarkdown({
+  label,
+  source,
+  what,
+  theme,
+  compact,
+}: {
+  label: string;
+  source: string;
+  /** What Show all reveals, for its accessibility label ("its last words"). */
+  what: string;
+  theme: PluginTheme;
+  compact: boolean;
+}) {
+  const text = useText(theme);
+  const [all, setAll] = useState(false);
+  const clamped = !all && clampedBody(source, compact);
+  return (
+    <View style={{ gap: space[1] }}>
+      <Text style={text.label}>{label}</Text>
+      <View style={clamped ? { maxHeight: compact ? CLAMP.phone : CLAMP.desktop, overflow: "hidden" } : null}>
+        <MarkdownView source={source} theme={theme} compact={compact} />
+      </View>
+      {clamped ? (
+        <View style={{ flexDirection: "row" }}>
+          <Button
+            theme={theme}
+            variant="quiet"
+            icon="ChevronDown"
+            label="Show all"
+            compact={compact}
+            accessibilityLabel={`Show all of ${what}`}
+            onPress={() => setAll(true)}
           />
         </View>
       ) : null}

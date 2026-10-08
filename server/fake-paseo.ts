@@ -38,8 +38,12 @@ export function fakePaseo(options: FakePaseoOptions = {}) {
   const archivedWorkspaces: string[] = [];
   const timelines = new Map<string, unknown[]>();
   const timelineEnd = new Map<string, string>();
+  /** The provider turn id the timeline's entries carry, as Paseo stamps them; none when unset. */
+  const timelineTurn = new Map<string, string>();
   const appended: Array<{ agentId: string; item: Record<string, unknown> }> = [];
   const refreshed: string[] = [];
+  /** Every timeline.refetch call, by agent id: reading a session's timeline is what a recovered end costs. */
+  const refetched: string[] = [];
   let appendMode: "ok" | "throw" | "hang" = "ok";
   let failSend = false;
   let n = 0;
@@ -110,9 +114,16 @@ export function fakePaseo(options: FakePaseoOptions = {}) {
           return { archivedAt: new Date().toISOString() };
         },
         timeline: {
-          refetch: async () => ({
-            entries: (timelines.get(id) ?? []).map((item) => ({ item, timestamp: timelineEnd.get(id) ?? "" })),
-          }),
+          refetch: async () => {
+            refetched.push(id);
+            return {
+              entries: (timelines.get(id) ?? []).map((item) => ({
+                item,
+                timestamp: timelineEnd.get(id) ?? "",
+                turnId: timelineTurn.get(id),
+              })),
+            };
+          },
           append: (item: Record<string, unknown>) => {
             appended.push({ agentId: id, item });
             if (appendMode === "throw") return Promise.reject(new Error("agent is not loaded"));
@@ -125,6 +136,7 @@ export function fakePaseo(options: FakePaseoOptions = {}) {
   } as unknown as Paseo;
   return {
     paseo,
+    refetched,
     agents,
     sent,
     created,
@@ -132,6 +144,7 @@ export function fakePaseo(options: FakePaseoOptions = {}) {
     archivedWorkspaces,
     timelines,
     timelineEnd,
+    timelineTurn,
     /** Every timeline.append call, recorded before it resolves, rejects or hangs. */
     appended,
     /** Every agents.ref(id).refresh() call, by agent id: the reconcile's round trips. */

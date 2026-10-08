@@ -1195,7 +1195,11 @@ async function mount(node: ReactNode, options: { state?: PluginClientStateSource
       await step(owner, () => client.invalidateQueries());
       await step(owner, () => new Promise<void>((resolve) => setTimeout(resolve, 20)));
     },
-    rings: () => [...container.querySelectorAll("div")].filter((el) => el.style.transform.includes("scale")),
+    // The pulse ring is the absolutely placed dot that scales; a button's press scale is not one.
+    rings: () =>
+      [...container.querySelectorAll("div")].filter(
+        (el) => el.style.transform.includes("scale") && el.style.position === "absolute",
+      ),
     /** Goes to a view by its name: its tab on a wide window, the view picker's menu on a phone. */
     goto: async (label: string) => {
       const named = (el: { getAttribute(name: string): string | null }) => {
@@ -1586,6 +1590,49 @@ describe("a finished arc at your gate (BRO-2856)", () => {
         key: JSON.stringify([root.path, "sti-3485.yaml", null, "redeploy"]),
       },
     ]);
+  });
+
+  /** The session's gate card for work `id` landed at 3, mounted as Paseo mounts it. */
+  async function gateCard(id: string) {
+    const Card = createGateCard(() => undefined);
+    const props = {
+      item: { data: { workId: id, landing: 3, agentId: `ag-${id}` } },
+      theme,
+      layout: { compact: false },
+    } as unknown as ComponentProps<typeof Card>;
+    const view = await mount(<Card {...props} />);
+    for (let tries = 0; tries < 100 && !view.text().includes("Approve"); tries += 1) await settle(20);
+    return view;
+  }
+
+  test("a card for a run that asked nothing shows its last words and says what the verbs do, inventing no ask", async () => {
+    const said = "Stored it on the Run record. All 40 tests pass and the branch is pushed.";
+    const look = { ran: "18m unsupervised · 1 turn · ran to the gate", decided: [], ask: "", arc: null, closing: said };
+    items = [...fixture(), work("plain", "review", { worker: worker("plain", null), look, landing: 3 })];
+    const text = (await gateCard("plain")).text();
+    expect(text).toContain("Its last words");
+    expect(text).toContain(said);
+    expect(text).toContain("Approve marks the work done. Send back reopens its session with your note.");
+    expect(text).not.toContain("Ask");
+    expect(text).not.toContain("Approve to close it");
+    // What it asks comes before how long it ran: the run's meta is the footer.
+    expect(text.indexOf(said)).toBeLessThan(text.indexOf("18m unsupervised"));
+  });
+
+  test("a card for a handback shows its ⛔ block verbatim as what it handed you", async () => {
+    const look = {
+      ran: "40m unsupervised · 2 turns · ran to the gate",
+      decided: [],
+      ask: "⛔ Blocked on you — 1 item, ~2 min",
+      arc: null,
+      closing: null,
+      handed: "| # | ask | unblocks |\n|---|---|---|\n| 1 | Merge #2134 | the deploy |",
+    };
+    items = [...fixture(), work("handed", "review", { worker: worker("handed", null), look, landing: 3 })];
+    const text = (await gateCard("handed")).text();
+    expect(text).toContain("⛔ Blocked on you — 1 item, ~2 min");
+    expect(text).toContain("What it handed you");
+    expect(text).toContain("Merge #2134");
   });
 
   test("in the work panel beside a session, the link goes through the panel's opener, which opens Maestro too", async () => {

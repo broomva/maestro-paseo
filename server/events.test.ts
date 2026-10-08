@@ -8,11 +8,14 @@ import {
   finishedArc,
   flagOf,
   formatDuration,
+  handsBack,
+  keptSummary,
   lastActivityOf,
   lookOf,
   parseEvents,
   pendingPermission,
   runningIntervals,
+  SUMMARY_MAX,
   scoreboard,
   section,
   verdictOf,
@@ -66,14 +69,84 @@ describe("the look at the gate", () => {
       arc: null,
       closing: null,
       archived: false,
+      handed: null,
     });
   });
 
-  test("a message without the sections still gives a usable ask", () => {
-    const events = toReview.map((e) => (e.type === "turn.ended" ? { ...e, summary: "Finished." } : e));
+  test("a message that asks nothing gets no invented ask: its last words are what the card shows", () => {
+    const said = "Ran the suite.\n\nAll 40 pass; the branch is pushed.";
+    const events = toReview.map((e) => (e.type === "turn.ended" ? { ...e, summary: said } : e));
+    expect(lookOf("review", events, T0)).toMatchObject({ decided: [], ask: "", closing: said, handed: null });
+  });
+
+  test("a turn hands something back by a verdict line, an ask or a ⛔ block; a mention of the grammar is not one", () => {
+    for (const text of [
+      "Merged.\n\nARC-STATUS: CLOSED",
+      "Checks done.\n\n**ARC-STATUS:** done with handback.",
+      "Checks done.\n\n*ARC-STATUS*: DONE",
+      "Built it.\n\n## Ask\n- Merge #12?",
+      "## ⛔ Blocked on you — 1 item\n\n| 1 | Merge #12 |",
+    ]) {
+      expect(handsBack(text)).toBe(true);
+    }
+    for (const text of [
+      "Adding `referrerSample` to the catalog card schema, then the app card.",
+      "The hook reads `ARC-STATUS:` lines; continuing the implementation.",
+      "> ARC-STATUS: CLOSED is what the brief asks for at the end. Continuing.",
+      "- ARC-STATUS: the grammar ctx-core reads. Next, the approval route.",
+      "The ARC-STATUS grammar is ctx-core's; next, the approval route.",
+      "ARC-STATUS: lines are what the stop hook reads; continuing.",
+      "Its stop hook reads this:\n\n    ARC-STATUS: CLOSED\n\nNext, the approval route.",
+    ]) {
+      expect(handsBack(text)).toBe(false);
+    }
+    // ctx-core reads a line that starts `ARC-STATUS: WORD` wherever it sits, a fence included (ctx.py
+    // _extract_arc), and the session's own stop hook takes it as its verdict: Maestro reads it the same way.
+    expect(handsBack("Example:\n```\nARC-STATUS: CLOSED\n```")).toBe(true);
+  });
+
+  test("a heading or a dressed verdict the session only quotes or mentions hands nothing back", () => {
+    for (const text of [
+      "The brief ends like this:\n```\n## Ask\n- Merge #12?\n```\nNext, the approval route.",
+      "The template opens with:\n~~~md\n## ⛔ Blocked on you — 1 item\n~~~\nContinuing.",
+      "**ARC-STATUS:** is what the hook reads; continuing…",
+      "The verdict goes last:\n```\n**ARC-STATUS:** done\n```",
+      "**ARC-STATUS:** HANDBACK was the old form.\n\nNext, the approval route.",
+      // A message cut inside a fence ends in the fence: its last line is still quoted, not said.
+      "The verdict goes last, like this:\n```md\n**ARC-STATUS:** DONE",
+    ]) {
+      expect(handsBack(text)).toBe(false);
+    }
+    // The same forms, said and not quoted, still hand back.
+    expect(handsBack("Done.\n\n## Ask\n- Merge #12?")).toBe(true);
+    expect(handsBack("Checks done.\n\n**ARC-STATUS:** HANDBACK 2")).toBe(true);
+  });
+
+  test("a long handback keeps its ask when its turn's text is cut, so it still lands and shows what it asked", () => {
+    const receipt = Array.from({ length: 400 }, (_, i) => `${i + 1}. A receipt line about the work done.`).join("\n");
+    const table =
+      "| # | Ask | Unblocks | If you say nothing |\n|---|---|---|---|\n| 1 | Merge #12 | deploy | it waits |";
+    const text = ["## ⛔ Blocked on you — 1 item, ~1 min", "", table, "", "## 📋 Receipt", "", receipt].join("\n");
+    expect(text.length).toBeGreaterThan(SUMMARY_MAX);
+    const kept = keptSummary(text);
+    expect(handsBack(kept)).toBe(true);
+    expect(kept.startsWith("## ⛔ Blocked on you — 1 item, ~1 min")).toBe(true);
+    expect(kept.endsWith("400. A receipt line about the work done.")).toBe(true);
+    const events = toReview.map((e) => (e.type === "turn.ended" ? { ...e, summary: kept } : e));
+    expect(lookOf("review", events, T0)).toMatchObject({ ask: "⛔ Blocked on you — 1 item, ~1 min", handed: table });
+    // One that is cut but asked nothing is kept as its end, as before.
+    expect(keptSummary(receipt).includes("Blocked on you")).toBe(false);
+  });
+
+  test("a handback's ⛔ block is the ask, its table verbatim, and its words are not repeated as last words", () => {
+    const table =
+      "| # | ask | unblocks | if you say nothing |\n|---|---|---|---|\n| 1 | Merge #12 | deploy | it waits |";
+    const said = ["## ⛔ Blocked on you — 1 item, ~2 min", "", table, "", "## ✅ Shipped", "- the fix"].join("\n");
+    const events = toReview.map((e) => (e.type === "turn.ended" ? { ...e, summary: said } : e));
     expect(lookOf("review", events, T0)).toMatchObject({
-      decided: [],
-      ask: "Approve to close it, or send it back with a note.",
+      ask: "⛔ Blocked on you — 1 item, ~2 min",
+      handed: table,
+      closing: null,
     });
   });
 

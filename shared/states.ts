@@ -10,7 +10,8 @@
 //   1. review -> running. A clean run parks at review; "Send back" wakes the
 //      same Paseo agent with a note instead of queueing a fresh dispatch. A
 //      permission request also parks at review and returns to running once it
-//      is answered.
+//      is answered. Adopted work whose session goes on and ends a turn that
+//      hands you nothing returns to running too (server/engine.ts endTurn).
 //   2. cancel from proposed, triggered or blocked. Maestro routes this through
 //      an audited human override; here it is the "Cancel work" verb, recorded
 //      in the event log as a human action.

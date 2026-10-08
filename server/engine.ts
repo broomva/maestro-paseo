@@ -45,10 +45,12 @@ import {
   type FlaggedEvent,
   finishedArc,
   flagOf,
+  handsBack,
   keptSummary,
   lastOf,
   latestChecks,
   type Origin,
+  onItsOwnArc,
   pendingChecks,
   pendingDecision,
   pendingPermission,
@@ -81,6 +83,9 @@ export class UserError extends Error {
 
 /** A dispatch refused at the concurrency cap. The work is unchanged: it stays queued (or stuck). */
 export class AtCapacity extends UserError {}
+
+/** Why work adopted from an idle session is at your gate: its last turn handed you something (adoptOnce). */
+export const IDLE_WHEN_TRACKED = "The session was idle when tracked";
 
 /**
  * The agent's text since the last user message. Consecutive assistant items
@@ -130,9 +135,13 @@ export function outcomeOf(timeline: readonly AgentTimelineItem[]): Outcome {
  * stretch (since the last move to running): the same provider turn id, or an
  * end with no turn start after it. A late hook after a recovered end is the
  * case this catches. Turn ids repeat after a session reopens, so an id only
- * counts within the stretch.
+ * counts within the stretch. Without two ids to compare, `summary` decides
+ * when it says anything: a repeat reports the same turn, so the same last
+ * words, and an end that says something else is a new turn whose start was
+ * missed (an adopted arc between turns writes no state event to start a new
+ * stretch).
  */
-export function isDuplicateEnd(events: readonly WorkEvent[], turnId: string | null): boolean {
+export function isDuplicateEnd(events: readonly WorkEvent[], turnId: string | null, summary?: string): boolean {
   let lastRun = -1;
   events.forEach((event, index) => {
     if (event.type === "state" && event.to === "running") lastRun = index;
@@ -152,13 +161,16 @@ export function isDuplicateEnd(events: readonly WorkEvent[], turnId: string | nu
   if (!lastEnd || lastEndIndex < lastStart) return false;
   // Both carry ids and they differ: a new turn whose start hook was missed, not a repeat.
   if (turnId && lastEnd.turnId) return false;
-  return true;
+  // Empty last words are no evidence of a new turn (a hook may carry no timeline): only different words are.
+  return !summary || summary === lastEnd.summary;
 }
 
 const QUEUE_MS = 120_000;
 const INDEX_MS = 15_000;
 const RECONCILE_MS = 10_000;
 const MISSED_END_MS = 90_000;
+/** Why adopted work left your gate: its session went on with its arc, handing you nothing (engine.ts endTurn). */
+const KEPT_WORKING = "The session kept working on its arc; it handed you nothing to decide";
 
 /** How long a decision at the gate waits before it takes effect. */
 export const UNDO_MS = 10_000;
@@ -343,6 +355,8 @@ export class Engine {
   private readonly chains = new Map<string, Promise<void>>();
   private readonly abort = new AbortController();
   private lastReconcile = 0;
+  /** Per agent, the daemon's `updatedAt` when reconcile last read its timeline for a missed end. */
+  private readonly readAt = new Map<string, string>();
   private readonly client: () => Paseo | null;
   private readonly timer: Timer;
   private readonly claimWaitMs: number;
@@ -1437,7 +1451,10 @@ export class Engine {
     return toWire(await store.load(stopped.dir), this.now().getTime(), config);
   }
 
-  /** Track a session that was started by hand, so its end lands at the gate. */
+  /**
+   * Track a session that is already running. Adopted by you, its end lands at the gate; adopted by an agent (an
+   * orchestrator tracking its arc), only a turn that hands you something does (events.ts onItsOwnArc).
+   */
   async adopt(paseo: Paseo, agentId: string, title: string, origin: Origin = BY_HUMAN): Promise<WorkItem> {
     // Scan-then-create is not atomic: a retry or a second caller must not bind one session twice.
     if (this.adopting.has(agentId)) throw new UserError("This session is already being tracked.");
@@ -1491,12 +1508,21 @@ export class Engine {
     );
     this.dirs(store.root).set(agentId, running.dir);
     if (agent.status === "running") return toWire(running, this.now().getTime(), config);
-    const landed = await store.mutate(
-      id,
-      () => ({ to: "review", reason: "The session was idle when tracked" }),
-      running.dir,
-    );
-    return toWire(landed, this.now().getTime(), config);
+    // Idle when tracked: its last turn decides, by the one landing rule every turn end goes through (endTurn).
+    // An arc that handed you something lands; one between steps stays running. Unreadable now: it stays
+    // running and reconcile reads it later, as it does any missed end.
+    const page = await paseo.agents
+      .ref(agentId)
+      .timeline.refetch({ direction: "tail", limit: 60 })
+      .catch(() => null);
+    if (!page) return toWire(running, this.now().getTime(), config);
+    const timeline = page.entries.map((entry) => entry.item);
+    this.readAt.set(agentId, agent.updatedAt);
+    await this.endTurn(store, running, agentId, outcomeOf(timeline), timeline, {
+      landedReason: IDLE_WHEN_TRACKED,
+      turnId: page.entries.at(-1)?.turnId ?? null,
+    });
+    return toWire(await store.load(running.dir), this.now().getTime(), config);
   }
 
   /** Prompt the session of work that just moved to running; a failed send parks it as stuck. */
@@ -1680,7 +1706,7 @@ export class Engine {
     agentId: string,
     outcome: Outcome,
     timeline: readonly AgentTimelineItem[],
-    options: { recovered?: boolean; seen?: number; endedAt?: string; turnId?: string | null },
+    options: { recovered?: boolean; seen?: number; endedAt?: string; turnId?: string | null; landedReason?: string },
   ): Promise<void> {
     let token: string | null = null;
     const updated = await store.mutate(
@@ -1690,7 +1716,9 @@ export class Engine {
         if (workerOf(fresh.events)?.agentId !== agentId) return null;
         // Without a turn id a repeat cannot be told from a new turn; a failure is never hidden as a repeat.
         const unidentifiedFailure = !options.turnId && outcome.kind !== "completed";
-        if (!unidentifiedFailure && isDuplicateEnd(fresh.events, options.turnId ?? null)) return null;
+        if (!unidentifiedFailure && isDuplicateEnd(fresh.events, options.turnId ?? null, latestOutputText(timeline))) {
+          return null;
+        }
         const at = options.endedAt ?? this.stamp();
         const ended: WorkEvent = {
           ts: at,
@@ -1703,9 +1731,15 @@ export class Engine {
           turnId: options.turnId ?? null,
         };
         const state = fresh.contract.state;
+        // A session Maestro adopted runs its own arc over many turns: a turn that hands you nothing (handsBack:
+        // no verdict, no ask) is the arc between steps, not work at your gate. It stays running, and the loop
+        // names it if it goes quiet. One that failed still stops it: that is something to look at. A turn
+        // answering your note is a task, not the arc (onItsOwnArc), so it lands whatever it says.
+        const between = onItsOwnArc(fresh.events) && outcome.kind !== "failed" && !handsBack(ended.summary);
         if (state !== "running") {
           // The session worked again after landing (its turn start was missed): the gate must show that turn.
           if (state === "review" && !pendingPermission(fresh.events)) {
+            if (between) return { at, to: "running", actor: "agent", reason: KEPT_WORKING, events: [ended] };
             if (outcome.kind === "failed") {
               return { at, to: "blocked", reason: outcome.error.message, events: [ended] };
             }
@@ -1725,6 +1759,7 @@ export class Engine {
           }
           return { events: [ended] };
         }
+        if (between) return { events: [ended] };
         if (outcome.kind === "failed") return { at, to: "blocked", reason: outcome.error.message, events: [ended] };
         if (outcome.kind === "canceled") {
           return { at, to: "blocked", reason: "Stopped before finishing", events: [ended] };
@@ -1740,7 +1775,7 @@ export class Engine {
           };
           return { events: [ended, started] };
         }
-        const reason = options.recovered ? "Recovered after a missed event" : null;
+        const reason = options.landedReason ?? (options.recovered ? "Recovered after a missed event" : null);
         return { at, to: landingState(fresh.contract.gate, "none"), reason, events: [ended] };
       },
       item.dir,
@@ -1966,6 +2001,10 @@ export class Engine {
     const last = lastOf(item.events, "dispatched", "adopted", "state", "turn.started");
     const since = last ? this.now().getTime() - Date.parse(last.ts) : Number.POSITIVE_INFINITY;
     if (since <= MISSED_END_MS) return false;
+    // Its end is on record and the daemon reports nothing new of its session since this process last read
+    // it: an adopted arc between turns (endTurn kept it running), not a missed end. Reading again would
+    // change nothing; any change of the session's (a turn whose hooks were missed too) reads it again.
+    if (isDuplicateEnd(item.events, null) && this.readAt.get(agent.id) === agent.updatedAt) return false;
     // The end was missed. Read what happened instead of assuming it went well; if it cannot be read, try later.
     const page = await paseo.agents
       .ref(agent.id)
@@ -1978,6 +2017,7 @@ export class Engine {
     const lastSeen = last ? Date.parse(last.ts) : 0;
     const endedAt =
       tail?.timestamp && Date.parse(tail.timestamp) >= lastSeen ? new Date(tail.timestamp).toISOString() : undefined;
+    this.readAt.set(agent.id, agent.updatedAt);
     await this.endTurn(store, item, agent.id, outcomeOf(timeline), timeline, {
       recovered: true,
       seen,

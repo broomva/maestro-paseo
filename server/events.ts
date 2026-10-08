@@ -359,6 +359,33 @@ export const ARCHIVED_NOTE = "The session was archived";
 const ARC_LINE = /^ARC-STATUS: ([A-Z]+)/;
 // Markdown's own limits: a heading or a rule is indented at most 3 spaces; deeper, it is code.
 const HEADING = /^ {0,3}#{1,6}\s/;
+
+const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+
+/**
+ * The text a session said in prose: every line inside a fenced code block
+ * (``` or ~~~) blanked, so line numbers still match. A heading or a verdict
+ * quoted in a fence is the session showing the grammar, not using it, so the
+ * handback readers (handsBack, lookOf) read this, never the raw text.
+ */
+export function proseOnly(text: string): string {
+  const lines = text.split("\n");
+  let open: string | null = null;
+  for (let at = 0; at < lines.length; at++) {
+    const line = lines[at] ?? "";
+    const fence = FENCE.exec(line)?.[1] ?? null;
+    if (open === null) {
+      if (fence) {
+        open = fence;
+        lines[at] = "";
+      }
+    } else {
+      lines[at] = "";
+      if (fence && fence[0] === open[0] && fence.length >= open.length && line.trim() === fence) open = null;
+    }
+  }
+  return lines.join("\n");
+}
 const RULE = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
 const TABLE_ROW = /^\s*\|/;
 /** Where the closing block above an arc's verdict starts: after a heading, a table row or a rule. */
@@ -445,6 +472,86 @@ export function finishedArc(events: readonly WorkEvent[]): string | null {
 /** The receipt of work that closed itself (finishedArc). */
 export const closedItself = (line: string) => `Its arc reported “${line}” and its session was archived`;
 
+/**
+ * Whether a turn's text hands something to you: an arc verdict (arcStatus) or
+ * an `## Ask` section, the workspace's two handback forms. A session Maestro
+ * adopted runs its own arc over many turns, so only such a turn lands it at
+ * your gate; any other turn end is the arc between steps (engine.ts endTurn).
+ */
+export const handsBack = (text: string): boolean => {
+  const prose = proseOnly(text);
+  return verdictLine(text) !== null || section(prose, "Ask") !== null || blockedOnYou(prose) !== null;
+};
+
+/**
+ * A line that starts an arc verdict dressed in emphasis (`**ARC-STATUS:** …`,
+ * `*ARC-STATUS*: …`), colon required. Undressed, only ctx-core's grammar is a
+ * verdict (arcStatus); a code span, a quote, a list item, an indented line or
+ * a plain mention is how a session talks about the grammar, so none is read.
+ */
+const ANY_ARC = /^[*_]+ARC-STATUS[*_]*\s*:[*_\s]*([A-Za-z]+)/;
+
+/** A dressed line is a verdict only when a verdict word follows the colon: a word in capitals, or one of ctx-core's. */
+const VERDICT_WORDS = new Set(["merged", "closed", "done", "blocked", "handback", "other"]);
+const isVerdictWord = (word: string) => /^[A-Z][A-Z_-]+$/.test(word) || VERDICT_WORDS.has(word.toLowerCase());
+
+/**
+ * The arc verdict a text ends with, as the gate reads it: ctx-core's grammar
+ * exactly when it holds (arcStatus, whose word alone can close work:
+ * finishedArc), else the last line that only means one (`**ARC-STATUS:** done
+ * with handback.`), in plain words and with no word read from it. Null when no
+ * line starts a verdict. Landing (handsBack) and the card (lookOf) both read
+ * this, so work never lands on a verdict its card cannot show.
+ */
+export function verdictLine(text: string): { status: string; line: string; at: number } | null {
+  const strict = arcStatus(text);
+  if (strict) return strict;
+  // Dressed, only the turn's last line of prose, with a verdict word after the colon, is one: a mention
+  // mid-message ("**ARC-STATUS:** is what the hook reads") or one quoted in a fence is talk about it.
+  const lines = proseOnly(text).split("\n");
+  let at = lines.length - 1;
+  while (at >= 0 && !(lines[at] ?? "").trim()) at -= 1;
+  const word = ANY_ARC.exec(lines[at] ?? "")?.[1];
+  if (!word || !isVerdictWord(word)) return null;
+  return { status: "", line: inlinePlain(lines[at] ?? "").trim(), at };
+}
+const BLOCKED_HEADING = /^ {0,3}#{1,6}\s*(?:⛔\s*)?Blocked on you\b.*$/i;
+
+/**
+ * The handback skill's `## ⛔ Blocked on you — N items` block: its heading
+ * without the #s, and its body verbatim (a table, as the skill writes it) up
+ * to the next heading. Null when the text has none.
+ */
+export function blockedOnYou(text: string): { heading: string; body: string | null } | null {
+  const lines = text.split("\n");
+  const at = lines.findIndex((line) => BLOCKED_HEADING.test(line));
+  if (at < 0) return null;
+  let end = at + 1;
+  while (end < lines.length && !HEADING.test(lines[end] ?? "")) end += 1;
+  const body = lines
+    .slice(at + 1, end)
+    .join("\n")
+    .trim();
+  return { heading: (lines[at] ?? "").replace(/^ {0,3}#{1,6}\s*/, "").trim(), body: body || null };
+}
+
+/**
+ * Whether the session is on its own arc: adopted by an agent (running an arc
+ * of its own, not one task from Maestro), with no task of yours outstanding. A Send back's
+ * note or an Unblock is a task, as a dispatched run is: the first turn to end
+ * after it answers it and lands at your gate like one (engine.ts endTurn);
+ * the turns after that are the arc's again.
+ */
+export function onItsOwnArc(events: readonly WorkEvent[]): boolean {
+  const bound = events.findLastIndex((e) => e.type === "dispatched" || e.type === "adopted");
+  const binding = events[bound];
+  // Only an agent's adoption (an orchestrator tracking an arc it started) is an arc of its own. A session you
+  // adopt by hand is work you handed Maestro: its end lands at your gate, whatever it says (engine.ts adopt).
+  if (binding?.type !== "adopted" || binding.actor !== "agent") return false;
+  const task = events.findLastIndex((e) => e.type === "unblocked" || (e.type === "gate" && e.verdict === "revise"));
+  return task < bound || events.slice(task + 1).some((e) => e.type === "turn.ended");
+}
+
 export function lookOf(state: OrchState, events: readonly WorkEvent[], now: number): Look | null {
   if (state !== "review") return null;
   const permission = pendingPermission(events);
@@ -466,21 +573,28 @@ export function lookOf(state: OrchState, events: readonly WorkEvent[], now: numb
     };
   }
   const summary = lastOf(events, "turn.ended")?.summary ?? "";
-  const arc = arcStatus(summary);
+  const arc = verdictLine(summary);
   // The sections are read above the verdict line, so a last `## Ask` never takes the verdict in.
-  const body = arc ? summary.split("\n").slice(0, arc.at).join("\n") : summary;
+  // Read in prose only, as landing does (handsBack): a heading quoted in a fence is not the session's own.
+  const body = proseOnly(arc ? summary.split("\n").slice(0, arc.at).join("\n") : summary);
   const decided = section(body, "Decided");
   const ask = section(body, "Ask");
-  const closing = arc ? closingAbove(summary, arc.at) : null;
+  const blocked = ask ? null : blockedOnYou(body);
+  // Its last words: above the verdict for an arc; with no verdict and nothing asked, the end of what it said,
+  // so the card always shows what you would be answering. An ask is itself the content, so it is not repeated.
+  const asked = ask !== null || blocked !== null;
+  const closing = arc
+    ? closingAbove(summary, arc.at)
+    : asked
+      ? null
+      : closingAbove(summary, summary.split("\n").length);
   const archived = archivedSince(events);
   return {
     ran,
     decided: decided ? bullets(decided) : [],
-    ask: ask
-      ? bullets(ask).join(" ")
-      : arc
-        ? arcAsk(arc.status, arc.line)
-        : "Approve to close it, or send it back with a note.",
+    // Empty when the session asked nothing: the card says what the verbs do instead of inventing a question.
+    ask: ask ? bullets(ask).join(" ") : arc ? arcAsk(arc.status, arc.line) : (blocked?.heading ?? ""),
+    handed: blocked?.body ?? null,
     arc: arc ? { status: arc.status, line: arc.line } : null,
     closing,
     archived,
@@ -509,9 +623,35 @@ function shorten(text: string, max = 280): string {
  */
 export const SUMMARY_MAX = 8000;
 
-/** A turn's text as kept: its last SUMMARY_MAX characters, starting at a line, sentence or word, with "…". */
+const ASK_HEADING = /^ {0,3}#{1,4}\s*Ask\s*:?\s*$/i;
+
+/**
+ * A turn's text as kept: its last SUMMARY_MAX characters, starting at a line,
+ * sentence or word, with "…". A handback opens with its ask (the handback
+ * template puts `## ⛔ Blocked on you` first, the receipt after it), so when
+ * the cut would drop the ask, that block is kept ahead of the tail, cut at the
+ * next heading: a long handback still hands back (handsBack) and its card
+ * still shows what it asked.
+ */
 export function keptSummary(text: string): string {
-  return tailWords(text.trim(), SUMMARY_MAX);
+  const whole = text.trim();
+  const tail = tailWords(whole, SUMMARY_MAX);
+  if (tail === whole) return tail;
+  const kept = proseOnly(tail);
+  if (section(kept, "Ask") !== null || blockedOnYou(kept) !== null) return tail;
+  const lines = whole.split("\n");
+  const prose = proseOnly(whole).split("\n");
+  const from = prose.findIndex((line) => ASK_HEADING.test(line) || BLOCKED_HEADING.test(line));
+  if (from < 0) return tail;
+  let to = from + 1;
+  while (to < prose.length && !HEADING.test(prose[to] ?? "")) to += 1;
+  // Whole lines, so its table stays a table; a block longer than the cap keeps its first SUMMARY_MAX characters.
+  let block = "";
+  for (const line of lines.slice(from, to)) {
+    if (block.length + line.length + 1 > SUMMARY_MAX) break;
+    block += `${line}\n`;
+  }
+  return `${block.trim()}\n\n### …\n\n${tail}`;
 }
 
 /**
