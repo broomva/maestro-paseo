@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { clipWords, flagRuns, inlinePlain, linksAndBold, plainMarkdown, tailWords } from "./text";
+import { clipWords, flagRuns, inlinePlain, linksAndBold, plainMarkdown, tailWords, ticketOf } from "./text";
 
 describe("clipWords", () => {
   test("text that fits is flattened and kept whole", () => {
@@ -168,5 +168,27 @@ describe("plainMarkdown", () => {
     expect(plainMarkdown("")).toBe("");
     expect(plainMarkdown(undefined as unknown as string)).toBe("");
     expect(plainMarkdown("| lone pipe")).toBe("| lone pipe");
+  });
+});
+
+describe("a ticket id (BRO-2908)", () => {
+  test("the first ticket-shaped id, never a standard such as UTF-8 or SHA-256", () => {
+    expect(
+      [
+        "SRI: STI-3508 Enroll",
+        "Act on BRO-2827 now",
+        "UTF-8 decode for STI-12",
+        "SHA-256 and ISO-8601 only",
+        "no ticket",
+      ].map(ticketOf),
+    ).toEqual(["STI-3508", "BRO-2827", "STI-12", null, null]);
+    // A team whose key reads like a standard keeps its tickets.
+    expect(["MD-12 notes", "ISO-12 audit", "RFC-9110 header"].map(ticketOf)).toEqual(["MD-12", "ISO-12", null]);
+    // Model names and CVEs read like tickets and are not: the ticket after them is the one.
+    expect(
+      ['"Opus 5.5 x GPT-6 Astra" (/checkit, BRO-2829)', "Evaluate GPT-5 for BRO-12", "Patch CVE-2024 in STI-3"].map(
+        ticketOf,
+      ),
+    ).toEqual(["BRO-2829", "BRO-12", "STI-3"]);
   });
 });

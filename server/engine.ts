@@ -32,6 +32,7 @@ import {
   type Verdict,
   verdictTarget,
 } from "../shared/states";
+import { TICKET, ticketOf } from "../shared/text";
 import { adopterNames } from "./adopter-names";
 import { branchMerged, gitOf, type MergedPr, mergedPrs, watchedBranch } from "./branch-merge";
 import { runChecks } from "./checks";
@@ -53,6 +54,7 @@ import {
   keptSummary,
   lastOf,
   latestChecks,
+  lineageOf,
   type Origin,
   onItsOwnArc,
   pendingChecks,
@@ -68,8 +70,9 @@ import {
 import { ACTIVE_AGAIN, flagStands, quietCleared } from "./flags";
 import { inspectFolder, repoRefusal } from "./folders";
 import { briefOf, type RunKeys, workTitle } from "./frontmatter";
+import { type LabelAgent, WORK_LABELS, workLabels } from "./labels";
 import { describePermission, type PermissionLike } from "./permissions";
-import { HELD_FOR_YOU, leftToYou, MODED_BY_YOU, nextRun, type Paseo, startRun } from "./runs";
+import { HELD_FOR_YOU, leftToYou, MODED_BY_YOU, nextRun, type Paseo, startRun, WORK_LABEL } from "./runs";
 import { type Mutation, placement, type StoredWork, WorkStore, withLock } from "./store";
 import { toWire } from "./wire";
 import { type WorktreeStatus, worktreeStatus } from "./worktree";
@@ -236,6 +239,8 @@ export interface EngineOptions {
   git?: (cwd: string | null) => Promise<{ branch: string | null; githubRepo: string | null }>;
   /** A branch's merged PR as known now, asked in the background (server/branch-merge.ts mergedPrs). Tests pass their own. */
   merged?: (repo: string, branch: string) => Promise<MergedPr | null>;
+  /** Sets labels on a session: the plugin passes server/labels.ts paseoLabel (the paseo CLI); absent, nothing is labelled. */
+  label?: LabelAgent;
 }
 
 /** What work.create takes: the work, where it runs, how it is judged, and optionally how its runs start. */
@@ -272,6 +277,11 @@ export { leftToYou, MODED_BY_YOU, PROMPT_FREE } from "./runs";
 
 /** See EngineOptions.claimWaitMs. */
 export const CLAIM_WAIT_MS = 30_000;
+
+/** A session's labels, once set, are asked for again after this long if they are gone (BRO-2908). */
+export const LABEL_AGAIN_MS = 10 * 60_000;
+/** After a failed label call, the first wait before asking again; it doubles per failure, up to LABEL_AGAIN_MS. */
+export const LABEL_RETRY_MS = 60_000;
 
 /** `work()`, or a rejection once `ms` pass: a claim, or a wake, never waits on the daemon for ever. */
 export function within<T>(work: () => Promise<T>, ms: number): Promise<T> {
@@ -372,6 +382,11 @@ export class Engine {
   private readonly claimWaitMs: number;
   private readonly gitOf: (cwd: string | null) => Promise<{ branch: string | null; githubRepo: string | null }>;
   private readonly merged: (repo: string, branch: string) => Promise<MergedPr | null>;
+  private readonly label: LabelAgent;
+  /** Each session's labels as Maestro last asked for them: when, and how many asks in a row failed. */
+  private readonly labelled = new Map<string, { key: string; at: number; failures: number; flying: boolean }>();
+  /** Label calls run one at a time: each is a paseo CLI process (server/labels.ts). */
+  private labelQueue: Promise<void> = Promise.resolve();
   /** Pending decisions with a timer armed, by token, to the timer's cancel. */
   private readonly armed = new Map<string, () => void>();
   /** Decisions being applied right now, by token, so a timer and a sweep never apply one twice. */
@@ -391,6 +406,57 @@ export class Engine {
     this.claimWaitMs = options.claimWaitMs ?? CLAIM_WAIT_MS;
     this.gitOf = options.git ?? gitOf;
     this.merged = options.merged ?? mergedPrs(undefined, undefined, this.log);
+    // No label unless one is passed: index.server.ts passes the paseo CLI, so no test can label a real session.
+    this.label = options.label ?? (async () => undefined);
+  }
+
+  /**
+   * Labels a work's session with its work, and its ticket and parent where the
+   * session has none of its own (BRO-2908): the harness registry is Paseo, so a
+   * session can be found from there as well as from here. A label the session
+   * already carries is never overwritten (an orchestrator's `ticket` stays).
+   * Never awaited by a verb and never fatal. Asked once per value: again after
+   * LABEL_AGAIN_MS once set (reconcile asks only when the work label is gone,
+   * so a removed work label comes back; a removed ticket or parent label does
+   * not), after a growing backoff when it failed, never while a call is in
+   * flight. Calls run one at a time, and every one settles the queue.
+   */
+  private labelSession(
+    agentId: string,
+    work: { id: string; ticket?: string | null; parentWork?: string | null },
+    has: Readonly<Record<string, string>> = {},
+  ): void {
+    const wanted = workLabels(work);
+    const labels = Object.fromEntries(Object.entries(wanted).filter(([key]) => key === WORK_LABEL || !has[key]));
+    const key = JSON.stringify(labels);
+    const last = this.labelled.get(agentId);
+    if (last?.flying) return;
+    if (last?.key === key) {
+      const wait =
+        last.failures === 0 ? LABEL_AGAIN_MS : Math.min(LABEL_RETRY_MS * 2 ** (last.failures - 1), LABEL_AGAIN_MS);
+      if (this.now().getTime() - last.at < wait) return;
+    }
+    const failures = last?.key === key ? last.failures : 0;
+    const entry = { key, at: this.now().getTime(), failures, flying: true };
+    this.labelled.set(agentId, entry);
+    this.labelQueue = this.labelQueue.then(async () => {
+      try {
+        await this.label(agentId, labels);
+        entry.failures = 0;
+      } catch (error) {
+        entry.failures = failures + 1;
+        this.log(`labelling session ${agentId}: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        // Stamped when it settles, so a long queue never asks the same session twice.
+        entry.at = this.now().getTime();
+        entry.flying = false;
+      }
+    });
+  }
+
+  /** For a test: waits for the label calls asked for so far. */
+  labelsSettled(): Promise<void> {
+    return this.labelQueue;
   }
 
   /** The settings runs start from, as this engine reads them. */
@@ -1495,18 +1561,33 @@ export class Engine {
    * Track a session that is already running. Adopted by you, its end lands at the gate; adopted by an agent (an
    * orchestrator tracking its arc), only a turn that hands you something does (events.ts onItsOwnArc).
    */
-  async adopt(paseo: Paseo, agentId: string, title: string, origin: Origin = BY_HUMAN): Promise<WorkItem> {
+  async adopt(
+    paseo: Paseo,
+    agentId: string,
+    title: string,
+    origin: Origin = BY_HUMAN,
+    given: { ticket?: string } = {},
+  ): Promise<WorkItem> {
     // Scan-then-create is not atomic: a retry or a second caller must not bind one session twice.
     if (this.adopting.has(agentId)) throw new UserError("This session is already being tracked.");
     this.adopting.add(agentId);
     try {
-      return await this.adoptOnce(paseo, agentId, title, origin);
+      if (given.ticket !== undefined && !TICKET.test(given.ticket.trim())) {
+        throw new UserError("A ticket is a team key and a number, like BRO-2908.");
+      }
+      return await this.adoptOnce(paseo, agentId, title, origin, given);
     } finally {
       this.adopting.delete(agentId);
     }
   }
 
-  private async adoptOnce(paseo: Paseo, agentId: string, title: string, origin: Origin): Promise<WorkItem> {
+  private async adoptOnce(
+    paseo: Paseo,
+    agentId: string,
+    title: string,
+    origin: Origin,
+    given: { ticket?: string },
+  ): Promise<WorkItem> {
     const { store, config } = await this.store();
     const { items } = await store.scan();
     this.index(store, items);
@@ -1528,6 +1609,17 @@ export class Engine {
       origin,
     });
     const id = created.contract.id;
+    // The lineage (BRO-2908): an orchestrator that adopts runs as work of its own, which becomes this one's parent.
+    // Only an open work is a parent: a finished one is history, not the arc this one belongs to. A session that
+    // tracks itself has none: this work is not bound to it yet, and one already bound returned above.
+    const adopter = origin.actor === "agent" && origin.by ? await this.forAgent(origin.by).catch(() => null) : null;
+    const parentWork = adopter && !isTerminal(adopter.state) ? adopter.id : null;
+    const own = agent.labels?.[WORK_LABELS.ticket];
+    const ticket =
+      given.ticket?.trim() ||
+      (own && TICKET.test(own) ? own : null) ||
+      ticketOf(created.title) ||
+      ticketOf(agent.title);
     const running = await store.mutate(
       id,
       () => ({
@@ -1544,12 +1636,15 @@ export class Engine {
             branch: bound.branch,
             githubRepo: bound.githubRepo,
             cwd: agent.cwd,
+            parentWork,
+            ticket,
           },
         ],
       }),
       created.dir,
     );
     this.dirs(store.root).set(agentId, running.dir);
+    this.labelSession(agentId, { id, ticket, parentWork }, agent.labels ?? {});
     if (agent.status === "running") return toWire(running, this.now().getTime(), config);
     // Idle when tracked: its last turn decides, by the one landing rule every turn end goes through (endTurn).
     // An arc that handed you something lands; one between steps stays running. Unreadable now: it stays
@@ -2021,6 +2116,15 @@ export class Engine {
       return false;
     }
     const agent = snapshot?.agent;
+    // Backfill (BRO-2908): a live session tracked before adoptions were labelled, or whose label was removed, gets it.
+    if (agent && !agent.archivedAt && agent.status !== "closed" && agent.labels?.[WORK_LABEL] !== item.contract.id) {
+      const lineage = lineageOf(item.events);
+      this.labelSession(
+        worker.agentId,
+        { id: item.contract.id, parentWork: lineage.parentWork, ticket: lineage.ticket ?? ticketOf(item.title) },
+        agent.labels ?? {},
+      );
+    }
     const permission = pendingPermission(item.events);
     if (!agent || agent.archivedAt || agent.status === "closed") {
       if (state === "running") return guarded({ to: "blocked", reason: "The session ended before the run finished" });

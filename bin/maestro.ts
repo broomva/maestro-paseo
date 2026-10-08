@@ -24,7 +24,7 @@ const USAGE = `maestro: operate Maestro from a Paseo session
       --initiative <name>             Group it under a folder
       --dispatch                      Start a run right away
   maestro dispatch <id>               Start a run in its own worktree
-  maestro track [--title <text>]      Track this session as work (or --agent <id>)
+  maestro track [--title <text>] [--ticket <id>]  Track this session as work (or --agent <id>)
   maestro mine                        The work this session is running (or --agent <id>)
   maestro config                      Where work lives and how runs start
 
@@ -194,6 +194,7 @@ function parse(argv: string[]) {
         initiative: { type: "string", default: "" },
         dispatch: { type: "boolean", default: false },
         title: { type: "string", default: "" },
+        ticket: { type: "string" },
         agent: { type: "string" },
         help: { type: "boolean", short: "h", default: false },
       },
@@ -245,8 +246,9 @@ export async function main(argv: string[], print: (text: string) => void = conso
       );
       return 0;
     case "track":
-      show(await call("work.adopt", { agentId: values.agent, title: values.title }), (output: { item: WorkItem }) =>
-        renderOne("Tracking", output),
+      show(
+        await call("work.adopt", { agentId: values.agent, title: values.title, ticket: values.ticket }),
+        (output: { item: WorkItem }) => renderOne("Tracking", output),
       );
       return 0;
     case "mine":

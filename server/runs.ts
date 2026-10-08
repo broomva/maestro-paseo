@@ -6,6 +6,7 @@
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { MaestroConfig, NextRun, Worker } from "../shared/contracts";
 import { skipsPrompts } from "../shared/run";
+import { ticketOf } from "../shared/text";
 import { runFolder } from "./folders";
 import { briefOf } from "./frontmatter";
 import { type StoredWork, slugify } from "./store";
@@ -166,7 +167,10 @@ export async function startRun(paseo: Paseo, config: MaestroConfig, item: Stored
     },
     title: item.title,
     prompt: composePrompt(item, branch),
-    labels: { [WORK_LABEL]: item.contract.id },
+    labels: {
+      [WORK_LABEL]: item.contract.id,
+      ...(ticketOf(item.title) ? { ticket: ticketOf(item.title) as string } : {}),
+    },
   });
   return {
     agentId: agent.id,

@@ -20,6 +20,8 @@ export interface FakeAgent {
   title: string | null;
   archivedAt: string | null;
   pendingPermissions: Array<{ id: string; name: string }>;
+  /** The session's labels, as the daemon's refresh() reports them; none when unset. */
+  labels?: Record<string, string>;
   activeTurn: null;
   lastError?: string;
 }

@@ -178,6 +178,21 @@ describe("dispatch", () => {
     expect(options.prompt).toContain(item.worker?.branch ?? "missing");
   });
 
+  test("a dispatch labels its agent with the ticket its title names (BRO-2908)", async () => {
+    const { engine, fake, repo } = await setup();
+    await engine.create(fake.paseo, {
+      title: "BRO-2908 Persist run transcripts",
+      brief: "Store it on the Run record.",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "hawthorne",
+      dispatch: true,
+    });
+    const options = fake.created[0] as { labels: Record<string, string> };
+    expect(options.labels.ticket).toBe("BRO-2908");
+  });
+
   test("gate:auto without a check is refused", async () => {
     const { create } = await setup();
     await expect(create({ gate: "auto" })).rejects.toThrow("needs a check command");
@@ -455,7 +470,15 @@ describe("reconcile", () => {
     const ref = fake.paseo.agents.ref;
     let reads = 0;
     fake.paseo.agents.ref = (id: string) =>
-      id === "orchestrator" ? { ...ref(id), refresh: () => (reads++, new Promise<never>(() => {})) } : ref(id);
+      id === "orchestrator"
+        ? {
+            ...ref(id),
+            refresh: () => {
+              reads++;
+              return new Promise<never>(() => {});
+            },
+          }
+        : ref(id);
     await engine.list(fake.paseo);
     // Bounded: the hung read is let go, so the id is not stuck behind it.
     await engine.adoptersSettled();
@@ -463,6 +486,165 @@ describe("reconcile", () => {
     await engine.list(fake.paseo);
     await engine.adoptersSettled();
     expect(reads).toBe(2);
+  });
+
+  test("an adoption records its lineage and labels the session with it: its work, ticket and parent (BRO-2908)", async () => {
+    const labelled: [string, Record<string, string>][] = [];
+    const { engine, fake, repo } = await setup({}, { label: async (id, labels) => void labelled.push([id, labels]) });
+    fake.agents.set("orchestrator", { ...idleSession(repo), id: "orchestrator", title: "SRI Orchestrator" });
+    fake.timelines.set("orchestrator", said("Working."));
+    const parent = await engine.adopt(fake.paseo, "orchestrator", "SRI Orchestrator");
+    fake.agents.set("manual", idleSession(repo));
+    fake.timelines.set("manual", said("Fixed it.\n\n## Ask\n- Merge #12?"));
+    const child = await engine.adopt(fake.paseo, "manual", "STI-3508 Enroll the identity", BY_ORCHESTRATOR, {});
+    expect([child.parentWork, child.ticket, parent.parentWork, parent.ticket]).toEqual([
+      parent.id,
+      "STI-3508",
+      null,
+      null,
+    ]);
+    await engine.labelsSettled();
+    expect(labelled.at(-1)).toEqual([
+      "manual",
+      { "maestro.work": child.id, ticket: "STI-3508", "maestro.parent-work": parent.id },
+    ]);
+    // A ticket given to the verb wins over the title's.
+    fake.agents.set("other", { ...idleSession(repo), id: "other", title: "BRO-1 old" });
+    fake.timelines.set("other", said("Done."));
+    expect((await engine.adopt(fake.paseo, "other", "", undefined, { ticket: "BRO-2908" })).ticket).toBe("BRO-2908");
+  });
+
+  test("reconcile labels a tracked session that lacks its work label: once, with a backoff after a failure (BRO-2908)", async () => {
+    let fail = true;
+    const calls: string[] = [];
+    const { create, engine, fake } = await setup(
+      {},
+      {
+        label: async (id) => {
+          calls.push(id);
+          if (fail) throw new Error("daemon busy");
+        },
+      },
+    );
+    await create();
+    const list = async (seconds: number) => {
+      tickMs(seconds * 1000);
+      await engine.list(fake.paseo);
+      await engine.labelsSettled();
+      return calls.length;
+    };
+    // First failure: asked again a minute later, not sooner; second: two minutes later.
+    expect([await list(60), await list(30), await list(30), await list(90), await list(30)]).toEqual([1, 1, 2, 2, 3]);
+    // Set: not asked again while it stays set; asked again once ten minutes pass and it is still missing.
+    fail = false;
+    expect([await list(240), await list(60), await list(9 * 60)]).toEqual([4, 4, 5]);
+  });
+
+  test("a session's own ticket label wins and is never overwritten; a closed or archived session is not labelled (BRO-2908)", async () => {
+    const labelled: [string, Record<string, string>][] = [];
+    const { engine, fake, repo } = await setup({}, { label: async (id, labels) => void labelled.push([id, labels]) });
+    fake.agents.set("manual", { ...idleSession(repo), labels: { ticket: "STI-77" } });
+    fake.timelines.set("manual", said("Done."));
+    const item = await engine.adopt(fake.paseo, "manual", "BRO-1 something", BY_ORCHESTRATOR);
+    await engine.labelsSettled();
+    expect(item.ticket).toBe("STI-77");
+    expect(labelled.at(-1)).toEqual(["manual", { "maestro.work": item.id }]);
+    // Two sessions, each lacking its work label: one archived but not closed, one closed but not archived.
+    const before = labelled.length;
+    for (const change of [{ archivedAt: new Date(clock).toISOString() }, { status: "closed" as const }]) {
+      const fresh = await setup({}, { label: async (id, labels) => void labelled.push([`fresh:${id}`, labels]) });
+      await fresh.create();
+      const agent = fresh.fake.agents.get("agent-1");
+      if (agent) Object.assign(agent, change);
+      tick(1);
+      await fresh.engine.list(fresh.fake.paseo);
+      await fresh.engine.labelsSettled();
+    }
+    expect(labelled.slice(before)).toEqual([]);
+  });
+
+  test("after failures, a success resets the backoff; a labeller that throws stops nothing after it (BRO-2908)", async () => {
+    let mode: "fail" | "ok" | "throw" = "fail";
+    const calls: string[] = [];
+    const { create, engine, fake } = await setup(
+      {},
+      {
+        label: ((id: string) => {
+          calls.push(id);
+          if (mode === "throw") throw new Error("sync throw");
+          return mode === "fail" ? Promise.reject(new Error("busy")) : Promise.resolve();
+        }) as never,
+      },
+    );
+    await create();
+    const list = async (seconds: number) => {
+      tickMs(seconds * 1000);
+      await engine.list(fake.paseo);
+      await engine.labelsSettled();
+      return calls.length;
+    };
+    // Three failures (1, 2, 4 minutes apart), then a success: the next ask is ten minutes after it, not four.
+    expect([await list(60), await list(60), await list(120), await list(200)]).toEqual([1, 2, 3, 3]);
+    mode = "ok";
+    expect([await list(40), await list(240), await list(360)]).toEqual([4, 4, 5]);
+    // A labeller that throws outright: logged like a failure, and the next call still runs.
+    mode = "throw";
+    expect(await list(600)).toBe(6);
+    mode = "ok";
+    expect(await list(60)).toBe(7);
+  });
+
+  test("a session with a label call in flight is not asked again until it settles (BRO-2908)", async () => {
+    let release: () => void = () => {};
+    const calls: string[] = [];
+    const { create, engine, fake } = await setup(
+      {},
+      {
+        label: (id) => {
+          calls.push(id);
+          return calls.length === 1 ? new Promise<void>((resolve) => (release = resolve)) : Promise.resolve();
+        },
+      },
+    );
+    await create();
+    tick(1);
+    await engine.list(fake.paseo);
+    // Long past any wait while the first call hangs: nothing more is queued for it.
+    tick(30);
+    await engine.list(fake.paseo);
+    release();
+    await engine.labelsSettled();
+    expect(calls).toEqual(["agent-1"]);
+  });
+
+  test("a dispatched work's ticket is read from its title when no adoption gave one (BRO-2908)", async () => {
+    const { engine, fake, repo } = await setup();
+    const item = await engine.create(fake.paseo, {
+      title: "BRO-12 Persist run transcripts",
+      brief: "x",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "hawthorne",
+      dispatch: false,
+    });
+    expect([item.ticket, item.parentWork]).toEqual(["BRO-12", null]);
+  });
+
+  test("a parent is an open work, never the session itself or a finished one; a ticket that is not one is refused (BRO-2908)", async () => {
+    const { engine, fake, repo, decide } = await setup({}, { label: async () => undefined });
+    fake.agents.set("orchestrator", { ...idleSession(repo), id: "orchestrator", title: "SRI Orchestrator" });
+    fake.timelines.set("orchestrator", said("Planned the arcs.\n\n## Ask\n- Start them?"));
+    const self = await engine.adopt(fake.paseo, "orchestrator", "", { actor: "agent", by: "orchestrator" });
+    expect(self.parentWork).toBeNull();
+    await expect(
+      engine.adopt(fake.paseo, "manual", "", BY_ORCHESTRATOR, { ticket: "X,maestro.work=other" }),
+    ).rejects.toThrow("A ticket is a team key and a number");
+    // The orchestrator's own work finished: a child it adopts after has no parent.
+    expect((await decide(self.id, "approve")).state).toBe("done");
+    fake.agents.set("manual", idleSession(repo));
+    fake.timelines.set("manual", said("Done."));
+    expect((await engine.adopt(fake.paseo, "manual", "", BY_ORCHESTRATOR)).parentWork).toBeNull();
   });
 
   test("an orchestrator adopting an idle arc between steps keeps it running; one it cannot read too", async () => {

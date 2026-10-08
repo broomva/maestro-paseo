@@ -6,16 +6,19 @@
 import type { MaestroConfig, WorkItem } from "../shared/contracts";
 import { fleetHeading } from "../shared/fleet-item";
 import { groupOf } from "../shared/states";
+import { ticketOf } from "../shared/text";
 import {
   adoptedByOf,
   closedOf,
   lastActivityOf,
+  lineageOf,
   lookOf,
   pendingDecision,
   pendingPermission,
   phaseOf,
   reasonOf,
   verdictOf,
+  type WorkEvent,
   workerOf,
 } from "./events";
 import { flagNow } from "./flags";
@@ -69,6 +72,13 @@ export function toWire(item: StoredWork, now: number, config: MaestroConfig): Wo
     flag: flagNow(events, contract.state, next, now, item.mtime),
     closed: closedOf(contract.state, events),
     adoptedBy: adoptedByOf(events),
+    ...lineage(events, item.title),
     display: { title: heading?.title ?? item.title, fleet: heading?.origin ?? null },
   };
+}
+
+/** The work's lineage: the work that adopted it, and its ticket, given at adoption or read from its title (BRO-2908). */
+function lineage(events: readonly WorkEvent[], title: string): { parentWork: string | null; ticket: string | null } {
+  const known = lineageOf(events);
+  return { parentWork: known.parentWork, ticket: known.ticket ?? ticketOf(title) };
 }

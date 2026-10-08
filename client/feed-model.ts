@@ -8,6 +8,7 @@
 import type { WorkItem } from "../shared/contracts";
 import type { DecisionAsk } from "../shared/fleet";
 import { needsYouOf, sectionOf } from "../shared/needs-you";
+import { ticketOf } from "../shared/text";
 import { headlineOf, isTriaged, ledgerName, ledgerOf, silenceOf } from "./decisions-model";
 import { ago, plural } from "./format";
 import { flagText, stuckText, workerText } from "./plane-model";
@@ -20,10 +21,7 @@ export const HANDLED_NAMED = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
 
-/** A ticket id in a title or name (`STI-3508`, `BRO-2827`), else null. Pure. */
-export function ticketOf(text: string | null | undefined): string | null {
-  return /\b([A-Z][A-Z0-9]{1,6}-\d{1,6})\b/.exec(text ?? "")?.[1] ?? null;
-}
+export { ticketOf };
 
 /** Whether a search matches the work: its title, place, ticket, branch or id, case-folded. Pure. */
 export function matchesQuery(item: WorkItem, query: string): boolean {
@@ -111,7 +109,7 @@ function sourceOf(item: WorkItem): { source: string[]; via: string | null } {
       source: ["fleet", [fleet.scope, fleet.tick ? `tick ${fleet.tick}` : null].filter(Boolean).join(" ")],
       via: null,
     };
-  const ticket = ticketOf(item.title);
+  const ticket = item.ticket ?? ticketOf(item.title);
   const via = ANSWER_TITLE.test(item.title)
     ? "your answer"
     : item.adoptedBy
