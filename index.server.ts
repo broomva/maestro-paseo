@@ -86,6 +86,14 @@ export default function contribute(host: PluginServerContext) {
     () => latest,
     async () => expandHome((await engine.settings()).workRoot),
     log,
+    undefined,
+    undefined,
+    undefined,
+    // An orchestrator's own landing pushes only if it is still at your gate on that landing after the grace.
+    async (workId, landing) => {
+      const { item } = await engine.get(workId);
+      return item.state === "review" && item.landing === landing;
+    },
   );
   const engine: Engine = new Engine({
     client: () => latest,

@@ -16,6 +16,7 @@ import {
   type InboxNotice,
   noticeOf,
   noticeText,
+  orchestratorsLanding,
 } from "./inbox";
 import type { Paseo } from "./runs";
 import type { StoredWork } from "./store";
@@ -341,8 +342,61 @@ describe("the inbox session", () => {
     );
     return { fake, inbox, path, logs };
   }
+  // Work you handed Maestro (adopted by you): it pushes at once. An orchestrator's own landing waits (below).
+  const yours: WorkEvent = { ...adopted, actor: "human" } as WorkEvent;
   const landing = (summary: string, id = "w1") =>
-    [work([adopted], id), work([adopted, ended(summary), toReview], id)] as const;
+    [work([yours], id), work([yours, ended(summary), toReview], id)] as const;
+
+  // An orchestrator's own landing waits for its orchestrator (A1): it pushes only if still at your gate.
+  async function graced(stillWaiting: boolean) {
+    const root = await mkdtemp(join(tmpdir(), "maestro-inbox-grace-"));
+    roots.push(root);
+    const fake = fakePaseo();
+    const logs: string[] = [];
+    const asked: Array<[string, number]> = [];
+    const inbox = new Inbox(
+      () => fake.paseo,
+      async () => "/Users/me/maestro",
+      (message) => logs.push(message),
+      join(root, "inbox.json"),
+      () => clock,
+      undefined,
+      async (workId, at) => {
+        asked.push([workId, at]);
+        return stillWaiting;
+      },
+      5,
+    );
+    return { fake, inbox, logs, asked };
+  }
+  const orchestrators = [work([adopted]), work([adopted, ended("## Ask\n- Merge?"), toReview])] as const;
+
+  test("still at your gate after the grace: it pushes, once", async () => {
+    const { fake, inbox, asked } = await graced(true);
+    await inbox.landed(...orchestrators);
+    expect(asked).toEqual([["w1", 2]]);
+    expect(fake.sent).toHaveLength(1);
+  });
+
+  test("taken back by its orchestrator within the grace: no push, and it says so", async () => {
+    const { fake, inbox, logs } = await graced(false);
+    await inbox.landed(...orchestrators);
+    expect(fake.sent).toEqual([]);
+    expect(logs).toEqual(["inbox notice for w1: its orchestrator took it within the grace; no push"]);
+  });
+
+  test("an answer to your Send back is yours: it pushes at once, without asking", async () => {
+    const { fake, inbox, asked } = await graced(false);
+    const revised: WorkEvent = { ts: at(20), type: "gate", actor: "human", verdict: "revise", note: "B", token: "t" };
+    await inbox.landed(work([adopted, revised]), work([adopted, revised, ended("## Ask\n- Merge?"), toReview]));
+    expect(asked).toEqual([]);
+    expect(fake.sent).toHaveLength(1);
+  });
+
+  test("orchestratorsLanding: an agent's adoption on its own arc, nothing else", () => {
+    expect(orchestratorsLanding([adopted, ended("x"), toReview])).toBe(true);
+    expect(orchestratorsLanding([{ ...adopted, actor: "human" } as WorkEvent, ended("x"), toReview])).toBe(false);
+  });
 
   test("the first landing opens the inbox on Maestro's provider and keeps its id; the next one reuses it", async () => {
     const { fake, inbox, path } = await setup();

@@ -23,7 +23,7 @@ import type {
 } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
 import { GATE_CARD_KIND, GATE_CARD_VERSION, type GateCardData, GateCardSchema } from "../shared/gate-card";
-import { lookOf, workerOf } from "./events";
+import { lookOf, onItsOwnArc, workerOf } from "./events";
 import { landingOf } from "./gate-card";
 import { configPath } from "./paths";
 import type { Paseo } from "./runs";
@@ -67,6 +67,23 @@ export const noticeText = (notice: InboxNotice): string =>
  * null. The ask is the session's own (lookOf); when it asked nothing, the
  * notice names the work and the card under it carries its last words.
  */
+/**
+ * How long a landing of an orchestrator's own arc waits before it pushes: the
+ * landing is the orchestrator's to read first (it takes the handback, raises
+ * what needs you as an ask, and archives the session, which closes the work:
+ * BRO-2903). One still at your gate after this pushes. Observed: the SRI
+ * orchestrator archives 14 s to 12 min after a landing.
+ */
+export const ORCHESTRATOR_GRACE_MS = 15 * 60_000;
+
+/** Whether the latest landing is an orchestrator's own arc's: adopted by an agent, not answering a task of yours. */
+export function orchestratorsLanding(events: readonly StoredWork["events"][number][]): boolean {
+  const bind = events.findLast((e) => e.type === "dispatched" || e.type === "adopted");
+  if (bind?.type !== "adopted" || bind.actor !== "agent") return false;
+  const turn = events.findLastIndex((e) => e.type === "turn.ended");
+  return turn >= 0 && onItsOwnArc(events.slice(0, turn));
+}
+
 export function noticeOf(before: Pick<StoredWork, "events">, after: StoredWork, now: number): InboxNotice | null {
   const landing = landingOf(before, after);
   const agentId = workerOf(after.events)?.agentId;
@@ -268,6 +285,9 @@ export class Inbox {
     private readonly path: string = inboxPath(),
     private readonly now: () => number = Date.now,
     private readonly limitMs: number = NOTICE_MS,
+    /** Whether the work is still at your gate on this landing: an orchestrator's landing pushes only then. */
+    private readonly stillWaiting: (workId: string, landing: number) => Promise<boolean> = async () => true,
+    private readonly graceMs: number = ORCHESTRATOR_GRACE_MS,
   ) {}
 
   /**
@@ -280,6 +300,24 @@ export class Inbox {
     if (!notice || notice.card.landing <= (this.told.get(notice.card.workId) ?? -1)) return Promise.resolve();
     // Claimed before the first await, so two reports of one landing at once still push once.
     this.told.set(notice.card.workId, notice.card.landing);
+    if (!orchestratorsLanding(after.events)) return this.enqueue(notice);
+    // An orchestrator's own landing is its to read first: it pushes only if still at your gate after the grace.
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        this.stillWaiting(notice.card.workId, notice.card.landing)
+          .catch(() => false)
+          .then((waiting) => {
+            if (waiting) return this.enqueue(notice);
+            this.log(`inbox notice for ${notice.card.workId}: its orchestrator took it within the grace; no push`);
+          })
+          .then(resolve);
+      }, this.graceMs);
+      // A pending grace never keeps the process alive; one lost to a restart still shows in Needs you.
+      (timer as { unref?: () => void }).unref?.();
+    });
+  }
+
+  private enqueue(notice: InboxNotice): Promise<void> {
     const sent = this.chain.then(() => this.bounded(this.send(notice)));
     this.chain = sent.catch(() => undefined);
     return sent.catch((error) => this.log(`inbox notice for ${notice.card.workId}: ${(error as Error).message}`));
