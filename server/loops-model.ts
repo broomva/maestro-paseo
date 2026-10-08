@@ -504,7 +504,7 @@ function adoptedAt(started: readonly TickEvent[]): number {
 }
 
 /** Whether a rollover of this row started under ROLLOVER_WINDOW_MS ago and has not completed or failed since. */
-function rollingOver(intent: LoopIntent, now: number, rollovers: readonly RolloverEvent[]): boolean {
+export function rollingOver(intent: LoopIntent, now: number, rollovers: readonly RolloverEvent[]): boolean {
   const latest = ticksOf(rollovers, intent.id).sort((a, b) => instant(b.ts) - instant(a.ts))[0];
   return latest?.type === "loop.rollover.started" && now - instant(latest.ts) < ROLLOVER_WINDOW_MS;
 }
@@ -604,9 +604,10 @@ function tickDrift(intent: LoopIntent, primary: LoopObservation, now: number, ev
   // TICK_MISSING, a row state: its most recent judged run (not failed, at or after adoption, the first started
   // tick) has no started tick for its slot TICK_WAIT_MS on. A later run that pairs, or the late tick, clears it.
   const adopted = adoptedAt(started);
-  // The most recent judged run: one younger than TICK_WAIT_MS is still in its window, and a later run that
-  // paired leaves the older miss behind.
-  const fire = primary.runs.find(
+  // Judged on the newest run past its TICK_WAIT_MS window; it holds until a started tick for that slot
+  // arrives or a newer run pairs. A newer run still inside its window neither raises nor clears it, so a dead
+  // session's every fire does not flap the row.
+  const judged = primary.runs.filter(
     (run) =>
       run.status !== "failed" &&
       run.status !== "missed" &&
@@ -614,7 +615,10 @@ function tickDrift(intent: LoopIntent, primary: LoopObservation, now: number, ev
       run.scheduledFor &&
       instant(run.scheduledFor) >= adopted,
   );
-  if (fire && untickedFire(started, fire, now)) {
+  const fire = judged.find((run) => now - instant(run.scheduledFor) > TICK_WAIT_MS);
+  const pairedLater =
+    fire && judged.some((run) => instant(run.scheduledFor) > instant(fire.scheduledFor) && tickFor(started, run));
+  if (fire && !pairedLater && untickedFire(started, fire, now)) {
     found.push({
       kind: "tick_missing",
       detail: `The ${fire.scheduledFor} fire was delivered (${fire.status}) and no tick started for it.`,
@@ -756,14 +760,21 @@ export function loopNeeds(rows: readonly LoopRow[]): LoopNotice[] {
 }
 
 /** The bindings to keep as the next read's baselines: a row with TARGET_CHANGED keeps its old one until it is answered. */
-export function nextBaselines(rows: readonly LoopRow[], previous: ReadonlyMap<string, Binding>): Map<string, Binding> {
+export function nextBaselines(
+  rows: readonly LoopRow[],
+  previous: ReadonlyMap<string, Binding>,
+  now = 0,
+  rollovers: readonly RolloverEvent[] = [],
+): Map<string, Binding> {
   const next = new Map<string, Binding>();
   for (const row of rows) {
     if (!row.id || row.intent?.session !== "bound" || !row.observed?.target) continue;
     const kept = previous.get(row.id);
+    // Frozen while a rollover is in flight: a rollover that fails resumes the old binding, which is no change.
+    const frozen = kept && rollingOver(row.intent, now, rollovers);
     next.set(
       row.id,
-      kept && row.drift.some((drift) => drift.kind === "target_changed")
+      frozen || (kept && row.drift.some((drift) => drift.kind === "target_changed"))
         ? kept
         : { agentId: row.observed.target.agentId, prompt: row.observed.target.prompt },
     );

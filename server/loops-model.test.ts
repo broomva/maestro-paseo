@@ -724,9 +724,16 @@ describe("P20 round 1 regressions", () => {
       tick("started", "B0", NOW - 2 * H + M, { fire: iso(NOW - 2 * H) }),
     ];
     const at = (runs: LoopRun[]) => ({ ...live({ prompt: POINTER }), runs });
+    // A later run that ticked clears the older miss.
     expect(has(one([bound()], [at([fire(NOW - 2 * H), fire(NOW - 4 * H)])], { ticks }), "tick_missing")).toBe(false);
-    expect(has(one([bound()], [at([fire(NOW - 10 * M), fire(NOW - 4 * H)])], { ticks }), "tick_missing")).toBe(false);
     expect(has(one([bound()], [at([fire(NOW - 4 * H)])], { ticks }), "tick_missing")).toBe(true);
+    // A dead session's new fire, still in its window, does not clear the open miss (no flap every fire).
+    expect(has(one([bound()], [at([fire(NOW - 10 * M), fire(NOW - 4 * H)])], { ticks }), "tick_missing")).toBe(true);
+    // A young fire that already ticked clears it.
+    const young = [...ticks, tick("started", "Y0", NOW - 9 * M, { fire: iso(NOW - 10 * M) })];
+    expect(has(one([bound()], [at([fire(NOW - 10 * M), fire(NOW - 4 * H)])], { ticks: young }), "tick_missing")).toBe(
+      false,
+    );
   });
   test("(b) is judged without an agent lookup: it needs only the runs and ticks", () => {
     const denied = "API Error: 403 Your organization has disabled Claude subscription access";
@@ -739,6 +746,21 @@ describe("P20 round 1 regressions", () => {
       ticks,
     });
     expect(has(row, "bound_session_gone")).toBe(true);
+  });
+  test("the baseline is frozen while a rollover is in flight, so a failed rollover that resumes the old agent is no change", () => {
+    const rolling = [event("loop.rollover.started", NOW - 5 * M)];
+    const successor = live({ prompt: POINTER, target: { type: "agent", agentId: OTHER } });
+    const rows = reconcile([bound()], [successor], NOW, {
+      rollovers: rolling,
+      baselines: new Map([["coordinator-tick", { agentId: AGENT, prompt: POINTER }]]),
+    });
+    const next = nextBaselines(
+      rows,
+      new Map([["coordinator-tick", { agentId: AGENT, prompt: POINTER }]]),
+      NOW,
+      rolling,
+    );
+    expect(next.get("coordinator-tick")?.agentId).toBe(AGENT);
   });
   test("an unread GitHub repo keeps its unclaimed workflow's open drift; another repo's still clears", () => {
     const open = new Map([

@@ -378,16 +378,19 @@ export class Loops {
       }
     } else warnings.push("No control repo: the loop ledger is not read.");
     const intents = ledger?.intents ?? [];
+    const schedulesBroken = { value: false };
     const [timeline, schedules, gha, p9] = await Promise.all([
       this.options.timeline?.get().catch((error) => {
         warnings.push(`The Timeline could not be read: ${(error as Error).message}`);
         return null;
       }) ?? Promise.resolve(null),
-      this.schedules(warnings),
+      this.schedules(warnings, schedulesBroken),
       this.gha(intents, warnings),
       this.p9(now, warnings),
     ]);
     if (!timeline) unread.add("launchd").add("maestro-loop");
+    // A Timeline that read but could not read launchd or the fleet leaves those jobs out: unread, not gone.
+    if (timeline?.warnings.some((line) => /^(launchd|the fleet) could not be read/i.test(line))) unread.add("launchd");
     if (!schedules) unread.add("paseo-heartbeat").add("paseo-schedule");
     if (gha.unread === "all") unread.add("gha-schedule");
     else for (const repo of gha.unread) unread.add(`gha-schedule:${repo}`);
@@ -421,6 +424,10 @@ export class Loops {
       const source = sources.find((one) => one.id === `heartbeat:${id}` || one.id === `schedule:${id}`) ?? null;
       return scheduleObservation(raw, file, source, now);
     });
+    // A schedule file that would not read or parse leaves its loop out: the Paseo substrates are unread this time.
+    if (schedulesBroken.value || scheduleObservations.some((one) => one === null)) {
+      unread.add("paseo-heartbeat").add("paseo-schedule");
+    }
     const observations = [
       ...fromTimeline,
       ...extraLaunchd,
@@ -432,7 +439,7 @@ export class Loops {
     // Read back what is open first: a restart judges against the baselines it had.
     const canWrite = ledger ? await this.loadOpen(warnings) : false;
     const rows = reconcile(intents, observations, now, { ...evidence, unread, baselines: this.baselines });
-    this.baselines = nextBaselines(rows, this.baselines);
+    this.baselines = nextBaselines(rows, this.baselines, now, evidence.rollovers);
     // An unread ledger judges nothing: every observation would read as unregistered.
     const judged = ledger ? rows : rows.map((row) => ({ ...row, drift: [], unread: true }));
     if (canWrite) await this.record(judged, unread, warnings);
@@ -452,7 +459,10 @@ export class Loops {
     return view;
   }
 
-  private async schedules(warnings: string[]): Promise<{ raw: unknown; file: string }[] | null> {
+  private async schedules(
+    warnings: string[],
+    broken: { value: boolean },
+  ): Promise<{ raw: unknown; file: string }[] | null> {
     const dir = this.options.schedulesDir;
     let names: string[];
     try {
@@ -469,6 +479,7 @@ export class Loops {
         out.push({ raw: JSON.parse(await readFile(file, "utf8")), file });
       } catch (error) {
         warnings.push(`Paseo schedule ${name} could not be read: ${(error as Error).message}`);
+        broken.value = true;
       }
     }
     return out;

@@ -277,6 +277,28 @@ describe("the Loops read", () => {
   });
 });
 
+describe("partial reads are unread, never gone", () => {
+  test("a schedule file caught mid-write leaves the Paseo rows unread: no false ACTIVE_BUT_ABSENT", async () => {
+    const { options, root } = await world();
+    await writeFile(join(root, "schedules", "44ab2429.json"), '{"id": "44ab24');
+    const view = await new Loops(options).get();
+    const row = view.rows.find((one) => one.id === "coordinator-tick");
+    expect(row?.unread).toBe(true);
+    expect(row?.drift).toEqual([]);
+  });
+  test("a Timeline that could not read launchd leaves the launchd rows unread", async () => {
+    const { options, view: timeline } = await world();
+    const broken = {
+      ...timeline,
+      sources: timeline.sources.filter((one) => one.kind !== "launchd"),
+      warnings: ["launchd could not be read: launchctl list exited 1"],
+    };
+    const view = await new Loops({ ...options, timeline: { get: async () => broken } }).get();
+    expect(view.rows.find((one) => one.id === "paseo-liveness")?.unread).toBe(true);
+    expect(view.rows.every((one) => one.kind !== "launchd" || one.drift.length === 0)).toBe(true);
+  });
+});
+
 describe("the streams", () => {
   test("envelope lines read; a torn one is skipped", () => {
     expect(
