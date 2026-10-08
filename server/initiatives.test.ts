@@ -8,6 +8,8 @@ import type { Initiative } from "../shared/initiatives";
 import { decisionOf, parsed, rowsOf } from "./control-asks";
 import {
   agentIds,
+  driverRelay,
+  driverSession,
   ghOutput,
   IDEA_TITLE_MAX,
   ideaCounts,
@@ -574,4 +576,35 @@ describe("the workspace's initiatives, in a scratch control repo", () => {
     }).view();
     expect([view.initiatives, view.warnings[0]]).toEqual([[], expect.stringContaining("has no origin/main")]);
   });
+});
+
+test("a driver names a session only as coordinator:<id> or session:<id>", () => {
+  expect(["coordinator:f5307ce7", "session:abc", "owner", "fleet", "none", null].map((d) => driverSession(d))).toEqual([
+    "f5307ce7",
+    "abc",
+    null,
+    null,
+    null,
+    null,
+  ]);
+});
+
+test("the router's driver: a coordinator id that resolves is a relay; a name that does not, or owner, is none", async () => {
+  const asked: string[][] = [];
+  const ids = {
+    resolve: async (_paseo: unknown, sessions: readonly string[]) => {
+      asked.push([...sessions]);
+      return new Map(sessions.filter((s) => s === "f5307ce7").map((s) => [s, `${s}-0000-agent`]));
+    },
+  };
+  const records: Record<string, string> = { a: "coordinator:f5307ce7", b: "session:hanging-pug-e7", c: "owner" };
+  const relay = driverRelay(async (id) => (id in records ? { driver: records[id] ?? null } : null), ids);
+  const paseo = {} as never;
+  expect([await relay("a", paseo), await relay("b", paseo), await relay("c", paseo), await relay("z", paseo)]).toEqual([
+    { agentId: "f5307ce7-0000-agent", as: "the driver of the initiative a (coordinator:f5307ce7)" },
+    null,
+    null,
+    null,
+  ]);
+  expect(asked).toEqual([["f5307ce7"], ["hanging-pug-e7"]]);
 });

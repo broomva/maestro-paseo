@@ -10,7 +10,7 @@ import { Engine, UserError } from "./server/engine";
 import { AwakeClock, Fleet, wallClock } from "./server/fleet";
 import { inspectFolder as inspect } from "./server/folders";
 import { GateCards } from "./server/gate-card";
-import { agentIds, ghRun, ideaWork, prStates, workspaceInitiatives } from "./server/initiatives";
+import { agentIds, driverRelay, ghRun, ideaWork, prStates, workspaceInitiatives } from "./server/initiatives";
 import { Launchd } from "./server/launchd";
 import { Loop } from "./server/loop";
 import {
@@ -101,6 +101,8 @@ export default function contribute(host: PluginServerContext) {
           log,
         })
       : null;
+  // Session ids to agents, one listing shared by the initiatives tab and answer routing.
+  const sessionIds = agentIds(Date.now, log);
   const router =
     workspace && control.repo
       ? new AnswerRouter({
@@ -109,6 +111,8 @@ export default function contribute(host: PluginServerContext) {
           engine,
           client: () => latest,
           controlRepo: control.repo,
+          // An answer whose asker is gone may go to its initiative's driver, when that names a session (BRO-2918).
+          driver: driverRelay(async (id) => (await initiatives?.one(id)) ?? null, sessionIds),
           log,
         })
       : null;
@@ -159,7 +163,7 @@ export default function contribute(host: PluginServerContext) {
         answersPath: control.answers,
         asks: workspace,
         prs: prStates(ghRun, Date.now, log),
-        agents: agentIds(Date.now, log),
+        agents: sessionIds,
         log,
       })
     : null;

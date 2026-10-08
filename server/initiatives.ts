@@ -375,6 +375,27 @@ export function prStates(run: Run = ghRun, now: () => number = Date.now, log?: (
 
 // ── Session ids to agents ────────────────────────────────────────────────────
 
+/** The session an initiative's driver names (`coordinator:<8 hex>`, `session:<id>`); null for owner, fleet, none. Pure. */
+export function driverSession(driver: string | null): string | null {
+  return /^(?:coordinator|session):(.+)$/.exec(driver ?? "")?.[1] ?? null;
+}
+
+/**
+ * Answer routing's `driver` (BRO-2918): the initiative's driver as a session,
+ * when its record names one that resolves to exactly one agent; else null.
+ */
+export function driverRelay(
+  one: (id: string) => Promise<{ driver: string | null } | null>,
+  ids: { resolve(paseo: Paseo | null, sessions: readonly string[]): Promise<Map<string, string>> },
+) {
+  return async (id: string, paseo: Paseo): Promise<{ agentId: string; as: string } | null> => {
+    const named = (await one(id))?.driver ?? null;
+    const session = driverSession(named);
+    const agentId = session ? (await ids.resolve(paseo, [session])).get(session) : undefined;
+    return agentId ? { agentId, as: `the driver of the initiative ${id} (${named})` } : null;
+  };
+}
+
 /** Session ids resolved this long ago are asked again. */
 export const AGENTS_EVERY_MS = 5 * 60_000;
 
