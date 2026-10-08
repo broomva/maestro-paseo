@@ -169,6 +169,19 @@ const sameAsk = (
   ref: { ledger: string; uid: string | null; id: string },
 ) => ask.ledger === ref.ledger && (ref.uid ? ask.uid === ref.uid : ask.id === ref.id);
 
+/**
+ * An ask whose answer decides an act only you perform: `class: authority` or
+ * `credential`, or a `why_you` that says owner-only. Its answer authorizes the
+ * decision, never an agent doing the act (BRO-2910). Pure.
+ */
+export function ownerOnly(ask: DecisionAsk | null): boolean {
+  const kind = ask?.audit?.class;
+  return kind === "authority" || kind === "credential" || /owner[- ]only/i.test(ask?.whyYou ?? "");
+}
+
+const OWNER_ONLY_LINE =
+  "The ask is owner-only: the answer decides it, and the owner-only act itself stays the owner's. Hand over the exact command; do not run it.";
+
 /** The message an asking session gets: your answer, verbatim, quoted, and where it is written. */
 export function deliveryText(receipt: AnsweredReceipt, ask: DecisionAsk | null): string {
   const what = ask?.headline ?? ask?.question ?? receipt.id;
@@ -183,6 +196,57 @@ export function deliveryText(receipt: AnsweredReceipt, ask: DecisionAsk | null):
     ...quoted,
     "",
     `${where} Act on it, and carry on.`,
+    ...(ownerOnly(ask) ? ["", OWNER_ONLY_LINE] : []),
+  ].join("\n");
+}
+
+/** A session that may take an answer its asker cannot: who it is to the ask, in words. */
+export interface Relay {
+  agentId: string;
+  as: string;
+}
+
+/**
+ * The other sessions that asked in the same ledger, at the same home, newest
+ * first: a ledger is one arc's, so they are that arc's own sessions, and the
+ * link is written in the file, never guessed (BRO-2918). Pure.
+ */
+export function arcAskers(all: readonly DecisionAsk[], ask: DecisionAsk): Relay[] {
+  const own = ask.origin?.agentId ?? null;
+  const askers = all
+    .filter(
+      (other) =>
+        other.ledger === ask.ledger &&
+        other.home.kind === ask.home.kind &&
+        other.home.path === ask.home.path &&
+        other.origin &&
+        other.origin.agentId !== own,
+    )
+    .sort((a, b) => (b.askedAt ?? "").localeCompare(a.askedAt ?? ""));
+  const seen = new Set<string>();
+  const out: Relay[] = [];
+  for (const other of askers) {
+    const agentId = other.origin?.agentId;
+    if (!agentId || seen.has(agentId)) continue;
+    seen.add(agentId);
+    out.push({ agentId, as: `the session that asked ${other.id} in ${ask.ledger}` });
+  }
+  return out;
+}
+
+/** The message a relayed session gets: the answer, why it came to this session, and what it may do. */
+export function relayText(receipt: AnsweredReceipt, ask: DecisionAsk | null, why: string, as: string): string {
+  const what = ask?.headline ?? ask?.question ?? receipt.id;
+  const quoted = (receipt.answer ?? ask?.answer ?? "(no words)").split("\n").map((line) => `> ${line}`);
+  return [
+    `An ask was answered in Maestro: "${what}" (${receipt.ledger} ${receipt.id}). ${why} It comes to you as ${as}.`,
+    "",
+    "The answer, verbatim:",
+    "",
+    ...quoted,
+    "",
+    "Decide what follows: carry it out if it is this arc's to do, append it to the arc's ticket, or file work with `maestro new`. Nothing has been filed for it.",
+    ...(ownerOnly(ask) ? ["", OWNER_ONLY_LINE] : []),
   ].join("\n");
 }
 
@@ -240,6 +304,8 @@ export interface RouterOptions {
   client: () => Paseo | null;
   /** Where routed work runs when the asking session's folder is gone: the control repo. */
   controlRepo: string;
+  /** The initiative's driver as a session, when its record names one (coordinator:<hex>, session:<id>). */
+  driver?: (initiative: string, paseo: Paseo) => Promise<Relay | null>;
   now?: () => number;
   log?: (message: string) => void;
   sessionMs?: number;
@@ -423,6 +489,20 @@ export class AnswerRouter {
         reason: `"${option.label}" keeps things as they are (the ledger marks it status_quo), so no work was filed.`,
       });
     }
+    // Owner-only: held for you, never relayed, never started (BRO-2910).
+    if (ownerOnly(ask)) {
+      return this.held(
+        receipt,
+        ask,
+        agentId,
+        `${why} The ask is owner-only, so the act it decides is yours.`,
+        "Your answer decides an owner-only act. Carry it out from the ask's own steps, then close this.",
+      );
+    }
+    if (ask) {
+      const relayed = await this.relay(paseo, receipt, ask, agentId, read, why);
+      if (relayed) return relayed;
+    }
     const existing = (await this.options.engine.answered()).get(key);
     if (existing) {
       return this.routed(receipt, {
@@ -457,18 +537,79 @@ export class AnswerRouter {
   }
 
   /**
+   * An answer its asker cannot take, sent to the first session that can: the
+   * arc's other askers, newest first, then the initiative's driver. One at
+   * work holds the answer until it is idle; one gone is passed over. Null when
+   * none is left, and the answer is filed as work (BRO-2918).
+   */
+  private async relay(
+    paseo: Paseo | null,
+    receipt: AnsweredReceipt,
+    ask: DecisionAsk,
+    agentId: string | null,
+    read: WorkspaceRead,
+    why: string,
+  ): Promise<RouteOutcome | null> {
+    const askers = arcAskers(read.all, ask);
+    if (!paseo) {
+      if (askers.length === 0 && !ask.initiative) return null;
+      return this.wait(
+        receipt,
+        "queued",
+        `${why} Paseo has not connected to Maestro yet, so its arc could not be asked.`,
+      );
+    }
+    const driver = ask.initiative && this.options.driver ? await this.options.driver(ask.initiative, paseo) : null;
+    const seen = new Set(agentId ? [agentId] : []);
+    for (const relay of [...askers, ...(driver ? [driver] : [])]) {
+      if (seen.has(relay.agentId)) continue;
+      seen.add(relay.agentId);
+      const session = await this.session(paseo, relay.agentId);
+      if (session === "gone") continue;
+      if (session === "busy") {
+        return this.wait(receipt, "queued", `${why} It goes to ${relay.as} when that session is idle.`);
+      }
+      await paseo.agents.ref(relay.agentId).send(relayText(receipt, ask, why, relay.as));
+      return this.routed(receipt, {
+        route: "relayed",
+        agentId: relay.agentId,
+        work: null,
+        reason: `${why} Sent to ${relay.as}, which decides what follows.`,
+      });
+    }
+    return null;
+  }
+
+  /**
    * An answer whose ask no ledger holds by its name now: held work at your
    * gate, which the loop flags in Needs you as yours to start, briefed from
    * the receipt alone. Filed once (Contract.answer).
    */
   private async stop(receipt: AnsweredReceipt, agentId: string | null): Promise<RouteOutcome> {
-    const key = answerKey(receipt);
     const why = `No ledger holds the ask ${receipt.id} in ${receipt.ledger} now (moved, renamed or removed: Maestro does not guess which).`;
+    return this.held(
+      receipt,
+      null,
+      agentId,
+      why,
+      `${why} Start it if your answer still needs acting on, or cancel it.`,
+    );
+  }
+
+  /** Held work at your gate, never started for you: Needs you flags it as yours. Filed once (Contract.answer). */
+  private async held(
+    receipt: AnsweredReceipt,
+    ask: DecisionAsk | null,
+    agentId: string | null,
+    why: string,
+    hold: string,
+  ): Promise<RouteOutcome> {
+    const key = answerKey(receipt);
     const existing = (await this.options.engine.answered()).get(key);
     const work = existing
       ? { id: existing.id, title: existing.title }
       : await (async () => {
-          const { title, brief } = routedWork(receipt, null, why);
+          const { title, brief } = routedWork(receipt, ask, why);
           const item = await this.options.engine.create(
             this.options.client(),
             {
@@ -477,10 +618,10 @@ export class AnswerRouter {
               repo: this.options.controlRepo,
               gate: "human",
               check: "",
-              initiative: "",
+              initiative: ask?.initiative ?? "",
               dispatch: false,
               answer: key,
-              hold: `${why} Start it if your answer still needs acting on, or cancel it.`,
+              hold,
             },
             LOOP,
           );
@@ -645,6 +786,7 @@ export class AnswerRouter {
 /** A routed answer, in a sentence. */
 export function fateWords(routed: Pick<RoutedReceipt, "route" | "work" | "reason">): string {
   if (routed.route === "delivered") return "Acted on: sent to the session that asked.";
+  if (routed.route === "relayed") return `Acted on: ${routed.reason}`;
   if (routed.route === "work")
     return `Acted on: filed as work, ${routed.work ? `"${routed.work.title}"` : "an item"}, for your gate.`;
   if (routed.route === "superseded") return `Not acted on. ${routed.reason}`;

@@ -8,6 +8,7 @@ import type { Initiative } from "../shared/initiatives";
 import { decisionOf, parsed, rowsOf } from "./control-asks";
 import {
   agentIds,
+  driverSession,
   ghOutput,
   IDEA_TITLE_MAX,
   ideaCounts,
@@ -574,4 +575,15 @@ describe("the workspace's initiatives, in a scratch control repo", () => {
     }).view();
     expect([view.initiatives, view.warnings[0]]).toEqual([[], expect.stringContaining("has no origin/main")]);
   });
+});
+
+test("a driver names a session only as coordinator:<id> or session:<id>", () => {
+  expect(["coordinator:f5307ce7", "session:abc", "owner", "fleet", "none", null].map((d) => driverSession(d))).toEqual([
+    "f5307ce7",
+    "abc",
+    null,
+    null,
+    null,
+    null,
+  ]);
 });

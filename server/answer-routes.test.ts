@@ -4,7 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AnswersLanding } from "../shared/answers";
 import type { DecisionAsk } from "../shared/fleet";
-import { AnswerRouter, afterBegan, answerKey, askFor, deliveryText, readLog } from "./answer-routes";
+import {
+  AnswerRouter,
+  afterBegan,
+  answerKey,
+  arcAskers,
+  askFor,
+  deliveryText,
+  ownerOnly,
+  type Relay,
+  readLog,
+} from "./answer-routes";
 import { decisionsOf } from "./control-asks";
 import type { Paseo } from "./runs";
 
@@ -102,6 +112,8 @@ async function setup(options: {
   after?: object[];
   /** The asks as the workspace reads them, changed for one test. */
   asksAre?: (asks: DecisionAsk[]) => DecisionAsk[];
+  /** The initiative's driver as the plugin resolves it. */
+  driver?: (initiative: string) => Relay | null;
 }) {
   const root = await mkdtemp(join(tmpdir(), "maestro-routes-"));
   roots.push(root);
@@ -145,6 +157,7 @@ async function setup(options: {
     client: () => paseo,
     controlRepo: root,
     now: () => Date.parse("2026-10-06T13:00:00Z"),
+    driver: options.driver ? async (initiative) => options.driver?.(initiative) ?? null : undefined,
   });
   const log = async () => readLog(await readFile(receipts, "utf8"));
   return { root, receipts, asks, router, created, filed, status, sent, log, reads: () => reads };
@@ -556,5 +569,127 @@ describe("the delivery's words", () => {
     const text = deliveryText({ ...receipt("A1", "checkout"), answer: "Line one.\n  indented two." } as never, null);
     expect(text).toContain("> Line one.\n>   indented two.");
     expect(text).toContain("It is written in /w/.control/asks/x.");
+  });
+});
+
+describe("an answer its asker cannot take (BRO-2918, BRO-2910)", () => {
+  // A2 names no asker; A1, in the same ledger, was asked by agent-1. A2's hold is made a real change here.
+  const unmarked = (asks: DecisionAsk[]) =>
+    asks.map((ask) =>
+      ask.id === "A2" ? { ...ask, options: ask.options.map((option) => ({ ...option, statusQuo: false })) } : ask,
+    );
+  const ownerOnlyA = (id: string) => (asks: DecisionAsk[]) =>
+    unmarked(asks).map((ask) =>
+      ask.id === id ? { ...ask, audit: { class: "authority", gates: [], withheld: 0 } } : ask,
+    ) as DecisionAsk[];
+  const hold = () => receipt("A2", "checkout", { answerOption: "hold", answer: "Hold: Nothing changes." });
+
+  test("named nowhere: it goes to the arc's other asker, idle, with why; nothing is filed", async () => {
+    const answered = hold();
+    const { router, created, sent, log } = await setup({
+      after: [answered],
+      agents: { "agent-1": "idle" },
+      asksAre: unmarked,
+    });
+    const [outcome] = await router.route();
+    expect([outcome?.route, created.length, sent.map((s) => s.agentId)]).toEqual(["relayed", 0, ["agent-1"]]);
+    expect(sent[0]?.text).toContain(`It comes to you as the session that asked A1 in ${LEDGER}.`);
+    expect(sent[0]?.text).toContain("> Hold: Nothing changes.");
+    const routed = (await log()).routed.get(answerKey(answered as never));
+    expect([routed?.route, routed?.agentId]).toEqual(["relayed", "agent-1"]);
+  });
+
+  test("the arc's asker at work: the answer waits for it, never filed past it", async () => {
+    const { router, created, sent } = await setup({
+      after: [hold()],
+      agents: { "agent-1": "running" },
+      asksAre: unmarked,
+    });
+    const [outcome] = await router.route();
+    expect([outcome?.status, outcome?.route, created.length, sent.length]).toEqual(["queued", null, 0, 0]);
+  });
+
+  test("the arc's asker gone too: the initiative's driver takes it; with no driver, work is filed", async () => {
+    const driven = await setup({
+      after: [hold()],
+      agents: { "agent-1": "archived", "agent-d": "idle" },
+      asksAre: unmarked,
+      driver: (initiative) => (initiative === "maestro" ? { agentId: "agent-d", as: "the driver" } : null),
+    });
+    const [relayed] = await driven.router.route();
+    expect([relayed?.route, driven.sent.map((s) => s.agentId), driven.created.length]).toEqual([
+      "relayed",
+      ["agent-d"],
+      0,
+    ]);
+    const undriven = await setup({ after: [hold()], agents: { "agent-1": "archived" }, asksAre: unmarked });
+    const [filed] = await undriven.router.route();
+    expect([filed?.route, undriven.created.length]).toEqual(["work", 1]);
+  });
+
+  test("owner-only with its asker gone: held work for you, never relayed, never started", async () => {
+    const { router, created, sent } = await setup({
+      after: [hold()],
+      agents: { "agent-1": "idle" },
+      asksAre: ownerOnlyA("A2"),
+    });
+    const [outcome] = await router.route();
+    expect([outcome?.route, sent.length, created.length]).toEqual(["work", 0, 1]);
+    const input = created[0] as Record<string, unknown>;
+    expect([input.dispatch, input.gate, input.initiative, Boolean(input.hold)]).toEqual([
+      false,
+      "human",
+      "maestro",
+      true,
+    ]);
+  });
+
+  test("owner-only to its live asker: delivered, saying the act stays the owner's", async () => {
+    const answered = receipt("A1", "checkout", { originAgentId: "agent-1", answerOption: "ship", answer: "Ship." });
+    const { router, sent } = await setup({
+      after: [answered],
+      agents: { "agent-1": "idle" },
+      asksAre: ownerOnlyA("A1"),
+    });
+    const [outcome] = await router.route();
+    expect(outcome?.route).toBe("delivered");
+    expect(sent[0]?.text).toContain("the owner-only act itself stays the owner's");
+  });
+});
+
+describe("who else may take an answer", () => {
+  const ask = (id: string, agentId: string | null, askedAt: string | null, path = "/w") =>
+    ({
+      ledger: LEDGER,
+      id,
+      askedAt,
+      origin: agentId ? { agentId, cwd: null } : null,
+      home: { kind: "checkout", path, branch: "w" },
+    }) as unknown as DecisionAsk;
+
+  test("the ledger's other askers, newest first, once each, never itself, never another home's", () => {
+    const own = ask("A1", "agent-1", "2026-10-06T10:00:00Z");
+    const all = [
+      own,
+      ask("A2", "agent-2", "2026-10-06T09:00:00Z"),
+      ask("A3", "agent-3", "2026-10-06T11:00:00Z"),
+      ask("A4", "agent-2", "2026-10-06T08:00:00Z"),
+      ask("A5", "agent-1", "2026-10-06T12:00:00Z"),
+      ask("A6", "agent-6", "2026-10-06T13:00:00Z", "/elsewhere"),
+      { ...ask("A7", "agent-7", "2026-10-06T14:00:00Z"), ledger: "other.yaml" } as DecisionAsk,
+    ];
+    expect(arcAskers(all, own).map((relay) => relay.agentId)).toEqual(["agent-3", "agent-2"]);
+  });
+
+  test("owner-only: authority or credential class, or a why_you that says so; nothing else", () => {
+    const of = (audit: string | null, whyYou: string | null) =>
+      ({ audit: audit ? { class: audit, gates: [], withheld: 0 } : null, whyYou }) as unknown as DecisionAsk;
+    expect([
+      ownerOnly(of("authority", null)),
+      ownerOnly(of("credential", null)),
+      ownerOnly(of(null, "Admin merges are owner-only.")),
+      ownerOnly(of("decision", "You set the direction.")),
+      ownerOnly(null),
+    ]).toEqual([true, true, true, false, false]);
   });
 });

@@ -52,10 +52,12 @@ export const ANSWER_STAGES = ["unlanded", "unrouted", "acted", "superseded", "be
 export type AnswerStage = (typeof ANSWER_STAGES)[number];
 
 /**
- * What routing did with an answer: told the session that asked, filed work,
- * nothing to do (and why), or nothing because the ask was closed another way.
+ * What routing did with an answer: told the session that asked, told another
+ * session on its arc or its initiative's driver when the asker is gone
+ * (relayed), filed work, nothing to do (and why), or nothing because the ask
+ * was closed another way.
  */
-export const ROUTES = ["delivered", "work", "none", "superseded"] as const;
+export const ROUTES = ["delivered", "relayed", "work", "none", "superseded"] as const;
 export type Route = (typeof ROUTES)[number];
 
 export const AnswerFateSchema = z.object({

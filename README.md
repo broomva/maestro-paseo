@@ -270,11 +270,18 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
   - *Routing.* Each answer Maestro wrote (an `ask.answered` receipt) is routed once, once it is
     where it belongs: landed on origin/main, or at once in its checkout. The session that asked,
     idle, is sent the answer, quoted verbatim; at work or asking a permission, the delivery waits
-    for its turn to end (never interrupting one). A session gone, or none named: a work item,
-    queued with gate human, briefed from the ask and your answer, in the ask's `initiative` when it
-    names one (the ask's own key, else the ledger's), filed once (`answer:` on the work). An answer
-    whose option the ledger marks `status_quo: true` needs no work, nor does an idea's (develop
-    files its own). Only that key says an option changes nothing, never its words. An ask that by
+    for its turn to end (never interrupting one). The answer to an owner-only ask (`class:
+    authority` or `credential`, or a `why_you` that says owner-only) tells that session the act
+    stays yours. A session gone, or none named, and the answer is *relayed*: to the session that
+    asked another ask in the same ledger (newest first; a ledger is one arc's, so the link is
+    written, never guessed), else to the driver of the ask's initiative when its record names a
+    session (`coordinator:<8 hex>`, `session:<id>`). The first one idle is sent the answer and
+    decides what follows; the first one at work holds it until idle; one gone is passed over. An
+    owner-only answer is never relayed: it is held work for you, never started. With no one to
+    relay to: a work item, queued with gate human, briefed from the ask and your answer, in the
+    ask's `initiative` when it names one (the ask's own key, else the ledger's), filed once
+    (`answer:` on the work). An answer whose option the ledger marks `status_quo: true` needs no
+    work, nor does an idea's (develop files its own). Only that key says an option changes nothing, never its words. An ask that by
     then records another outcome where it lives (main's wins) is *superseded*: never acted on, your
     words kept in the receipt. An answer whose ask no
     ledger holds by its name any more (moved, renamed, removed: Maestro does not guess which) is a stop
@@ -676,8 +683,9 @@ contract (workspace#861, `docs/specs/2026-10-01-maestro-control-interface.html`)
   not written, and the card says why. A receipt line goes to
   `~/.local/state/maestro-paseo/asks.jsonl`, with the ask's uid or id, its `asked_at`, the asking
   session, and the entry's hash; one that cannot be written is said beside the answer.
-- **Routed once, by the loop.** A workspace answer is sent to the session that asked, or filed as
-  work when it is gone (*The loop*, above). A fleet scope's answer is not routed: the fleet reads it
+- **Routed once, by the loop.** A workspace answer is sent to the session that asked, relayed to its
+  arc or its initiative's driver when that session is gone, or filed as work when no one is left
+  (*The loop*, above). A fleet scope's answer is not routed: the fleet reads it
   from its own file at its next tick (the spec's *Record only*).
 
 Answers are yours alone, so the agent socket refuses `ask.answer`, at every home. `MAESTRO_PASEO_ASK_LOCKS` and

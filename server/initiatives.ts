@@ -375,6 +375,11 @@ export function prStates(run: Run = ghRun, now: () => number = Date.now, log?: (
 
 // ── Session ids to agents ────────────────────────────────────────────────────
 
+/** The session an initiative's driver names (`coordinator:<8 hex>`, `session:<id>`); null for owner, fleet, none. Pure. */
+export function driverSession(driver: string | null): string | null {
+  return /^(?:coordinator|session):(.+)$/.exec(driver ?? "")?.[1] ?? null;
+}
+
 /** Session ids resolved this long ago are asked again. */
 export const AGENTS_EVERY_MS = 5 * 60_000;
 
