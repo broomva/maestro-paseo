@@ -544,20 +544,86 @@ describe("reconcile", () => {
     await engine.labelsSettled();
     expect(item.ticket).toBe("STI-77");
     expect(labelled.at(-1)).toEqual(["manual", { "maestro.work": item.id }]);
+    // Two sessions, each lacking its work label: one archived but not closed, one closed but not archived.
     const before = labelled.length;
-    await create();
-    for (const status of ["closed", "archived"] as const) {
-      const agent = fake.agents.get("agent-1");
-      if (agent)
-        Object.assign(
-          agent,
-          status === "closed" ? { status: "closed" } : { archivedAt: new Date(clock).toISOString() },
-        );
+    for (const change of [{ archivedAt: new Date(clock).toISOString() }, { status: "closed" as const }]) {
+      const fresh = await setup({}, { label: async (id, labels) => void labelled.push([`fresh:${id}`, labels]) });
+      await fresh.create();
+      const agent = fresh.fake.agents.get("agent-1");
+      if (agent) Object.assign(agent, change);
       tick(1);
+      await fresh.engine.list(fresh.fake.paseo);
+      await fresh.engine.labelsSettled();
+    }
+    expect(labelled.slice(before)).toEqual([]);
+  });
+
+  test("after failures, a success resets the backoff; a labeller that throws stops nothing after it (BRO-2908)", async () => {
+    let mode: "fail" | "ok" | "throw" = "fail";
+    const calls: string[] = [];
+    const { create, engine, fake } = await setup(
+      {},
+      {
+        label: ((id: string) => {
+          calls.push(id);
+          if (mode === "throw") throw new Error("sync throw");
+          return mode === "fail" ? Promise.reject(new Error("busy")) : Promise.resolve();
+        }) as never,
+      },
+    );
+    await create();
+    const list = async (seconds: number) => {
+      tickMs(seconds * 1000);
       await engine.list(fake.paseo);
       await engine.labelsSettled();
-    }
-    expect(labelled.slice(before).map(([id]) => id)).not.toContain("agent-1");
+      return calls.length;
+    };
+    // Three failures (1, 2, 4 minutes apart), then a success: the next ask is ten minutes after it, not four.
+    expect([await list(60), await list(60), await list(120), await list(200)]).toEqual([1, 2, 3, 3]);
+    mode = "ok";
+    expect([await list(40), await list(240), await list(360)]).toEqual([4, 4, 5]);
+    // A labeller that throws outright: logged like a failure, and the next call still runs.
+    mode = "throw";
+    expect(await list(600)).toBe(6);
+    mode = "ok";
+    expect(await list(60)).toBe(7);
+  });
+
+  test("a session with a label call in flight is not asked again until it settles (BRO-2908)", async () => {
+    let release: () => void = () => {};
+    const calls: string[] = [];
+    const { create, engine, fake } = await setup(
+      {},
+      {
+        label: (id) => {
+          calls.push(id);
+          return calls.length === 1 ? new Promise<void>((resolve) => (release = resolve)) : Promise.resolve();
+        },
+      },
+    );
+    await create();
+    tick(1);
+    await engine.list(fake.paseo);
+    // Long past any wait while the first call hangs: nothing more is queued for it.
+    tick(30);
+    await engine.list(fake.paseo);
+    release();
+    await engine.labelsSettled();
+    expect(calls).toEqual(["agent-1"]);
+  });
+
+  test("a dispatched work's ticket is read from its title when no adoption gave one (BRO-2908)", async () => {
+    const { engine, fake, repo } = await setup();
+    const item = await engine.create(fake.paseo, {
+      title: "BRO-12 Persist run transcripts",
+      brief: "x",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "hawthorne",
+      dispatch: false,
+    });
+    expect([item.ticket, item.parentWork]).toEqual(["BRO-12", null]);
   });
 
   test("a parent is an open work, never the session itself or a finished one; a ticket that is not one is refused (BRO-2908)", async () => {

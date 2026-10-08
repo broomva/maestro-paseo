@@ -384,7 +384,7 @@ export class Engine {
   private readonly merged: (repo: string, branch: string) => Promise<MergedPr | null>;
   private readonly label: LabelAgent;
   /** Each session's labels as Maestro last asked for them: when, and how many asks in a row failed. */
-  private readonly labelled = new Map<string, { key: string; at: number; failures: number }>();
+  private readonly labelled = new Map<string, { key: string; at: number; failures: number; flying: boolean }>();
   /** Label calls run one at a time: each is a paseo CLI process (server/labels.ts). */
   private labelQueue: Promise<void> = Promise.resolve();
   /** Pending decisions with a timer armed, by token, to the timer's cancel. */
@@ -415,9 +415,11 @@ export class Engine {
    * session has none of its own (BRO-2908): the harness registry is Paseo, so a
    * session can be found from there as well as from here. A label the session
    * already carries is never overwritten (an orchestrator's `ticket` stays).
-   * Never awaited by a verb and never fatal. Asked once per value; asked again
-   * after LABEL_AGAIN_MS when it was set (a label removed since comes back),
-   * after a growing backoff when it failed. Calls run one at a time.
+   * Never awaited by a verb and never fatal. Asked once per value: again after
+   * LABEL_AGAIN_MS once set (reconcile asks only when the work label is gone,
+   * so a removed work label comes back; a removed ticket or parent label does
+   * not), after a growing backoff when it failed, never while a call is in
+   * flight. Calls run one at a time, and every one settles the queue.
    */
   private labelSession(
     agentId: string,
@@ -427,22 +429,29 @@ export class Engine {
     const wanted = workLabels(work);
     const labels = Object.fromEntries(Object.entries(wanted).filter(([key]) => key === WORK_LABEL || !has[key]));
     const key = JSON.stringify(labels);
-    const now = this.now().getTime();
     const last = this.labelled.get(agentId);
+    if (last?.flying) return;
     if (last?.key === key) {
       const wait =
         last.failures === 0 ? LABEL_AGAIN_MS : Math.min(LABEL_RETRY_MS * 2 ** (last.failures - 1), LABEL_AGAIN_MS);
-      if (now - last.at < wait) return;
+      if (this.now().getTime() - last.at < wait) return;
     }
     const failures = last?.key === key ? last.failures : 0;
-    this.labelled.set(agentId, { key, at: now, failures });
-    this.labelQueue = this.labelQueue.then(() =>
-      this.label(agentId, labels).catch((error: unknown) => {
-        const entry = this.labelled.get(agentId);
-        if (entry?.key === key) entry.failures = failures + 1;
-        this.log(`labelling session ${agentId}: ${(error as Error).message}`);
-      }),
-    );
+    const entry = { key, at: this.now().getTime(), failures, flying: true };
+    this.labelled.set(agentId, entry);
+    this.labelQueue = this.labelQueue.then(async () => {
+      try {
+        await this.label(agentId, labels);
+        entry.failures = 0;
+      } catch (error) {
+        entry.failures = failures + 1;
+        this.log(`labelling session ${agentId}: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        // Stamped when it settles, so a long queue never asks the same session twice.
+        entry.at = this.now().getTime();
+        entry.flying = false;
+      }
+    });
   }
 
   /** For a test: waits for the label calls asked for so far. */

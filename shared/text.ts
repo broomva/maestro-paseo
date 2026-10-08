@@ -11,8 +11,9 @@ export const LINE_CAP = 2000;
 /** A ticket id, whole: a team key and a number (`STI-3508`, `BRO-2827`). */
 export const TICKET = /^[A-Z][A-Z0-9]{1,6}-\d{1,6}$/;
 
-/** Standards that read like a ticket id (`UTF-8`, `SHA-256`) and never are one; a team called MD or ISO keeps its tickets. */
-const NOT_TICKETS = /^(UTF-(8|16|32)|SHA-(1|224|256|384|512)|ISO-\d{3,5}|RFC-\d{3,5}|AES-(128|192|256))$/;
+/** Ids that read like a ticket and never are one: standards (`UTF-8`, `SHA-256`), model names (`GPT-6`), `CVE-2024`; a team called MD or ISO keeps its tickets. */
+const NOT_TICKETS =
+  /^(UTF-(8|16|32)|SHA-(1|224|256|384|512)|ISO-\d{3,5}|RFC-\d{3,5}|AES-(128|192|256)|GPT-\d{1,2}|COVID-19|CVE-\d{4})$/;
 
 /** A ticket id in a title or name (`STI-3508`, `BRO-2827`), else null. Pure. */
 export function ticketOf(text: string | null | undefined): string | null {

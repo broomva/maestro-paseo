@@ -184,5 +184,11 @@ describe("a ticket id (BRO-2908)", () => {
     ).toEqual(["STI-3508", "BRO-2827", "STI-12", null, null]);
     // A team whose key reads like a standard keeps its tickets.
     expect(["MD-12 notes", "ISO-12 audit", "RFC-9110 header"].map(ticketOf)).toEqual(["MD-12", "ISO-12", null]);
+    // Model names and CVEs read like tickets and are not: the ticket after them is the one.
+    expect(
+      ['"Opus 5.5 x GPT-6 Astra" (/checkit, BRO-2829)', "Evaluate GPT-5 for BRO-12", "Patch CVE-2024 in STI-3"].map(
+        ticketOf,
+      ),
+    ).toEqual(["BRO-2829", "BRO-12", "STI-3"]);
   });
 });

@@ -700,6 +700,39 @@ describe("the socket", () => {
     expect(await answers(join(root, "missing.sock"))).toBe(false);
   });
 
+  test("maestro track --ticket tracks the calling session for that ticket (BRO-2908)", async () => {
+    const { root, methods, fake } = await setup();
+    fake.agents.set("cli-session", {
+      id: "cli-session",
+      cwd: "/tmp",
+      status: "running",
+      workspaceId: "ws-x",
+      provider: "claude",
+      title: "Refactor the loader",
+      archivedAt: null,
+      pendingPermissions: [],
+      activeTurn: null,
+    });
+    const path = join(root, "maestro.sock");
+    const close = await serveAgents({ path, methods });
+    const saved = { socket: process.env.MAESTRO_PASEO_SOCKET, agent: process.env.PASEO_AGENT_ID };
+    process.env.MAESTRO_PASEO_SOCKET = path;
+    process.env.PASEO_AGENT_ID = "cli-session";
+    try {
+      expect(await main(["track", "--ticket", "BRO-2908"], () => {})).toBe(0);
+      const json = [] as string[];
+      await main(["ls", "--json"], (text) => json.push(text));
+      const [item] = (JSON.parse(json[0] ?? "{}") as { items: WorkItem[] }).items;
+      expect(item?.ticket).toBe("BRO-2908");
+    } finally {
+      process.env.MAESTRO_PASEO_SOCKET = saved.socket;
+      process.env.PASEO_AGENT_ID = saved.agent;
+      if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
+      if (saved.agent === undefined) delete process.env.PASEO_AGENT_ID;
+      await close();
+    }
+  });
+
   test("the CLI finds the socket and the session from the environment", async () => {
     const { root, repo, methods, events } = await setup();
     const path = join(root, "maestro.sock");
