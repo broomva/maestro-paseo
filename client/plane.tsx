@@ -19,11 +19,13 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { ChangeScope } from "./changed";
 import { type DecisionsFocus, DecisionsView } from "./decision-triage";
-import { AnswersNotices, AskNotices, useDecisionCounts } from "./decisions";
-import { ledgerOf } from "./decisions-model";
+import { AnswersNotices, AskNotices, useDecisionCounts, useWorkspaceAsks } from "./decisions";
+import { decisionAsks, ledgerOf } from "./decisions-model";
 import { WorkDetail } from "./detail";
+import { DecideSection, FeedControls, FeedSectionsView } from "./feed";
+import { headerLine, matchesQuery, sectionsOf } from "./feed-model";
 import { FleetNotices, FleetView } from "./fleet";
-import { errorText, plural } from "./format";
+import { duration, errorText, plural } from "./format";
 import { needsYouCount } from "./header-count";
 import { HistoryView } from "./history";
 import { useAttention, useLoop, useWorkList } from "./hooks";
@@ -79,6 +81,9 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const [fleetScope, setFleetScope] = useState<string | null>(null);
   const [fleetTick, setFleetTick] = useState<number | null>(null);
   const [decisionsFocus, setDecisionsFocus] = useState<DecisionsFocus | null>(null);
+  const [query, setQuery] = useState("");
+  const asksRead = useWorkspaceAsks();
+  const asks = asksRead.data ? decisionAsks(asksRead.data) : [];
   const openFleet = (scope: string | null, tick: number | null = null) => {
     setFleetScope(scope);
     setFleetTick(tick);
@@ -126,6 +131,19 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const counts = countFilters(scoped);
   const shown = view === "board" ? scoped : applyFilter(scoped, filter);
   const pick = { theme, selected: current, onSelect: setSelected };
+  // The Feed home (client/feed.tsx): sections from the scoped work the search keeps.
+  const sections = sectionsOf(scoped.filter((item) => matchesQuery(item, query)));
+  const board = list.data?.scoreboard;
+  // Decide (client/feed.tsx): the asks that wait on you, inline at the top of the Feed.
+  const decide = (
+    <DecideSection
+      theme={theme}
+      asks={asks}
+      onOpen={(ask) =>
+        openDecisions(ask ? ledgerOf(ask) : null, ask ? { ledger: ledgerOf(ask), uid: ask.uid, id: ask.id } : null)
+      }
+    />
+  );
   // The board has no state chips, so it clears the filter rather than hide one.
   const chooseView = (next: PlaneView) => {
     setView(next);
@@ -163,16 +181,20 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     // A tap on a button below a note field acts on the first tap, not only closes the keyboard.
     <ScrollView
       style={{ flex: 1 }}
-      contentContainerStyle={{ padding: pad, gap: space[5] }}
+      contentContainerStyle={{
+        padding: pad,
+        gap: space[5],
+        // The Feed is a home page: a readable column, centred when it has the window to itself.
+        ...(view === "feed" && !compact ? { width: "100%", maxWidth: 760, alignSelf: "center" as const } : null),
+      }}
       keyboardShouldPersistTaps="handled"
     >
       <View style={{ gap: space[2] }}>
-        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[3] }}>
-          <View style={{ flex: 1, gap: space[1] }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space[3] }}>
+          <View style={{ flex: 1 }}>
             <Text style={text.heading} accessibilityRole="header">
               Maestro
             </Text>
-            <Text style={text.muted}>{summaryText(items, needsYouTotal)}</Text>
           </View>
           <IconButton theme={theme} icon="RefreshCw" label="Refresh work" onPress={() => void list.refetch()} />
           <Button
@@ -184,15 +206,30 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
             onPress={() => setCreating(true)}
           />
         </View>
+        {/* Its own row under the title, as the design has it: beside the buttons it wraps. */}
+        <Text style={[text.body, { fontWeight: "500" }]}>
+          {view === "feed" && loaded
+            ? headerLine(needsYouTotal, sectionsOf(scoped))
+            : summaryText(items, needsYouTotal)}
+        </Text>
         {/* Its own row, the pane's full width: beside the buttons a phone wraps "Next wake in 15 min". */}
-        <LoopControl theme={theme} open={loopOpen} onToggle={() => setLoopOpen((open) => !open)} />
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space[3], flexWrap: "wrap" }}>
+          <LoopControl theme={theme} open={loopOpen} onToggle={() => setLoopOpen((open) => !open)} />
+          {board ? (
+            <Text style={[text.small, text.tabular]}>
+              {board.live ? "running now · " : ""}
+              {duration(board.unsupervisedMs)} unsupervised today
+            </Text>
+          ) : null}
+        </View>
       </View>
 
       {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
 
       {view === "fleet" ? null : <FleetNotices theme={theme} compact={compact} onOpen={openFleet} />}
       <AnswersNotices theme={theme} compact={compact} />
-      {view === "decisions" ? null : (
+      {/* On the Feed, Decide below says the same, inline. */}
+      {view === "decisions" || view === "feed" ? null : (
         <AskNotices
           theme={theme}
           compact={compact}
@@ -251,7 +288,9 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
         </View>
       ) : (
         <>
-          <ScoreboardCard theme={theme} board={list.data.scoreboard} onOpenHistory={() => chooseView("history")} />
+          {view === "feed" ? null : (
+            <ScoreboardCard theme={theme} board={list.data.scoreboard} onOpenHistory={() => chooseView("history")} />
+          )}
           {list.data.warnings.slice(0, 3).map((warning) => (
             <Notice key={warning} theme={theme} tone="warn">
               {warning}
@@ -260,24 +299,51 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
           {list.data.warnings.length > 3 ? (
             <Text style={text.small}>{plural(list.data.warnings.length - 3, "more file")} could not be read.</Text>
           ) : null}
-          {items.length === 0 ? (
-            <Card theme={theme}>
-              <Text style={text.title}>No work yet</Text>
-              <Text style={text.muted}>
-                Work lives as folders in {list.data.root}. Write one down and dispatch it: an agent runs it in its own
-                worktree and brings it back to you.
-              </Text>
-              <View style={{ flexDirection: "row" }}>
-                <Button
-                  theme={theme}
-                  variant="primary"
-                  icon="Plus"
-                  label="New work"
-                  compact={compact}
-                  onPress={() => setCreating(true)}
-                />
-              </View>
-            </Card>
+          {view === "feed" && items.length > 0 ? (
+            <>
+              <FeedControls
+                theme={theme}
+                initiatives={scopes}
+                scope={scope}
+                onScope={setScope}
+                query={query}
+                onQuery={setQuery}
+              />
+              {decide}
+              {query &&
+              sections.gate.length +
+                sections.running.length +
+                sections.queued.length +
+                sections.done.count +
+                sections.handled.count ===
+                0 ? (
+                <Text style={text.muted}>No work matches “{query}”.</Text>
+              ) : (
+                <FeedSectionsView {...pick} sections={sections} loopOn={loopOn} />
+              )}
+              <ScoreboardCard theme={theme} board={list.data.scoreboard} onOpenHistory={() => chooseView("history")} />
+            </>
+          ) : items.length === 0 ? (
+            <>
+              {view === "feed" ? decide : null}
+              <Card theme={theme}>
+                <Text style={text.title}>No work yet</Text>
+                <Text style={text.muted}>
+                  Work lives as folders in {list.data.root}. Write one down and dispatch it: an agent runs it in its own
+                  worktree and brings it back to you.
+                </Text>
+                <View style={{ flexDirection: "row" }}>
+                  <Button
+                    theme={theme}
+                    variant="primary"
+                    icon="Plus"
+                    label="New work"
+                    compact={compact}
+                    onPress={() => setCreating(true)}
+                  />
+                </View>
+              </Card>
+            </>
           ) : (
             <>
               {scopes.length > 0 ? (
@@ -322,7 +388,8 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   }
 
   // The board, the list, History and the system views want the width: the item opens beside them only when one is picked.
-  const wide = view !== "feed";
+  // So does the Feed with nothing picked: a home page, not a narrow rail beside an empty pane.
+  const wide = view !== "feed" || !current;
   return (
     <ChangeScope>
       <View style={{ flex: 1, flexDirection: "row", backgroundColor: theme.colors.surface0 }}>
@@ -330,7 +397,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
           style={
             wide
               ? { flex: 1 }
-              : { width: 440, maxWidth: "45%", borderRightWidth: 1, borderRightColor: theme.colors.border }
+              : { width: 560, maxWidth: "50%", borderRightWidth: 1, borderRightColor: theme.colors.border }
           }
         >
           {listPane}
@@ -349,19 +416,11 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
             </View>
           ) : null
         ) : (
+          // Not wide means the Feed with an item picked: the item takes the rest of the window.
           <View style={{ flex: 1 }}>
             {current ? (
               <WorkDetail id={current} theme={theme} compact={false} navigation={navigation} open={requestIntent} />
-            ) : (
-              <View
-                style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: space[8], gap: space[2] }}
-              >
-                <Text style={text.title}>Pick a work item</Text>
-                <Text style={[text.muted, { textAlign: "center", maxWidth: 360 }]}>
-                  Its receipts, checks and the verb it needs from you show here.
-                </Text>
-              </View>
-            )}
+            ) : null}
           </View>
         )}
         {newWork}

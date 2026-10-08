@@ -7,6 +7,8 @@ import type { MaestroConfig, WorkItem } from "../shared/contracts";
 import { fleetHeading } from "../shared/fleet-item";
 import { groupOf } from "../shared/states";
 import {
+  adoptedByOf,
+  closedOf,
   lastActivityOf,
   lookOf,
   pendingDecision,
@@ -65,6 +67,8 @@ export function toWire(item: StoredWork, now: number, config: MaestroConfig): Wo
         }
       : null,
     flag: flagNow(events, contract.state, next, now, item.mtime),
+    closed: closedOf(contract.state, events),
+    adoptedBy: adoptedByOf(events),
     display: { title: heading?.title ?? item.title, fleet: heading?.origin ?? null },
   };
 }

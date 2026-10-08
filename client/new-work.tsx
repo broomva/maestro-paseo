@@ -20,7 +20,6 @@ import {
   type TextInput as NativeTextInput,
   Platform,
   Pressable,
-  type Role,
   Text,
   type TextInputKeyPressEventData,
   type TextStyle,
@@ -54,7 +53,7 @@ import {
 } from "./composer";
 import { basename, errorText, plural } from "./format";
 import { useConfig, useVerbs, useWorkList } from "./hooks";
-import { IconButton, Notice, radius, size, space, useText } from "./ui";
+import { CHOICE_ROLE, IconButton, Notice, radius, size, space, useText } from "./ui";
 
 /** Paseo reads are not Maestro state: kept out of the `maestro` key so a verb does not refetch them. */
 const PASEO_KEY = "maestro-paseo";
@@ -96,14 +95,6 @@ interface KeyTarget {
   addEventListener(type: "keydown", listener: (event: { key?: string }) => void, capture: boolean): void;
   removeEventListener(type: "keydown", listener: (event: { key?: string }) => void, capture: boolean): void;
 }
-
-/**
- * A row that is one choice among several. On the web it is ARIA's
- * `menuitemradio` inside `role="menu"`: react-native-web writes the role as
- * given, though RN's Role type omits it. Native has no such role and logs an
- * error for unknown ones, so there it is a radio.
- */
-const CHOICE_ROLE = (Platform.OS === "web" ? "menuitemradio" : "radio") as Role;
 
 export interface NewWorkPaneProps {
   theme: PluginTheme;

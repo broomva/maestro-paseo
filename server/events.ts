@@ -273,6 +273,24 @@ export function checkOutcome(results: readonly CheckResult[]): "passed" | "faile
   return required.every((result) => result.ok) ? "passed" : "failed";
 }
 
+/**
+ * Who closed finished work, and when: you (a verdict, a cancel), or Maestro on
+ * its own evidence (finishedArc, adopterClosed, a merged branch). Null while
+ * the work is open. The feed's Handled for you lists Maestro's (BRO-2906).
+ */
+export function closedOf(state: OrchState, events: readonly WorkEvent[]): { by: "you" | "maestro"; at: string } | null {
+  if (state !== "done" && state !== "canceled") return null;
+  const moved = events.findLast((event) => event.type === "state" && event.to === state);
+  if (moved?.type !== "state") return null;
+  return { by: moved.actor === "human" ? "you" : "maestro", at: moved.ts };
+}
+
+/** The agent that adopted the work (an orchestrator), by its own name when it gave one; null for your own work. */
+export function adoptedByOf(events: readonly WorkEvent[]): { by: string | null } | null {
+  const bind = lastOf(events, "dispatched", "adopted");
+  return bind?.type === "adopted" && bind.actor === "agent" ? { by: bind.by || null } : null;
+}
+
 export function reasonOf(state: OrchState, events: readonly WorkEvent[]): string | null {
   if (state !== "blocked") return null;
   const moved = [...events].reverse().find((event) => event.type === "state" && event.to === "blocked");

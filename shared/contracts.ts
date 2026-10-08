@@ -176,6 +176,13 @@ export const WorkItemSchema = z.object({
    * first ask), and for fleet work where it came from. `title` stays raw: the
    * fleet finds its items by the marker. Absent from older daemons.
    */
+  /** Who closed finished work and when (server/events.ts closedOf); absent from an older daemon. */
+  closed: z
+    .object({ by: z.enum(["you", "maestro"]), at: z.string() })
+    .nullable()
+    .optional(),
+  /** The agent that adopted it, an orchestrator, by its name when it gave one; absent from an older daemon. */
+  adoptedBy: z.object({ by: z.string().nullable() }).nullable().optional(),
   display: z
     .object({
       title: z.string(),
