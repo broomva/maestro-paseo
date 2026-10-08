@@ -47,6 +47,8 @@ export type WorkEvent = Base &
         provider: string;
         branch: string | null;
         cwd: string | null;
+        /** The worktree's GitHub repo (`owner/name`) when an agent adopted it, so a merged branch can be found later (BRO-2923); absent on older receipts. */
+        githubRepo?: string | null;
         /** What the agent was started with beyond the provider; absent on older receipts. */
         modeId?: string | null;
         thinkingOptionId?: string | null;
@@ -289,9 +291,9 @@ export function verdictOf(state: OrchState, events: readonly WorkEvent[]): strin
   if (state === "done") {
     const gate = lastOf(events, "gate");
     if (gate?.verdict === "approve") return checks ? `${checks} · you approved` : "You approved";
-    // Closed itself (finishedArc): its receipt says why, after the checks it passed.
+    // Closed by Maestro (finishedArc, adopterClosed, a merged branch): its receipt says why, after the checks it passed.
     const closed = lastOf(events, "state");
-    if (closed?.actor === "maestro" && closed.from === "review" && closed.reason) {
+    if (closed?.actor === "maestro" && (closed.from === "review" || closed.from === "blocked") && closed.reason) {
       return checks ? `${checks} · ${closed.reason.charAt(0).toLowerCase()}${closed.reason.slice(1)}` : closed.reason;
     }
     return checks;

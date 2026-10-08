@@ -32,6 +32,7 @@ import {
   type Verdict,
   verdictTarget,
 } from "../shared/states";
+import { branchMerged, gitOf, type MergedPr, mergedPrs, watchedBranch } from "./branch-merge";
 import { runChecks } from "./checks";
 import { loadConfig } from "./config";
 import {
@@ -230,6 +231,10 @@ export interface EngineOptions {
   timer?: Timer;
   /** The longest one daemon call made while holding an item's claim may take. Tests pass a short one. */
   claimWaitMs?: number;
+  /** A worktree's branch and remote, read when work is bound (server/branch-merge.ts gitOf). Tests pass their own. */
+  git?: (cwd: string | null) => Promise<{ branch: string | null; githubRepo: string | null }>;
+  /** A branch's merged PR as known now, asked in the background (server/branch-merge.ts mergedPrs). Tests pass their own. */
+  merged?: (repo: string, branch: string) => Promise<MergedPr | null>;
 }
 
 /** What work.create takes: the work, where it runs, how it is judged, and optionally how its runs start. */
@@ -362,6 +367,8 @@ export class Engine {
   private readonly client: () => Paseo | null;
   private readonly timer: Timer;
   private readonly claimWaitMs: number;
+  private readonly gitOf: (cwd: string | null) => Promise<{ branch: string | null; githubRepo: string | null }>;
+  private readonly merged: (repo: string, branch: string) => Promise<MergedPr | null>;
   /** Pending decisions with a timer armed, by token, to the timer's cancel. */
   private readonly armed = new Map<string, () => void>();
   /** Decisions being applied right now, by token, so a timer and a sweep never apply one twice. */
@@ -378,6 +385,8 @@ export class Engine {
     this.client = options.client ?? (() => null);
     this.timer = options.timer ?? realTimer;
     this.claimWaitMs = options.claimWaitMs ?? CLAIM_WAIT_MS;
+    this.gitOf = options.git ?? gitOf;
+    this.merged = options.merged ?? mergedPrs(undefined, undefined, this.log);
   }
 
   /** The settings runs start from, as this engine reads them. */
@@ -1477,6 +1486,8 @@ export class Engine {
     const snapshot = await paseo.agents.ref(agentId).refresh();
     if (!snapshot) throw new UserError("That session no longer exists.");
     const agent = snapshot.agent;
+    // Read while the worktree exists: by the time its session ends, the worktree may be gone (BRO-2923).
+    const bound = await this.gitOf(agent.cwd).catch(() => ({ branch: null, githubRepo: null }));
     const created = await store.create({
       title: title.trim() || agent.title || `Session ${agentId.slice(0, 8)}`,
       brief: "",
@@ -1501,7 +1512,8 @@ export class Engine {
             agentId,
             workspaceId: agent.workspaceId ?? null,
             provider: agent.provider,
-            branch: null,
+            branch: bound.branch,
+            githubRepo: bound.githubRepo,
             cwd: agent.cwd,
           },
         ],
@@ -1919,9 +1931,34 @@ export class Engine {
     return results.some(Boolean);
   }
 
+  /**
+   * An orchestrator's child, Stuck only because its session ended unfinished,
+   * closes Done when the branch recorded at its adoption merged after that
+   * (server/branch-merge.ts). The receipt says only what was seen: which PR
+   * merged, and that it was after the adoption. The lookup never waits on gh: it answers what is known and asks
+   * in the background, so a later reconcile acts on it.
+   */
+  private async closeIfBranchMerged(
+    item: StoredWork,
+    guarded: (change: Mutation) => Promise<boolean>,
+  ): Promise<boolean> {
+    const now = this.now().getTime();
+    const watched = watchedBranch(item.events, now);
+    if (!watched) return false;
+    const merged = await this.merged(watched.repo, watched.branch).catch(() => null);
+    const close = branchMerged(item.events, merged, now);
+    if (!close) return false;
+    return guarded({
+      to: "done",
+      actor: "maestro",
+      ctx: { branchMerged: true },
+      reason: `Its branch ${close.branch} merged as ${close.repo}#${close.number} after it was adopted`,
+    });
+  }
+
   private async reconcileOne(paseo: Paseo, store: WorkStore, item: StoredWork): Promise<boolean> {
     const state = item.contract.state;
-    if (state !== "running" && state !== "review") return false;
+    if (state !== "running" && state !== "review" && state !== "blocked") return false;
     const seen = item.events.length;
     /** Apply a change only if nothing was recorded since this item was read. */
     const guarded = async (change: Mutation): Promise<boolean> => {
@@ -1937,6 +1974,7 @@ export class Engine {
       );
       return applied;
     };
+    if (state === "blocked") return this.closeIfBranchMerged(item, guarded);
     const worker = workerOf(item.events);
     if (!worker) {
       return state === "running" ? guarded({ to: "blocked", reason: "No session is recorded for this run" }) : false;

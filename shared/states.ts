@@ -118,7 +118,7 @@ const LEGAL: Record<OrchState, readonly OrchState[]> = {
   reviewing: ["triggered", "running", "canceled"],
   triggered: ["running", "canceled"],
   running: ["review", "blocked", "done"],
-  blocked: ["running", "triggered", "canceled"],
+  blocked: ["running", "triggered", "canceled", "done"],
   review: ["done", "running", "canceled", "blocked"],
   done: [],
   canceled: [],
@@ -152,6 +152,12 @@ export interface TransitionContext {
    * adopterClosed): that landing was the orchestrator's to read.
    */
   adopterClosed?: boolean;
+  /**
+   * True when an orchestrator's child, blocked only because its session ended
+   * unfinished, has a branch, recorded at its adoption, from which a PR merged
+   * after the adoption (server/branch-merge.ts): the work landed.
+   */
+  branchMerged?: boolean;
 }
 
 /** Validate one transition. Returns the target state or throws. */
@@ -170,6 +176,13 @@ export function transition(from: OrchState, to: OrchState, ctx: TransitionContex
       from,
       to,
       "only an approve verdict, an arc that reported itself finished and was archived, or an orchestrator that took back its arc and archived it, closes gated work",
+    );
+  }
+  if (from === "blocked" && to === "done" && ctx.branchMerged !== true) {
+    throw new IllegalTransitionError(
+      from,
+      to,
+      "only a PR from its branch merged after its adoption closes blocked work",
     );
   }
   if (from === "running" && to === "done" && !(ctx.gate === "auto" && ctx.checksPassed === true)) {

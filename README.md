@@ -175,6 +175,18 @@ The eight system states are Maestro's; the UI speaks the six plain labels.
 - **gate: human** (the default): a finished run always lands at Needs you, whatever the checks
   say. Only Approve moves it to Done.
 - **gate: auto**: requires a check. Passing checks close it; failing checks leave it Stuck.
+- **Its branch merged.** An orchestrator's child (a session an agent adopted) that is Stuck only
+  because its session ended unfinished closes as Done when a PR from its branch merged after the
+  adoption: the work landed, by that session before it died or by another the orchestrator sent.
+  The receipt says only that ("Its branch … merged as owner/name#N after it was adopted"). The
+  branch and GitHub repo (`owner/name`, never the raw remote) are recorded at adoption, only for a
+  separate worktree (never a shared checkout, or a symlinked folder inside one). The PR is looked
+  up with `gh` in the background (it never holds up the board; answers and failures are kept 10
+  minutes; a card is watched 7 days after it stopped). A branch any PR targets as its base (dev,
+  main) never counts, nor a fork's PR of the same name. Work you adopted or dispatched is yours and
+  stays Stuck, as does a child you acted on at all since its adoption (a Send back, an Unblock, a
+  note), one with no recorded branch, or one whose PR merged before the adoption
+  (`server/branch-merge.ts`, BRO-2923).
 - **Send back** wakes the same session with your note. **Unblock** does the same for stuck work,
   or starts a fresh run if the session is gone.
 - **Notifications.** Paseo pushes to your phone only when a top-level session finishes a turn, and

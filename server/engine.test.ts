@@ -11,6 +11,7 @@ import {
   CHECKING,
   CLIENT_WAIT_MS,
   Engine,
+  type EngineOptions,
   MODED_BY_YOU,
   NOT_STOPPABLE,
   RUN_WENT_ON,
@@ -98,7 +99,7 @@ afterAll(async () => {
   await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function setup(overrides: Partial<MaestroConfig> = {}) {
+async function setup(overrides: Partial<MaestroConfig> = {}, options: Partial<EngineOptions> = {}) {
   // Real path: the repository's path may not pass through a link, and macOS's tmpdir does (/var).
   const root = await realpath(await mkdtemp(join(tmpdir(), "maestro-engine-")));
   roots.push(root);
@@ -120,6 +121,9 @@ async function setup(overrides: Partial<MaestroConfig> = {}) {
     log: process.env.DEBUG ? console.log : () => {},
     timer: timers.timer,
     claimWaitMs: 200,
+    git: async () => ({ branch: null, githubRepo: null }),
+    merged: async () => null,
+    ...options,
   });
   const fake = fakePaseo();
   /** Decide at the gate and let the undo window run out. */
@@ -3275,5 +3279,111 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
       state: "review",
       look: { ask: "", closing: "Stored it on the Run record; tests pass." },
     });
+  });
+});
+
+describe("an orchestrator's child whose branch merged after its session ended (BRO-2923)", () => {
+  const ORCHESTRATOR = { actor: "agent" as const, by: "orchestrator" };
+  const recorded = { git: async () => ({ branch: "feature/x", githubRepo: "acme/app" }) };
+  const AFTER = "2026-09-22T10:00:00Z";
+  const merged =
+    (mergedAt: string, asked: string[][] = []) =>
+    async (repo: string, branch: string) => {
+      asked.push([repo, branch]);
+      return { number: 7, mergedAt };
+    };
+  /** A running session in the work's repo, adopted, then archived before it finished. */
+  const adoptAndArchive = async (
+    { engine, fake, repo }: Awaited<ReturnType<typeof setup>>,
+    origin?: { actor: "agent" | "human"; by: string | null },
+  ) => {
+    fake.agents.set("child", {
+      id: "child",
+      cwd: repo,
+      status: "running",
+      workspaceId: null,
+      provider: "claude",
+      title: "Child arc",
+      archivedAt: null,
+    } as never);
+    const item = await engine.adopt(fake.paseo, "child", "", origin as never);
+    await engine.onArchived({ id: "child" });
+    return item;
+  };
+
+  test("it closes Done once its branch merged, the PR as its receipt; the adoption recorded branch and repo", async () => {
+    const asked: string[][] = [];
+    const env = await setup({}, { ...recorded, merged: merged(AFTER, asked) });
+    const item = await adoptAndArchive(env, ORCHESTRATOR);
+    const bind = (await env.store.findById(item.id)).events.find((event) => event.type === "adopted");
+    expect(bind && "branch" in bind ? [bind.branch, bind.githubRepo] : null).toEqual(["feature/x", "acme/app"]);
+    expect((await env.engine.get(item.id)).item.state).toBe("blocked");
+    await env.engine.list(env.fake.paseo);
+    const { item: after } = await env.engine.get(item.id);
+    expect([after.state, after.verdict, asked]).toEqual([
+      "done",
+      "Its branch feature/x merged as acme/app#7 after it was adopted",
+      [["acme/app", "feature/x"]],
+    ]);
+  });
+
+  test("a child you sent back before its session died is yours: it stays Stuck though its branch merged", async () => {
+    const asked: string[][] = [];
+    const env = await setup({}, { ...recorded, merged: merged(AFTER, asked) });
+    env.fake.agents.set("child", {
+      id: "child",
+      cwd: env.repo,
+      status: "running",
+      workspaceId: null,
+      provider: "claude",
+      title: "Child arc",
+      archivedAt: null,
+    } as never);
+    const item = await env.engine.adopt(env.fake.paseo, "child", "", ORCHESTRATOR);
+    await env.engine.onTurnEnded({ id: "child" }, { kind: "completed" }, [
+      { type: "assistant_message", text: "## Ask\nMerge it?" },
+    ] as never);
+    expect((await env.engine.get(item.id)).item.state).toBe("review");
+    const child = env.fake.agents.get("child");
+    if (child) child.status = "idle";
+    await env.decide(item.id, "revise", "Do not merge: change X first");
+    await env.engine.onArchived({ id: "child" });
+    await env.engine.list(env.fake.paseo);
+    expect([(await env.engine.get(item.id)).item.state, asked.length]).toEqual(["blocked", 0]);
+  });
+
+  test("a session you adopted is yours to close: it stays Stuck, and gh is not asked", async () => {
+    const asked: string[][] = [];
+    const env = await setup({}, { ...recorded, merged: merged(AFTER, asked) });
+    const item = await adoptAndArchive(env);
+    await env.engine.list(env.fake.paseo);
+    expect([(await env.engine.get(item.id)).item.state, asked.length]).toEqual(["blocked", 0]);
+  });
+
+  test("a dispatched run is yours to close: it stays Stuck, and gh is not asked", async () => {
+    const asked: string[][] = [];
+    const { create, engine, fake } = await setup({}, { ...recorded, merged: merged(AFTER, asked) });
+    const item = await create();
+    await engine.onArchived({ id: "agent-1" });
+    await engine.list(fake.paseo);
+    expect([(await engine.get(item.id)).item.state, asked.length]).toEqual(["blocked", 0]);
+  });
+
+  test("a PR merged before the adoption is an old one on a reused branch: it stays Stuck", async () => {
+    const env = await setup({}, { ...recorded, merged: merged("2026-09-01T00:00:00Z") });
+    const item = await adoptAndArchive(env, ORCHESTRATOR);
+    await env.engine.list(env.fake.paseo);
+    expect((await env.engine.get(item.id)).item.state).toBe("blocked");
+  });
+
+  test("a shared checkout or detached HEAD records no branch: it stays Stuck, and gh is not asked", async () => {
+    const asked: string[][] = [];
+    const env = await setup(
+      {},
+      { git: async () => ({ branch: null, githubRepo: "acme/app" }), merged: merged(AFTER, asked) },
+    );
+    const item = await adoptAndArchive(env, ORCHESTRATOR);
+    await env.engine.list(env.fake.paseo);
+    expect([(await env.engine.get(item.id)).item.state, asked.length]).toEqual(["blocked", 0]);
   });
 });
