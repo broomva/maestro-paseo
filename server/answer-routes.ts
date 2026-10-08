@@ -8,9 +8,14 @@
 //     alive and idle: the answer is sent to it, quoted verbatim. Alive and at
 //     work, or asking for a permission: the delivery waits for it to go idle
 //     (a turn's end, or the loop's next wake). A turn is never interrupted.
-//   - Gone, or none named: a work item, queued with gate human, briefed from
-//     the ask and the answer, in the ask's initiative when it names one, and
-//     filed once (Contract.answer). An answer that takes an option the ledger
+//   - Gone, or none named: relayed (BRO-2918) to the session that asked
+//     another ask in the same ledger, newest first, then to the initiative's
+//     driver when it names a session; one at work holds it for RELAY_WAIT_MS
+//     from when it first waited on that session (an `ask.waiting` line), then
+//     the next is asked. An owner-only ask (ownerOnly) is never relayed: it is
+//     held work, never started. With no one to relay to: a work item, queued
+//     with gate human, briefed from the ask and the answer, in the ask's
+//     initiative when it names one, and filed once (Contract.answer). An answer that takes an option the ledger
 //     marks `status_quo: true` needs none; nor does an idea's, whose develop
 //     answer files its own (index.server.ts). Read from the ask's own keys,
 //     never from the words of an option.
@@ -84,6 +89,12 @@ export interface Log {
   routed: Map<string, RoutedReceipt>;
   /** When routing first ran (its first `routing.began`); null: it has not begun. */
   began: string | null;
+  /**
+   * By answer key: the sessions a relayed answer waited on, each with when it
+   * first did (`ask.waiting` lines), and the latest one. Written to the log so
+   * a restart keeps both the patience clock and who the answer waits on.
+   */
+  waiting: Map<string, { since: Map<string, string>; on: string }>;
 }
 
 /**
@@ -115,7 +126,7 @@ export function records(
 
 /** The receipt log's lines, read. A line that is not a receipt is skipped. Pure. */
 export function readLog(source: string): Log {
-  const log: Log = { answered: [], routed: new Map(), began: null };
+  const log: Log = { answered: [], routed: new Map(), began: null, waiting: new Map() };
   for (const line of source.split("\n")) {
     if (!line.trim()) continue;
     let row: unknown;
@@ -127,6 +138,14 @@ export function readLog(source: string): Log {
     if (!isRow(row)) continue;
     if (row.kind === "routing.began") {
       log.began ??= text(row.at);
+    } else if (row.kind === "ask.waiting" && typeof row.key === "string") {
+      const on = text(row.on);
+      const at = text(row.at);
+      if (!on || !at) continue;
+      const entry = log.waiting.get(row.key) ?? { since: new Map<string, string>(), on };
+      if (!entry.since.has(on)) entry.since.set(on, at);
+      entry.on = on;
+      log.waiting.set(row.key, entry);
     } else if (row.kind === "ask.routed" && typeof row.key === "string") {
       if (!log.routed.has(row.key)) log.routed.set(row.key, row as unknown as RoutedReceipt);
     } else if (row.kind === "ask.answered" && (row.homeKind === "main" || row.homeKind === "checkout")) {
@@ -173,14 +192,24 @@ const sameAsk = (
 ) => ask.ledger === ref.ledger && (ref.uid ? ask.uid === ref.uid : ask.id === ref.id);
 
 /**
- * An ask whose answer decides an act only you perform: `class: authority` or
- * `credential`, or a `why_you` that says owner-only. Its answer authorizes the
+ * An ask whose answer decides an act only you perform: `class: authority`,
+ * `credential` or `external` (any case), or a `why_you` that says owner-only. Its answer authorizes the
  * decision, never an agent doing the act (BRO-2910). Pure.
  */
 export function ownerOnly(ask: DecisionAsk | null): boolean {
-  const kind = ask?.audit?.class;
-  return kind === "authority" || kind === "credential" || /owner[- ]only/i.test(ask?.whyYou ?? "");
+  const kind = (ask?.audit?.class ?? "").toLowerCase();
+  return OWNER_CLASSES.has(kind) || /owner[- ]only/i.test(ask?.whyYou ?? "");
 }
+
+/**
+ * The classes whose act is the owner's (DECISION-LAYER.md): authority and
+ * credential, and external, an act on the outside world (a post, a purge, a
+ * message to a person); the rotation asks were classed external or authority.
+ */
+const OWNER_CLASSES = new Set(["authority", "credential", "external"]);
+
+const UNREAD_LINE =
+  "Maestro could not read the ask itself, so whether it is owner-only is unknown: if it is, hand over the exact command; do not run it.";
 
 const OWNER_ONLY_LINE =
   "The ask is owner-only: the answer decides it, and the owner-only act itself stays the owner's. Hand over the exact command; do not run it.";
@@ -200,6 +229,7 @@ export function deliveryText(receipt: AnsweredReceipt, ask: DecisionAsk | null):
     "",
     `${where} Act on it, and carry on.`,
     ...(ownerOnly(ask) ? ["", OWNER_ONLY_LINE] : []),
+    ...(ask ? [] : ["", UNREAD_LINE]),
   ].join("\n");
 }
 
@@ -336,10 +366,7 @@ export class AnswerRouter {
   private running: Promise<unknown> = Promise.resolve();
   private cached: { stamp: string; log: Log } | null = null;
   /** Why an answer still waits, as the last pass found it: Decisions says it. */
-  private readonly waits = new Map<
-    string,
-    { status: "unlanded" | "queued" | "failed"; words: string; on?: string | undefined }
-  >();
+  private readonly waits = new Map<string, { status: "unlanded" | "queued" | "failed"; words: string }>();
 
   constructor(options: RouterOptions) {
     this.options = options;
@@ -383,7 +410,7 @@ export class AnswerRouter {
         (receipt) =>
           !only.agentId ||
           receipt.originAgentId === only.agentId ||
-          this.waits.get(answerKey(receipt))?.on === only.agentId,
+          log.waiting.get(answerKey(receipt))?.on === only.agentId,
       );
     if (due.length === 0) return [];
     let read: WorkspaceRead;
@@ -408,7 +435,7 @@ export class AnswerRouter {
               work: null,
               reason: "A later answer to this ask replaced it.",
             })
-          : await this.one(receipt, ask, agentId, read).catch((error) =>
+          : await this.one(receipt, ask, agentId, read, log).catch((error) =>
               this.wait(receipt, "failed", `${(error as Error).message}`),
             );
       outcomes.push(outcome);
@@ -421,6 +448,7 @@ export class AnswerRouter {
     ask: DecisionAsk | null,
     agentId: string | null,
     read: WorkspaceRead,
+    log: Log,
   ): Promise<RouteOutcome> {
     const key = answerKey(receipt);
     if (receipt.homeKind === "main" && !ask) {
@@ -518,7 +546,7 @@ export class AnswerRouter {
         "Your answer decides an owner-only act. Carry it out from the ask's own steps, then close this.",
       );
     }
-    const relayed = await this.relay(paseo, receipt, ask, read, why);
+    const relayed = await this.relay(paseo, receipt, ask, read, log, why);
     if (relayed) return relayed;
     const existing = (await this.options.engine.answered()).get(key);
     if (existing) {
@@ -564,6 +592,7 @@ export class AnswerRouter {
     receipt: AnsweredReceipt,
     ask: DecisionAsk,
     read: WorkspaceRead,
+    log: Log,
     why: string,
   ): Promise<RouteOutcome | null> {
     const askers = arcAskers(read.all, ask);
@@ -575,8 +604,8 @@ export class AnswerRouter {
         `${why} Paseo has not connected to Maestro yet, so its arc could not be asked.`,
       );
     }
-    // Waited RELAY_WAIT_MS on one at work: the next is asked instead, so an answer is never held by a busy one forever.
-    const patient = !(this.now() - Date.parse(receipt.at ?? "") >= RELAY_WAIT_MS);
+    const key = answerKey(receipt);
+    const since = log.waiting.get(key)?.since;
     // The driver is looked up only once the arc's own askers are exhausted.
     for (let at = 0; ; at += 1) {
       const relay =
@@ -587,9 +616,21 @@ export class AnswerRouter {
             : null;
       if (!relay) return null;
       const session = await this.session(paseo, relay.agentId);
-      if (session === "gone" || (session === "busy" && !patient)) continue;
+      if (session === "gone") continue;
       if (session === "busy") {
-        return this.wait(receipt, "queued", `${why} It goes to ${relay.as} when that session is idle.`, relay.agentId);
+        // Waited RELAY_WAIT_MS on this one since it first did: the next is asked, so a busy one never holds it forever.
+        const first = since?.get(relay.agentId);
+        if (first && this.now() - Date.parse(first) >= RELAY_WAIT_MS) continue;
+        if (!first) {
+          await this.append({
+            kind: "ask.waiting",
+            actor: "maestro",
+            at: new Date(this.now()).toISOString(),
+            key,
+            on: relay.agentId,
+          });
+        }
+        return this.wait(receipt, "queued", `${why} It goes to ${relay.as} when that session is idle.`);
       }
       await paseo.agents.ref(relay.agentId).send(relayText(receipt, ask, why, relay.as));
       return this.routed(receipt, {
@@ -698,17 +739,11 @@ export class AnswerRouter {
     };
   }
 
-  /** `on`: the session the answer waits on, so that session's turn's end routes it. */
-  private wait(
-    receipt: AnsweredReceipt,
-    status: "unlanded" | "queued" | "failed",
-    words: string,
-    on?: string,
-  ): RouteOutcome {
+  private wait(receipt: AnsweredReceipt, status: "unlanded" | "queued" | "failed", words: string): RouteOutcome {
     const key = answerKey(receipt);
     const said =
       status === "failed" ? `Maestro could not act on it yet (${words}); it tries again at its next check.` : words;
-    this.waits.set(key, { status, words: said, on });
+    this.waits.set(key, { status, words: said });
     if (status === "failed") this.options.log?.(`answers: routing ${receipt.ledger} ${receipt.id}: ${words}`);
     return { key, ledger: receipt.ledger, id: receipt.id, status, route: null, words: said };
   }
@@ -721,7 +756,7 @@ export class AnswerRouter {
 
   private async log(): Promise<Log> {
     const info = await stat(this.options.receipts).catch(() => null);
-    if (!info) return { answered: [], routed: new Map(), began: null };
+    if (!info) return { answered: [], routed: new Map(), began: null, waiting: new Map() };
     const stamp = `${info.mtimeMs}:${info.size}`;
     if (this.cached?.stamp === stamp) return this.cached.log;
     const log = readLog(await readFile(this.options.receipts, "utf8"));

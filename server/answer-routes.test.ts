@@ -150,27 +150,45 @@ async function setup(options: {
   };
   const { paseo, status, sent } = sessions(options.agents ?? {});
   const drivers: string[] = [];
-  const router = new AnswerRouter({
-    receipts,
-    asks: {
-      read: async () => {
-        reads += 1;
-        return { controlRepo: root, main: { sha: "f00", fetchedAt: null }, all: asks, warnings: [] };
+  const clock = { at: options.nowIs ?? "2026-10-06T13:00:00Z" };
+  // A router over the same receipts and doubles: a fresh one is Maestro after a restart.
+  const routerOf = () =>
+    new AnswerRouter({
+      receipts,
+      asks: {
+        read: async () => {
+          reads += 1;
+          return { controlRepo: root, main: { sha: "f00", fetchedAt: null }, all: asks, warnings: [] };
+        },
       },
-    },
-    engine: engine as never,
-    client: () => (options.noPaseo ? null : paseo),
-    controlRepo: root,
-    now: () => Date.parse(options.nowIs ?? "2026-10-06T13:00:00Z"),
-    driver: options.driver
-      ? async (initiative) => {
-          drivers.push(initiative);
-          return options.driver?.(initiative) ?? null;
-        }
-      : undefined,
-  });
+      engine: engine as never,
+      client: () => (options.noPaseo ? null : paseo),
+      controlRepo: root,
+      now: () => Date.parse(clock.at),
+      driver: options.driver
+        ? async (initiative) => {
+            drivers.push(initiative);
+            return options.driver?.(initiative) ?? null;
+          }
+        : undefined,
+    });
+  const router = routerOf();
   const log = async () => readLog(await readFile(receipts, "utf8"));
-  return { root, receipts, asks, router, created, filed, status, sent, drivers, log, reads: () => reads };
+  return {
+    root,
+    receipts,
+    asks,
+    router,
+    routerOf,
+    clock,
+    created,
+    filed,
+    status,
+    sent,
+    drivers,
+    log,
+    reads: () => reads,
+  };
 }
 
 describe("the receipt log", () => {
@@ -746,16 +764,24 @@ describe("an answer its asker cannot take, round 1 (P20)", () => {
     expect([filed?.route, files.created.length]).toEqual(["work", 1]);
   });
 
-  test("an asker at work past RELAY_WAIT_MS is passed over for the next", async () => {
-    const { router, sent } = await setup({
+  test("an asker at work is waited on for RELAY_WAIT_MS from when it first was, then passed over", async () => {
+    const { router, clock, sent, log } = await setup({
       after: [hold()],
-      nowIs: "2026-10-06T14:00:03Z",
       agents: { "agent-1": "running", "agent-d": "idle" },
       asksAre: unmarked,
       driver: driverD,
+      // Routed 4 h after it was answered (a slow landing): the clock starts at the first wait, not the answer.
+      nowIs: "2026-10-06T16:00:00Z",
     });
-    const [outcome] = await router.route();
-    expect([outcome?.route, sent.map((s) => s.agentId)]).toEqual(["relayed", ["agent-d"]]);
+    const [first] = await router.route();
+    expect([first?.status, sent.length]).toEqual(["queued", 0]);
+    clock.at = "2026-10-06T17:59:59Z";
+    const [still] = await router.route();
+    expect([still?.status, sent.length]).toEqual(["queued", 0]);
+    clock.at = "2026-10-06T18:00:00Z";
+    const [moved] = await router.route();
+    expect([moved?.route, sent.map((s) => s.agentId)]).toEqual(["relayed", ["agent-d"]]);
+    expect([...((await log()).waiting.get(answerKey(hold() as never))?.since.keys() ?? [])]).toEqual(["agent-1"]);
   });
 
   test("a relay waiting on a session at work is delivered when that session's turn ends", async () => {
@@ -835,4 +861,75 @@ test("an asker of the same ledger at the same path but another kind of home is a
   expect(
     arcAskers([own, at("A2", "agent-2", "main"), at("A3", "agent-3", "checkout")], own).map((r) => r.agentId),
   ).toEqual(["agent-3"]);
+});
+
+describe("an answer its asker cannot take, round 2 (P20)", () => {
+  const unmarked = (asks: DecisionAsk[]) =>
+    asks.map((ask) =>
+      ask.id === "A2" ? { ...ask, options: ask.options.map((option) => ({ ...option, statusQuo: false })) } : ask,
+    );
+  const hold = () => receipt("A2", "checkout", { answerOption: "hold", answer: "Hold: Nothing changes." });
+
+  test("after a restart, the waited-on session's turn end still delivers the relay", async () => {
+    const { router, routerOf, status, sent } = await setup({
+      after: [hold()],
+      agents: { "agent-1": "running" },
+      asksAre: unmarked,
+    });
+    await router.route();
+    status.set("agent-1", "idle");
+    const [outcome] = await routerOf().route({ agentId: "agent-1" });
+    expect([outcome?.route, sent.map((s) => s.agentId)]).toEqual(["relayed", ["agent-1"]]);
+  });
+
+  test("owner-only: authority, credential and external, in any case", () => {
+    const of = (kind: string) =>
+      ({ audit: { class: kind, gates: [], withheld: 0 }, whyYou: null }) as unknown as DecisionAsk;
+    expect(["Authority", "CREDENTIAL", "external", "decision", "artifact"].map((kind) => ownerOnly(of(kind)))).toEqual([
+      true,
+      true,
+      true,
+      false,
+      false,
+    ]);
+  });
+
+  test("an unreadable checkout ask, its asker idle: delivered, saying its class is unknown", async () => {
+    const answered = receipt("A9", "checkout", { originAgentId: "agent-1", answerOption: "ship", answer: "Ship." });
+    const { router, sent } = await setup({ after: [answered], agents: { "agent-1": "idle" } });
+    const [outcome] = await router.route();
+    expect([outcome?.route, sent[0]?.text.includes("whether it is owner-only is unknown")]).toEqual([
+      "delivered",
+      true,
+    ]);
+  });
+
+  test("held owner-only work runs in the control repo even when the asker's folder is a live repo", async () => {
+    const authority = (asks: DecisionAsk[]) =>
+      unmarked(asks).map((ask) =>
+        ask.id === "A2"
+          ? {
+              ...ask,
+              audit: { class: "authority", gates: [], withheld: 0 },
+              origin: { agentId: "agent-2", cwd: process.cwd() },
+            }
+          : ask,
+      ) as DecisionAsk[];
+    const { router, created, root } = await setup({ after: [hold()], asksAre: authority });
+    await router.route();
+    expect((created[0] as Record<string, unknown>).repo).toBe(root);
+  });
+});
+
+test("a relay's patience runs from its first ask.waiting line, even if two passes wrote one", () => {
+  const line = (on: string, at: string) => JSON.stringify({ kind: "ask.waiting", key: "k", on, at });
+  const log = readLog(
+    [
+      line("agent-1", "2026-10-06T12:00:00Z"),
+      line("agent-1", "2026-10-06T13:00:00Z"),
+      line("agent-d", "2026-10-06T14:00:00Z"),
+    ].join("\n"),
+  );
+  const waiting = log.waiting.get("k");
+  expect([waiting?.since.get("agent-1"), waiting?.on]).toEqual(["2026-10-06T12:00:00Z", "agent-d"]);
 });

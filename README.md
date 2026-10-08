@@ -271,14 +271,15 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
     where it belongs: landed on origin/main, or at once in its checkout. The session that asked,
     idle, is sent the answer, quoted verbatim; at work or asking a permission, the delivery waits
     for its turn to end (never interrupting one). The answer to an owner-only ask (`class:
-    authority` or `credential`, or a `why_you` that says owner-only) tells that session the act
+    authority`, `credential` or `external`, in any case, or a `why_you` that says owner-only) tells that session the act
     stays yours. A session gone, or none named, and the answer is *relayed*: to the session that
     asked another ask in the same ledger (newest first; a ledger is one arc's, so the link is
     written, never guessed), else to the driver of the ask's initiative when its record names a
     session (`coordinator:<8 hex>`, `session:<id>`), looked up only once the arc's askers are
     exhausted. The first one idle is sent the answer and decides what follows; the first one at
-    work holds it until its turn ends, for up to two hours, after which the next is asked; one gone
-    is passed over. A fleet scope's asks are never relayed or relayed to. A ledger several arcs
+    work holds it until its turn ends, for up to two hours from when the answer first waited on it
+    (an `ask.waiting` line in the receipts, so a restart keeps the clock and who it waits on),
+    after which the next is asked; one gone is passed over. A fleet scope's asks are never relayed or relayed to. A ledger several arcs
     share (an initiative's gaps list) relays to whichever of them asked last, which is why the
     relayed session is told it decides, and that nothing was filed. An owner-only answer is never
     relayed: it is held work for you, never started, and its brief says not to perform the act;
