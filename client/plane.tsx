@@ -181,19 +181,19 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     // A tap on a button below a note field acts on the first tap, not only closes the keyboard.
     <ScrollView
       style={{ flex: 1 }}
-      contentContainerStyle={{ padding: pad, gap: space[5] }}
+      contentContainerStyle={{
+        padding: pad,
+        gap: space[5],
+        // The Feed is a home page: a readable column, centred when it has the window to itself.
+        ...(view === "feed" && !compact ? { width: "100%", maxWidth: 760, alignSelf: "center" as const } : null),
+      }}
       keyboardShouldPersistTaps="handled"
     >
       <View style={{ gap: space[2] }}>
-        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[3] }}>
-          <View style={{ flex: 1, gap: space[1] }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space[3] }}>
+          <View style={{ flex: 1 }}>
             <Text style={text.heading} accessibilityRole="header">
               Maestro
-            </Text>
-            <Text style={[text.body, { fontWeight: "500" }]}>
-              {view === "feed" && loaded
-                ? headerLine(needsYouTotal, sectionsOf(scoped))
-                : summaryText(items, needsYouTotal)}
             </Text>
           </View>
           <IconButton theme={theme} icon="RefreshCw" label="Refresh work" onPress={() => void list.refetch()} />
@@ -206,6 +206,12 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
             onPress={() => setCreating(true)}
           />
         </View>
+        {/* Its own row under the title, as the design has it: beside the buttons it wraps. */}
+        <Text style={[text.body, { fontWeight: "500" }]}>
+          {view === "feed" && loaded
+            ? headerLine(needsYouTotal, sectionsOf(scoped))
+            : summaryText(items, needsYouTotal)}
+        </Text>
         {/* Its own row, the pane's full width: beside the buttons a phone wraps "Next wake in 15 min". */}
         <View style={{ flexDirection: "row", alignItems: "center", gap: space[3], flexWrap: "wrap" }}>
           <LoopControl theme={theme} open={loopOpen} onToggle={() => setLoopOpen((open) => !open)} />
@@ -382,7 +388,8 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   }
 
   // The board, the list, History and the system views want the width: the item opens beside them only when one is picked.
-  const wide = view !== "feed";
+  // So does the Feed with nothing picked: a home page, not a narrow rail beside an empty pane.
+  const wide = view !== "feed" || !current;
   return (
     <ChangeScope>
       <View style={{ flex: 1, flexDirection: "row", backgroundColor: theme.colors.surface0 }}>
@@ -390,7 +397,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
           style={
             wide
               ? { flex: 1 }
-              : { width: 440, maxWidth: "45%", borderRightWidth: 1, borderRightColor: theme.colors.border }
+              : { width: 560, maxWidth: "50%", borderRightWidth: 1, borderRightColor: theme.colors.border }
           }
         >
           {listPane}
