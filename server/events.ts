@@ -496,7 +496,7 @@ export function adopterClosed(events: readonly WorkEvent[]): string | null {
   const turn = events.slice(0, landed).findLastIndex((e) => e.type === "turn.ended");
   // The turn that landed it answered a task of yours (a Send back, an Unblock): that answer is yours to read.
   if (turn < 0 || !onItsOwnArc(events.slice(0, turn))) return null;
-  return bind.by ?? "";
+  return ("by" in bind ? bind.by : null) ?? "";
 }
 
 /** The receipt of work its orchestrator took back (adopterClosed): what Maestro saw, and nothing more. */
