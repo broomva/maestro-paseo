@@ -11,6 +11,7 @@ import {
   matchesQuery,
   sectionsOf,
   ticketOf,
+  UNNAMED,
 } from "./feed-model";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
@@ -100,6 +101,8 @@ describe("Handled for you's group titles (BRO-2928)", () => {
       "Maestro closed 2 arcs that finished on their own",
       "From SRI Orchestrator: 2 arcs closed",
     ]);
+    // An adopter that gave no name reads in the sentence's case.
+    expect(handledTitle({ by: UNNAMED, items: one })).toBe("From their orchestrators: 1 arc closed");
   });
 });
 

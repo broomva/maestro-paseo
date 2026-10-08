@@ -18,6 +18,8 @@ import { placeText, titleText } from "./records-text";
 export const DECIDE_INLINE = 3;
 /** How many closed arcs Handled for you names under each group. */
 export const HANDLED_NAMED = 3;
+/** The Handled group for arcs whose adopter gave no name. */
+export const UNNAMED = "Their orchestrators";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
 
@@ -245,7 +247,7 @@ export function sectionsOf(items: readonly WorkItem[], now: number = Date.now())
     .sort((a, b) => closedAt(b) - closedAt(a));
   const groups = new Map<string, WorkItem[]>();
   for (const item of handled) {
-    const by = item.adoptedBy ? (item.adoptedBy.by ?? "Their orchestrators") : "Maestro";
+    const by = item.adoptedBy ? (item.adoptedBy.by ?? UNNAMED) : "Maestro";
     groups.set(by, [...(groups.get(by) ?? []), item]);
   }
   const yours = finished.filter((item) => !handled.includes(item)).sort((a, b) => closedAt(b) - closedAt(a));
@@ -273,11 +275,11 @@ export function headerLine(needsYou: number | null, sections: FeedSections): str
   return parts.filter(Boolean).join(" · ");
 }
 
-/** A handled group's title: who closed how many. Pure. */
+/** A handled group's title: who handed the arcs over, and how many were closed. Pure. */
 export function handledTitle(group: HandledGroup): string {
   const n = group.items.length;
   // Who handed them over, not who closed them: Maestro closes them, on receipts that say why (BRO-2928).
   return group.by === "Maestro"
     ? `Maestro closed ${plural(n, "arc")} that finished on ${n === 1 ? "its" : "their"} own`
-    : `From ${group.by}: ${plural(n, "arc")} closed`;
+    : `From ${group.by === UNNAMED ? "their orchestrators" : group.by}: ${plural(n, "arc")} closed`;
 }

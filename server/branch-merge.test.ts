@@ -284,7 +284,7 @@ describe("an orchestrator's child archived between turns (BRO-2928)", () => {
   const ended = turn("turn.ended", "2026-10-08T00:50:00Z");
   const started = turn("turn.started", "2026-10-08T00:40:00Z");
 
-  test("closes only an agent's adoption, archived after a turn that ended cleanly, untouched by you", () => {
+  test("closes only an agent's adoption, archived after a turn that reported no error, untouched by you", () => {
     expect(archivedBetweenTurns([bind(), started, ended, stopped(ENDED)], NOW)).toBe(true);
     // Archived mid-turn: a turn started after the last end, so something was cut off.
     expect(
@@ -297,6 +297,12 @@ describe("an orchestrator's child archived between turns (BRO-2928)", () => {
         NOW,
       ),
     ).toBe(false);
+    // A run of yours started after the adoption makes it your dispatch, not the orchestrator's arc.
+    const yours = { ...bind(), type: "dispatched", actor: "agent", ts: "2026-10-08T00:30:00Z" } as unknown as WorkEvent;
+    expect(archivedBetweenTurns([bind(), yours, started, ended, stopped(ENDED)], NOW)).toBe(false);
+    // Only the turn before the archive is judged: a turn the record shows after it does not change that.
+    const late = turn("turn.started", "2026-10-08T01:10:00Z");
+    expect(archivedBetweenTurns([bind(), started, ended, stopped(ENDED), late], NOW)).toBe(true);
     // Interrupted (canceled): not a clean end either.
     const interrupted = turn("turn.ended", "2026-10-08T00:50:00Z", "canceled");
     expect(archivedBetweenTurns([bind(), started, interrupted, stopped(ENDED)], NOW)).toBe(false);

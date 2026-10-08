@@ -3261,14 +3261,14 @@ describe("an orchestrator archiving its child between turns closes it, not as st
     expect([closed.state, closed.closed?.by]).toEqual(["canceled", "maestro"]);
     // The card says what happened, never "You canceled it".
     expect(closed.verdict).toBe(
-      "Its session was archived between turns, after a turn that ended cleanly: an orchestrator's arc, closed, not stuck",
+      "Its session was archived between turns, after a turn that reported no error: an orchestrator's arc, closed, not stuck",
     );
     const { events } = await engine.get(item.id);
     expect(events.at(-1)).toMatchObject({
       type: "state",
       text: "Canceled",
       detail:
-        "Its session was archived between turns, after a turn that ended cleanly: an orchestrator's arc, closed, not stuck",
+        "Its session was archived between turns, after a turn that reported no error: an orchestrator's arc, closed, not stuck",
     });
   });
 });

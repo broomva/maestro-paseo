@@ -67,12 +67,12 @@ export function watchedBranch(events: readonly WorkEvent[], now: number): { repo
  * same), so the receipt says what is: when it was archived, and whose arc it is.
  */
 export const ARCHIVED_BETWEEN_TURNS =
-  "Its session was archived between turns, after a turn that ended cleanly: an orchestrator's arc, closed, not stuck";
+  "Its session was archived between turns, after a turn that reported no error: an orchestrator's arc, closed, not stuck";
 
 /**
  * Whether an orchestrator's child was archived between turns (BRO-2928): an
  * adopted arc stays running between its turns (engine.ts endTurn), so when its
- * session is archived after a turn that ended cleanly, the card read "archived
+ * session is archived after a turn that reported no error, the card read "archived
  * before it finished" though no turn was cut off. Maestro records it as
  * canceled, never as done: it has no evidence the work landed, and a clean
  * turn is not a finished arc (STI-2944 was archived 3.5 h after a turn whose
