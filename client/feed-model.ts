@@ -275,7 +275,9 @@ export function headerLine(needsYou: number | null, sections: FeedSections): str
 
 /** A handled group's title: who closed how many. Pure. */
 export function handledTitle(group: HandledGroup): string {
+  const n = group.items.length;
+  // Who handed them over, not who closed them: Maestro closes them, on receipts that say why (BRO-2928).
   return group.by === "Maestro"
-    ? `Maestro closed ${plural(group.items.length, "arc")} that finished on their own`
-    : `${group.by} closed ${plural(group.items.length, "arc")}`;
+    ? `Maestro closed ${plural(n, "arc")} that finished on ${n === 1 ? "its" : "their"} own`
+    : `From ${group.by}: ${plural(n, "arc")} closed`;
 }
