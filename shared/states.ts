@@ -22,9 +22,12 @@
 //      ends failed or canceled after the work landed (server/engine.ts
 //      endTurn): the gate then shows the turn that stopped, as Stuck.
 // The invariant that matters is kept exactly: under gate:human nothing reaches
-// done without an approve verdict, but for one named cause, arcFinished: the
-// work's own arc reported itself finished, its session was archived, and
-// nothing of yours is open (server/events.ts finishedArc).
+// done without an approve verdict, but for two named causes, with nothing of
+// yours open: arcFinished, the work's own arc reported itself finished and its
+// session was archived (server/events.ts finishedArc); and adopterClosed, an
+// orchestrator that adopted the work was handed something by its last turn and
+// archived its session, with you having done nothing with it since it landed
+// (server/events.ts adopterClosed, BRO-2903).
 
 export const ORCH_STATES = [
   "proposed",
@@ -143,6 +146,12 @@ export interface TransitionContext {
    * (server/events.ts finishedArc): it closes itself, receipted as Maestro's.
    */
   arcFinished?: boolean;
+  /**
+   * True when an orchestrator that adopted the work was handed something by
+   * its last turn and archived its session since, untouched by you (server/
+   * events.ts adopterClosed): its handback was the orchestrator's to take.
+   */
+  adopterClosed?: boolean;
 }
 
 /** Validate one transition. Returns the target state or throws. */
@@ -150,11 +159,17 @@ export function transition(from: OrchState, to: OrchState, ctx: TransitionContex
   if (!LEGAL[from].includes(to)) {
     throw new IllegalTransitionError(from, to);
   }
-  if (from === "review" && to === "done" && ctx.verdict !== "approve" && ctx.arcFinished !== true) {
+  if (
+    from === "review" &&
+    to === "done" &&
+    ctx.verdict !== "approve" &&
+    ctx.arcFinished !== true &&
+    ctx.adopterClosed !== true
+  ) {
     throw new IllegalTransitionError(
       from,
       to,
-      "only an approve verdict, or an arc that reported itself finished and was archived, closes gated work",
+      "only an approve verdict, an arc that reported itself finished and was archived, or an orchestrator that took back what it was handed and archived it, closes gated work",
     );
   }
   if (from === "running" && to === "done" && !(ctx.gate === "auto" && ctx.checksPassed === true)) {

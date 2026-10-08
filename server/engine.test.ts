@@ -3057,6 +3057,39 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
     });
   });
 
+  test("its orchestrator archiving an arc that landed with nothing handed back (it died) cancels it (BRO-2903)", async () => {
+    const { engine, fake, item, store } = await adopted();
+    // Landed before the handback rule (or recovered), its last words the error the session died on.
+    await store.mutate(item.id, () => ({
+      to: "review",
+      events: [
+        {
+          ts: new Date(clock).toISOString(),
+          type: "turn.ended",
+          actor: "agent",
+          agentId: "arc",
+          outcome: "completed",
+          error: null,
+          summary: "Your organization has disabled Claude subscription access for Claude Code",
+          turnId: "dead",
+        },
+      ],
+    }));
+    const agent = fake.agents.get("arc");
+    if (agent) {
+      agent.status = "idle";
+      agent.archivedAt = new Date(clock).toISOString();
+    }
+    await engine.onArchived({ id: "arc" }, fake.paseo);
+    const { item: after, events } = await engine.get(item.id);
+    expect(after.state).toBe("canceled");
+    expect(events.at(-1)).toMatchObject({
+      type: "state",
+      actor: "maestro",
+      detail: "Its orchestrator (session orchestr) archived its session; the last turn Maestro saw handed nothing back",
+    });
+  });
+
   test("a turn that hands nothing back is the arc between steps: it stays running, and no card is left", async () => {
     const { engine, fake, item, end } = await adopted();
     tick(17);

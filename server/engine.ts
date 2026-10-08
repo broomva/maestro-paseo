@@ -36,6 +36,8 @@ import { runChecks } from "./checks";
 import { loadConfig } from "./config";
 import {
   ARCHIVED_NOTE,
+  adopterClosed,
+  archivedByOrchestrator,
   archivedSince,
   BY_HUMAN,
   checkOutcome,
@@ -45,7 +47,6 @@ import {
   type FlaggedEvent,
   finishedArc,
   flagOf,
-  handledByAdopter,
   handledByOrchestrator,
   handsBack,
   keptSummary,
@@ -1964,14 +1965,23 @@ export class Engine {
         const archived = agent?.archivedAt && !archivedSince(item.events) ? [this.note(ARCHIVED_NOTE)] : [];
         const seen = [...item.events, ...archived];
         const line = finishedArc(seen);
-        // An orchestrator's child closes the same way once the orchestrator archived it (BRO-2903).
-        const adopter = line ? null : handledByAdopter(seen);
-        if (line || adopter !== null) {
+        // An orchestrator's child leaves your gate once the orchestrator archived it (BRO-2903): done if its
+        // last turn handed the orchestrator something, canceled if it handed nothing (its session ended).
+        const adopter = line ? null : adopterClosed(seen);
+        if (adopter && !adopter.handedBack) {
+          return guarded({
+            to: "canceled",
+            actor: "maestro",
+            reason: archivedByOrchestrator(adopter.by),
+            events: archived,
+          });
+        }
+        if (line || adopter) {
           const closed = await guarded({
             to: "done",
             actor: "maestro",
-            ctx: { arcFinished: true },
-            reason: line ? closedItself(line) : handledByOrchestrator(adopter ?? ""),
+            ctx: line ? { arcFinished: true } : { adopterClosed: true },
+            reason: line ? closedItself(line) : handledByOrchestrator(adopter?.by ?? ""),
             events: archived,
           });
           // As an approval would: the workspace a run created goes when Settings says archive on approve.

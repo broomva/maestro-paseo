@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ARCHIVED_NOTE,
+  adopterClosed,
   arcStatus,
   bullets,
   closingAbove,
@@ -8,7 +9,6 @@ import {
   finishedArc,
   flagOf,
   formatDuration,
-  handledByAdopter,
   handsBack,
   keptSummary,
   lastActivityOf,
@@ -624,30 +624,92 @@ describe("an arc's own verdict at the gate (BRO-2856)", () => {
   });
 });
 
-describe("work its orchestrator handled closes once archived (BRO-2903)", () => {
-  const archived: WorkEvent = { ts: at(135), type: "note", actor: "maestro", text: ARCHIVED_NOTE };
-  // The same run, adopted by an orchestrator instead of dispatched, its last turn a handback.
-  const byAgent = (by: string | null): WorkEvent[] =>
+describe("work its orchestrator took back leaves your gate once archived (BRO-2903)", () => {
+  const archived: WorkEvent = { ts: at(200), type: "note", actor: "maestro", text: ARCHIVED_NOTE };
+  const HANDBACK = "Merged.\n\nARC-STATUS: HANDBACK 1";
+  // The same run, adopted by an orchestrator instead of dispatched, its last turn saying `last`.
+  const byAgent = (by: string | null, last = HANDBACK): WorkEvent[] =>
     toReview.map((e) =>
       e.type === "dispatched"
         ? { ...e, type: "adopted", actor: "agent", by }
         : e.type === "turn.ended"
-          ? { ...e, summary: "Merged.\n\nARC-STATUS: HANDBACK 1" }
+          ? { ...e, summary: last }
           : e,
     ) as WorkEvent[];
+  const turnEnded = (minutes: number, summary: string): WorkEvent => ({
+    ts: at(minutes),
+    type: "turn.ended",
+    actor: "agent",
+    agentId: "a1",
+    outcome: "completed",
+    error: null,
+    summary,
+  });
+  const landing = (minutes: number): WorkEvent => ({
+    ts: at(minutes),
+    type: "state",
+    actor: "maestro",
+    from: "running",
+    to: "review",
+    reason: null,
+  });
 
-  test("an orchestrator's arc, archived since it landed, untouched by you: its adopter", () => {
-    expect(handledByAdopter([...byAgent("e2b10dcc-dd32"), archived])).toBe("e2b10dcc-dd32");
-    expect(handledByAdopter([...byAgent(null), archived])).toBe("");
+  test("an orchestrator's arc that handed it something, archived since, untouched by you: handled", () => {
+    expect(adopterClosed([...byAgent("e2b10dcc-dd32"), archived])).toEqual({ by: "e2b10dcc-dd32", handedBack: true });
+    expect(adopterClosed([...byAgent(null), archived])).toEqual({ by: "", handedBack: true });
+  });
+
+  test("one whose last turn handed nothing back (its session died) was only archived", () => {
+    const died = "Your organization has disabled Claude subscription access for Claude Code";
+    expect(adopterClosed([...byAgent("orch", died), archived])).toEqual({ by: "orch", handedBack: false });
   });
 
   test("not archived, adopted by you, dispatched, or acted on by you since it landed: null", () => {
-    expect(handledByAdopter(byAgent("orch"))).toBeNull();
+    expect(adopterClosed(byAgent("orch"))).toBeNull();
     const byYou = byAgent("orch").map((e) => (e.type === "adopted" ? { ...e, actor: "human" } : e)) as WorkEvent[];
-    expect(handledByAdopter([...byYou, archived])).toBeNull();
-    expect(handledByAdopter([...toReview, archived])).toBeNull();
-    const yours: WorkEvent = { ts: at(134.5), type: "note", actor: "human", text: "Looking at this one." };
-    expect(handledByAdopter([...byAgent("orch"), yours, archived])).toBeNull();
+    expect(adopterClosed([...byYou, archived])).toBeNull();
+    expect(adopterClosed([...toReview, archived])).toBeNull();
+    const yours: WorkEvent = { ts: at(150), type: "note", actor: "human", text: "Looking at this one." };
+    expect(adopterClosed([...byAgent("orch"), yours, archived])).toBeNull();
+  });
+
+  test("a landing that answers your Send back or Unblock is yours to read, archived or not", () => {
+    const sentBack: WorkEvent[] = [
+      { ts: at(140), type: "gate", actor: "human", verdict: "revise", note: "Use plan B.", token: "t" },
+      { ts: at(140), type: "state", actor: "human", from: "review", to: "running", reason: "Sent back with a note" },
+      turnEnded(160, "Switched to B.\n\n## Ask\n- Approve?"),
+      landing(160),
+    ];
+    expect(adopterClosed([...byAgent("orch"), ...sentBack, archived])).toBeNull();
+    const unblocked: WorkEvent[] = [
+      { ts: at(140), type: "unblocked", actor: "human", note: "Retry with the new token." },
+      { ts: at(140), type: "state", actor: "human", from: "review", to: "running", reason: null },
+      turnEnded(160, "Done.\n\nARC-STATUS: HANDBACK 1"),
+      landing(160),
+    ];
+    expect(adopterClosed([...byAgent("orch"), ...unblocked, archived])).toBeNull();
+  });
+
+  test("the last landing decides: a later handback after the arc continued is the orchestrator's", () => {
+    // The orchestrator prompted it again (recorded as "You continued", a known misattribution), and it landed
+    // again: that last landing is the one read, and the arc's own.
+    const again: WorkEvent[] = [
+      { ts: at(140), type: "turn.started", actor: "agent", agentId: "a1" },
+      {
+        ts: at(140),
+        type: "state",
+        actor: "human",
+        from: "review",
+        to: "running",
+        reason: "You continued the session",
+      },
+      turnEnded(160, "Second pass done.\n\nARC-STATUS: HANDBACK 1"),
+      landing(160),
+    ];
+    expect(adopterClosed([...byAgent("orch", "Working."), ...again, archived])).toEqual({
+      by: "orch",
+      handedBack: true,
+    });
   });
 });
 
