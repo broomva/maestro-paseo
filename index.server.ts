@@ -14,6 +14,7 @@ import { GateCards } from "./server/gate-card";
 import { GhaSchedules } from "./server/gha";
 import { createInboxProvider, Inbox } from "./server/inbox";
 import { agentIds, driverRelay, ghRun, ideaWork, prStates, workspaceInitiatives } from "./server/initiatives";
+import { paseoLabel } from "./server/labels";
 import { Launchd, launchdPresence } from "./server/launchd";
 import { Loop } from "./server/loop";
 import { homeWriter, Loops } from "./server/loops";
@@ -102,6 +103,8 @@ export default function contribute(host: PluginServerContext) {
   );
   const engine: Engine = new Engine({
     client: () => latest,
+    // Paseo is the harness registry (BRO-2908): an adopted session is labelled with its work, as a dispatched one is.
+    label: paseoLabel,
     landed: (before, after) => Promise.all([cards.landed(before, after), inbox.landed(before, after)]),
   });
   // The workspace's own asks: the control repo's ledgers, at their homes (spec #861 §5.2).
@@ -363,8 +366,8 @@ export default function contribute(host: PluginServerContext) {
   server.handle(stopWork, ({ id, discard }, { paseo }) =>
     engine.stopRun(paseo, id, { discard: discard === true }).then((item) => ({ item })),
   );
-  server.handle(adoptAgent, ({ agentId, title }, { paseo }) =>
-    engine.adopt(paseo, agentId, title).then((item) => ({ item })),
+  server.handle(adoptAgent, ({ agentId, title, ticket }, { paseo }) =>
+    engine.adopt(paseo, agentId, title, undefined, { ticket }).then((item) => ({ item })),
   );
   server.handle(workForAgent, ({ agentId }) => engine.forAgent(agentId).then((item) => ({ item })));
   server.handle(inspectFolder, ({ path }) => inspect(path));

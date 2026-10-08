@@ -187,6 +187,10 @@ export const WorkItemSchema = z.object({
    * elsewhere `by` is the agent id the receipt holds. Absent from an older daemon.
    */
   adoptedBy: z.object({ by: z.string().nullable() }).nullable().optional(),
+  /** The work the adopting session runs as, when Maestro tracks it (BRO-2908); absent from an older daemon. */
+  parentWork: z.string().nullable().optional(),
+  /** The ticket it is for: given when it was adopted, else read from its title; absent from an older daemon. */
+  ticket: z.string().nullable().optional(),
   display: z
     .object({
       title: z.string(),
@@ -366,7 +370,7 @@ export const leaveRunning = defineRpc({ name: "work.leave-running", input: ById,
 
 export const adoptAgent = defineRpc({
   name: "work.adopt",
-  input: z.object({ agentId: z.string().min(1), title: z.string() }),
+  input: z.object({ agentId: z.string().min(1), title: z.string(), ticket: z.string().optional() }),
   output: ItemResult,
 });
 

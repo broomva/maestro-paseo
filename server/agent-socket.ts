@@ -122,9 +122,12 @@ export function agentMethods(engine: Engine, paseo: () => Paseo | null): Readonl
     ],
     [
       "work.adopt",
-      method(ForAgent.extend({ title: z.string().default("") }), async ({ agentId, title }, caller) => ({
-        item: await engine.adopt(connected(), session(agentId, caller), title, origin(caller)),
-      })),
+      method(
+        ForAgent.extend({ title: z.string().default(""), ticket: z.string().optional() }),
+        async ({ agentId, title, ticket }, caller) => ({
+          item: await engine.adopt(connected(), session(agentId, caller), title, origin(caller), { ticket }),
+        }),
+      ),
     ],
     [
       "work.for-agent",

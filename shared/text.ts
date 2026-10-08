@@ -8,6 +8,17 @@ const ELLIPSIS = "…";
 /** The longest line any inline regex here sees; the rest of a longer line is left out. */
 export const LINE_CAP = 2000;
 
+/** Standards that read like a ticket id (`UTF-8`, `SHA-256`) and never are one. */
+const NOT_TICKETS = /^(UTF|SHA|ISO|RFC|MD|AES|HTTP|TLS|SSL|X)-/;
+
+/** A ticket id in a title or name (`STI-3508`, `BRO-2827`), else null. Pure. */
+export function ticketOf(text: string | null | undefined): string | null {
+  for (const match of (text ?? "").matchAll(/\b([A-Z][A-Z0-9]{1,6}-\d{1,6})\b/g)) {
+    if (!NOT_TICKETS.test(match[1] ?? "")) return match[1] ?? null;
+  }
+  return null;
+}
+
 /** Whitespace runs as one space, trimmed. */
 export function flat(text: string): string {
   return text.replace(/\s+/g, " ").trim();

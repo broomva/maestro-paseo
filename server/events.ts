@@ -53,6 +53,10 @@ export type WorkEvent = Base &
         modeId?: string | null;
         thinkingOptionId?: string | null;
         featureValues?: FeatureValues | null;
+        /** On an adoption: the adopting session's own work, when Maestro tracks it (BRO-2908); absent on older receipts. */
+        parentWork?: string | null;
+        /** On an adoption: the ticket it was tracked for, given or read from its title; absent on older receipts. */
+        ticket?: string | null;
       } & Origin)
     | { type: "turn.started"; actor: "agent"; agentId: string }
     | {
@@ -283,6 +287,14 @@ export function closedOf(state: OrchState, events: readonly WorkEvent[]): { by: 
   const moved = events.findLast((event) => event.type === "state" && event.to === state);
   if (moved?.type !== "state") return null;
   return { by: moved.actor === "human" ? "you" : "maestro", at: moved.ts };
+}
+
+/** The work the adopting session runs as, and the ticket, from the adoption's receipt (BRO-2908). Pure. */
+export function lineageOf(events: readonly WorkEvent[]): { parentWork: string | null; ticket: string | null } {
+  const bind = lastOf(events, "dispatched", "adopted");
+  return bind?.type === "adopted"
+    ? { parentWork: bind.parentWork ?? null, ticket: bind.ticket ?? null }
+    : { parentWork: null, ticket: null };
 }
 
 /** The agent that adopted the work (an orchestrator), by its own name when it gave one; null for your own work. */

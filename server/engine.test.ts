@@ -465,6 +465,68 @@ describe("reconcile", () => {
     expect(reads).toBe(2);
   });
 
+  test("an adoption records its lineage and labels the session with it: its work, ticket and parent (BRO-2908)", async () => {
+    const labelled: [string, Record<string, string>][] = [];
+    const { engine, fake, repo } = await setup({}, { label: async (id, labels) => void labelled.push([id, labels]) });
+    fake.agents.set("orchestrator", { ...idleSession(repo), id: "orchestrator", title: "SRI Orchestrator" });
+    fake.timelines.set("orchestrator", said("Working."));
+    const parent = await engine.adopt(fake.paseo, "orchestrator", "SRI Orchestrator");
+    fake.agents.set("manual", idleSession(repo));
+    fake.timelines.set("manual", said("Fixed it.\n\n## Ask\n- Merge #12?"));
+    const child = await engine.adopt(fake.paseo, "manual", "STI-3508 Enroll the identity", BY_ORCHESTRATOR, {});
+    expect([child.parentWork, child.ticket, parent.parentWork, parent.ticket]).toEqual([
+      parent.id,
+      "STI-3508",
+      null,
+      null,
+    ]);
+    expect(labelled.at(-1)).toEqual([
+      "manual",
+      { "maestro.work": child.id, ticket: "STI-3508", "maestro.parent-work": parent.id },
+    ]);
+    // A ticket given to the verb wins over the title's.
+    fake.agents.set("other", { ...idleSession(repo), id: "other", title: "BRO-1 old" });
+    fake.timelines.set("other", said("Done."));
+    expect((await engine.adopt(fake.paseo, "other", "", undefined, { ticket: "BRO-2908" })).ticket).toBe("BRO-2908");
+  });
+
+  test("reconcile labels a tracked session that lacks its work label, once, and again after a failure (BRO-2908)", async () => {
+    let fail = true;
+    const calls: string[] = [];
+    const { create, engine, fake } = await setup(
+      {},
+      {
+        label: async (id) => {
+          calls.push(id);
+          if (fail) throw new Error("daemon busy");
+        },
+      },
+    );
+    const item = await create();
+    tick(1);
+    await engine.list(fake.paseo);
+    expect(calls).toEqual(["agent-1"]);
+    // Failed: asked again at the next reconcile.
+    fail = false;
+    tick(1);
+    await engine.list(fake.paseo);
+    expect(calls).toEqual(["agent-1", "agent-1"]);
+    // Set: not asked again while its labels are the same.
+    tick(1);
+    await engine.list(fake.paseo);
+    expect(calls.length).toBe(2);
+    // A session already carrying its work's label is left alone.
+    const agent = fake.agents.get("agent-1");
+    if (agent) Object.assign(agent, { labels: { "maestro.work": item.id } });
+    const fresh = await setup({}, { label: async (id) => void calls.push(`fresh:${id}`) });
+    await fresh.create();
+    const freshAgent = fresh.fake.agents.get("agent-1");
+    if (freshAgent) Object.assign(freshAgent, { labels: { "maestro.work": (await fresh.engine.list()).items[0]?.id } });
+    tick(1);
+    await fresh.engine.list(fresh.fake.paseo);
+    expect(calls.filter((c) => c.startsWith("fresh:"))).toEqual([]);
+  });
+
   test("an orchestrator adopting an idle arc between steps keeps it running; one it cannot read too", async () => {
     const { engine, fake, repo } = await setup();
     fake.agents.set("manual", idleSession(repo));
