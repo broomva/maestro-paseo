@@ -933,3 +933,38 @@ test("a relay's patience runs from its first ask.waiting line, even if two passe
   const waiting = log.waiting.get("k");
   expect([waiting?.since.get("agent-1"), waiting?.on]).toEqual(["2026-10-06T12:00:00Z", "agent-d"]);
 });
+
+describe("an answer its asker cannot take, round 3 (P20)", () => {
+  const unmarked = (asks: DecisionAsk[]) =>
+    asks.map((ask) =>
+      ask.id === "A2" ? { ...ask, options: ask.options.map((option) => ({ ...option, statusQuo: false })) } : ask,
+    );
+  const hold = () => receipt("A2", "checkout", { answerOption: "hold", answer: "Hold: Nothing changes." });
+
+  test("many passes on a session at work write one ask.waiting line for it", async () => {
+    const { router, receipts } = await setup({ after: [hold()], agents: { "agent-1": "running" }, asksAre: unmarked });
+    for (let pass = 0; pass < 5; pass += 1) await router.route();
+    const lines = (await readFile(receipts, "utf8")).split("\n").filter((line) => line.includes('"ask.waiting"'));
+    expect(lines.length).toBe(1);
+  });
+
+  test("an ask.waiting line whose time does not parse is skipped", () => {
+    const log = readLog(JSON.stringify({ kind: "ask.waiting", key: "k", on: "agent-1", at: "garbage" }));
+    expect(log.waiting.has("k")).toBe(false);
+  });
+
+  test("once the wait moved on, the first session's turn end still delivers it", async () => {
+    const { router, clock, status, sent } = await setup({
+      after: [hold()],
+      agents: { "agent-1": "running", "agent-d": "running" },
+      asksAre: unmarked,
+      driver: (initiative) => (initiative === "maestro" ? { agentId: "agent-d", as: "the driver" } : null),
+    });
+    await router.route();
+    clock.at = "2026-10-06T15:00:01Z";
+    await router.route();
+    status.set("agent-1", "idle");
+    const [outcome] = await router.route({ agentId: "agent-1" });
+    expect([outcome?.route, sent.map((s) => s.agentId)]).toEqual(["relayed", ["agent-1"]]);
+  });
+});

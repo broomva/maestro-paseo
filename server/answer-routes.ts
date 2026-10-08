@@ -141,7 +141,8 @@ export function readLog(source: string): Log {
     } else if (row.kind === "ask.waiting" && typeof row.key === "string") {
       const on = text(row.on);
       const at = text(row.at);
-      if (!on || !at) continue;
+      // A time that does not parse would make patience never run out: skip it, and the next pass writes a good one.
+      if (!on || !at || !Number.isFinite(Date.parse(at))) continue;
       const entry = log.waiting.get(row.key) ?? { since: new Map<string, string>(), on };
       if (!entry.since.has(on)) entry.since.set(on, at);
       entry.on = on;
@@ -410,7 +411,8 @@ export class AnswerRouter {
         (receipt) =>
           !only.agentId ||
           receipt.originAgentId === only.agentId ||
-          log.waiting.get(answerKey(receipt))?.on === only.agentId,
+          // Any session it has waited on: its asker at work first, then the next once that one's patience ran out.
+          log.waiting.get(answerKey(receipt))?.since.has(only.agentId) === true,
       );
     if (due.length === 0) return [];
     let read: WorkspaceRead;
