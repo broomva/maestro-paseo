@@ -2922,6 +2922,28 @@ describe("a finished arc closes itself once its session is archived (BRO-2861)",
     expect(events.at(-1)?.text).toBe("Could not archive the workspace: busy. It stays done.");
   });
 
+  test("a handback from a session you adopted waits on you after its archive (BRO-2903 is only an orchestrator's)", async () => {
+    const { engine, fake, repo } = await setup();
+    fake.agents.set("agent-1", {
+      id: "agent-1",
+      cwd: repo,
+      status: "running",
+      workspaceId: "ws-1",
+      provider: "claude",
+      title: "Mine",
+      archivedAt: null,
+      pendingPermissions: [],
+      activeTurn: null,
+    });
+    const item = await engine.adopt(fake.paseo, "agent-1", "");
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, said("Merged.\n\nARC-STATUS: HANDBACK 1"), "t1");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+    await archive(engine, fake, "client");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+  });
+
   test("HANDBACK, or no verdict, waits on you after the archive, as before", async () => {
     for (const text of ["Left you one.\n\nARC-STATUS: HANDBACK 1", "Done, I think.", "**ARC-STATUS:** done"]) {
       const { create, engine, fake } = await setup();
@@ -3016,6 +3038,57 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
     };
     return { ...s, item, end };
   }
+
+  test("its orchestrator archiving a handed-back arc closes it, receipted as the orchestrator's (BRO-2903)", async () => {
+    const { engine, fake, item, end } = await adopted();
+    tick(17);
+    await end("Merged #2134.\n\nARC-STATUS: HANDBACK 1");
+    expect((await engine.get(item.id)).item.state).toBe("review");
+    const agent = fake.agents.get("arc");
+    if (agent) agent.archivedAt = new Date(clock).toISOString();
+    await engine.onArchived({ id: "arc" }, fake.paseo);
+    const { item: closed, events } = await engine.get(item.id);
+    expect(closed.state).toBe("done");
+    expect(events.at(-1)).toMatchObject({
+      type: "state",
+      actor: "maestro",
+      text: "Done",
+      detail: "Its orchestrator (session orchestr) took it back and archived its session",
+    });
+  });
+
+  test("its orchestrator archiving an arc whose session died closes it with the same plain receipt (BRO-2903)", async () => {
+    const { engine, fake, item, store } = await adopted();
+    // Landed before the handback rule (or recovered), its last words the error the session died on.
+    await store.mutate(item.id, () => ({
+      to: "review",
+      events: [
+        {
+          ts: new Date(clock).toISOString(),
+          type: "turn.ended",
+          actor: "agent",
+          agentId: "arc",
+          outcome: "completed",
+          error: null,
+          summary: "Your organization has disabled Claude subscription access for Claude Code",
+          turnId: "dead",
+        },
+      ],
+    }));
+    const agent = fake.agents.get("arc");
+    if (agent) {
+      agent.status = "idle";
+      agent.archivedAt = new Date(clock).toISOString();
+    }
+    await engine.onArchived({ id: "arc" }, fake.paseo);
+    const { item: after, events } = await engine.get(item.id);
+    expect(after.state).toBe("done");
+    expect(events.at(-1)).toMatchObject({
+      type: "state",
+      actor: "maestro",
+      detail: "Its orchestrator (session orchestr) took it back and archived its session",
+    });
+  });
 
   test("a turn that hands nothing back is the arc between steps: it stays running, and no card is left", async () => {
     const { engine, fake, item, end } = await adopted();

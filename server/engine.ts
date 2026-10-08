@@ -36,6 +36,8 @@ import { runChecks } from "./checks";
 import { loadConfig } from "./config";
 import {
   ARCHIVED_NOTE,
+  adopterClosed,
+  archivedByOrchestrator,
   archivedSince,
   BY_HUMAN,
   checkOutcome,
@@ -1960,13 +1962,16 @@ export class Engine {
       // note or as the daemon now says (a missed hook, whose note is written with it).
       if (state === "review") {
         const archived = agent?.archivedAt && !archivedSince(item.events) ? [this.note(ARCHIVED_NOTE)] : [];
-        const line = finishedArc([...item.events, ...archived]);
-        if (line) {
+        const seen = [...item.events, ...archived];
+        const line = finishedArc(seen);
+        // An orchestrator's child leaves your gate once the orchestrator took it back and archived it (BRO-2903).
+        const adopter = line ? null : adopterClosed(seen);
+        if (line || adopter !== null) {
           const closed = await guarded({
             to: "done",
             actor: "maestro",
-            ctx: { arcFinished: true },
-            reason: closedItself(line),
+            ctx: line ? { arcFinished: true } : { adopterClosed: true },
+            reason: line ? closedItself(line) : archivedByOrchestrator(adopter ?? ""),
             events: archived,
           });
           // As an approval would: the workspace a run created goes when Settings says archive on approve.
