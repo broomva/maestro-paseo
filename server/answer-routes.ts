@@ -37,6 +37,9 @@ import type { Paseo } from "./runs";
 /** The longest a route waits for a session to say how it is. */
 export const SESSION_MS = 10_000;
 
+/** How long an answer waits on a relay at work before the next one is asked, and at the end, work is filed. */
+export const RELAY_WAIT_MS = 2 * 60 * 60_000;
+
 /** A work item's title, at most this long. */
 const TITLE_MAX = 90;
 
@@ -212,10 +215,12 @@ export interface Relay {
  * link is written in the file, never guessed (BRO-2918). Pure.
  */
 export function arcAskers(all: readonly DecisionAsk[], ask: DecisionAsk): Relay[] {
+  if (ask.scope) return [];
   const own = ask.origin?.agentId ?? null;
   const askers = all
     .filter(
       (other) =>
+        !other.scope &&
         other.ledger === ask.ledger &&
         other.home.kind === ask.home.kind &&
         other.home.path === ask.home.path &&
@@ -235,7 +240,8 @@ export function arcAskers(all: readonly DecisionAsk[], ask: DecisionAsk): Relay[
 }
 
 /** The message a relayed session gets: the answer, why it came to this session, and what it may do. */
-export function relayText(receipt: AnsweredReceipt, ask: DecisionAsk | null, why: string, as: string): string {
+/** Never for an owner-only ask: those are held for you, never relayed. */
+export function relayText(receipt: AnsweredReceipt, ask: DecisionAsk, why: string, as: string): string {
   const what = ask?.headline ?? ask?.question ?? receipt.id;
   const quoted = (receipt.answer ?? ask?.answer ?? "(no words)").split("\n").map((line) => `> ${line}`);
   return [
@@ -246,7 +252,6 @@ export function relayText(receipt: AnsweredReceipt, ask: DecisionAsk | null, why
     ...quoted,
     "",
     "Decide what follows: carry it out if it is this arc's to do, append it to the arc's ticket, or file work with `maestro new`. Nothing has been filed for it.",
-    ...(ownerOnly(ask) ? ["", OWNER_ONLY_LINE] : []),
   ].join("\n");
 }
 
@@ -256,10 +261,11 @@ export function routedWork(
   ask: DecisionAsk | null,
   why: string,
 ): { title: string; brief: string } {
+  const theirs = ownerOnly(ask);
   const what = ask?.headline ?? ask?.question ?? receipt.id;
   const title = clip(`Act on your answer: ${what}`, TITLE_MAX);
   const lines = [
-    `You answered an ask in Maestro (${receipt.ledger} ${receipt.id}). ${why} Do what the answer decided.`,
+    `You answered an ask in Maestro (${receipt.ledger} ${receipt.id}). ${why} ${theirs ? "The act it decides is yours." : "Do what the answer decided."}`,
     "",
     "## The ask",
     "",
@@ -282,7 +288,9 @@ export function routedWork(
     "## How",
     "",
     `The answer is recorded in ${receipt.ledger} (${receipt.homeKind === "main" ? "origin/main" : receipt.home}); do not edit the ask.`,
-    "Do the smallest complete thing the answer asks for. If it turns out to need nothing done, say so and stop.",
+    theirs
+      ? "The ask is owner-only. If this is started, do not perform the act: write out the exact command or steps for the owner, and stop."
+      : "Do the smallest complete thing the answer asks for. If it turns out to need nothing done, say so and stop.",
   );
   return { title, brief: lines.join("\n") };
 }
@@ -328,7 +336,10 @@ export class AnswerRouter {
   private running: Promise<unknown> = Promise.resolve();
   private cached: { stamp: string; log: Log } | null = null;
   /** Why an answer still waits, as the last pass found it: Decisions says it. */
-  private readonly waits = new Map<string, { status: "unlanded" | "queued" | "failed"; words: string }>();
+  private readonly waits = new Map<
+    string,
+    { status: "unlanded" | "queued" | "failed"; words: string; on?: string | undefined }
+  >();
 
   constructor(options: RouterOptions) {
     this.options = options;
@@ -366,8 +377,14 @@ export class AnswerRouter {
     const due = log.answered
       .filter((receipt) => afterBegan(receipt, log.began))
       .filter((receipt) => !log.routed.has(answerKey(receipt)))
-      // A turn's end asks for its own session's answers: the receipt names the session that asked, as the ask did.
-      .filter((receipt) => !only.agentId || receipt.originAgentId === only.agentId);
+      // A turn's end asks for its own session's answers (the receipt names the session that asked, as the ask did),
+      // and for those relayed answers that wait on it.
+      .filter(
+        (receipt) =>
+          !only.agentId ||
+          receipt.originAgentId === only.agentId ||
+          this.waits.get(answerKey(receipt))?.on === only.agentId,
+      );
     if (due.length === 0) return [];
     let read: WorkspaceRead;
     try {
@@ -472,7 +489,9 @@ export class AnswerRouter {
       }
     }
     const why = agentId ? "The session that asked is gone." : "No session is named as the one that asked.";
-    if (ask?.idea) {
+    // An ask no read holds (a checkout's, moved or unreadable): whether it is owner-only cannot be known, so it is held.
+    if (!ask) return this.stop(receipt, agentId);
+    if (ask.idea) {
       return this.routed(receipt, {
         route: "none",
         agentId,
@@ -499,10 +518,8 @@ export class AnswerRouter {
         "Your answer decides an owner-only act. Carry it out from the ask's own steps, then close this.",
       );
     }
-    if (ask) {
-      const relayed = await this.relay(paseo, receipt, ask, agentId, read, why);
-      if (relayed) return relayed;
-    }
+    const relayed = await this.relay(paseo, receipt, ask, read, why);
+    if (relayed) return relayed;
     const existing = (await this.options.engine.answered()).get(key);
     if (existing) {
       return this.routed(receipt, {
@@ -546,7 +563,6 @@ export class AnswerRouter {
     paseo: Paseo | null,
     receipt: AnsweredReceipt,
     ask: DecisionAsk,
-    agentId: string | null,
     read: WorkspaceRead,
     why: string,
   ): Promise<RouteOutcome | null> {
@@ -559,15 +575,21 @@ export class AnswerRouter {
         `${why} Paseo has not connected to Maestro yet, so its arc could not be asked.`,
       );
     }
-    const driver = ask.initiative && this.options.driver ? await this.options.driver(ask.initiative, paseo) : null;
-    const seen = new Set(agentId ? [agentId] : []);
-    for (const relay of [...askers, ...(driver ? [driver] : [])]) {
-      if (seen.has(relay.agentId)) continue;
-      seen.add(relay.agentId);
+    // Waited RELAY_WAIT_MS on one at work: the next is asked instead, so an answer is never held by a busy one forever.
+    const patient = !(this.now() - Date.parse(receipt.at ?? "") >= RELAY_WAIT_MS);
+    // The driver is looked up only once the arc's own askers are exhausted.
+    for (let at = 0; ; at += 1) {
+      const relay =
+        at < askers.length
+          ? askers[at]
+          : at === askers.length && ask.initiative && this.options.driver
+            ? await this.options.driver(ask.initiative, paseo)
+            : null;
+      if (!relay) return null;
       const session = await this.session(paseo, relay.agentId);
-      if (session === "gone") continue;
+      if (session === "gone" || (session === "busy" && !patient)) continue;
       if (session === "busy") {
-        return this.wait(receipt, "queued", `${why} It goes to ${relay.as} when that session is idle.`);
+        return this.wait(receipt, "queued", `${why} It goes to ${relay.as} when that session is idle.`, relay.agentId);
       }
       await paseo.agents.ref(relay.agentId).send(relayText(receipt, ask, why, relay.as));
       return this.routed(receipt, {
@@ -577,7 +599,6 @@ export class AnswerRouter {
         reason: `${why} Sent to ${relay.as}, which decides what follows.`,
       });
     }
-    return null;
   }
 
   /**
@@ -677,11 +698,17 @@ export class AnswerRouter {
     };
   }
 
-  private wait(receipt: AnsweredReceipt, status: "unlanded" | "queued" | "failed", words: string): RouteOutcome {
+  /** `on`: the session the answer waits on, so that session's turn's end routes it. */
+  private wait(
+    receipt: AnsweredReceipt,
+    status: "unlanded" | "queued" | "failed",
+    words: string,
+    on?: string,
+  ): RouteOutcome {
     const key = answerKey(receipt);
     const said =
       status === "failed" ? `Maestro could not act on it yet (${words}); it tries again at its next check.` : words;
-    this.waits.set(key, { status, words: said });
+    this.waits.set(key, { status, words: said, on });
     if (status === "failed") this.options.log?.(`answers: routing ${receipt.ledger} ${receipt.id}: ${words}`);
     return { key, ledger: receipt.ledger, id: receipt.id, status, route: null, words: said };
   }

@@ -114,6 +114,10 @@ async function setup(options: {
   asksAre?: (asks: DecisionAsk[]) => DecisionAsk[];
   /** The initiative's driver as the plugin resolves it. */
   driver?: (initiative: string) => Relay | null;
+  /** Paseo has not connected yet. */
+  noPaseo?: boolean;
+  /** The clock, when not 13:00 on the receipts' day. */
+  nowIs?: string;
 }) {
   const root = await mkdtemp(join(tmpdir(), "maestro-routes-"));
   roots.push(root);
@@ -145,6 +149,7 @@ async function setup(options: {
     },
   };
   const { paseo, status, sent } = sessions(options.agents ?? {});
+  const drivers: string[] = [];
   const router = new AnswerRouter({
     receipts,
     asks: {
@@ -154,13 +159,18 @@ async function setup(options: {
       },
     },
     engine: engine as never,
-    client: () => paseo,
+    client: () => (options.noPaseo ? null : paseo),
     controlRepo: root,
-    now: () => Date.parse("2026-10-06T13:00:00Z"),
-    driver: options.driver ? async (initiative) => options.driver?.(initiative) ?? null : undefined,
+    now: () => Date.parse(options.nowIs ?? "2026-10-06T13:00:00Z"),
+    driver: options.driver
+      ? async (initiative) => {
+          drivers.push(initiative);
+          return options.driver?.(initiative) ?? null;
+        }
+      : undefined,
   });
   const log = async () => readLog(await readFile(receipts, "utf8"));
-  return { root, receipts, asks, router, created, filed, status, sent, log, reads: () => reads };
+  return { root, receipts, asks, router, created, filed, status, sent, drivers, log, reads: () => reads };
 }
 
 describe("the receipt log", () => {
@@ -692,4 +702,137 @@ describe("who else may take an answer", () => {
       ownerOnly(null),
     ]).toEqual([true, true, true, false, false]);
   });
+});
+
+describe("an answer its asker cannot take, round 1 (P20)", () => {
+  const unmarked = (asks: DecisionAsk[]) =>
+    asks.map((ask) =>
+      ask.id === "A2" ? { ...ask, options: ask.options.map((option) => ({ ...option, statusQuo: false })) } : ask,
+    );
+  const hold = (extra: Record<string, unknown> = {}) =>
+    receipt("A2", "checkout", { answerOption: "hold", answer: "Hold: Nothing changes.", ...extra });
+  const driverD = (initiative: string) => (initiative === "maestro" ? { agentId: "agent-d", as: "the driver" } : null);
+
+  test("an idle asker on the arc is chosen before the driver, which is never looked up", async () => {
+    const { router, sent, drivers } = await setup({
+      after: [hold()],
+      agents: { "agent-1": "idle", "agent-d": "idle" },
+      asksAre: unmarked,
+      driver: driverD,
+    });
+    await router.route();
+    expect([sent.map((s) => s.agentId), drivers]).toEqual([["agent-1"], []]);
+  });
+
+  test("the driver is asked for the ask's own initiative", async () => {
+    const { router, drivers } = await setup({
+      after: [hold()],
+      agents: { "agent-1": "archived" },
+      asksAre: unmarked,
+      driver: driverD,
+    });
+    await router.route();
+    expect(drivers).toEqual(["maestro"]);
+  });
+
+  test("Paseo not connected: waits when the arc has someone to ask; files work when it has no one", async () => {
+    const waits = await setup({ after: [hold()], asksAre: unmarked, noPaseo: true });
+    const [waited] = await waits.router.route();
+    expect([waited?.status, waits.created.length]).toEqual(["queued", 0]);
+    const alone = (asks: DecisionAsk[]) =>
+      unmarked(asks).map((ask) => ({ ...ask, origin: null, initiative: null })) as DecisionAsk[];
+    const files = await setup({ after: [hold()], asksAre: alone, noPaseo: true });
+    const [filed] = await files.router.route();
+    expect([filed?.route, files.created.length]).toEqual(["work", 1]);
+  });
+
+  test("an asker at work past RELAY_WAIT_MS is passed over for the next", async () => {
+    const { router, sent } = await setup({
+      after: [hold()],
+      nowIs: "2026-10-06T14:00:03Z",
+      agents: { "agent-1": "running", "agent-d": "idle" },
+      asksAre: unmarked,
+      driver: driverD,
+    });
+    const [outcome] = await router.route();
+    expect([outcome?.route, sent.map((s) => s.agentId)]).toEqual(["relayed", ["agent-d"]]);
+  });
+
+  test("a relay waiting on a session at work is delivered when that session's turn ends", async () => {
+    const answered = hold();
+    const { router, status, sent } = await setup({
+      after: [answered],
+      agents: { "agent-1": "running" },
+      asksAre: unmarked,
+    });
+    await router.route();
+    status.set("agent-1", "idle");
+    const [outcome] = await router.route({ agentId: "agent-1" });
+    expect([outcome?.route, sent.map((s) => s.agentId)]).toEqual(["relayed", ["agent-1"]]);
+  });
+
+  test("owner-only with a status_quo answer needs nothing, held or otherwise", async () => {
+    const authority = (asks: DecisionAsk[]) =>
+      asks.map((ask) =>
+        ask.id === "A2" ? { ...ask, audit: { class: "authority", gates: [], withheld: 0 } } : ask,
+      ) as DecisionAsk[];
+    const { router, created } = await setup({ after: [hold()], asksAre: authority });
+    const [outcome] = await router.route();
+    expect([outcome?.route, created.length]).toEqual(["none", 0]);
+  });
+
+  test("held owner-only work runs in the control repo, and its brief says not to perform the act", async () => {
+    const authority = (asks: DecisionAsk[]) =>
+      unmarked(asks).map((ask) =>
+        ask.id === "A2" ? { ...ask, audit: { class: "authority", gates: [], withheld: 0 } } : ask,
+      ) as DecisionAsk[];
+    const { router, created, root } = await setup({ after: [hold()], asksAre: authority });
+    await router.route();
+    const input = created[0] as Record<string, unknown>;
+    expect([input.repo, String(input.brief).includes("do not perform the act")]).toEqual([root, true]);
+  });
+
+  test("a checkout ask no read holds: held for you, never startable work", async () => {
+    const answered = receipt("A9", "checkout", { answerOption: "ship", answer: "Ship." });
+    const { router, created } = await setup({ after: [answered] });
+    const [outcome] = await router.route();
+    expect([outcome?.route, created.length, Boolean((created[0] as Record<string, unknown>)?.hold)]).toEqual([
+      "work",
+      1,
+      true,
+    ]);
+  });
+
+  test("a fleet scope's ask has no arc askers, and is no arc asker", () => {
+    const ask = (id: string, agentId: string, scope: string | null) =>
+      ({
+        ledger: LEDGER,
+        id,
+        askedAt: null,
+        scope,
+        origin: { agentId, cwd: null },
+        home: { kind: "checkout", path: "/w", branch: "w" },
+      }) as unknown as DecisionAsk;
+    const all = [ask("A1", "agent-1", null), ask("A2", "agent-2", "sri"), ask("A3", "agent-3", null)];
+    expect([
+      arcAskers(all, all[0] as DecisionAsk).map((r) => r.agentId),
+      arcAskers(all, all[1] as DecisionAsk),
+    ]).toEqual([["agent-3"], []]);
+  });
+});
+
+test("an asker of the same ledger at the same path but another kind of home is another copy, not the arc", () => {
+  const at = (id: string, agentId: string, kind: "main" | "checkout") =>
+    ({
+      ledger: LEDGER,
+      id,
+      askedAt: null,
+      scope: null,
+      origin: { agentId, cwd: null },
+      home: { kind, path: "/repo", branch: null },
+    }) as unknown as DecisionAsk;
+  const own = at("A1", "agent-1", "checkout");
+  expect(
+    arcAskers([own, at("A2", "agent-2", "main"), at("A3", "agent-3", "checkout")], own).map((r) => r.agentId),
+  ).toEqual(["agent-3"]);
 });

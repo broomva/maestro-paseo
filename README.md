@@ -275,9 +275,14 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
     stays yours. A session gone, or none named, and the answer is *relayed*: to the session that
     asked another ask in the same ledger (newest first; a ledger is one arc's, so the link is
     written, never guessed), else to the driver of the ask's initiative when its record names a
-    session (`coordinator:<8 hex>`, `session:<id>`). The first one idle is sent the answer and
-    decides what follows; the first one at work holds it until idle; one gone is passed over. An
-    owner-only answer is never relayed: it is held work for you, never started. With no one to
+    session (`coordinator:<8 hex>`, `session:<id>`), looked up only once the arc's askers are
+    exhausted. The first one idle is sent the answer and decides what follows; the first one at
+    work holds it until its turn ends, for up to two hours, after which the next is asked; one gone
+    is passed over. A fleet scope's asks are never relayed or relayed to. A ledger several arcs
+    share (an initiative's gaps list) relays to whichever of them asked last, which is why the
+    relayed session is told it decides, and that nothing was filed. An owner-only answer is never
+    relayed: it is held work for you, never started, and its brief says not to perform the act;
+    so is an answer whose checkout ask no read holds, whose class cannot be known. With no one to
     relay to: a work item, queued with gate human, briefed from the ask and your answer, in the
     ask's `initiative` when it names one (the ask's own key, else the ledger's), filed once
     (`answer:` on the work). An answer whose option the ledger marks `status_quo: true` needs no

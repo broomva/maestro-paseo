@@ -11,7 +11,7 @@ import { AwakeClock, Fleet, wallClock } from "./server/fleet";
 import { inspectFolder as inspect } from "./server/folders";
 import { GateCards } from "./server/gate-card";
 import { createInboxProvider, Inbox } from "./server/inbox";
-import { agentIds, driverSession, ghRun, ideaWork, prStates, workspaceInitiatives } from "./server/initiatives";
+import { agentIds, driverRelay, ghRun, ideaWork, prStates, workspaceInitiatives } from "./server/initiatives";
 import { Launchd } from "./server/launchd";
 import { Loop } from "./server/loop";
 import {
@@ -123,6 +123,8 @@ export default function contribute(host: PluginServerContext) {
           log,
         })
       : null;
+  // Session ids to agents, one listing shared by the initiatives tab and answer routing.
+  const sessionIds = agentIds(Date.now, log);
   const router =
     workspace && control.repo
       ? new AnswerRouter({
@@ -132,16 +134,10 @@ export default function contribute(host: PluginServerContext) {
           client: () => latest,
           controlRepo: control.repo,
           // An answer whose asker is gone may go to its initiative's driver, when that names a session (BRO-2918).
-          driver: async (id, paseo) => {
-            const named = (await initiatives?.one(id))?.driver ?? null;
-            const session = driverSession(named);
-            const agentId = session ? (await drivers.resolve(paseo, [session])).get(session) : undefined;
-            return agentId ? { agentId, as: `the driver of the initiative ${id} (${named})` } : null;
-          },
+          driver: driverRelay(async (id) => (await initiatives?.one(id)) ?? null, sessionIds),
           log,
         })
       : null;
-  const drivers = agentIds(Date.now, log);
   // Where routing begins: an answer given before this is never routed (it was acted on, or not, by hand).
   void router?.begin().catch((error) => log(`answers: marking where routing begins: ${(error as Error).message}`));
   // The loop wakes on its own timer, outside any handler, so it reads the same client (server/loop.ts).
@@ -189,7 +185,7 @@ export default function contribute(host: PluginServerContext) {
         answersPath: control.answers,
         asks: workspace,
         prs: prStates(ghRun, Date.now, log),
-        agents: agentIds(Date.now, log),
+        agents: sessionIds,
         log,
       })
     : null;
