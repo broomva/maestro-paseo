@@ -1,0 +1,10 @@
+id: granola-bridge
+title: Granola bridge
+purpose: The Granola meeting bridge, started on demand by granola-arm.
+owner: owner
+scope: external
+substrate: {kind: launchd, ref: local.granola-bridge}
+cadence: on demand (no schedule)
+desired: active
+retires: {none: 'a third-party daemon the owner installed; it is not a broomva loop and replaces none'}
+review_by: '2026-10-21'

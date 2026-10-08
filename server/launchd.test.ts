@@ -4,7 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { calendarSpecs, dueTimes } from "./cron";
 import { sleptThrough } from "./fake-awake";
-import { execRunner, LAUNCHCTL, Launchd, LOG, NotARead, PLUTIL, PS, type Runner, readOnly } from "./launchd";
+import {
+  execRunner,
+  LAUNCHCTL,
+  Launchd,
+  LOG,
+  launchdPresence,
+  NotARead,
+  PLUTIL,
+  PS,
+  type Runner,
+  readOnly,
+} from "./launchd";
 import { EVIDENCE_MS, logStartArg } from "./launchd-model";
 import { launchdSource } from "./timeline-model";
 
@@ -46,6 +57,21 @@ describe("the timeline only reads", () => {
     // print with more than its target is not a plain read either.
     await expect(run(LAUNCHCTL, ["print", "gui/501/x", "extra"], { timeoutMs: 1000 })).rejects.toBeInstanceOf(NotARead);
     expect(calls).toEqual(["/bin/launchctl list", "/bin/launchctl print gui/501/com.broomva.kg-lint"]);
+  });
+
+  test("print-disabled is read for the user's own domain, in exactly that one shape (BRO-2911 §6)", async () => {
+    const before = calls.length;
+    await run(LAUNCHCTL, ["print-disabled", "gui/501"], { timeoutMs: 1000 });
+    for (const args of [
+      ["print-disabled"],
+      ["print-disabled", "system"],
+      ["print-disabled", "gui/501", "extra"],
+      ["print-disabled", "gui/501/com.broomva.kg-lint"],
+      ["print-disabled", "user/501"],
+    ]) {
+      await expect(run(LAUNCHCTL, args, { timeoutMs: 1000 })).rejects.toBeInstanceOf(NotARead);
+    }
+    expect(calls.slice(before)).toEqual(["/bin/launchctl print-disabled gui/501"]);
   });
 
   test("plutil only converts to stdout; log only shows; ps only reads what the timeline asks", async () => {
@@ -738,4 +764,45 @@ describe("the real runner", () => {
     await expect(execRunner("/usr/bin/yes", [], { timeoutMs: 20_000 })).rejects.toThrow("wrote more than 32 MB");
     await expect(execRunner("/nonexistent/binary", [], { timeoutMs: 5000 })).rejects.toThrow();
   }, 30_000);
+});
+
+describe("presence (BRO-2911 §2)", () => {
+  const DISABLED = `disabled services = {
+\t"com.broomva.kg-lint" => disabled
+\t"com.broomva.paseo-liveness" => enabled
+\t"local.granola-arm" => enabled
+}
+`;
+  const LIST =
+    "PID\tStatus\tLabel\n123\t0\tcom.broomva.paseo-liveness\n-\t0\tcom.broomva.kg-lint\n-\t0\tlocal.granola-arm\n";
+  test("on: listed and not disabled; off: listed but disabled, or a plist not loaded; gone: neither", async () => {
+    const root = await mkdtemp(join(tmpdir(), "presence-"));
+    try {
+      await writeFile(join(root, "com.broomva.moltbook-loop.plist"), "<plist/>");
+      const run: Runner = async (_command, args) => ({ stdout: args[0] === "list" ? LIST : DISABLED, code: 0 });
+      const got = await launchdPresence(
+        [
+          "com.broomva.paseo-liveness",
+          "com.broomva.kg-lint",
+          "com.broomva.moltbook-loop",
+          "local.granola-arm",
+          "com.broomva.none",
+        ],
+        { run, uid: 501, agentsDir: root },
+      );
+      expect(Object.fromEntries(got)).toEqual({
+        "com.broomva.paseo-liveness": "on",
+        "com.broomva.kg-lint": "off",
+        "com.broomva.moltbook-loop": "off",
+        "local.granola-arm": "on",
+        "com.broomva.none": "gone",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  test("a failed read throws: no presence is guessed", async () => {
+    const run: Runner = async () => ({ stdout: "", code: 1 });
+    await expect(launchdPresence(["x"], { run, uid: 501, agentsDir: "/none" })).rejects.toThrow("exited 1");
+  });
 });

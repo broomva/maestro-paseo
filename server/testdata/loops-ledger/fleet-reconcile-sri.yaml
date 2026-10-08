@@ -1,0 +1,8 @@
+id: fleet-reconcile-sri
+title: Fleet reconcile tick (SRI scope)
+purpose: 'The SRI orchestrator''s hourly fleet tick. Read-only row: not ours to change.'
+owner: sri-orchestrator
+scope: sri
+substrate: {kind: launchd, ref: com.broomva.fleet-reconcile.sri}
+cadence: every 3600 s
+review_by: '2026-10-21'

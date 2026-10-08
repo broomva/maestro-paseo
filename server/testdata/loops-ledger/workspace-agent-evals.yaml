@@ -1,0 +1,11 @@
+id: workspace-agent-evals
+title: Agent evals (nightly)
+purpose: 'Run claude -p over real tasks nightly: configuration regression-tested by behavior (P11 rule 9).'
+owner: owner
+scope: broomva
+substrate: {kind: gha-schedule, ref: broomva/workspace/.github/workflows/agent-evals.yml}
+cadence: daily 07:17 UTC
+desired: active
+retires: ['hand re-checks of agent behavior after a CLAUDE.md, AGENTS.md or policy change']
+contract: {produces: 'a scheduled run per day, conclusion success; a failure names the regressed task'}
+review_by: '2026-10-21'

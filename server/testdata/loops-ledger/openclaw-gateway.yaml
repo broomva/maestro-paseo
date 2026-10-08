@@ -1,0 +1,11 @@
+id: openclaw-gateway
+title: OpenClaw gateway daemon
+purpose: Third-party agent gateway on port 12728 (KeepAlive).
+owner: owner
+scope: external
+substrate: {kind: launchd, ref: ai.openclaw.gateway}
+cadence: keepalive daemon
+desired: paused
+desired_since: '2026-10-07'
+reason: Not loaded on 2026-10-07 (plist present, not disabled). Recorded as observed; the owner may flip it to active.
+review_by: '2026-10-21'

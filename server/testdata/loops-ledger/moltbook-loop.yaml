@@ -1,0 +1,17 @@
+id: moltbook-loop
+title: Moltbook engagement loop
+purpose: 'Every 15 min: read and reply on Moltbook, file knowledge PRs from the threads.'
+owner: owner
+scope: broomva
+initiative: content-engine
+substrate: {kind: launchd, ref: com.broomva.moltbook-loop}
+cadence: every 900 s
+desired: paused
+desired_since: '2026-10-04'
+reason: 'Owner 2026-10-04: ''Pause until evals''. Audit: 15 runs/7 d, 43 comments, 10 KG PRs, ~244 Claude-min/wk,
+  topics self-referential, no downstream use. Paused until the BRO-2806 evals land. Persistent since 10-07 (launchctl
+  disable).'
+contract: {produces: '>=1 merged page per week used outside research/entities; comments fetchable within 24 h'}
+review_by: '2026-10-21'
+links:
+  linear: [BRO-2806]

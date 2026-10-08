@@ -1,0 +1,17 @@
+id: kg-compile
+title: Knowledge-graph nightly compile
+purpose: Score raw notes and promote items to entity pages (bookkeeping compile).
+owner: owner
+scope: broomva
+substrate: {kind: launchd, ref: com.broomva.kg-compile}
+cadence: daily 02:00
+desired: paused
+desired_since: '2026-10-04'
+reason: 'Owner 2026-10-04: ''fix the broken ones or pause/remove them''. Audit: 7 runs, all exit 0, 6 junk name
+  pages, 14 dirty files per run. Paused until the BRO-2806 evals and the BRO-2807 kg fixes land. Persistent since
+  10-07 (launchctl disable).'
+contract: {produces: '>=1 non-name entity page per week, merged and not reverted within 7 d; 0 uncommitted files
+    after a run'}
+review_by: '2026-10-21'
+links:
+  linear: [BRO-2806, BRO-2807]

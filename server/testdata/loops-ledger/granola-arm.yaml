@@ -1,0 +1,10 @@
+id: granola-arm
+title: Granola bridge arm
+purpose: Every 120 s, arm the Granola meeting bridge.
+owner: owner
+scope: external
+substrate: {kind: launchd, ref: local.granola-arm}
+cadence: every 120 s
+desired: active
+retires: {none: 'a third-party daemon the owner installed; it is not a broomva loop and replaces none'}
+review_by: '2026-10-21'

@@ -1,0 +1,14 @@
+id: maestro-wake
+title: Maestro loop wake
+purpose: 'Every 30 min, Maestro wakes: dispatch queued work under the run cap, route answers, flag quiet runs.'
+owner: owner
+scope: broomva
+initiative: maestro
+substrate: {kind: maestro-loop, ref: wake}
+cadence: every 30 min, cap 3
+desired: active
+retires: [hand dispatch of queued Maestro work items]
+contract: {produces: a queued item under the cap dispatches within one wake; answers land and route within one wake}
+review_by: '2026-10-21'
+links:
+  linear: [BRO-2843]

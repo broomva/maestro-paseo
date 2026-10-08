@@ -1,0 +1,15 @@
+id: fleet-reconcile-broomva
+title: Fleet reconcile tick (broomva scope)
+purpose: 'Hourly fleet tick: read sessions, PRs and asks, propose actions, report (dry run).'
+owner: coordinator
+scope: broomva
+initiative: fleet-autonomy
+substrate: {kind: launchd, ref: com.broomva.fleet-reconcile.broomva}
+cadence: every 3600 s
+desired: active
+retires: [the coordinator's session-cron tick as the fleet driver (its prompt reads 'bridge until the fleet-reconcile
+    tick is live')]
+contract: {produces: report.json fresh within 70 min; its asks acknowledged within 6 h (BRO-2806)}
+review_by: '2026-10-21'
+links:
+  linear: [BRO-2714, BRO-2806]

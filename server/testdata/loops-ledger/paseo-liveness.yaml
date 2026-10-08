@@ -1,0 +1,18 @@
+id: paseo-liveness
+title: Paseo liveness watchdog
+purpose: Probe the Paseo daemon on 127.0.0.1:6767 every 30 s; after 3 failed probes, kill the worker so the supervisor
+  respawns it.
+owner: owner
+scope: broomva
+substrate: {kind: launchd, ref: com.broomva.paseo-liveness}
+cadence: every 30 s
+desired: active
+reason: Found 2026-10-07 (loaded 11:45 local) with no recorded owner or purpose. The owner answered 'Keep it, owned
+  by me' on 2026-10-08 00:38Z (bro-2911-loop-layer.yaml#paseo-liveness).
+retires: {none: 'its origin was never recorded; kept by the owner on 2026-10-08 as a standing watchdog'}
+contract: {produces: a hung Paseo daemon answers again within ~2 min (worker respawned); 0 kills while the daemon
+    answers}
+review_by: '2026-10-21'
+links:
+  linear: [BRO-2911]
+  asks: [bro-2911-loop-layer.yaml#paseo-liveness]

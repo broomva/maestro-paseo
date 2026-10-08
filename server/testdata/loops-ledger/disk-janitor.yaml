@@ -1,0 +1,14 @@
+id: disk-janitor
+title: Disk janitor (weekly reclaim)
+purpose: 'Reclaim disk: caches, merged branches and stale worktrees, from the wrapper on origin/main.'
+owner: owner
+scope: broomva
+initiative: null
+substrate: {kind: launchd, ref: com.broomva.disk-janitor}
+cadence: Sundays 04:00
+desired: active
+retires: [hand-run disk cleanup sessions when the disk fills]
+contract: {produces: free space rises after each run; branch-delete failures = 0 (BRO-2806)}
+review_by: '2026-10-21'
+links:
+  linear: [BRO-2806]

@@ -204,6 +204,7 @@ export function parseLedger(files: ReadonlyMap<string, string | null>): Omit<Led
       errors.push({ file, error: row });
       continue;
     }
+    // Two rows on one substrate: the first by file name keeps it, the other is an error naming it.
     const key = `${row.substrate.kind} ${row.substrate.ref}`;
     const first = claimed.get(key);
     if (first) {
