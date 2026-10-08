@@ -11,6 +11,7 @@ import type { AnswersNotice } from "../shared/answers";
 import type { WorkItem } from "../shared/contracts";
 import type { AskNotice, FleetNotice } from "../shared/fleet";
 import type { InitiativeNotice } from "../shared/initiatives";
+import type { LoopNotice } from "../shared/loops";
 import { needsHand } from "../shared/needs-you";
 import type { TimelineNotice } from "../shared/timeline";
 import type { MaestroIntent } from "./intent";
@@ -39,8 +40,17 @@ export function needsYouCount(
   asks: readonly Pick<AskNotice, "scope">[] = [],
   initiatives: readonly Pick<InitiativeNotice, "id">[] = [],
   answers: readonly Pick<AnswersNotice, "kind">[] = [],
+  loops: readonly Pick<LoopNotice, "id">[] = [],
 ): number {
-  return needsYou(items).length + fleet.length + timeline.length + asks.length + initiatives.length + answers.length;
+  return (
+    needsYou(items).length +
+    fleet.length +
+    timeline.length +
+    asks.length +
+    initiatives.length +
+    answers.length +
+    loops.length
+  );
 }
 
 /**
@@ -56,7 +66,7 @@ export function needsYouCount(
  * each fleet root's;
  * with only timeline notices, the Timeline;
  * with only stale or overdue initiatives, Initiatives, whose notices sit above
- * every other view.
+ * every other view; with only loop drift, Loops (BRO-2911).
  */
 export function needsYouTarget(
   items: readonly Listed[],
@@ -65,16 +75,18 @@ export function needsYouTarget(
   asks: readonly Pick<AskNotice, "scope">[] = [],
   initiatives: readonly Pick<InitiativeNotice, "id">[] = [],
   answers: readonly Pick<AnswersNotice, "kind">[] = [],
+  loops: readonly Pick<LoopNotice, "id">[] = [],
 ): MaestroIntent {
   const waiting = needsYou(items);
   const [only] = waiting;
   const [notice] = fleet;
   const [ask] = asks;
-  const notices = fleet.length + timeline.length + asks.length + initiatives.length + answers.length;
+  const notices = fleet.length + timeline.length + asks.length + initiatives.length + answers.length + loops.length;
   if (waiting.length === 0 && notice) return { kind: "fleet", scope: notice.scope };
   if (waiting.length === 0 && (ask || answers.length > 0)) return { kind: "decisions" };
   if (waiting.length === 0 && timeline.length > 0) return { kind: "timeline" };
   if (waiting.length === 0 && initiatives.length > 0) return { kind: "initiatives" };
+  if (waiting.length === 0 && loops.length > 0) return { kind: "loops" };
   if (waiting.length === 1 && only && notices === 0) return { kind: "select", id: only.id };
   if (waiting.length > 0 && notices === 0 && waiting.every((item) => item.group === "blocked"))
     return { kind: "filter", group: "blocked" };

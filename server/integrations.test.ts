@@ -157,6 +157,7 @@ test("work.attention reads the files and reconciles no session; work.list does",
       asks: [],
       initiatives: [],
       answers: [],
+      loops: [],
     });
     const agent = fake.agents.get("agent-1");
     if (agent) agent.status = "idle";

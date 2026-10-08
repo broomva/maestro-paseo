@@ -24,7 +24,8 @@ export type MaestroIntent =
       key?: string | null;
     }
   | { kind: "timeline" }
-  | { kind: "initiatives" };
+  | { kind: "initiatives" }
+  | { kind: "loops" };
 
 export const INTENT_TTL_MS = 30_000;
 

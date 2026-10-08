@@ -172,3 +172,10 @@ describe("the answers batch in the count (BRO-2827)", () => {
     });
   });
 });
+
+describe("loop drift (BRO-2911)", () => {
+  test("each loop notice counts once, and with nothing else waiting the count opens Loops", () => {
+    expect(needsYouCount([], [], [], [], [], [], [{ id: "loop:kg-lint#failing" }])).toBe(1);
+    expect(needsYouTarget([], [], [], [], [], [], [{ id: "loop:kg-lint#failing" }])).toEqual({ kind: "loops" });
+  });
+});

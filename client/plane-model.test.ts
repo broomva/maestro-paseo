@@ -91,11 +91,12 @@ describe("views", () => {
     expect(viewFor("history", false)).toBe("history");
   });
 
-  test("compact offers the feed, History and every system view; wide offers all eight, in two groups", () => {
+  test("compact offers the feed, History and every system view; wide offers all nine, in two groups", () => {
     expect(viewFor("fleet", true)).toBe("fleet");
     expect(viewFor("decisions", true)).toBe("decisions");
     expect(viewFor("timeline", true)).toBe("timeline");
     expect(viewFor("initiatives", true)).toBe("initiatives");
+    expect(viewFor("loops", true)).toBe("loops");
     expect(viewsFor(true).map((view) => view.label)).toEqual([
       "Feed",
       "History",
@@ -103,12 +104,13 @@ describe("views", () => {
       "Decisions",
       "Timeline",
       "Initiatives",
+      "Loops",
     ]);
     expect(groupedViews(viewsFor(false)).map((group) => [group.label, group.views.map((view) => view.label)])).toEqual([
       ["Work", ["Feed", "Board", "List", "History"]],
-      ["System", ["Fleet", "Decisions", "Timeline", "Initiatives"]],
+      ["System", ["Fleet", "Decisions", "Timeline", "Initiatives", "Loops"]],
     ]);
-    expect(SYSTEM_VIEWS).toEqual(["fleet", "decisions", "timeline", "initiatives"]);
+    expect(SYSTEM_VIEWS).toEqual(["fleet", "decisions", "timeline", "initiatives", "loops"]);
   });
 
   test("the Decisions badge: the open count, warn only when one waits on you, and none when nothing is open", () => {

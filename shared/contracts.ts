@@ -6,6 +6,7 @@ import { z } from "zod";
 import { AnswersLandingSchema, AnswersNoticeSchema, ROUTES } from "./answers";
 import { AskNoticeSchema, FleetNoticeSchema } from "./fleet";
 import { InitiativeNoticeSchema } from "./initiatives";
+import { LoopNoticeSchema } from "./loops";
 import { GATE_MODES, GROUP_ORDER, KINDS, ORCH_STATES, VERDICTS } from "./states";
 import { TimelineNoticeSchema } from "./timeline";
 
@@ -424,6 +425,8 @@ export const attentionWork = defineRpc({
     initiatives: z.array(InitiativeNoticeSchema).optional(),
     /** The answers batch, while answers wait to land or it cannot take main (shared/answers.ts); absent from an older daemon. */
     answers: z.array(AnswersNoticeSchema).optional(),
+    /** Loop drift that needs you, each with its pinned fix (shared/loops.ts loopNeeds()); absent from an older daemon. */
+    loops: z.array(LoopNoticeSchema).optional(),
   }),
 });
 export type Attention = z.infer<typeof attentionWork.output>;

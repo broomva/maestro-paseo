@@ -32,6 +32,7 @@ import { useAttention, useLoop, useWorkList } from "./hooks";
 import { InitiativeNotices, InitiativesView } from "./initiatives";
 import { requestIntent, useIntent } from "./intent";
 import { LoopControl, LoopPanel } from "./loop";
+import { LoopsNotices, LoopsView } from "./loops";
 import { NewWork } from "./new-work";
 import { FilterRow, ScopeRow, ViewPicker, ViewSwitch } from "./plane-controls";
 import {
@@ -67,6 +68,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
         attention.data.asks,
         attention.data.initiatives,
         attention.data.answers,
+        attention.data.loops,
       )
     : null;
   // The same read as the loop control's (one query): whether the loop is on words the Queued hint.
@@ -105,6 +107,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
         intent.id ? { ledger: intent.ledger ?? null, id: intent.id, key: intent.key ?? null } : null,
       );
     else if (intent.kind === "timeline") setView("timeline");
+    else if (intent.kind === "loops") setView("loops");
     else if (intent.kind === "initiatives") setView("initiatives");
     else {
       // A filter opened from elsewhere means that group across all work, where its chips show.
@@ -236,6 +239,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
           onOpen={(notice) => openDecisions(null, { ledger: ledgerOf(notice), uid: notice.uid, id: notice.id })}
         />
       )}
+      {view === "loops" ? null : <LoopsNotices theme={theme} compact={compact} onOpen={() => setView("loops")} />}
       {view === "timeline" ? null : (
         <TimelineNotices theme={theme} compact={compact} onOpen={() => setView("timeline")} />
       )}
@@ -269,6 +273,8 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
           onOpenDecision={(ledger, id) => openDecisions(ledger, id ? { ledger, id } : null)}
           onOpenWork={setSelected}
         />
+      ) : view === "loops" ? (
+        <LoopsView theme={theme} />
       ) : view === "timeline" ? (
         <TimelineView
           theme={theme}
