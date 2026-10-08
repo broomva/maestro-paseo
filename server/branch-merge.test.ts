@@ -221,6 +221,24 @@ test("git that echoes --path-format back (older than 2.31) records nothing", asy
   const root = await realpath(await mkdtemp(join(tmpdir(), "maestro-oldgit-")));
   roots.push(root);
   const real = execFileSync("sh", ["-c", "command -v git"]).toString().trim();
+  const main = join(root, "main");
+  const tree = join(root, "tree");
+  execFileSync(real, ["init", "-q", "-b", "main", main]);
+  execFileSync(real, [
+    "-C",
+    main,
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@t",
+    "commit",
+    "-q",
+    "--allow-empty",
+    "-m",
+    "first",
+  ]);
+  execFileSync(real, ["-C", main, "remote", "add", "origin", "https://github.com/acme/app.git"]);
+  execFileSync(real, ["-C", main, "worktree", "add", "-q", "-b", "feature/x", tree]);
   const bin = join(root, "bin");
   await mkdir(bin);
   // As git before 2.31 does: an unknown --path-format is printed back as-is, and the rest still runs.
@@ -232,7 +250,9 @@ test("git that echoes --path-format back (older than 2.31) records nothing", asy
   const before = process.env.PATH;
   process.env.PATH = `${bin}:${before}`;
   try {
-    expect(await gitOf(process.cwd())).toEqual({ branch: null, githubRepo: null });
+    // A linked worktree of its own, so the test holds wherever the suite runs: in a plain clone (CI) both git
+    // dirs are ".git" and compare equal before the absolute-path check matters (P20 round 4).
+    expect(await gitOf(tree)).toEqual({ branch: null, githubRepo: null });
   } finally {
     process.env.PATH = before;
   }
