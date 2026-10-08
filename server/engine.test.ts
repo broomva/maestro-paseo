@@ -470,7 +470,15 @@ describe("reconcile", () => {
     const ref = fake.paseo.agents.ref;
     let reads = 0;
     fake.paseo.agents.ref = (id: string) =>
-      id === "orchestrator" ? { ...ref(id), refresh: () => (reads++, new Promise<never>(() => {})) } : ref(id);
+      id === "orchestrator"
+        ? {
+            ...ref(id),
+            refresh: () => {
+              reads++;
+              return new Promise<never>(() => {});
+            },
+          }
+        : ref(id);
     await engine.list(fake.paseo);
     // Bounded: the hung read is let go, so the id is not stuck behind it.
     await engine.adoptersSettled();
@@ -534,10 +542,7 @@ describe("reconcile", () => {
 
   test("a session's own ticket label wins and is never overwritten; a closed or archived session is not labelled (BRO-2908)", async () => {
     const labelled: [string, Record<string, string>][] = [];
-    const { engine, fake, repo, create } = await setup(
-      {},
-      { label: async (id, labels) => void labelled.push([id, labels]) },
-    );
+    const { engine, fake, repo } = await setup({}, { label: async (id, labels) => void labelled.push([id, labels]) });
     fake.agents.set("manual", { ...idleSession(repo), labels: { ticket: "STI-77" } });
     fake.timelines.set("manual", said("Done."));
     const item = await engine.adopt(fake.paseo, "manual", "BRO-1 something", BY_ORCHESTRATOR);
