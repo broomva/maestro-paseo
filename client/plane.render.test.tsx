@@ -1163,6 +1163,7 @@ async function mount(node: ReactNode, options: { state?: PluginClientStateSource
   await step(owner, () => root.render(wrap(node)));
   await step(owner, () => new Promise<void>((resolve) => setTimeout(resolve, 20)));
   const byLabel = (label: string) => container.querySelector(`[aria-label="${label}"]`);
+  const byId = (id: string) => container.querySelector(`[id="${id}"]`);
   const picker = () => container.querySelector('[aria-label^="View: "]');
   const press = async (target: Element | null | undefined) => {
     if (!target) throw new Error("nothing to press");
@@ -1172,6 +1173,7 @@ async function mount(node: ReactNode, options: { state?: PluginClientStateSource
   return {
     text: () => container.textContent ?? "",
     byLabel,
+    byId,
     tabs: () => [...container.querySelectorAll('[role="tab"]')],
     pressed: (label: string) => byLabel(label)?.getAttribute("aria-pressed"),
     all: (selector: string) => [...container.querySelectorAll(selector)],
@@ -1928,6 +1930,13 @@ describe("views and filters", () => {
     for (const title of ["Work a", "Work b", "Work c", "Work d", "Work f"]) expect(view.text()).toContain(title);
     await view.press(view.tabs()[2]);
     expect(view.pressed("All, 6")).toBe("true");
+    // A search typed in the compact feed while the board is the chosen view: the board has no search field, so it hides nothing.
+    await view.press(view.tabs()[1]);
+    await view.rerender(surface(true));
+    await view.type(view.byLabel("Find work, ticket or branch"), "genesis");
+    await view.rerender(surface(false));
+    expect(view.tabs()[1]?.getAttribute("aria-selected")).toBe("true");
+    for (const title of ["Work a", "Work b", "Work c", "Work d", "Work f"]) expect(view.text()).toContain(title);
   });
 
   test("a scope whose initiative leaves the list does not come back", async () => {
@@ -4370,11 +4379,13 @@ describe("the Feed home (BRO-2906)", () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(view.text()).toContain("3 need you · 1 running · 1 handled for you");
     expect(view.text()).toContain("SRI Orchestrator closed 1 arc");
+    // Maestro's own closes (an auto gate, a finished arc) are handled for you too: not "by their orchestrator".
+    expect(view.text()).toContain("closed without you this week");
     expect(view.text()).toContain("STI-3569 typography cap");
     expect(view.text()).toContain("today 1 · this week 1");
     // The Done list opens on demand.
     expect(view.text()).not.toContain("Work f");
-    await view.press(view.byLabel("Done: 1. Show the list"));
+    await view.press(view.byLabel("Show the 1 done item"));
     expect(view.text()).toContain("Work f");
   });
 
@@ -4385,6 +4396,9 @@ describe("the Feed home (BRO-2906)", () => {
     expect(card?.textContent).toContain("Approve the branch");
     expect(card?.textContent).toContain("Needs you");
     expect(card?.textContent).toContain("Answer");
+    // The one button says what it opens to, and the ask, to a screen reader too.
+    const described = (card?.getAttribute("aria-describedby") ?? "").split(" ").map((id) => view.byId(id)?.textContent);
+    expect(described).toEqual(["Answer", "Approve the branch"]);
     expect(card?.querySelectorAll('[role="button"]').length).toBe(0);
     await view.press(card);
     expect(card?.getAttribute("aria-current")).toBe("true");
@@ -4424,7 +4438,7 @@ describe("the Feed home (BRO-2906)", () => {
 
   test("the search keeps what matches its title, place or branch, and says when nothing does", async () => {
     const view = await mount(surface(false));
-    const field = view.byLabel("Find work, ticket or PR");
+    const field = view.byLabel("Find work, ticket or branch");
     await view.type(field, "genesis");
     expect(view.text()).toContain("Work c");
     expect(view.text()).not.toContain("Work a");

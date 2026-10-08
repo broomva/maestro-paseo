@@ -259,6 +259,8 @@ describe("the gate", () => {
     const done = await decide(item.id, "approve");
     expect(done.state).toBe("done");
     expect(done.verdict).toBe("You approved");
+    // Yours: the feed lists it under Done, never under Handled for you (BRO-2906).
+    expect(done.closed?.by).toBe("you");
     const dir = join(config.workRoot, "hawthorne", "persist-run-transcripts");
     expect(await readFile(join(dir, WORK_FILE), "utf8")).toContain("state: done");
     expect(await readFile(join(dir, EVENTS_FILE), "utf8")).toContain('"verdict":"approve"');
@@ -299,6 +301,7 @@ describe("checks", () => {
     await endTurn(engine, fake);
     const done = await settle(engine, item.id, "done");
     expect(done.verdict).toBe("Check passed");
+    expect(done.closed?.by).toBe("maestro");
   });
 
   test("gate:auto with a failing check is stuck, with the reason", async () => {
@@ -2894,6 +2897,7 @@ describe("a finished arc closes itself once its session is archived (BRO-2861)",
     const { item: closed, events } = await engine.get(item.id);
     expect(closed.state).toBe("done");
     expect(closed.verdict).toBe("Its arc reported “ARC-STATUS: CLOSED” and its session was archived");
+    expect(closed.closed?.by).toBe("maestro");
     expect(events.at(-1)).toMatchObject({
       type: "state",
       actor: "maestro",

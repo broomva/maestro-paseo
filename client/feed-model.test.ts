@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { DecisionAsk } from "../shared/fleet";
 import { fakeWork } from "./fake-work";
 import {
+  cardHint,
   cardOf,
   DECIDE_INLINE,
   decideOf,
@@ -182,10 +183,34 @@ describe("a card", () => {
     const yours = cardOf(fakeWork("r2", "running", live, { lastEventAt: "2026-10-08T11:58:00Z" }), NOW);
     expect([adopted.pill.label, adopted.session, yours.session, adopted.action]).toEqual([
       "Running",
-      "2m in · orchestrator decides",
-      "2m in · lands at your gate",
+      "orchestrator decides",
+      "lands at your gate",
       null,
     ]);
+    expect(adopted.evidence?.text).toContain("last activity 2m ago");
+    // Inside the minute it reads as words, never "now ago".
+    const fresh = cardOf(fakeWork("r3", "running", live, { lastEventAt: "2026-10-08T11:59:40Z" }), NOW);
+    expect(fresh.evidence?.text).toContain("active just now");
+    expect(fresh.evidence?.text).not.toContain("now ago");
+  });
+
+  test("failed checks are not drawn as a pass", () => {
+    const [failed, passed] = ["2 of 3 checks failed", "All 3 checks passed"].map(
+      (verdict) => cardOf(fakeWork("v", "review", live, { verdict }), NOW).evidence,
+    );
+    expect([failed?.icon, failed?.tone, passed?.icon, passed?.tone]).toEqual([
+      "CircleX",
+      "danger",
+      "CircleCheck",
+      "success",
+    ]);
+  });
+
+  test("a card's hint says the verb it opens to and what it asks", () => {
+    expect([
+      cardHint({ action: "Answer", ask: { kind: "ask", text: "Enrol the identity." } }),
+      cardHint({ action: null, ask: null }),
+    ]).toEqual(["Opens it to answer. Enrol the identity.", "Opens it"]);
   });
 });
 

@@ -13,6 +13,7 @@ import { ChangeText, WithChange } from "./changed";
 import { askKey } from "./decisions-model";
 import {
   type CardModel,
+  cardHint,
   cardOf,
   type DecideRow,
   decideOf,
@@ -21,7 +22,7 @@ import {
   handledTitle,
   type Tone,
 } from "./feed-model";
-import { ago } from "./format";
+import { ago, plural } from "./format";
 import { cardLabel, changedVisible, groupHint, type Initiative } from "./plane-model";
 import { placeText, titleText } from "./records-text";
 import { radius, StateDot, space, Unbroken, useText, webAria } from "./ui";
@@ -185,11 +186,17 @@ function CardBody({
   const isSelected = item.id === selected;
   const open = () => onSelect(item.id);
   const pill = tint(theme, card.pill.tone);
+  // The verb and the ask describe the card's one button: native reads the hint, the web the drawn words by id.
+  const ids = { verb: `feed-${item.id}-verb`, ask: `feed-${item.id}-ask` };
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityState={{ selected: isSelected }}
       {...webAria({ "aria-current": isSelected })}
+      accessibilityHint={cardHint(card)}
+      aria-describedby={
+        [card.action ? ids.verb : null, card.ask ? ids.ask : null].filter(Boolean).join(" ") || undefined
+      }
       accessibilityLabel={cardLabel({
         ...item,
         title: titleText(item),
@@ -256,7 +263,7 @@ function CardBody({
               color={card.ask.kind === "reason" ? theme.colors.statusWarning : theme.colors.foregroundMuted}
             />
           </View>
-          <Text style={[text.body, { flex: 1 }]} numberOfLines={3}>
+          <Text nativeID={ids.ask} style={[text.body, { flex: 1 }]} numberOfLines={3}>
             {card.ask.text}
           </Text>
         </View>
@@ -290,7 +297,9 @@ function CardBody({
               backgroundColor: theme.colors.accent,
             }}
           >
-            <Text style={[text.small, { color: theme.colors.accentForeground, fontWeight: "600" }]}>{card.action}</Text>
+            <Text nativeID={ids.verb} style={[text.small, { color: theme.colors.accentForeground, fontWeight: "600" }]}>
+              {card.action}
+            </Text>
           </View>
         ) : null}
       </View>
@@ -384,16 +393,19 @@ function DoneSection({
   if (done.count === 0) return null;
   return (
     <View style={{ gap: space[2] }}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        accessibilityLabel={`Done: ${done.count}. ${open ? "Hide" : "Show"} the list`}
-        onPress={() => setOpen((value) => !value)}
-        style={{ flexDirection: "row", alignItems: "center", gap: space[2] }}
-      >
+      {/* The heading stays a heading; the toggle beside it is its own button. */}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space[2] }}>
         <Header theme={theme} title="Done" count={done.count} hint={`today ${done.today} · this week ${done.week}`} />
-        <Icon name={open ? "ChevronUp" : "ChevronDown"} size={14} color={theme.colors.foregroundMuted} />
-      </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: open }}
+          accessibilityLabel={`${open ? "Hide" : "Show"} the ${plural(done.count, "done item")}`}
+          onPress={() => setOpen((value) => !value)}
+          hitSlop={8}
+        >
+          <Icon name={open ? "ChevronUp" : "ChevronDown"} size={14} color={theme.colors.foregroundMuted} />
+        </Pressable>
+      </View>
       {open
         ? done.items.map((item) => (
             <Pressable
@@ -518,9 +530,9 @@ export function FeedControls({
           <TextInput
             value={query}
             onChangeText={onQuery}
-            placeholder="Find work, ticket or PR"
+            placeholder="Find work, ticket or branch"
             placeholderTextColor={theme.colors.foregroundMuted}
-            accessibilityLabel="Find work, ticket or PR"
+            accessibilityLabel="Find work, ticket or branch"
             autoCorrect={false}
             autoCapitalize="none"
             style={[text.body, { flex: 1, paddingVertical: space[2] }]}
@@ -541,7 +553,7 @@ export function FeedControls({
               <Pressable
                 key={name ?? "all"}
                 accessibilityRole="menuitem"
-                accessibilityState={{ selected: chosen }}
+                accessibilityState={{ checked: chosen }}
                 onPress={() => choose(name)}
                 style={({ pressed }) => ({
                   flexDirection: "row",

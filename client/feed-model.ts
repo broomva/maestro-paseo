@@ -122,12 +122,16 @@ function sourceOf(item: WorkItem): { source: string[]; via: string | null } {
   return { source: [scope, ticket].filter((part): part is string => !!part), via };
 }
 
-function sessionOf(item: WorkItem, now: number): string {
+/** `last activity 3m ago`, or `active just now` inside the minute. Pure. */
+function activityText(iso: string, now: number): string {
+  const since = ago(iso, now);
+  return since === "now" ? "active just now" : `last activity ${since} ago`;
+}
+
+function sessionOf(item: WorkItem): string {
   if (!item.worker) return "no session";
-  if (item.state === "running") {
-    const since = item.lastEventAt ? `${ago(item.lastEventAt, now)} in` : "running";
-    return item.adoptedBy ? `${since} · orchestrator decides` : `${since} · lands at your gate`;
-  }
+  // How long it has run is not known here (lastEventAt is its last activity, which the evidence row says): who decides it is.
+  if (item.state === "running") return item.adoptedBy ? "orchestrator decides" : "lands at your gate";
   if (item.look?.archived) return "session archived";
   return item.state === "review" ? "session idle" : "session ended";
 }
@@ -162,15 +166,17 @@ export function cardOf(
       ? [
           item.phase ? `${item.phase}` : null,
           workerText(item.worker),
-          item.lastEventAt ? `last activity ${ago(item.lastEventAt, now)} ago` : null,
+          item.lastEventAt ? activityText(item.lastEventAt, now) : null,
         ]
           .filter(Boolean)
           .join(" · ")
       : [look?.arc ? look.arc.status : null, item.verdict, look?.ran].filter(Boolean).join(" · ");
+  // verdictOf words a failed run `N of M checks failed`: its evidence is not a pass.
+  const failed = /\bchecks? failed\b/.test(item.verdict ?? "");
   const evidence: CardModel["evidence"] = evidenceText
     ? {
-        icon: item.state === "running" ? "Activity" : stuck ? "Unplug" : "CircleCheck",
-        tone: item.state === "running" ? "accent" : stuck ? "danger" : "success",
+        icon: item.state === "running" ? "Activity" : stuck ? "Unplug" : failed ? "CircleX" : "CircleCheck",
+        tone: item.state === "running" ? "accent" : stuck || failed ? "danger" : "success",
         text: evidenceText,
       }
     : null;
@@ -204,10 +210,16 @@ export function cardOf(
     branch: item.worker?.branch ?? null,
     ask,
     pill,
-    session: sessionOf(item, now),
+    session: sessionOf(item),
     action,
     lead: item.state === "review",
   };
+}
+
+/** What pressing a card does, for a screen reader: the verb it opens to, and what it asks. Pure. */
+export function cardHint(card: Pick<CardModel, "action" | "ask">): string {
+  const opens = card.action ? `Opens it to ${card.action.toLowerCase()}` : "Opens it";
+  return card.ask ? `${opens}. ${card.ask.text}` : opens;
 }
 
 export interface HandledGroup {

@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   ARCHIVED_NOTE,
+  adoptedByOf,
   adopterClosed,
   arcStatus,
   bullets,
+  closedOf,
   closingAbove,
   type FlaggedEvent,
   finishedArc,
@@ -791,5 +793,43 @@ describe("work that closes itself (BRO-2861)", () => {
     const before: WorkEvent = { ...archived, ts: at(100) };
     const turn = ended("ARC-STATUS: CLOSED");
     expect(finishedArc([...turn.slice(0, 2), before, ...turn.slice(2)])).toBeNull();
+  });
+});
+
+describe("who closed it, and who adopted it (BRO-2906)", () => {
+  const closing = (actor: "human" | "maestro" | "agent", to: "done" | "canceled"): WorkEvent[] => [
+    ...toReview,
+    { ts: at(140), type: "state", actor, from: "review", to, reason: null },
+  ];
+
+  test("your verdict or cancel is yours; Maestro's own close (or an agent's) is handled for you", () => {
+    expect([
+      closedOf("done", closing("human", "done")),
+      closedOf("canceled", closing("human", "canceled")),
+      closedOf("done", closing("maestro", "done")),
+      closedOf("done", closing("agent", "done")),
+    ]).toEqual([
+      { by: "you", at: at(140) },
+      { by: "you", at: at(140) },
+      { by: "maestro", at: at(140) },
+      { by: "maestro", at: at(140) },
+    ]);
+  });
+
+  test("open work, or a log with no move into its state, was closed by no one", () => {
+    expect([closedOf("review", toReview), closedOf("done", toReview)]).toEqual([null, null]);
+  });
+
+  test("only an agent's adoption counts, by its name when it gave one, and a later dispatch of yours undoes it", () => {
+    const adopted = (actor: "agent" | "human", by?: string): WorkEvent[] => [
+      { ...dispatched, type: "adopted", actor, ...(by ? { by } : {}) } as WorkEvent,
+    ];
+    expect([
+      adoptedByOf(adopted("agent", "SRI Orchestrator")),
+      adoptedByOf(adopted("agent")),
+      adoptedByOf(adopted("human", "you")),
+      adoptedByOf([...adopted("agent", "SRI Orchestrator"), { ...dispatched, ts: at(9) }]),
+      adoptedByOf(toReview),
+    ]).toEqual([{ by: "SRI Orchestrator" }, { by: null }, null, null, null]);
   });
 });
