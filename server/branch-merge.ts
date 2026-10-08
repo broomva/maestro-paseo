@@ -97,7 +97,9 @@ export async function gitOf(cwd: string | null): Promise<{ branch: string | null
     git(["rev-parse", "--abbrev-ref", "HEAD"]),
     git(["remote", "get-url", "origin"]),
   ]);
-  if (!gitDir || !commonDir || resolve(gitDir) === resolve(commonDir)) return none;
+  // Git before 2.31 echoes an unknown --path-format back and exits 0: only two absolute single-line paths count.
+  const absolute = (path: string | null): path is string => !!path && path.startsWith("/") && !path.includes("\n");
+  if (!absolute(gitDir) || !absolute(commonDir) || resolve(gitDir) === resolve(commonDir)) return none;
   return { branch: branch && branch !== "HEAD" ? branch : null, githubRepo: repoOf(remote) };
 }
 

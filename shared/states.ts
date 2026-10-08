@@ -153,9 +153,9 @@ export interface TransitionContext {
    */
   adopterClosed?: boolean;
   /**
-   * True when work blocked only because its session ended unfinished has a
-   * branch, recorded when it was bound, whose PR merged after that
-   * (server/branch-merge.ts): another session finished it.
+   * True when an orchestrator's child, blocked only because its session ended
+   * unfinished, has a branch, recorded at its adoption, from which a PR merged
+   * after the adoption (server/branch-merge.ts): the work landed.
    */
   branchMerged?: boolean;
 }
@@ -179,7 +179,11 @@ export function transition(from: OrchState, to: OrchState, ctx: TransitionContex
     );
   }
   if (from === "blocked" && to === "done" && ctx.branchMerged !== true) {
-    throw new IllegalTransitionError(from, to, "only a branch that merged after its session ended closes blocked work");
+    throw new IllegalTransitionError(
+      from,
+      to,
+      "only a PR from its branch merged after its adoption closes blocked work",
+    );
   }
   if (from === "running" && to === "done" && !(ctx.gate === "auto" && ctx.checksPassed === true)) {
     throw new IllegalTransitionError(

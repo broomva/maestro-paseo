@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { IllegalTransitionError, transition } from "../shared/states";
@@ -205,4 +205,35 @@ test("a fork's PR with the same branch name is someone else's: only one from the
   await lookup("acme/app", "feature/x");
   await lookup.settled();
   expect(await lookup("acme/app", "feature/x")).toEqual(PR);
+});
+
+test("a cached answer is dropped once WATCH_STUCK_MS old: it is asked again, not served", async () => {
+  let at = 0;
+  const run = async (args: readonly string[]) => JSON.stringify(args.includes("--base") ? [] : [ROW]);
+  const lookup = mergedPrs(run, () => at);
+  await lookup("acme/app", "feature/x");
+  await lookup.settled();
+  at = WATCH_STUCK_MS;
+  expect(await lookup("acme/app", "feature/x")).toBeNull();
+});
+
+test("git that echoes --path-format back (older than 2.31) records nothing", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "maestro-oldgit-")));
+  roots.push(root);
+  const real = execFileSync("sh", ["-c", "command -v git"]).toString().trim();
+  const bin = join(root, "bin");
+  await mkdir(bin);
+  // As git before 2.31 does: an unknown --path-format is printed back as-is, and the rest still runs.
+  await writeFile(
+    join(bin, "git"),
+    `#!/bin/bash\nout=(); hit=0\nfor a in "$@"; do if [ "$a" = "--path-format=absolute" ]; then hit=1; else out+=("$a"); fi; done\n[ $hit = 1 ] && echo "--path-format=absolute"\nexec ${real} "\${out[@]}"\n`,
+    { mode: 0o755 },
+  );
+  const before = process.env.PATH;
+  process.env.PATH = `${bin}:${before}`;
+  try {
+    expect(await gitOf(process.cwd())).toEqual({ branch: null, githubRepo: null });
+  } finally {
+    process.env.PATH = before;
+  }
 });
