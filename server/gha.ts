@@ -28,7 +28,8 @@ export const execGh: Gh = (args) =>
       [...args],
       { timeout: 30_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, GH_PROMPT_DISABLED: "1" } },
       (error, stdout, stderr) => {
-        if (error) reject(new Error(`gh ${args.slice(0, 2).join(" ")}: ${(stderr || error.message).trim().split("\n")[0]}`));
+        if (error)
+          reject(new Error(`gh ${args.slice(0, 2).join(" ")}: ${(stderr || error.message).trim().split("\n")[0]}`));
         else resolve(stdout);
       },
     );
@@ -207,7 +208,12 @@ export class GhaSchedules {
         (run) => run.workflow_id === workflow.id && now - Date.parse(run.created_at) < GHA_RECENT_MS,
       );
       if (!named.has(`${repo}/${workflow.path}`) && !recent) continue;
-      const text = await this.gh(["api", `repos/${repo}/contents/${workflow.path}`, "-H", "Accept: application/vnd.github.raw"]);
+      const text = await this.gh([
+        "api",
+        `repos/${repo}/contents/${workflow.path}`,
+        "-H",
+        "Accept: application/vnd.github.raw",
+      ]);
       crons.set(workflow.path, scheduleCrons(text));
     }
     const read = { repo, workflows, runs, crons };

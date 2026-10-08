@@ -72,15 +72,10 @@ export interface TickEvent {
 /** A loop.rollover.* line of ledger/loops/rollover.jsonl (§7), as read. */
 export type RolloverEvent = TickEvent;
 
-/**
- * A Paseo agent as the lookup found it. The agent record has no error field,
- * so `activity` is its recent activity timeline's error text, each with when
- * (Paseo get_agent_activity); empty when none was read.
- */
+/** A Paseo agent as the lookup found it: whether it exists, and when it was archived. */
 export interface AgentState {
   found: boolean;
   archivedAt: string | null;
-  activity: readonly { at: string; text: string }[];
 }
 
 /** What a bound row's substrate targets and says: the baseline TARGET_CHANGED compares the live one with. */
@@ -264,11 +259,7 @@ export function rowStub(observation: LoopObservation): { id: string; yaml: strin
  * the verb and its work item are BRO-2933's, which reads this seam, so the
  * item's key is (loop id, old agent id, attempt).
  */
-export function rolloverSeam(
-  intent: LoopIntent,
-  oldAgent: string | null,
-  attempt = 1,
-): { key: string; steps: string } {
+export function rolloverSeam(intent: LoopIntent, oldAgent: string | null, attempt = 1): { key: string; steps: string } {
   const agentOwned = intent.owner === "coordinator" || intent.owner === "fleet";
   const script = `scripts/loop_rollover.py ${intent.id} --expect-agent ${oldAgent ?? "<old agent>"}`;
   const steps = [
@@ -307,7 +298,9 @@ const untickedFire = (started: readonly TickEvent[], run: LoopRun, now: number) 
 function lastOkEnd(ticks: readonly TickEvent[]): number {
   return Math.max(
     Number.NEGATIVE_INFINITY,
-    ...ticks.filter((tick) => tick.type === "loop.tick.ended" && tick.data.outcome === "ok").map((tick) => instant(tick.ts)),
+    ...ticks
+      .filter((tick) => tick.type === "loop.tick.ended" && tick.data.outcome === "ok")
+      .map((tick) => instant(tick.ts)),
   );
 }
 
@@ -342,7 +335,9 @@ function rowDrift(
 
   if (desired === "paused" || desired === "retired") {
     const since = intent.desiredSince ? Date.parse(`${intent.desiredSince}T00:00:00Z`) : Number.NaN;
-    const after = Number.isNaN(since) ? null : runs.find((run) => instant(run.at) >= since + DAY && run.status !== "missed");
+    const after = Number.isNaN(since)
+      ? null
+      : runs.find((run) => instant(run.at) >= since + DAY && run.status !== "missed");
     if (primary && (primary.presence === "on" || after)) {
       found.push({
         kind: "paused_but_running",
@@ -356,7 +351,7 @@ function rowDrift(
   }
 
   if (desired === "active") {
-    if (!orphan && (!primary || primary.presence !== "on")) {
+    if (!orphan && primary?.presence !== "on") {
       found.push({
         kind: "active_but_absent",
         detail: primary
@@ -405,11 +400,18 @@ function rowDrift(
     }
   } else if (desired === null && primary) {
     // scope sri: read-only badges on what the substrate says.
-    if (primary.status === "failed") found.push({ kind: "failing", detail: primary.reason, fix: "Not ours: the SRI orchestrator's." });
-    if (primary.status === "missed") found.push({ kind: "missed", detail: primary.reason, fix: "Not ours: the SRI orchestrator's." });
+    if (primary.status === "failed")
+      found.push({ kind: "failing", detail: primary.reason, fix: "Not ours: the SRI orchestrator's." });
+    if (primary.status === "missed")
+      found.push({ kind: "missed", detail: primary.reason, fix: "Not ours: the SRI orchestrator's." });
   }
 
-  if (intent.prompt && primary?.target && primary.target.prompt !== null && !primary.target.prompt.includes(intent.prompt)) {
+  if (
+    intent.prompt &&
+    primary?.target &&
+    primary.target.prompt !== null &&
+    !primary.target.prompt.includes(intent.prompt)
+  ) {
     found.push({
       kind: "prompt_mismatch",
       detail: `The ${kind} prompt does not name ${intent.prompt}.`,
@@ -417,6 +419,55 @@ function rowDrift(
     });
   }
   return found;
+}
+
+/**
+ * The text a dead session itself produced: a failed run's error, or an output
+ * that IS an API error. A healthy session's prose about someone's login
+ * failure (run 6c5147fd) never counts, nor a replayed earlier message.
+ */
+export function ownFailure(run: LoopRun): string | null {
+  const error = run.status === "failed" ? run.detail : null;
+  if (authFailure(error)) return error;
+  const output = run.output?.trim() ?? "";
+  return output.startsWith("API Error") && authFailure(output) ? output : null;
+}
+
+/**
+ * BOUND_SESSION_GONE (b), as a property contract (spec §4): judged only on
+ * runs at or after the row's first started tick, and never while the row has
+ * no ok tick; busy fires never count; each of the last two judged runs failed
+ * or never ticked, and each carries a login failure of its own (ownFailure),
+ * ended after the row's last ok tick. Returns that failure, or null.
+ */
+export function deadLogin(
+  intent: LoopIntent,
+  runs: readonly LoopRun[],
+  now: number,
+  ticks: readonly TickEvent[],
+): string | null {
+  const mine = ticksOf(ticks, intent.id);
+  const started = mine.filter((tick) => tick.type === "loop.tick.started");
+  const okAt = lastOkEnd(mine);
+  if (started.length === 0 || okAt === Number.NEGATIVE_INFINITY) return null;
+  const adopted = adoptedAt(started);
+  const judged = runs
+    .filter((run) => run.status !== "running" && run.status !== "missed" && !isBusy(run))
+    .filter((run) => instant(run.scheduledFor ?? run.at) >= adopted)
+    .slice(0, 2);
+  if (judged.length < 2) return null;
+  const failures = judged.map((run) => {
+    const bad = run.status === "failed" || untickedFire(started, run, now);
+    const own = ownFailure(run);
+    return bad && own && instant(run.endedAt ?? run.at) > okAt ? own : null;
+  });
+  return failures.every(Boolean) ? (failures[0] as string) : null;
+}
+
+/** When a row adopted ticks: its first started tick, or that tick's fire if earlier. */
+function adoptedAt(started: readonly TickEvent[]): number {
+  const at = Math.min(...started.flatMap((tick) => [instant(tick.ts), fireOf(tick)].filter(Number.isFinite)));
+  return Number.isFinite(at) ? at : Number.POSITIVE_INFINITY;
 }
 
 function boundDrift(
@@ -432,23 +483,12 @@ function boundDrift(
   // (a) archived or not found; (b) the last two fires bad, and the agent's last error a login failure.
   let gone: string | null = null;
   if (agent && (!agent.found || agent.archivedAt)) {
-    gone = agent.found ? `Its session ${short(agentId)} was archived at ${agent.archivedAt}.` : `Its session ${short(agentId)} is not in Paseo.`;
+    gone = agent.found
+      ? `Its session ${short(agentId)} was archived at ${agent.archivedAt}.`
+      : `Its session ${short(agentId)} is not in Paseo.`;
   } else if (agent) {
-    const mine = ticksOf(evidence.ticks ?? [], intent.id);
-    const started = mine.filter((tick) => tick.type === "loop.tick.started");
-    const okAt = lastOkEnd(mine);
-    // The last two fires that were not busy: busy fires never count.
-    const fires = primary.runs.filter((run) => run.status !== "running" && run.status !== "missed" && !isBusy(run)).slice(0, 2);
-    const bad = (run: LoopRun) => run.status === "failed" || untickedFire(started, run, now);
-    const failure =
-      fires
-        .filter((run) => instant(run.endedAt ?? run.at) > okAt && authFailure(run.output ?? run.detail))
-        .map((run) => run.output ?? run.detail)[0] ??
-      agent.activity.find((entry) => instant(entry.at) > okAt && authFailure(entry.text))?.text ??
-      null;
-    if (fires.length === 2 && fires.every(bad) && failure) {
-      gone = `Its last two fires failed or never ticked, and its session hit a login failure: ${failure}`;
-    }
+    const why = deadLogin(intent, primary.runs, now, evidence.ticks ?? []);
+    if (why) gone = `Its last two fires failed or never ticked, each on a login failure: ${why}`;
   }
   if (gone) {
     const attempt =
@@ -476,17 +516,19 @@ function boundDrift(
   // TARGET_CHANGED: the live target or prompt moved off the baseline with no rollover naming the change.
   const baseline = evidence.baselines?.get(intent.id);
   const current: Binding = { agentId, prompt: primary.target?.prompt ?? null };
-  if (baseline && (baseline.agentId !== current.agentId || baseline.prompt !== current.prompt)) {
-    const rolled = ticksOf(evidence.rollovers ?? [], intent.id).some(
-      (event) =>
-        event.type === "loop.rollover.completed" &&
-        (current.agentId === baseline.agentId || JSON.stringify(event.data).includes(current.agentId ?? "\0")),
-    );
-    if (!rolled) {
-      const what =
-        baseline.agentId !== current.agentId
-          ? `its target moved from ${short(baseline.agentId)} to ${short(current.agentId)}`
-          : "its prompt changed";
+  if (baseline) {
+    // The latest loop.rollover.completed explains a target or prompt equal to its own (§7 data shape).
+    const completed = ticksOf(evidence.rollovers ?? [], intent.id)
+      .filter((event) => event.type === "loop.rollover.completed")
+      .sort((a, b) => instant(b.ts) - instant(a.ts))[0];
+    const targetMoved = baseline.agentId !== current.agentId && completed?.data.new_agent !== current.agentId;
+    const promptMoved =
+      baseline.prompt !== current.prompt &&
+      !(completed && typeof completed.data.prompt === "string" && completed.data.prompt === current.prompt);
+    if (targetMoved || promptMoved) {
+      const what = targetMoved
+        ? `its target moved from ${short(baseline.agentId)} to ${short(current.agentId)}`
+        : "its prompt changed";
       found.push({
         kind: "target_changed",
         detail: `Outside a rollover, ${what}.`,
@@ -503,22 +545,33 @@ function tickDrift(intent: LoopIntent, primary: LoopObservation, now: number, ev
   const mine = ticksOf(evidence.ticks, intent.id);
   const started = mine.filter((tick) => tick.type === "loop.tick.started");
   const ends = new Map(mine.filter((tick) => tick.type === "loop.tick.ended").map((tick) => [tick.cause, tick]));
-  // TICK_UNCLOSED: measured from the started tick, not the run (a Paseo run can end while its turn goes on).
+  // TICK_UNCLOSED, a row state: its most recent started tick has no end after the limit, measured from the start
+  // (a Paseo run can end while its turn goes on). A later tick that closes clears it.
   const lengths = started.flatMap((tick) => {
     const end = ends.get(tick.id);
     return end ? [instant(end.ts) - instant(tick.ts)] : [];
   });
   const limit = Math.max(TICK_CLOSE_MS, 2 * median(lengths));
-  const open = started.find((tick) => !ends.has(tick.id) && now - instant(tick.ts) > limit);
-  if (open) {
+  const latest = [...started].sort((a, b) => instant(b.ts) - instant(a.ts))[0];
+  if (latest && !ends.has(latest.id) && now - instant(latest.ts) > limit) {
     found.push({
       kind: "tick_unclosed",
-      detail: `The tick started at ${open.ts}${typeof open.data.fire === "string" ? ` for the ${open.data.fire} fire` : ""} has not ended after ${Math.round(limit / MIN)} min.`,
+      detail: `The tick started at ${latest.ts}${typeof latest.data.fire === "string" ? ` for the ${latest.data.fire} fire` : ""} has not ended after ${Math.round(limit / MIN)} min.`,
       fix: "Read the session's last turn; the next fire reseeds from state.",
     });
   }
-  // TICK_MISSING: its newest fire that did not fail, TICK_WAIT_MS past its slot, with no started tick for that slot.
-  const fire = primary.runs.find((run) => run.status !== "failed" && run.status !== "missed" && run.scheduledFor);
+  // TICK_MISSING, a row state: its most recent judged run (not failed, at or after adoption, the first started
+  // tick) has no started tick for its slot TICK_WAIT_MS on. A later run that pairs, or the late tick, clears it.
+  const adopted = adoptedAt(started);
+  const fire = primary.runs.find(
+    (run) =>
+      run.status !== "failed" &&
+      run.status !== "missed" &&
+      run.status !== "running" &&
+      run.scheduledFor &&
+      instant(run.scheduledFor) >= adopted &&
+      now - instant(run.scheduledFor) > TICK_WAIT_MS,
+  );
   if (fire && untickedFire(started, fire, now)) {
     found.push({
       kind: "tick_missing",
@@ -697,7 +750,8 @@ export function transitions(open: OpenDrift, rows: readonly LoopRow[]): { lines:
   const now: OpenDrift = new Map();
   const keep = new Set(rows.filter((row) => row.unread).map((row) => row.subject));
   for (const row of rows) {
-    for (const drift of row.drift) now.set(`${row.subject}#${drift.kind}`, { subject: row.subject, kind: drift.kind, detail: drift.detail });
+    for (const drift of row.drift)
+      now.set(`${row.subject}#${drift.kind}`, { subject: row.subject, kind: drift.kind, detail: drift.detail });
   }
   for (const [key, value] of open) if (keep.has(value.subject) && !now.has(key)) now.set(key, value);
   const lines: Transition[] = [];
@@ -707,7 +761,9 @@ export function transitions(open: OpenDrift, rows: readonly LoopRow[]): { lines:
 }
 
 /** What drift.jsonl's lines leave open: each (subject, class) whose last line is a detection. */
-export function openFrom(lines: readonly { type: string; subject: string; data: Record<string, unknown> }[]): OpenDrift {
+export function openFrom(
+  lines: readonly { type: string; subject: string; data: Record<string, unknown> }[],
+): OpenDrift {
   const open: OpenDrift = new Map();
   for (const line of lines) {
     const kind = line.data.kind;

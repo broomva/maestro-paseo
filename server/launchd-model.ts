@@ -92,6 +92,13 @@ export function parseList(text: string, prefix: string): ListedJob[] {
   return jobs;
 }
 
+/** `launchctl print-disabled gui/<uid>`: the labels it says are disabled. */
+export function parseDisabled(text: string): Set<string> {
+  const disabled = new Set<string>();
+  for (const match of text.matchAll(/^\s*"([^"]+)"\s*=>\s*(disabled|true)\s*$/gm)) disabled.add(match[1] as string);
+  return disabled;
+}
+
 export interface PrintedJob {
   /** The plist launchd loaded it from. */
   path: string | null;

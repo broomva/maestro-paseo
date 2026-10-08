@@ -19,8 +19,8 @@ import { parseDocument } from "yaml";
 import {
   DESIRED,
   type Desired,
-  LOOP_SCOPES,
   type LedgerError,
+  LOOP_SCOPES,
   type LoopIntent,
   type LoopScope,
   SUBSTRATE_KINDS,
@@ -114,7 +114,8 @@ export function parseRow(file: string, text: string, files: ReadonlySet<string>)
     if (key in row && (str(row[key]) ?? "").trim() === "") errors.push(`${key} must be text`);
   }
   const scope = str(row.scope);
-  if ("scope" in row && !LOOP_SCOPES.includes(scope as LoopScope)) errors.push(`scope must be ${LOOP_SCOPES.join("|")}`);
+  if ("scope" in row && !LOOP_SCOPES.includes(scope as LoopScope))
+    errors.push(`scope must be ${LOOP_SCOPES.join("|")}`);
   const substrate = row.substrate as Record<string, unknown> | undefined;
   let kind: SubstrateKind | null = null;
   let ref: string | null = null;
@@ -149,7 +150,8 @@ export function parseRow(file: string, text: string, files: ReadonlySet<string>)
     if (session === "bound") {
       if (!prompt) errors.push("session: bound needs a prompt");
       if (ref && id && ref !== `name:${id}`) errors.push(`session: bound needs ref name:${id}`);
-      if (!BOUND_OWNERS.includes(str(row.owner) ?? "")) errors.push(`session: bound needs owner ${BOUND_OWNERS.join("|")}`);
+      if (!BOUND_OWNERS.includes(str(row.owner) ?? ""))
+        errors.push(`session: bound needs owner ${BOUND_OWNERS.join("|")}`);
     }
   }
   const initiative = row.initiative ?? null;

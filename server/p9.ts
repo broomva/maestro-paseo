@@ -13,7 +13,7 @@ export const P9_TAIL_BYTES = 512 * 1024;
 export const P9_RECENT_MS = 24 * 60 * 60_000;
 /** States in which a watcher or a wait is still going. */
 const GOING = new Set(["PUSHED", "WATCHING", "WAITING"]);
-const FAILED = new Set(["RED_UNCLASSIFIED", "ABANDONED", "TIMED_OUT", "KILLED"]);
+const FAILED = new Set(["RED_UNCLASSIFIED", "TIMED_OUT"]);
 
 export interface P9Transition {
   ts: string;
@@ -72,7 +72,10 @@ export function p9Observations(
       endedAt: going ? null : new Date(Date.parse(last.ts)).toISOString(),
       status: going ? "running" : FAILED.has(last.to_state) ? "failed" : "ok",
       exit: null,
-      detail: going && GOING.has(last.to_state) ? last.to_state : `${last.to_state}${pid !== null && !alive(pid) && GOING.has(last.to_state) ? " (its process is gone)" : ""}`,
+      detail:
+        going && GOING.has(last.to_state)
+          ? last.to_state
+          : `${last.to_state}${pid !== null && !alive(pid) && GOING.has(last.to_state) ? " (its process is gone)" : ""}`,
     };
     out.push({
       subject: `loop:p9/${key}`,
