@@ -47,8 +47,8 @@ export type WorkEvent = Base &
         provider: string;
         branch: string | null;
         cwd: string | null;
-        /** The worktree's origin remote when bound, so a merged branch can be found later (BRO-2923); absent on older receipts. */
-        remote?: string | null;
+        /** The worktree's GitHub repo (`owner/name`) when an agent adopted it, so a merged branch can be found later (BRO-2923); absent on older receipts. */
+        githubRepo?: string | null;
         /** What the agent was started with beyond the provider; absent on older receipts. */
         modeId?: string | null;
         thinkingOptionId?: string | null;

@@ -121,7 +121,7 @@ async function setup(overrides: Partial<MaestroConfig> = {}, options: Partial<En
     log: process.env.DEBUG ? console.log : () => {},
     timer: timers.timer,
     claimWaitMs: 200,
-    git: async () => ({ branch: null, remote: null }),
+    git: async () => ({ branch: null, githubRepo: null }),
     merged: async () => null,
     ...options,
   });
@@ -3282,84 +3282,83 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
   });
 });
 
-describe("a branch that merged after its session ended (BRO-2923)", () => {
-  const REMOTE = "https://github.com/acme/app.git";
-  const bound = { git: async () => ({ branch: "feature/x", remote: REMOTE }) };
-  const mergedAt = (iso: string) => async () => ({ number: 7, mergedAt: iso });
-
-  test("a run whose session was archived unfinished closes Done once its branch merged, with the PR as receipt", async () => {
-    const asked: string[][] = [];
-    const { create, engine, fake } = await setup(
-      {},
-      {
-        ...bound,
-        merged: async (repo, branch) => {
-          asked.push([repo, branch]);
-          return { number: 7, mergedAt: "2026-09-22T10:00:00Z" };
-        },
-      },
-    );
-    const item = await create();
-    await engine.onArchived({ id: "agent-1" });
-    expect((await engine.get(item.id)).item.state).toBe("blocked");
-    await engine.list(fake.paseo);
-    const { item: after } = await engine.get(item.id);
-    const branch = asked[0]?.[1] ?? "";
-    expect([after.state, after.verdict, asked[0]?.[0]]).toEqual([
-      "done",
-      `Its branch ${branch} merged as #7; another session finished it`,
-      "acme/app",
-    ]);
-  });
-
-  test("an adopted session records its worktree's branch and remote while the worktree exists", async () => {
-    const { engine, fake, repo, store } = await setup({}, bound);
-    fake.agents.set("manual", {
-      id: "manual",
+describe("an orchestrator's child whose branch merged after its session ended (BRO-2923)", () => {
+  const ORCHESTRATOR = { actor: "agent" as const, by: "orchestrator" };
+  const recorded = { git: async () => ({ branch: "feature/x", githubRepo: "acme/app" }) };
+  const AFTER = "2026-09-22T10:00:00Z";
+  const merged =
+    (mergedAt: string, asked: string[][] = []) =>
+    async (repo: string, branch: string) => {
+      asked.push([repo, branch]);
+      return { number: 7, mergedAt };
+    };
+  /** A running session in the work's repo, adopted, then archived before it finished. */
+  const adoptAndArchive = async (
+    { engine, fake, repo }: Awaited<ReturnType<typeof setup>>,
+    origin?: { actor: "agent" | "human"; by: string | null },
+  ) => {
+    fake.agents.set("child", {
+      id: "child",
       cwd: repo,
       status: "running",
       workspaceId: null,
       provider: "claude",
-      title: "Adopted",
+      title: "Child arc",
       archivedAt: null,
     } as never);
-    const item = await engine.adopt(fake.paseo, "manual", "");
-    const stored = await store.findById(item.id);
-    const bind = stored.events.find((event) => event.type === "adopted");
-    expect(bind && "branch" in bind ? [bind.branch, bind.remote] : null).toEqual(["feature/x", REMOTE]);
-  });
+    const item = await engine.adopt(fake.paseo, "child", "", origin as never);
+    await engine.onArchived({ id: "child" });
+    return item;
+  };
 
-  test("a PR merged before the work was bound is an old one on a reused branch: it stays blocked", async () => {
-    const { create, engine, fake } = await setup({}, { ...bound, merged: mergedAt("2026-09-01T00:00:00Z") });
-    const item = await create();
-    await engine.onArchived({ id: "agent-1" });
-    await engine.list(fake.paseo);
-    expect((await engine.get(item.id)).item.state).toBe("blocked");
-  });
-
-  test("no merged PR, or no remote recorded: it stays blocked", async () => {
-    const none = await setup({}, { ...bound, merged: async () => null });
-    const first = await none.create();
-    await none.engine.onArchived({ id: "agent-1" });
-    await none.engine.list(none.fake.paseo);
-    const noRemote = await setup(
-      {},
-      { git: async () => ({ branch: "feature/x", remote: null }), merged: mergedAt("2026-09-22T10:00:00Z") },
-    );
-    const second = await noRemote.create();
-    await noRemote.engine.onArchived({ id: "agent-1" });
-    await noRemote.engine.list(noRemote.fake.paseo);
-    expect([(await none.engine.get(first.id)).item.state, (await noRemote.engine.get(second.id)).item.state]).toEqual([
-      "blocked",
-      "blocked",
+  test("it closes Done once its branch merged, the PR as its receipt; the adoption recorded branch and repo", async () => {
+    const asked: string[][] = [];
+    const env = await setup({}, { ...recorded, merged: merged(AFTER, asked) });
+    const item = await adoptAndArchive(env, ORCHESTRATOR);
+    const bind = (await env.store.findById(item.id)).events.find((event) => event.type === "adopted");
+    expect(bind && "branch" in bind ? [bind.branch, bind.githubRepo] : null).toEqual(["feature/x", "acme/app"]);
+    expect((await env.engine.get(item.id)).item.state).toBe("blocked");
+    await env.engine.list(env.fake.paseo);
+    const { item: after } = await env.engine.get(item.id);
+    expect([after.state, after.verdict, asked]).toEqual([
+      "done",
+      "Its branch feature/x merged as #7; its orchestrator finished it with another session",
+      [["acme/app", "feature/x"]],
     ]);
   });
 
-  test("work blocked for another reason (a failed turn) stays blocked even if its branch merged", async () => {
-    const { create, engine, fake } = await setup({}, { ...bound, merged: mergedAt("2026-09-22T10:00:00Z") });
+  test("a session you adopted is yours to close: it stays Stuck, and gh is not asked", async () => {
+    const asked: string[][] = [];
+    const env = await setup({}, { ...recorded, merged: merged(AFTER, asked) });
+    const item = await adoptAndArchive(env);
+    await env.engine.list(env.fake.paseo);
+    expect([(await env.engine.get(item.id)).item.state, asked.length]).toEqual(["blocked", 0]);
+  });
+
+  test("a dispatched run is yours to close: it stays Stuck, and gh is not asked", async () => {
+    const asked: string[][] = [];
+    const { create, engine, fake } = await setup({}, { ...recorded, merged: merged(AFTER, asked) });
     const item = await create();
-    await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "rate limited" } }, []);
+    await engine.onArchived({ id: "agent-1" });
     await engine.list(fake.paseo);
-    expect((await engine.get(item.id)).item).toMatchObject({ state: "blocked", reason: "rate limited" });
+    expect([(await engine.get(item.id)).item.state, asked.length]).toEqual(["blocked", 0]);
+  });
+
+  test("a PR merged before the adoption is an old one on a reused branch: it stays Stuck", async () => {
+    const env = await setup({}, { ...recorded, merged: merged("2026-09-01T00:00:00Z") });
+    const item = await adoptAndArchive(env, ORCHESTRATOR);
+    await env.engine.list(env.fake.paseo);
+    expect((await env.engine.get(item.id)).item.state).toBe("blocked");
+  });
+
+  test("a shared checkout or detached HEAD records no branch: it stays Stuck, and gh is not asked", async () => {
+    const asked: string[][] = [];
+    const env = await setup(
+      {},
+      { git: async () => ({ branch: null, githubRepo: "acme/app" }), merged: merged(AFTER, asked) },
+    );
+    const item = await adoptAndArchive(env, ORCHESTRATOR);
+    await env.engine.list(env.fake.paseo);
+    expect([(await env.engine.get(item.id)).item.state, asked.length]).toEqual(["blocked", 0]);
   });
 });
