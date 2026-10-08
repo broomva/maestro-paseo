@@ -8,8 +8,11 @@ const ELLIPSIS = "…";
 /** The longest line any inline regex here sees; the rest of a longer line is left out. */
 export const LINE_CAP = 2000;
 
-/** Standards that read like a ticket id (`UTF-8`, `SHA-256`) and never are one. */
-const NOT_TICKETS = /^(UTF|SHA|ISO|RFC|MD|AES|HTTP|TLS|SSL|X)-/;
+/** A ticket id, whole: a team key and a number (`STI-3508`, `BRO-2827`). */
+export const TICKET = /^[A-Z][A-Z0-9]{1,6}-\d{1,6}$/;
+
+/** Standards that read like a ticket id (`UTF-8`, `SHA-256`) and never are one; a team called MD or ISO keeps its tickets. */
+const NOT_TICKETS = /^(UTF-(8|16|32)|SHA-(1|224|256|384|512)|ISO-\d{3,5}|RFC-\d{3,5}|AES-(128|192|256))$/;
 
 /** A ticket id in a title or name (`STI-3508`, `BRO-2827`), else null. Pure. */
 export function ticketOf(text: string | null | undefined): string | null {

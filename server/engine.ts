@@ -32,7 +32,7 @@ import {
   type Verdict,
   verdictTarget,
 } from "../shared/states";
-import { ticketOf } from "../shared/text";
+import { TICKET, ticketOf } from "../shared/text";
 import { adopterNames } from "./adopter-names";
 import { branchMerged, gitOf, type MergedPr, mergedPrs, watchedBranch } from "./branch-merge";
 import { runChecks } from "./checks";
@@ -70,7 +70,7 @@ import {
 import { ACTIVE_AGAIN, flagStands, quietCleared } from "./flags";
 import { inspectFolder, repoRefusal } from "./folders";
 import { briefOf, type RunKeys, workTitle } from "./frontmatter";
-import { type LabelAgent, workLabels } from "./labels";
+import { type LabelAgent, WORK_LABELS, workLabels } from "./labels";
 import { describePermission, type PermissionLike } from "./permissions";
 import { HELD_FOR_YOU, leftToYou, MODED_BY_YOU, nextRun, type Paseo, startRun, WORK_LABEL } from "./runs";
 import { type Mutation, placement, type StoredWork, WorkStore, withLock } from "./store";
@@ -278,6 +278,11 @@ export { leftToYou, MODED_BY_YOU, PROMPT_FREE } from "./runs";
 /** See EngineOptions.claimWaitMs. */
 export const CLAIM_WAIT_MS = 30_000;
 
+/** A session's labels, once set, are asked for again after this long if they are gone (BRO-2908). */
+export const LABEL_AGAIN_MS = 10 * 60_000;
+/** After a failed label call, the first wait before asking again; it doubles per failure, up to LABEL_AGAIN_MS. */
+export const LABEL_RETRY_MS = 60_000;
+
 /** `work()`, or a rejection once `ms` pass: a claim, or a wake, never waits on the daemon for ever. */
 export function within<T>(work: () => Promise<T>, ms: number): Promise<T> {
   let handle: ReturnType<typeof setTimeout> | undefined;
@@ -378,8 +383,10 @@ export class Engine {
   private readonly gitOf: (cwd: string | null) => Promise<{ branch: string | null; githubRepo: string | null }>;
   private readonly merged: (repo: string, branch: string) => Promise<MergedPr | null>;
   private readonly label: LabelAgent;
-  /** Each session's labels as Maestro last set them, so a label is asked for once, not on every reconcile. */
-  private readonly labelled = new Map<string, string>();
+  /** Each session's labels as Maestro last asked for them: when, and how many asks in a row failed. */
+  private readonly labelled = new Map<string, { key: string; at: number; failures: number }>();
+  /** Label calls run one at a time: each is a paseo CLI process (server/labels.ts). */
+  private labelQueue: Promise<void> = Promise.resolve();
   /** Pending decisions with a timer armed, by token, to the timer's cancel. */
   private readonly armed = new Map<string, () => void>();
   /** Decisions being applied right now, by token, so a timer and a sweep never apply one twice. */
@@ -404,23 +411,43 @@ export class Engine {
   }
 
   /**
-   * Labels a work's session with its work, ticket and parent (BRO-2908), once
-   * per value: the harness registry is Paseo, so a session can be found from
-   * there as well as from here. Never awaited by a verb and never fatal: a
-   * label that cannot be set is logged and asked for again at a later reconcile.
+   * Labels a work's session with its work, and its ticket and parent where the
+   * session has none of its own (BRO-2908): the harness registry is Paseo, so a
+   * session can be found from there as well as from here. A label the session
+   * already carries is never overwritten (an orchestrator's `ticket` stays).
+   * Never awaited by a verb and never fatal. Asked once per value; asked again
+   * after LABEL_AGAIN_MS when it was set (a label removed since comes back),
+   * after a growing backoff when it failed. Calls run one at a time.
    */
   private labelSession(
     agentId: string,
     work: { id: string; ticket?: string | null; parentWork?: string | null },
+    has: Readonly<Record<string, string>> = {},
   ): void {
-    const labels = workLabels(work);
+    const wanted = workLabels(work);
+    const labels = Object.fromEntries(Object.entries(wanted).filter(([key]) => key === WORK_LABEL || !has[key]));
     const key = JSON.stringify(labels);
-    if (this.labelled.get(agentId) === key) return;
-    this.labelled.set(agentId, key);
-    void this.label(agentId, labels).catch((error: unknown) => {
-      if (this.labelled.get(agentId) === key) this.labelled.delete(agentId);
-      this.log(`labelling session ${agentId}: ${(error as Error).message}`);
-    });
+    const now = this.now().getTime();
+    const last = this.labelled.get(agentId);
+    if (last?.key === key) {
+      const wait =
+        last.failures === 0 ? LABEL_AGAIN_MS : Math.min(LABEL_RETRY_MS * 2 ** (last.failures - 1), LABEL_AGAIN_MS);
+      if (now - last.at < wait) return;
+    }
+    const failures = last?.key === key ? last.failures : 0;
+    this.labelled.set(agentId, { key, at: now, failures });
+    this.labelQueue = this.labelQueue.then(() =>
+      this.label(agentId, labels).catch((error: unknown) => {
+        const entry = this.labelled.get(agentId);
+        if (entry?.key === key) entry.failures = failures + 1;
+        this.log(`labelling session ${agentId}: ${(error as Error).message}`);
+      }),
+    );
+  }
+
+  /** For a test: waits for the label calls asked for so far. */
+  labelsSettled(): Promise<void> {
+    return this.labelQueue;
   }
 
   /** The settings runs start from, as this engine reads them. */
@@ -1536,6 +1563,9 @@ export class Engine {
     if (this.adopting.has(agentId)) throw new UserError("This session is already being tracked.");
     this.adopting.add(agentId);
     try {
+      if (given.ticket !== undefined && !TICKET.test(given.ticket.trim())) {
+        throw new UserError("A ticket is a team key and a number, like BRO-2908.");
+      }
       return await this.adoptOnce(paseo, agentId, title, origin, given);
     } finally {
       this.adopting.delete(agentId);
@@ -1571,11 +1601,16 @@ export class Engine {
     });
     const id = created.contract.id;
     // The lineage (BRO-2908): an orchestrator that adopts runs as work of its own, which becomes this one's parent.
-    const parentWork =
-      origin.actor === "agent" && origin.by && origin.by !== agentId
-        ? ((await this.forAgent(origin.by).catch(() => null))?.id ?? null)
-        : null;
-    const ticket = given.ticket?.trim() || ticketOf(created.title) || ticketOf(agent.title);
+    // Only an open work is a parent: a finished one is history, not the arc this one belongs to. A session that
+    // tracks itself has none: this work is not bound to it yet, and one already bound returned above.
+    const adopter = origin.actor === "agent" && origin.by ? await this.forAgent(origin.by).catch(() => null) : null;
+    const parentWork = adopter && !isTerminal(adopter.state) ? adopter.id : null;
+    const own = agent.labels?.[WORK_LABELS.ticket];
+    const ticket =
+      given.ticket?.trim() ||
+      (own && TICKET.test(own) ? own : null) ||
+      ticketOf(created.title) ||
+      ticketOf(agent.title);
     const running = await store.mutate(
       id,
       () => ({
@@ -1600,7 +1635,7 @@ export class Engine {
       created.dir,
     );
     this.dirs(store.root).set(agentId, running.dir);
-    this.labelSession(agentId, { id, ticket, parentWork });
+    this.labelSession(agentId, { id, ticket, parentWork }, agent.labels ?? {});
     if (agent.status === "running") return toWire(running, this.now().getTime(), config);
     // Idle when tracked: its last turn decides, by the one landing rule every turn end goes through (endTurn).
     // An arc that handed you something lands; one between steps stays running. Unreadable now: it stays
@@ -2072,13 +2107,14 @@ export class Engine {
       return false;
     }
     const agent = snapshot?.agent;
-    // Backfill (BRO-2908): a session adopted before adoptions were labelled, or whose label was lost, gets it now.
-    if (agent && !agent.archivedAt && agent.labels?.[WORK_LABEL] !== item.contract.id) {
-      this.labelSession(worker.agentId, {
-        id: item.contract.id,
-        ...lineageOf(item.events),
-        ticket: lineageOf(item.events).ticket ?? ticketOf(item.title),
-      });
+    // Backfill (BRO-2908): a live session tracked before adoptions were labelled, or whose label was removed, gets it.
+    if (agent && !agent.archivedAt && agent.status !== "closed" && agent.labels?.[WORK_LABEL] !== item.contract.id) {
+      const lineage = lineageOf(item.events);
+      this.labelSession(
+        worker.agentId,
+        { id: item.contract.id, parentWork: lineage.parentWork, ticket: lineage.ticket ?? ticketOf(item.title) },
+        agent.labels ?? {},
+      );
     }
     const permission = pendingPermission(item.events);
     if (!agent || agent.archivedAt || agent.status === "closed") {

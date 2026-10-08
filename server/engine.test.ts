@@ -178,6 +178,21 @@ describe("dispatch", () => {
     expect(options.prompt).toContain(item.worker?.branch ?? "missing");
   });
 
+  test("a dispatch labels its agent with the ticket its title names (BRO-2908)", async () => {
+    const { engine, fake, repo } = await setup();
+    await engine.create(fake.paseo, {
+      title: "BRO-2908 Persist run transcripts",
+      brief: "Store it on the Run record.",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "hawthorne",
+      dispatch: true,
+    });
+    const options = fake.created[0] as { labels: Record<string, string> };
+    expect(options.labels.ticket).toBe("BRO-2908");
+  });
+
   test("gate:auto without a check is refused", async () => {
     const { create } = await setup();
     await expect(create({ gate: "auto" })).rejects.toThrow("needs a check command");
@@ -480,6 +495,7 @@ describe("reconcile", () => {
       null,
       null,
     ]);
+    await engine.labelsSettled();
     expect(labelled.at(-1)).toEqual([
       "manual",
       { "maestro.work": child.id, ticket: "STI-3508", "maestro.parent-work": parent.id },
@@ -490,7 +506,7 @@ describe("reconcile", () => {
     expect((await engine.adopt(fake.paseo, "other", "", undefined, { ticket: "BRO-2908" })).ticket).toBe("BRO-2908");
   });
 
-  test("reconcile labels a tracked session that lacks its work label, once, and again after a failure (BRO-2908)", async () => {
+  test("reconcile labels a tracked session that lacks its work label: once, with a backoff after a failure (BRO-2908)", async () => {
     let fail = true;
     const calls: string[] = [];
     const { create, engine, fake } = await setup(
@@ -502,29 +518,62 @@ describe("reconcile", () => {
         },
       },
     );
-    const item = await create();
-    tick(1);
-    await engine.list(fake.paseo);
-    expect(calls).toEqual(["agent-1"]);
-    // Failed: asked again at the next reconcile.
+    await create();
+    const list = async (seconds: number) => {
+      tickMs(seconds * 1000);
+      await engine.list(fake.paseo);
+      await engine.labelsSettled();
+      return calls.length;
+    };
+    // First failure: asked again a minute later, not sooner; second: two minutes later.
+    expect([await list(60), await list(30), await list(30), await list(90), await list(30)]).toEqual([1, 1, 2, 2, 3]);
+    // Set: not asked again while it stays set; asked again once ten minutes pass and it is still missing.
     fail = false;
-    tick(1);
-    await engine.list(fake.paseo);
-    expect(calls).toEqual(["agent-1", "agent-1"]);
-    // Set: not asked again while its labels are the same.
-    tick(1);
-    await engine.list(fake.paseo);
-    expect(calls.length).toBe(2);
-    // A session already carrying its work's label is left alone.
-    const agent = fake.agents.get("agent-1");
-    if (agent) Object.assign(agent, { labels: { "maestro.work": item.id } });
-    const fresh = await setup({}, { label: async (id) => void calls.push(`fresh:${id}`) });
-    await fresh.create();
-    const freshAgent = fresh.fake.agents.get("agent-1");
-    if (freshAgent) Object.assign(freshAgent, { labels: { "maestro.work": (await fresh.engine.list()).items[0]?.id } });
-    tick(1);
-    await fresh.engine.list(fresh.fake.paseo);
-    expect(calls.filter((c) => c.startsWith("fresh:"))).toEqual([]);
+    expect([await list(240), await list(60), await list(9 * 60)]).toEqual([4, 4, 5]);
+  });
+
+  test("a session's own ticket label wins and is never overwritten; a closed or archived session is not labelled (BRO-2908)", async () => {
+    const labelled: [string, Record<string, string>][] = [];
+    const { engine, fake, repo, create } = await setup(
+      {},
+      { label: async (id, labels) => void labelled.push([id, labels]) },
+    );
+    fake.agents.set("manual", { ...idleSession(repo), labels: { ticket: "STI-77" } });
+    fake.timelines.set("manual", said("Done."));
+    const item = await engine.adopt(fake.paseo, "manual", "BRO-1 something", BY_ORCHESTRATOR);
+    await engine.labelsSettled();
+    expect(item.ticket).toBe("STI-77");
+    expect(labelled.at(-1)).toEqual(["manual", { "maestro.work": item.id }]);
+    const before = labelled.length;
+    await create();
+    for (const status of ["closed", "archived"] as const) {
+      const agent = fake.agents.get("agent-1");
+      if (agent)
+        Object.assign(
+          agent,
+          status === "closed" ? { status: "closed" } : { archivedAt: new Date(clock).toISOString() },
+        );
+      tick(1);
+      await engine.list(fake.paseo);
+      await engine.labelsSettled();
+    }
+    expect(labelled.slice(before).map(([id]) => id)).not.toContain("agent-1");
+  });
+
+  test("a parent is an open work, never the session itself or a finished one; a ticket that is not one is refused (BRO-2908)", async () => {
+    const { engine, fake, repo, decide } = await setup({}, { label: async () => undefined });
+    fake.agents.set("orchestrator", { ...idleSession(repo), id: "orchestrator", title: "SRI Orchestrator" });
+    fake.timelines.set("orchestrator", said("Planned the arcs.\n\n## Ask\n- Start them?"));
+    const self = await engine.adopt(fake.paseo, "orchestrator", "", { actor: "agent", by: "orchestrator" });
+    expect(self.parentWork).toBeNull();
+    await expect(
+      engine.adopt(fake.paseo, "manual", "", BY_ORCHESTRATOR, { ticket: "X,maestro.work=other" }),
+    ).rejects.toThrow("A ticket is a team key and a number");
+    // The orchestrator's own work finished: a child it adopts after has no parent.
+    expect((await decide(self.id, "approve")).state).toBe("done");
+    fake.agents.set("manual", idleSession(repo));
+    fake.timelines.set("manual", said("Done."));
+    expect((await engine.adopt(fake.paseo, "manual", "", BY_ORCHESTRATOR)).parentWork).toBeNull();
   });
 
   test("an orchestrator adopting an idle arc between steps keeps it running; one it cannot read too", async () => {

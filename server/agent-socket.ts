@@ -26,6 +26,7 @@ import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { GATE_MODES } from "../shared/states";
+import { TICKET } from "../shared/text";
 import { type Engine, NO_HANDLE, UserError } from "./engine";
 import type { Origin } from "./events";
 import type { Paseo } from "./runs";
@@ -123,7 +124,10 @@ export function agentMethods(engine: Engine, paseo: () => Paseo | null): Readonl
     [
       "work.adopt",
       method(
-        ForAgent.extend({ title: z.string().default(""), ticket: z.string().optional() }),
+        ForAgent.extend({
+          title: z.string().default(""),
+          ticket: z.string().regex(TICKET, "A ticket is a team key and a number, like BRO-2908").optional(),
+        }),
         async ({ agentId, title, ticket }, caller) => ({
           item: await engine.adopt(connected(), session(agentId, caller), title, origin(caller), { ticket }),
         }),

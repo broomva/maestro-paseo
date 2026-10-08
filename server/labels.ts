@@ -15,6 +15,12 @@ export const WORK_LABELS = { work: WORK_LABEL, ticket: "ticket", parent: "maestr
 
 export const paseoLabel: LabelAgent = (agentId, labels) =>
   new Promise((done, fail) => {
+    // The CLI splits each --label on commas: a value with one would set a second label (maestro.work, say).
+    const unsafe = Object.entries(labels).find(([key, value]) => /[,=\s]/.test(key) || /[,\n]/.test(value));
+    if (unsafe) {
+      fail(new Error(`refused to label ${agentId}: ${unsafe[0]} holds a comma or line break`));
+      return;
+    }
     const args = [
       "agent",
       "update",

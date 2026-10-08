@@ -182,5 +182,7 @@ describe("a ticket id (BRO-2908)", () => {
         "no ticket",
       ].map(ticketOf),
     ).toEqual(["STI-3508", "BRO-2827", "STI-12", null, null]);
+    // A team whose key reads like a standard keeps its tickets.
+    expect(["MD-12 notes", "ISO-12 audit", "RFC-9110 header"].map(ticketOf)).toEqual(["MD-12", "ISO-12", null]);
   });
 });

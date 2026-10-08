@@ -70,6 +70,25 @@ async function setup() {
 }
 
 describe("what a session is offered", () => {
+  test("tracking takes a ticket, and refuses one that is not a ticket id (BRO-2908)", async () => {
+    const { ok, ask, fake } = await setup();
+    const session = (id: string) => ({
+      id,
+      cwd: "/tmp",
+      status: "running" as const,
+      workspaceId: "ws-x",
+      provider: "claude",
+      title: "Refactor the loader",
+      archivedAt: null,
+      pendingPermissions: [],
+      activeTurn: null,
+    });
+    fake.agents.set("session-1", session("session-1"));
+    const refused = await ask("work.adopt", { ticket: "X,maestro.work=other" });
+    expect(!refused.ok && refused.error).toContain("team key and a number");
+    expect((await ok("work.adopt", { ticket: "BRO-2908" })).item.ticket).toBe("BRO-2908");
+  });
+
   test("work a session creates is recorded as that session's and waits at the gate", async () => {
     const { repo, ok, events } = await setup();
     const { item } = await ok("work.create", { title: "Trim the cache", repo });

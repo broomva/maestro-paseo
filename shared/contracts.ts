@@ -8,6 +8,7 @@ import { AskNoticeSchema, FleetNoticeSchema } from "./fleet";
 import { InitiativeNoticeSchema } from "./initiatives";
 import { LoopNoticeSchema } from "./loops";
 import { GATE_MODES, GROUP_ORDER, KINDS, ORCH_STATES, VERDICTS } from "./states";
+import { TICKET } from "./text";
 import { TimelineNoticeSchema } from "./timeline";
 
 /** Bounds on what a work may pass to a provider as feature values. */
@@ -370,7 +371,11 @@ export const leaveRunning = defineRpc({ name: "work.leave-running", input: ById,
 
 export const adoptAgent = defineRpc({
   name: "work.adopt",
-  input: z.object({ agentId: z.string().min(1), title: z.string(), ticket: z.string().optional() }),
+  input: z.object({
+    agentId: z.string().min(1),
+    title: z.string(),
+    ticket: z.string().regex(TICKET, "A ticket is a team key and a number, like BRO-2908").optional(),
+  }),
   output: ItemResult,
 });
 
