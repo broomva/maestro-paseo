@@ -181,7 +181,10 @@ export const WorkItemSchema = z.object({
     .object({ by: z.enum(["you", "maestro"]), at: z.string() })
     .nullable()
     .optional(),
-  /** The agent that adopted it, an orchestrator, by its name when it gave one; absent from an older daemon. */
+  /**
+   * The agent that adopted it, an orchestrator. work.list names it by its session title (null when unknown);
+   * elsewhere `by` is the agent id the receipt holds. Absent from an older daemon.
+   */
   adoptedBy: z.object({ by: z.string().nullable() }).nullable().optional(),
   display: z
     .object({

@@ -32,6 +32,7 @@ import {
   type Verdict,
   verdictTarget,
 } from "../shared/states";
+import { adopterNames } from "./adopter-names";
 import { branchMerged, gitOf, type MergedPr, mergedPrs, watchedBranch } from "./branch-merge";
 import { runChecks } from "./checks";
 import { loadConfig } from "./config";
@@ -364,6 +365,8 @@ export class Engine {
   private lastReconcile = 0;
   /** Per agent, the daemon's `updatedAt` when reconcile last read its timeline for a missed end. */
   private readonly readAt = new Map<string, string>();
+  /** An adopter's session title by its agent id, read in the background (BRO-2938). */
+  private readonly adopterName: ReturnType<typeof adopterNames>;
   private readonly client: () => Paseo | null;
   private readonly timer: Timer;
   private readonly claimWaitMs: number;
@@ -379,6 +382,7 @@ export class Engine {
 
   constructor(options: EngineOptions = {}) {
     this.now = options.now ?? (() => new Date());
+    this.adopterName = adopterNames(() => this.now().getTime());
     this.readConfig = options.config ?? (() => loadConfig());
     this.log = options.log ?? ((message) => console.log(`[maestro] ${message}`));
     this.landed = options.landed ?? (() => undefined);
@@ -483,6 +487,28 @@ export class Engine {
     return found ? this.loadBound(store, found, agentId) : null;
   }
 
+  /**
+   * An adoption records its orchestrator by agent id (agent-socket.ts origin):
+   * the list says its session title instead, as far as it is known now. The
+   * read happens in the background (adopter-names.ts), so no list waits on it.
+   */
+  private namedAdopters(wire: WorkItem[], paseo?: Paseo): WorkItem[] {
+    const read = paseo
+      ? async (id: string) => {
+          const snapshot = await within(() => paseo.agents.ref(id).refresh(), this.claimWaitMs);
+          return snapshot?.agent.title ?? null;
+        }
+      : undefined;
+    return wire.map((item) =>
+      item.adoptedBy?.by ? { ...item, adoptedBy: { by: this.adopterName(item.adoptedBy.by, read) } } : item,
+    );
+  }
+
+  /** For a test: waits for the adopter names being read. */
+  adoptersSettled(): Promise<void> {
+    return this.adopterName.settled();
+  }
+
   // ── Reads ──────────────────────────────────────────────────────────────────
 
   /**
@@ -516,7 +542,10 @@ export class Engine {
     const now = this.now();
     const dayStart = new Date(now);
     dayStart.setHours(0, 0, 0, 0);
-    const wire = items.map((item) => toWire(item, now.getTime(), config));
+    const wire = this.namedAdopters(
+      items.map((item) => toWire(item, now.getTime(), config)),
+      paseo,
+    );
     wire.sort(
       (a, b) => GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group) || b.updatedAt.localeCompare(a.updatedAt),
     );

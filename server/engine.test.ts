@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { MaestroConfig } from "../shared/contracts";
 import { nextRunCopy } from "../shared/run";
 import type { Verdict } from "../shared/states";
+import { NAME_RETRY_MS } from "./adopter-names";
 import { defaultConfig } from "./config";
 import {
   CHECKING,
@@ -428,6 +429,40 @@ describe("reconcile", () => {
     expect(landed).toMatchObject({ text: "Waiting on you", detail: "The session was idle when tracked" });
     expect((await engine.adopt(fake.paseo, "manual", "")).id).toBe(item.id);
     expect((await engine.forAgent("manual"))?.id).toBe(item.id);
+  });
+
+  test("the list names an adopter by its session title once read, never its id, and never waits for it (BRO-2938)", async () => {
+    const { engine, fake, repo } = await setup();
+    fake.agents.set("manual", idleSession(repo));
+    fake.timelines.set("manual", said("Fixed it.\n\n## Ask\n- Merge #12?"));
+    fake.agents.set("orchestrator", { ...idleSession(repo), id: "orchestrator", title: "SRI Orchestrator" });
+    const item = await engine.adopt(fake.paseo, "manual", "", BY_ORCHESTRATOR);
+    const listed = async (paseo?: typeof fake.paseo) =>
+      (await engine.list(paseo)).items.find((entry) => entry.id === item.id)?.adoptedBy;
+    // The first list answers before the read lands: nothing, not the id.
+    expect(await listed(fake.paseo)).toEqual({ by: null });
+    await engine.adoptersSettled();
+    expect(await listed(fake.paseo)).toEqual({ by: "SRI Orchestrator" });
+    // Known: a list without the daemon still names it.
+    expect(await listed()).toEqual({ by: "SRI Orchestrator" });
+  });
+
+  test("a daemon that never answers a name read is given up on after the claim wait, and asked again (BRO-2938)", async () => {
+    const { engine, fake, repo } = await setup({}, { claimWaitMs: 20 });
+    fake.agents.set("manual", idleSession(repo));
+    fake.timelines.set("manual", said("Fixed it.\n\n## Ask\n- Merge #12?"));
+    await engine.adopt(fake.paseo, "manual", "", BY_ORCHESTRATOR);
+    const ref = fake.paseo.agents.ref;
+    let reads = 0;
+    fake.paseo.agents.ref = (id: string) =>
+      id === "orchestrator" ? { ...ref(id), refresh: () => (reads++, new Promise<never>(() => {})) } : ref(id);
+    await engine.list(fake.paseo);
+    // Bounded: the hung read is let go, so the id is not stuck behind it.
+    await engine.adoptersSettled();
+    tickMs(NAME_RETRY_MS);
+    await engine.list(fake.paseo);
+    await engine.adoptersSettled();
+    expect(reads).toBe(2);
   });
 
   test("an orchestrator adopting an idle arc between steps keeps it running; one it cannot read too", async () => {
