@@ -1405,6 +1405,8 @@ describe("work the loop flagged", () => {
     expect(view.text()).toContain("4 need you · 1 running");
     const card = view.byLabel(`Work y, Queued, ${yours.reason}, updated 12 minutes ago`);
     expect(card?.textContent).toContain(yours.reason);
+    // The state chips are the List's (the Feed's sections already put what needs you first).
+    await view.press(view.tabs()[2]);
     await view.press(view.byLabel("Needs you, 4"));
     expect(view.text()).toContain("Work y");
     expect(view.text()).not.toContain("Work d");
@@ -1431,10 +1433,10 @@ describe("work the loop flagged", () => {
     // The header count, as Paseo's header shows it: work.attention's waiting, counted by the header.
     const count = needsYou(attentionOf(items, Date.now()).waiting).length;
     expect(headerFace(count).label).toBe("5 need you");
-    const heading = view.all('[role="heading"]').find((el) => el.textContent === "Needs you");
+    const heading = view.all('[role="heading"]').find((el) => el.textContent === "At your gate");
     const header = heading?.parentElement;
     const section = header?.parentElement;
-    expect(header?.textContent).toBe(`Needs you${count}At your gate, stuck or flagged`);
+    expect(header?.textContent).toBe(`At your gate${count}`);
     const cards = [...(section?.querySelectorAll('[role="button"]') ?? [])].map((el) => el.getAttribute("aria-label"));
     expect(cards).toHaveLength(count);
     expect(cards.map((label) => label?.split(",")[0])).toEqual(["Work a", "Work g", "Work b", "Work y", "Work z"]);
@@ -1446,7 +1448,8 @@ describe("work the loop flagged", () => {
       expect(view.text().match(new RegExp(title, "g"))).toHaveLength(1);
     expect(view.all('[role="heading"]').map((el) => el.textContent)).not.toContain("Stuck");
     expect(view.text()).toContain("5 need you · 1 running");
-    // The chip the header opens holds the same work.
+    // The List's chip the header opens holds the same work.
+    await view.press(view.tabs()[2]);
     expect(view.byLabel(`Needs you, ${count}`)).not.toBeNull();
   });
 
@@ -1843,6 +1846,8 @@ describe("views and filters", () => {
       work("q", "proposed"),
     ];
     const view = await mount(surface(false));
+    // The chips live on the List: its sections are the same groups the chips count.
+    await view.press(view.tabs()[2]);
     /** The chips as the toolbar shows them: label to count. */
     const chips = () =>
       new Map(
@@ -1894,14 +1899,20 @@ describe("views and filters", () => {
     }
   });
 
-  test("a filter intent checks its chip, opens the feed and drops the scope", async () => {
+  test("a filter intent opens the feed, drops the scope, and checks its chip on the List", async () => {
     const view = await mount(surface(false));
+    await view.press(view.tabs()[2]);
     await view.press(view.byLabel("genesis, 1 of 2 open"));
     await view.press(view.tabs()[1]);
     expect(view.tabs()[1]?.getAttribute("aria-selected")).toBe("true");
     await act(async () => requestIntent({ kind: "filter", group: "review" }));
     await settle();
     expect(view.tabs()[0]?.getAttribute("aria-selected")).toBe("true");
+    // On the Feed, what needs you is its first section, At your gate; the scope menu is back to all.
+    expect(view.byLabel("Scope: all scopes")).not.toBeNull();
+    const headings = view.all('[role="heading"]').map((el) => el.textContent);
+    expect(headings.indexOf("At your gate")).toBeLessThan(headings.indexOf("Running"));
+    await view.press(view.tabs()[2]);
     expect(view.pressed("Needs you, 3")).toBe("true");
     expect(view.pressed("All work")).toBe("true");
     expect(view.text()).toContain("Work a");
@@ -1910,22 +1921,18 @@ describe("views and filters", () => {
 
   test("the board bypasses the state filter, and choosing it clears the filter", async () => {
     const view = await mount(surface(false));
+    await view.press(view.tabs()[2]);
     await view.press(view.byLabel("Running, 1"));
     expect(view.text()).not.toContain("Work a");
     await view.press(view.tabs()[1]);
-    await view.press(view.tabs()[0]);
-    expect(view.pressed("All, 6")).toBe("true");
-    // A filter set in the compact feed while the board is the chosen view.
-    await view.press(view.tabs()[1]);
-    await view.rerender(surface(true));
-    await view.press(view.byLabel("Running, 1"));
-    await view.rerender(surface(false));
-    expect(view.tabs()[1]?.getAttribute("aria-selected")).toBe("true");
     for (const title of ["Work a", "Work b", "Work c", "Work d", "Work f"]) expect(view.text()).toContain(title);
+    await view.press(view.tabs()[2]);
+    expect(view.pressed("All, 6")).toBe("true");
   });
 
   test("a scope whose initiative leaves the list does not come back", async () => {
     const view = await mount(surface(false));
+    await view.press(view.tabs()[2]);
     await view.press(view.byLabel("genesis, 1 of 2 open"));
     items = fixture().filter((item) => item.initiative !== "genesis");
     await view.press(view.byLabel("Refresh work"));
@@ -3605,6 +3612,8 @@ describe("the Decisions tab", () => {
       },
     ];
     const view = await mount(surface(false));
+    // Every view but the Feed (Decide, inline) and Decisions shows the notice.
+    await view.press(view.tabs()[1]);
     await until(view, "A decision waits on you");
     expect(view.text()).toContain("A decision waits on you: Approve merge of PR #863");
     await view.press(view.byLabel("Open Decisions, 1 waiting"));
@@ -3651,6 +3660,7 @@ describe("the Decisions tab", () => {
       },
     ];
     const view = await mount(surface(false));
+    await view.press(view.tabs()[1]);
     await until(view, "2 decisions wait on you");
     expect(view.text()).toContain("2 decisions wait on you, 1 blocking: Approve merge of PR #863");
     await view.press(view.byLabel("Open Decisions, 2 waiting"));
@@ -4331,5 +4341,112 @@ describe("Initiatives", () => {
     await broken.press(broken.byLabel("Try again"));
     await until(broken, "mod-anything skill");
     expect(broken.text()).toContain("mod-anything skill");
+  });
+});
+
+describe("the Feed home (BRO-2906)", () => {
+  const until = async (view: Awaited<ReturnType<typeof mount>>, text: string) => {
+    for (let tries = 0; tries < 150 && !view.text().includes(text); tries += 1) await settle(20);
+  };
+  const handledAt = new Date(Date.now() - 60 * 60_000).toISOString();
+  const withHandled = () => [
+    ...fixture(),
+    work("h", "done", {
+      title: "SRI: STI-3569 typography cap",
+      closed: { by: "maestro", at: handledAt },
+      adoptedBy: { by: "SRI Orchestrator" },
+    }),
+  ];
+
+  test("its sections, in order, under a header that says what was handled for you", async () => {
+    items = withHandled();
+    const view = await mount(surface(false));
+    const headings = view.all('[role="heading"]').map((el) => el.textContent);
+    const order = ["At your gate", "Running", "Queued", "Handled for you", "Done"].map((name) =>
+      headings.indexOf(name),
+    );
+    expect(order.every((at) => at >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(view.text()).toContain("3 need you · 1 running · 1 handled for you");
+    expect(view.text()).toContain("SRI Orchestrator closed 1 arc");
+    expect(view.text()).toContain("STI-3569 typography cap");
+    expect(view.text()).toContain("today 1 · this week 1");
+    // The Done list opens on demand.
+    expect(view.text()).not.toContain("Work f");
+    await view.press(view.byLabel("Done: 1. Show the list"));
+    expect(view.text()).toContain("Work f");
+  });
+
+  test("a card at your gate: its branch, its ask, Needs you and its verb, with no button inside the card", async () => {
+    const view = await mount(surface(false));
+    const card = view.byLabel("Work a, Needs you, hawthorne · core, updated 12 minutes ago");
+    expect(card?.textContent).toContain("maestro/a-1");
+    expect(card?.textContent).toContain("Approve the branch");
+    expect(card?.textContent).toContain("Needs you");
+    expect(card?.textContent).toContain("Answer");
+    expect(card?.querySelectorAll('[role="button"]').length).toBe(0);
+    await view.press(card);
+    expect(card?.getAttribute("aria-current")).toBe("true");
+  });
+
+  test("Decide lists the asks that wait on you, blocking first, and opens Decisions at the one you pick", async () => {
+    workspaceNow = [
+      { ...decisionFixture(), ledger: "plain.yaml", id: "B1", hash: "bbbbbbbbbbbbbbbb", headline: "A plain ask?" },
+      {
+        ...decisionFixture(),
+        ledger: "gate.yaml",
+        id: "A1",
+        hash: "aaaaaaaaaaaaaaaa",
+        headline: "Merge the gate fix?",
+        blocking: true,
+        waiting: true,
+        fallback: "hold",
+        options: [
+          { id: "merge", label: "Merge it", consequence: "", reversible: true, recommended: true },
+          { id: "hold", label: "Hold it", consequence: "", reversible: true, recommended: false },
+        ],
+      },
+    ];
+    const view = await mount(surface(false));
+    await until(view, "Merge the gate fix?");
+    const rows = view.all('[aria-label^="Decide: "]').map((el) => el.getAttribute("aria-label"));
+    expect(rows).toEqual(["Decide: Merge the gate fix?", "Decide: A plain ask?"]);
+    expect(view.text()).toContain("1 block running work");
+    expect(view.text()).toContain("blocks work");
+    expect(view.text()).toContain("silent → Hold it");
+    // Decide replaces the notice on the Feed: said once.
+    expect(view.text()).not.toContain("A decision waits on you");
+    await view.press(view.byLabel("Decide: Merge the gate fix?"));
+    await until(view, "Decision ");
+    expect(view.viewNow()).toBe("Decisions");
+  });
+
+  test("the search keeps what matches its title, place or branch, and says when nothing does", async () => {
+    const view = await mount(surface(false));
+    const field = view.byLabel("Find work, ticket or PR");
+    await view.type(field, "genesis");
+    expect(view.text()).toContain("Work c");
+    expect(view.text()).not.toContain("Work a");
+    await view.type(field, "maestro/a-1");
+    expect(view.text()).toContain("Work a");
+    expect(view.text()).not.toContain("Work c");
+    await view.type(field, "nothing like it");
+    expect(view.text()).toContain("No work matches “nothing like it”.");
+    await view.press(view.byLabel("Clear the search"));
+    expect(view.text()).toContain("Work c");
+  });
+
+  test("the scope menu lists the initiatives and narrows the feed to one", async () => {
+    const view = await mount(surface(false));
+    await view.press(view.byLabel("Scope: all scopes"));
+    expect(view.all('[role="menuitem"]').map((el) => el.textContent?.split(/\d/)[0])).toEqual([
+      "All scopes",
+      "genesis",
+      "hawthorne",
+    ]);
+    await view.press(view.all('[role="menuitem"]').find((el) => el.textContent?.startsWith("genesis")));
+    expect(view.byLabel("Scope: genesis")).not.toBeNull();
+    expect(view.text()).toContain("Work c");
+    expect(view.text()).not.toContain("Work a");
   });
 });
