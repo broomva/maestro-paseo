@@ -3,7 +3,7 @@ import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TimelineSource, TimelineView } from "../shared/timeline";
-import { type DriftWriter, envelopes, Loops, type LoopsOptions, stateOf } from "./loops";
+import { type DriftWriter, envelopes, Loops, type LoopsOptions, stateOf, WRITE_BACKOFF_MS } from "./loops";
 import { dirLedger } from "./loops-ledger";
 import heartbeat from "./testdata/heartbeat-103a1850.json";
 
@@ -53,7 +53,7 @@ const PAUSED = new Set([
   "com.broomva.moltbook-loop",
 ]);
 
-async function world(extraLabels: string[] = []) {
+async function world(extraLabels: string[] = [], ghaFails: { now: boolean; extra?: boolean } = { now: false }) {
   const root = await mkdtemp(join(tmpdir(), "loops-"));
   roots.push(root);
   const ledger = join(root, "ledger");
@@ -104,7 +104,10 @@ async function world(extraLabels: string[] = []) {
       ),
     gha: {
       observe: async (refs) => ({
-        observations: refs.map((ref) => ({
+        observations: (ghaFails.now
+          ? []
+          : [...refs, ...(ghaFails.extra ? ["broomva/x/.github/workflows/w.yml"] : [])]
+        ).map((ref) => ({
           subject: `loop:gha/${ref.split("/")[0]}/${ref.split("/")[1]}/${ref.split("/").at(-1)}`,
           kind: "gha-schedule" as const,
           ref,
@@ -121,7 +124,7 @@ async function world(extraLabels: string[] = []) {
           ephemeral: false,
           where: null,
         })),
-        unread: false,
+        unread: ghaFails.now ? ["broomva/workspace", "broomva/life", "broomva/x"] : [],
       }),
     },
     p9Dir: join(root, "p9"),
@@ -215,8 +218,8 @@ describe("the Loops read", () => {
     expect(written).toEqual([]);
   });
 
-  test("a write that fails is said and tried again on the next read", async () => {
-    const { options } = await world(["com.broomva.canary"]);
+  test("a write that fails is said, never holds the lines after it, and is tried again after the back-off", async () => {
+    const { options } = await world(["com.broomva.canary"], { now: false, extra: true });
     let fail = true;
     const lines: string[] = [];
     let clock = NOW;
@@ -224,15 +227,53 @@ describe("the Loops read", () => {
       ...options,
       now: () => clock,
       writer: async (line) => {
-        if (fail) throw new Error("locked");
-        lines.push(line.kind);
+        if (fail && line.subject === "loop:launchd/com.broomva.canary") throw new Error("locked");
+        lines.push(line.subject);
       },
     });
     expect((await loops.get()).warnings.join(" ")).toContain("locked");
+    // The other unregistered loop (a gha workflow no row names) is written though the canary's line failed.
+    expect(lines).toEqual(["loop:gha/broomva/x/w.yml"]);
     fail = false;
     clock += 60_000;
     await loops.get();
-    expect(lines).toEqual(["unregistered"]);
+    expect(lines).toHaveLength(1);
+    clock += WRITE_BACKOFF_MS;
+    await loops.get();
+    expect(lines).toEqual(["loop:gha/broomva/x/w.yml", "loop:launchd/com.broomva.canary"]);
+  });
+
+  test("a substrate that fails one read clears none of its open drift, and writes nothing when it is back", async () => {
+    const fails = { now: false, extra: true };
+    const { options, written } = await world([], fails);
+    let clock = NOW;
+    const loops = new Loops({ ...options, now: () => clock });
+    await loops.get();
+    expect(written.map((one) => `${one.type} ${one.subject}`)).toEqual([
+      "loop.drift.detected loop:gha/broomva/x/w.yml",
+    ]);
+    fails.now = true;
+    clock += 60_000;
+    await loops.get();
+    fails.now = false;
+    clock += 60_000;
+    await loops.get();
+    expect(written).toHaveLength(1);
+  });
+
+  test("a restart with an open TARGET_CHANGED judges against the binding it was detected with: no cleared, no re-detected", async () => {
+    const { options, written } = await world();
+    const other = "0badc0de-0000-4000-8000-000000000000";
+    await mkdir(options.streams, { recursive: true });
+    await writeFile(
+      join(options.streams, "drift.jsonl"),
+      `${JSON.stringify({ v: 1, id: "01", ts: "2026-10-08T15:00:00.000Z", stream: "loops/drift", type: "loop.drift.detected", actor: "daemon:maestro", subject: "loop:coordinator-tick", refs: {}, cause: null, data: { kind: "target_changed", detail: "x", baseline: { agentId: other, prompt: "follow .broomva/loops/prompts/coordinator-tick.md" } }, prev: null })}\n`,
+    );
+    const view = await new Loops(options).get();
+    expect(view.rows.find((row) => row.id === "coordinator-tick")?.drift.map((one) => one.kind)).toContain(
+      "target_changed",
+    );
+    expect(written.filter((one) => one.subject === "loop:coordinator-tick")).toEqual([]);
   });
 });
 

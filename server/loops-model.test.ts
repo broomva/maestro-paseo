@@ -690,3 +690,71 @@ describe("the seams", () => {
     expect(rowStub(obs({ ref: "com.broomva.Paseo_Liveness" })).id).toBe("paseo-liveness");
   });
 });
+
+describe("P20 round 1 regressions", () => {
+  const OTHER = "0badc0de-0000-4000-8000-000000000000";
+  const event = (type: string, ts: number, data: Record<string, unknown> = {}): TickEvent => ({
+    id: type,
+    ts: iso(ts),
+    type,
+    subject: "loop:coordinator-tick",
+    cause: null,
+    data,
+  });
+  test("a rollover in flight raises neither ACTIVE_BUT_ABSENT nor TARGET_CHANGED; one over 20 min old does", () => {
+    const paused = live({ status: "paused", prompt: POINTER });
+    const started = [event("loop.rollover.started", NOW - 5 * M, { old_agent: AGENT })];
+    const evidence: Evidence = {
+      rollovers: started,
+      baselines: new Map([["coordinator-tick", { agentId: OTHER, prompt: POINTER }]]),
+    };
+    const row = one([bound()], [paused], evidence);
+    expect(has(row, "active_but_absent")).toBe(false);
+    expect(has(row, "target_changed")).toBe(false);
+    const stale = { ...evidence, rollovers: [event("loop.rollover.started", NOW - 25 * M)] };
+    expect(has(one([bound()], [paused], stale), "active_but_absent")).toBe(true);
+    const failed = { ...evidence, rollovers: [...started, event("loop.rollover.failed", NOW - M)] };
+    expect(has(one([bound()], [paused], failed), "active_but_absent")).toBe(true);
+  });
+  test("TICK_MISSING is a row state: a later run that ticked clears it, and a newest run under 30 min waits", () => {
+    const fire = (at: number) => run(at, { scheduledFor: iso(at) });
+    const ticks = [
+      tick("started", "A0", NOW - 6 * H, { fire: iso(NOW - 6 * H) }),
+      tick("ended", "A1", NOW - 6 * H + M, { outcome: "ok" }, "A0"),
+      tick("started", "B0", NOW - 2 * H + M, { fire: iso(NOW - 2 * H) }),
+    ];
+    const at = (runs: LoopRun[]) => ({ ...live({ prompt: POINTER }), runs });
+    expect(has(one([bound()], [at([fire(NOW - 2 * H), fire(NOW - 4 * H)])], { ticks }), "tick_missing")).toBe(false);
+    expect(has(one([bound()], [at([fire(NOW - 10 * M), fire(NOW - 4 * H)])], { ticks }), "tick_missing")).toBe(false);
+    expect(has(one([bound()], [at([fire(NOW - 4 * H)])], { ticks }), "tick_missing")).toBe(true);
+  });
+  test("(b) is judged without an agent lookup: it needs only the runs and ticks", () => {
+    const denied = "API Error: 403 Your organization has disabled Claude subscription access";
+    const dead = (at: number) => run(at, { scheduledFor: iso(at), status: "failed", detail: denied });
+    const ticks = [
+      tick("started", "T1", NOW - 10 * H, { fire: iso(NOW - 10 * H) }),
+      tick("ended", "T2", NOW - 10 * H + M, { outcome: "ok" }, "T1"),
+    ];
+    const row = one([bound()], [{ ...live({ prompt: POINTER }), runs: [dead(NOW - 2 * H), dead(NOW - 4 * H)] }], {
+      ticks,
+    });
+    expect(has(row, "bound_session_gone")).toBe(true);
+  });
+  test("an unread GitHub repo keeps its unclaimed workflow's open drift; another repo's still clears", () => {
+    const open = new Map([
+      [
+        "loop:gha/broomva/x/w.yml#unregistered",
+        { subject: "loop:gha/broomva/x/w.yml", kind: "unregistered" as const, detail: "d" },
+      ],
+      [
+        "loop:gha/broomva/y/w.yml#unregistered",
+        { subject: "loop:gha/broomva/y/w.yml", kind: "unregistered" as const, detail: "d" },
+      ],
+    ]);
+    const got = transitions(open, [], new Set(["gha-schedule:broomva/x"]));
+    expect(got.lines.map((line) => `${line.type} ${line.subject}`)).toEqual([
+      "loop.drift.cleared loop:gha/broomva/y/w.yml",
+    ]);
+    expect([...got.open.keys()]).toEqual(["loop:gha/broomva/x/w.yml#unregistered"]);
+  });
+});

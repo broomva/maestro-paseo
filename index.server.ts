@@ -280,9 +280,13 @@ export default function contribute(host: PluginServerContext) {
       for (const id of ids) {
         try {
           const agent = (await paseo.agents.ref(id).refresh())?.agent ?? null;
-          found.set(id, { found: Boolean(agent), archivedAt: agent?.archivedAt ?? null });
+          // An empty answer (a client reconnecting) says nothing: only a session read is judged.
+          if (agent) found.set(id, { found: true, archivedAt: agent.archivedAt ?? null });
         } catch (error) {
-          log(`loops: reading session ${id}: ${(error as Error).message}`);
+          const said = (error as Error).message;
+          // Only Paseo's own word that the session does not exist is "not found".
+          if (/not found|unknown agent|no such agent/i.test(said)) found.set(id, { found: false, archivedAt: null });
+          else log(`loops: reading session ${id}: ${said}`);
         }
       }
       return found;

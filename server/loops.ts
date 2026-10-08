@@ -48,6 +48,8 @@ import { fleetLabel, StoredScheduleSchema, scheduleCadence, scheduleName } from 
 
 /** A view computed this recently is served as it is: several clients polling read once. */
 export const LOOPS_VIEW_MS = 10_000;
+/** A transition whose write failed is tried again this long after. */
+export const WRITE_BACKOFF_MS = 5 * 60_000;
 /** The header count waits this long for a read before it answers with the last one. */
 export const LOOPS_NOTICE_WAIT_MS = 2_000;
 /** The stream file's lines kept for the drift fold, ticks and rollovers: the tail. */
@@ -243,10 +245,10 @@ export function envelopes(text: string): Envelope[] {
   });
 }
 
-async function readTail(path: string): Promise<string> {
+async function readTail(path: string, limit: number | null = STREAM_TAIL): Promise<string> {
   try {
     const text = await readFile(path, "utf8");
-    return text.length > STREAM_TAIL ? text.slice(text.indexOf("\n", text.length - STREAM_TAIL) + 1) : text;
+    return limit !== null && text.length > limit ? text.slice(text.indexOf("\n", text.length - limit) + 1) : text;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
     throw error;
@@ -272,7 +274,18 @@ export async function stateOf(path: string): Promise<"ok" | "missing" | "unparse
  * tree is trusted to be on main). Actor daemon:maestro (spec §4).
  */
 export function homeWriter(repo: string, env: NodeJS.ProcessEnv = process.env): DriftWriter {
-  const script = () =>
+  // Read once per batch of transitions, not once per line.
+  let kept: { at: number; source: Promise<string> } | null = null;
+  const script = () => {
+    if (kept && Date.now() - kept.at < 60_000) return kept.source;
+    const source = read();
+    kept = { at: Date.now(), source };
+    source.catch(() => {
+      kept = null;
+    });
+    return source;
+  };
+  const read = () =>
     new Promise<string>((resolve, reject) => {
       execFile(
         "git",
@@ -323,6 +336,8 @@ export class Loops {
   /** What drift.jsonl leaves open; read once, then kept as each read writes. */
   private open: OpenDrift | null = null;
   private baselines = new Map<string, Binding>();
+  /** Transition lines whose write failed, and when: retried after WRITE_BACKOFF_MS. */
+  private readonly failed = new Map<string, number>();
   private logged = "";
 
   constructor(private readonly options: LoopsOptions) {
@@ -353,7 +368,7 @@ export class Loops {
   private async compute(): Promise<LoopsView> {
     const warnings: string[] = [];
     const now = this.now();
-    const unread = new Set<SubstrateKind>();
+    const unread = new Set<string>();
     let ledger: LedgerRead | null = null;
     if (this.options.ledger) {
       try {
@@ -374,7 +389,8 @@ export class Loops {
     ]);
     if (!timeline) unread.add("launchd").add("maestro-loop");
     if (!schedules) unread.add("paseo-heartbeat").add("paseo-schedule");
-    if (gha.unread) unread.add("gha-schedule");
+    if (gha.unread === "all") unread.add("gha-schedule");
+    else for (const repo of gha.unread) unread.add(`gha-schedule:${repo}`);
     if (!p9) unread.add("p9");
     // Session crons are P3's adapter (BRO-2932): until it lands, not read.
     unread.add("session-cron");
@@ -413,11 +429,13 @@ export class Loops {
       ...(p9 ?? []),
     ];
     const evidence = await this.evidence(intents, observations, warnings);
+    // Read back what is open first: a restart judges against the baselines it had.
+    const canWrite = ledger ? await this.loadOpen(warnings) : false;
     const rows = reconcile(intents, observations, now, { ...evidence, unread, baselines: this.baselines });
     this.baselines = nextBaselines(rows, this.baselines);
     // An unread ledger judges nothing: every observation would read as unregistered.
     const judged = ledger ? rows : rows.map((row) => ({ ...row, drift: [], unread: true }));
-    if (ledger) await this.record(judged, warnings);
+    if (canWrite) await this.record(judged, unread, warnings);
     const said = warnings.join("\n");
     if (said && said !== this.logged) this.log(`loops: ${warnings.join("; ")}`);
     this.logged = said;
@@ -458,7 +476,7 @@ export class Loops {
 
   private async gha(intents: readonly LoopIntent[], warnings: string[]) {
     const refs = intents.filter((one) => one.substrate.kind === "gha-schedule").map((one) => one.substrate.ref);
-    if (!this.options.gha) return { observations: [], unread: true };
+    if (!this.options.gha) return { observations: [], unread: "all" as const };
     return this.options.gha.observe(refs, warnings);
   }
 
@@ -504,48 +522,64 @@ export class Loops {
     return { ticks, rollovers, states, agents };
   }
 
-  /** Append each transition since the last read; a write that fails is said, and tried again next read. */
-  private async record(rows: readonly LoopRow[], warnings: string[]): Promise<void> {
-    if (!this.open) {
-      try {
-        const lines = envelopes(await readTail(this.options.driftFile ?? join(this.options.streams, "drift.jsonl")));
-        this.open = openFrom(lines);
-        // A TARGET_CHANGED still open keeps the binding it was detected against, across a restart.
-        for (const line of lines) {
-          const base = line.data.baseline as Binding | undefined;
-          const id = line.subject.startsWith("loop:") ? line.subject.slice(5) : null;
-          if (line.data.kind === "target_changed" && id && base && this.open.has(`${line.subject}#target_changed`)) {
-            this.baselines.set(id, base);
-          }
+  /**
+   * What drift.jsonl leaves open, read once before the first reconcile, so a
+   * restart neither re-detects what is open nor judges an open TARGET_CHANGED
+   * without the binding it was detected against. The whole file is folded: it
+   * holds transitions only.
+   */
+  private async loadOpen(warnings: string[]): Promise<boolean> {
+    if (this.open) return true;
+    try {
+      const lines = envelopes(
+        await readTail(this.options.driftFile ?? join(this.options.streams, "drift.jsonl"), null),
+      );
+      const open = openFrom(lines);
+      for (const line of lines) {
+        const base = line.data.baseline as Binding | undefined;
+        const id = line.subject.startsWith("loop:") ? line.subject.slice(5) : null;
+        if (line.data.kind === "target_changed" && id && base && open.has(`${line.subject}#target_changed`)) {
+          this.baselines.set(id, base);
         }
-      } catch (error) {
-        warnings.push(`drift.jsonl could not be read: ${(error as Error).message}`);
-        return;
       }
-    }
-    const { lines, open } = transitions(this.open, rows);
-    if (lines.length === 0) {
       this.open = open;
-      return;
+      return true;
+    } catch (error) {
+      warnings.push(`drift.jsonl could not be read, so no transition is written: ${(error as Error).message}`);
+      return false;
     }
-    if (!this.options.writer) {
+  }
+
+  /**
+   * Append each transition since the last read. A line that fails is said and
+   * stays pending (tried again after WRITE_BACKOFF_MS); the lines after it are
+   * still written, so one bad line never holds the rest.
+   */
+  private async record(rows: readonly LoopRow[], unread: ReadonlySet<string>, warnings: string[]): Promise<void> {
+    if (!this.open) return;
+    const { lines, open } = transitions(this.open, rows, unread);
+    if (lines.length === 0 || !this.options.writer) {
       this.open = open;
       return;
     }
     const written: OpenDrift = new Map(this.open);
+    const now = this.now();
     for (const line of lines) {
-      const key = `${line.subject}#${line.kind}`;
+      const key = `${line.type} ${line.subject}#${line.kind}`;
+      const failed = this.failed.get(key);
+      if (failed && now - failed < WRITE_BACKOFF_MS) continue;
       const id = line.subject.startsWith("loop:") ? line.subject.slice(5) : "";
       const base =
         line.kind === "target_changed" && line.type === "loop.drift.detected" ? this.baselines.get(id) : undefined;
       try {
         await this.options.writer({ ...line, ...(base ? { data: { baseline: base } } : {}) });
-        if (line.type === "loop.drift.detected")
-          written.set(key, { subject: line.subject, kind: line.kind, detail: line.detail });
-        else written.delete(key);
+        this.failed.delete(key);
+        if (line.type === "loop.drift.detected") {
+          written.set(`${line.subject}#${line.kind}`, { subject: line.subject, kind: line.kind, detail: line.detail });
+        } else written.delete(`${line.subject}#${line.kind}`);
       } catch (error) {
+        this.failed.set(key, now);
         warnings.push(`A drift transition could not be written: ${(error as Error).message}`);
-        break;
       }
     }
     this.open = written;

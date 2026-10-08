@@ -38,6 +38,8 @@ export const BUSY_RUN = 3;
 /** A session cron's own maximum life (CronCreate: recurring tasks auto-expire after 7 days). */
 export const CRON_LIFE_MS = 7 * DAY;
 export const EXPIRING_MS = DAY;
+/** A rollover started this recently with no end yet is in flight: its expected moves are not drift (§7 waits up to 15 min). */
+export const ROLLOVER_WINDOW_MS = 20 * MIN;
 
 /**
  * The pinned auth-failure list (§4 BOUND_SESSION_GONE (b)): a session whose
@@ -94,8 +96,12 @@ export interface Evidence {
   agents?: ReadonlyMap<string, AgentState>;
   /** The binding last seen for each bound row, by loop id; none: this is the first sight, which sets it. */
   baselines?: ReadonlyMap<string, Binding>;
-  /** Substrates that could not be read this time: their rows judge nothing (no false ABSENT). */
-  unread?: ReadonlySet<SubstrateKind>;
+  /**
+   * What could not be read this time: a substrate kind, or one GitHub repo as
+   * `gha-schedule:<owner>/<repo>`. Its rows judge nothing (no false ABSENT),
+   * and its open drift stays open (no false cleared).
+   */
+  unread?: ReadonlySet<string>;
 }
 
 /** The Timeline raises these itself (shared/timeline.ts timelineNotices); Loops shows the badge, never a second notice. */
@@ -110,6 +116,31 @@ const TIMELINE_RAISES: Record<SubstrateKind, boolean> = {
 };
 
 // ── Subjects and joins ───────────────────────────────────────────────────────
+
+/** The substrate an observation subject names (`loop:launchd/…`, `loop:gha/…`); null for a ledger row's `loop:<id>`. */
+export function subjectKind(subject: string): SubstrateKind | null {
+  const rest = subject.slice("loop:".length);
+  if (!rest.includes("/")) return null;
+  const kinds: Record<string, SubstrateKind> = {
+    launchd: "launchd",
+    "paseo-heartbeat": "paseo-heartbeat",
+    "paseo-schedule": "paseo-schedule",
+    maestro: "maestro-loop",
+    gha: "gha-schedule",
+    cc: "session-cron",
+    p9: "p9",
+  };
+  return kinds[rest.split("/")[0] ?? ""] ?? null;
+}
+
+/** Whether a substrate ref (or an observation subject) went unread this time. */
+export function isUnread(unread: ReadonlySet<string> | undefined, kind: SubstrateKind, ref: string): boolean {
+  if (!unread) return false;
+  if (unread.has(kind)) return true;
+  if (kind !== "gha-schedule") return false;
+  const parts = ref.replace(/^loop:gha\//, "").split("/");
+  return unread.has(`gha-schedule:${parts[0]}/${parts[1]}`);
+}
 
 /** A ledger row's subject (§1): `loop:<id>`. */
 export const rowSubject = (id: string) => `loop:${id}`;
@@ -323,6 +354,7 @@ function rowDrift(
   const found: Found[] = [];
   const { kind, ref } = intent.substrate;
   const id = primary && isPaseo(kind) ? primary.ref : null;
+  const rolling = intent.session === "bound" && rollingOver(intent, now, evidence.rollovers ?? []);
   const runs = primary?.runs ?? [];
   const bound = intent.session === "bound";
   const desired = intent.desired;
@@ -351,7 +383,8 @@ function rowDrift(
   }
 
   if (desired === "active") {
-    if (!orphan && primary?.presence !== "on") {
+    // A rollover in flight pauses the old schedule before its successor's is live (§7): not absent.
+    if (!orphan && !rolling && primary?.presence !== "on") {
       found.push({
         kind: "active_but_absent",
         detail: primary
@@ -386,7 +419,7 @@ function rowDrift(
         });
       }
     }
-    if (bound && primary) found.push(...boundDrift(intent, primary, all, now, evidence));
+    if (bound && primary) found.push(...boundDrift(intent, primary, all, now, evidence, rolling));
     if (intent.prompt && primary) found.push(...tickDrift(intent, primary, now, evidence));
     if (intent.prompt && evidence.states) {
       const state = evidence.states.get(intent.id);
@@ -470,12 +503,19 @@ function adoptedAt(started: readonly TickEvent[]): number {
   return Number.isFinite(at) ? at : Number.POSITIVE_INFINITY;
 }
 
+/** Whether a rollover of this row started under ROLLOVER_WINDOW_MS ago and has not completed or failed since. */
+function rollingOver(intent: LoopIntent, now: number, rollovers: readonly RolloverEvent[]): boolean {
+  const latest = ticksOf(rollovers, intent.id).sort((a, b) => instant(b.ts) - instant(a.ts))[0];
+  return latest?.type === "loop.rollover.started" && now - instant(latest.ts) < ROLLOVER_WINDOW_MS;
+}
+
 function boundDrift(
   intent: LoopIntent,
   primary: LoopObservation,
   all: readonly LoopObservation[],
   now: number,
   evidence: Evidence,
+  rolling: boolean,
 ): Found[] {
   const found: Found[] = [];
   const agentId = primary.target?.agentId ?? null;
@@ -486,7 +526,8 @@ function boundDrift(
     gone = agent.found
       ? `Its session ${short(agentId)} was archived at ${agent.archivedAt}.`
       : `Its session ${short(agentId)} is not in Paseo.`;
-  } else if (agent) {
+  } else {
+    // (b) needs only the runs and ticks: judged whether or not the agent lookup answered.
     const why = deadLogin(intent, primary.runs, now, evidence.ticks ?? []);
     if (why) gone = `Its last two fires failed or never ticked, each on a login failure: ${why}`;
   }
@@ -516,7 +557,7 @@ function boundDrift(
   // TARGET_CHANGED: the live target or prompt moved off the baseline with no rollover naming the change.
   const baseline = evidence.baselines?.get(intent.id);
   const current: Binding = { agentId, prompt: primary.target?.prompt ?? null };
-  if (baseline) {
+  if (baseline && !rolling) {
     // The latest loop.rollover.completed explains a target or prompt equal to its own (§7 data shape).
     const completed = ticksOf(evidence.rollovers ?? [], intent.id)
       .filter((event) => event.type === "loop.rollover.completed")
@@ -563,14 +604,15 @@ function tickDrift(intent: LoopIntent, primary: LoopObservation, now: number, ev
   // TICK_MISSING, a row state: its most recent judged run (not failed, at or after adoption, the first started
   // tick) has no started tick for its slot TICK_WAIT_MS on. A later run that pairs, or the late tick, clears it.
   const adopted = adoptedAt(started);
+  // The most recent judged run: one younger than TICK_WAIT_MS is still in its window, and a later run that
+  // paired leaves the older miss behind.
   const fire = primary.runs.find(
     (run) =>
       run.status !== "failed" &&
       run.status !== "missed" &&
       run.status !== "running" &&
       run.scheduledFor &&
-      instant(run.scheduledFor) >= adopted &&
-      now - instant(run.scheduledFor) > TICK_WAIT_MS,
+      instant(run.scheduledFor) >= adopted,
   );
   if (fire && untickedFire(started, fire, now)) {
     found.push({
@@ -638,7 +680,7 @@ export function reconcile(
     const mine = claimed(intent, observations);
     for (const one of mine) used.add(one);
     const primary = mine[0] ?? null;
-    const unread = evidence.unread?.has(intent.substrate.kind) ?? false;
+    const unread = isUnread(evidence.unread, intent.substrate.kind, intent.substrate.ref);
     const found = unread ? [] : rowDrift(intent, primary, observations, now, evidence);
     const sri = intent.scope === "sri";
     rows.push({
@@ -746,9 +788,18 @@ export type OpenDrift = Map<string, { subject: string; kind: DriftClass; detail:
  * transitions, never a line per read. A row that could not be read keeps
  * what it had open: an unread substrate clears nothing.
  */
-export function transitions(open: OpenDrift, rows: readonly LoopRow[]): { lines: Transition[]; open: OpenDrift } {
+export function transitions(
+  open: OpenDrift,
+  rows: readonly LoopRow[],
+  unread?: ReadonlySet<string>,
+): { lines: Transition[]; open: OpenDrift } {
   const now: OpenDrift = new Map();
   const keep = new Set(rows.filter((row) => row.unread).map((row) => row.subject));
+  // An observation-only row vanishes when its substrate is not read: what it had open stays open.
+  for (const value of open.values()) {
+    const kind = subjectKind(value.subject);
+    if (kind && isUnread(unread, kind, value.subject)) keep.add(value.subject);
+  }
   for (const row of rows) {
     for (const drift of row.drift)
       now.set(`${row.subject}#${drift.kind}`, { subject: row.subject, kind: drift.kind, detail: drift.detail });

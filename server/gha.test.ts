@@ -45,6 +45,8 @@ describe("the workflow file", () => {
     const text = `on:\n  schedule:\n    - cron: '17 7 * * *'  # nightly\n    - cron: "0 12 * * 1"\n  workflow_dispatch:\njobs: {}\n`;
     expect(scheduleCrons(text)).toEqual(["17 7 * * *", "0 12 * * 1"]);
     expect(scheduleCrons("on:\n  push:\n    branches: [main]\n")).toEqual([]);
+    // A list at its key's own indent is valid YAML.
+    expect(scheduleCrons("on:\n  schedule:\n  - cron: '41 6 * * *'\n  workflow_dispatch:\n")).toEqual(["41 6 * * *"]);
   });
 });
 
@@ -112,9 +114,9 @@ describe("the reader", () => {
     fail = true;
     const kept = await reader.observe([REF], warnings);
     expect(kept.observations).toHaveLength(1);
-    expect(kept.unread).toBe(false);
+    expect(kept.unread).toEqual([]);
     expect(warnings[0]).toContain("HTTP 502");
     const cold = await new GhaSchedules(gh, () => now).observe([REF], []);
-    expect(cold.unread).toBe(true);
+    expect(cold.unread).toEqual(["broomva/workspace"]);
   });
 });

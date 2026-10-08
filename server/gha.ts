@@ -16,7 +16,7 @@ import { dueTimes, parseCron } from "./cron";
 export const GHA_CACHE_MS = 10 * 60_000;
 /** A workflow the schedule ran within this is a scheduled one, named by a row or not. */
 export const GHA_RECENT_MS = 14 * 24 * 60 * 60_000;
-const RUNS = 50;
+const RUNS = 100;
 
 /** `gh` with its arguments; answers stdout. */
 export type Gh = (args: readonly string[]) => Promise<string>;
@@ -44,6 +44,7 @@ export interface GhaWorkflow {
 }
 
 export interface GhaRun {
+  id?: number;
   workflow_id: number;
   status: string | null;
   conclusion: string | null;
@@ -72,7 +73,9 @@ export function scheduleCrons(text: string): string[] {
   const crons: string[] = [];
   for (const line of lines.slice(at + 1)) {
     if (line.trim() === "" || line.trim().startsWith("#")) continue;
-    if (line.search(/\S/) <= indent) break;
+    // YAML lets a list sit at its key's own indent (`schedule:` then `- cron: …` in the same column).
+    const sameIndentItem = line.search(/\S/) === indent && line.trim().startsWith("-");
+    if (line.search(/\S/) <= indent && !sameIndentItem) break;
     const match = /cron\s*:\s*["']?([^"'#]+?)["']?\s*(?:#.*)?$/.exec(line);
     if (match?.[1]) crons.push(match[1].trim());
   }
@@ -172,9 +175,10 @@ export class GhaSchedules {
   async observe(
     refs: readonly string[],
     warnings: string[],
-  ): Promise<{ observations: LoopObservation[]; unread: boolean }> {
+  ): Promise<{ observations: LoopObservation[]; unread: string[] }> {
     const { repos, named } = ghaTargets(refs);
-    let unread = false;
+    // Per repo: one that cannot be read silences only its own rows.
+    const unread: string[] = [];
     const observations: LoopObservation[] = [];
     for (const repo of repos) {
       const read = await this.repo(repo, named).catch((error) => {
@@ -182,7 +186,7 @@ export class GhaSchedules {
         return this.cache.get(repo)?.read ?? null;
       });
       if (!read) {
-        unread = true;
+        unread.push(repo);
         continue;
       }
       observations.push(...ghaObservations(read, named, this.now()));
@@ -193,14 +197,28 @@ export class GhaSchedules {
   private async repo(repo: string, named: ReadonlySet<string>): Promise<GhaRepoRead> {
     const kept = this.cache.get(repo);
     if (kept && this.now() - kept.at < GHA_CACHE_MS) return kept.read;
-    const [workflows, runs] = await Promise.all([
+    const runsOf = (path: string) =>
+      this.gh(["api", path]).then((text) => (JSON.parse(text) as { workflow_runs: GhaRun[] }).workflow_runs);
+    // The repo's schedule runs find the workflows no row names; a named one's own runs (spec §3) are read apart,
+    // so a busy workflow never pushes another out of the sample.
+    const [workflows, recent] = await Promise.all([
       this.gh(["api", `repos/${repo}/actions/workflows?per_page=100`]).then(
         (text) => (JSON.parse(text) as { workflows: GhaWorkflow[] }).workflows,
       ),
-      this.gh(["api", `repos/${repo}/actions/runs?event=schedule&per_page=${RUNS}`]).then(
-        (text) => (JSON.parse(text) as { workflow_runs: GhaRun[] }).workflow_runs,
-      ),
+      runsOf(`repos/${repo}/actions/runs?event=schedule&per_page=${RUNS}`),
     ]);
+    const own = await Promise.all(
+      workflows
+        .filter((workflow) => named.has(`${repo}/${workflow.path}`))
+        .map((workflow) => runsOf(`repos/${repo}/actions/workflows/${workflow.id}/runs?event=schedule&per_page=20`)),
+    );
+    const seen = new Set<string>();
+    const runs = [...own.flat(), ...recent].filter((run) => {
+      const key = `${run.id ?? `${run.workflow_id}:${run.created_at}`}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     const crons = new Map<string, string[]>();
     const now = this.now();
     for (const workflow of workflows) {
