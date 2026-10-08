@@ -4386,6 +4386,8 @@ describe("the Feed home (BRO-2906)", () => {
     // The Done list opens on demand.
     expect(view.text()).not.toContain("Work f");
     expect(view.byLabel("Show the 1 done item")?.getAttribute("aria-expanded")).toBe("false");
+    // An icon-only toggle is a 32 px target: react-native-web ignores hitSlop.
+    expect(view.byLabel("Show the 1 done item")?.getAttribute("style")).toContain("min-width: 32px");
     await view.press(view.byLabel("Show the 1 done item"));
     expect(view.text()).toContain("Work f");
     expect(view.byLabel("Hide the 1 done item")?.getAttribute("aria-expanded")).toBe("true");
@@ -4449,6 +4451,7 @@ describe("the Feed home (BRO-2906)", () => {
     expect(view.text()).not.toContain("Work c");
     await view.type(field, "nothing like it");
     expect(view.text()).toContain("No work matches “nothing like it”.");
+    expect(view.byLabel("Clear the search")?.getAttribute("style")).toContain("min-height: 32px");
     await view.press(view.byLabel("Clear the search"));
     expect(view.text()).toContain("Work c");
   });

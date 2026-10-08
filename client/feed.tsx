@@ -25,7 +25,10 @@ import {
 import { ago, plural } from "./format";
 import { cardLabel, changedVisible, groupHint, type Initiative } from "./plane-model";
 import { placeText, titleText } from "./records-text";
-import { radius, StateDot, space, Unbroken, useText, webAria } from "./ui";
+import { CHOICE_ROLE, radius, StateDot, space, Unbroken, useText, webAria } from "./ui";
+
+/** An icon-only control's target: a real box, since react-native-web ignores hitSlop. */
+export const TAP_BOX = { minWidth: 32, minHeight: 32, alignItems: "center", justifyContent: "center" } as const;
 
 type Pick = { theme: PluginTheme; selected: string | null; onSelect: (id: string) => void };
 
@@ -402,8 +405,7 @@ function DoneSection({
           aria-expanded={open}
           accessibilityLabel={`${open ? "Hide" : "Show"} the ${plural(done.count, "done item")}`}
           onPress={() => setOpen((value) => !value)}
-          // A real box, not hitSlop: react-native-web ignores hitSlop.
-          style={{ minWidth: 32, minHeight: 32, alignItems: "center", justifyContent: "center" }}
+          style={TAP_BOX}
         >
           <Icon name={open ? "ChevronUp" : "ChevronDown"} size={14} color={theme.colors.foregroundMuted} />
         </Pressable>
@@ -540,7 +542,12 @@ export function FeedControls({
             style={[text.body, { flex: 1, paddingVertical: space[2] }]}
           />
           {query ? (
-            <Pressable accessibilityRole="button" accessibilityLabel="Clear the search" onPress={() => onQuery("")}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Clear the search"
+              onPress={() => onQuery("")}
+              style={TAP_BOX}
+            >
               <Icon name="X" size={14} color={theme.colors.foregroundMuted} />
             </Pressable>
           ) : null}
@@ -554,9 +561,9 @@ export function FeedControls({
             return (
               <Pressable
                 key={name ?? "all"}
-                accessibilityRole="menuitem"
+                role={CHOICE_ROLE}
                 accessibilityState={{ checked: chosen }}
-                {...webAria({ role: "menuitemradio", "aria-checked": chosen })}
+                {...webAria({ "aria-checked": chosen })}
                 onPress={() => choose(name)}
                 style={({ pressed }) => ({
                   flexDirection: "row",

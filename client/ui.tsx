@@ -13,6 +13,7 @@ import {
   Easing,
   Platform,
   Pressable,
+  type Role,
   Text,
   type TextStyle,
   View,
@@ -33,11 +34,17 @@ export function webAria(props: {
   "aria-pressed"?: boolean;
   "aria-current"?: boolean;
   "aria-checked"?: boolean;
-  /** Roles React Native's types lack, for the web only (a menu of choices is `menuitemradio`). */
-  role?: "menuitemradio";
 }): object {
   return props;
 }
+
+/**
+ * A row that is one choice among several. On the web it is ARIA's
+ * `menuitemradio` inside `role="menu"`: react-native-web writes the role as
+ * given, though RN's Role type omits it. Native has no such role and logs an
+ * error for unknown ones, so there it is a radio.
+ */
+export const CHOICE_ROLE = (Platform.OS === "web" ? "menuitemradio" : "radio") as Role;
 
 export function toneColor(theme: PluginTheme, tone: Tone): string {
   switch (tone) {
