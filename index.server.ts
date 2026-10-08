@@ -10,12 +10,14 @@ import { Engine, UserError } from "./server/engine";
 import { AwakeClock, Fleet, wallClock } from "./server/fleet";
 import { inspectFolder as inspect } from "./server/folders";
 import { GateCards } from "./server/gate-card";
+import { createInboxProvider, Inbox } from "./server/inbox";
 import { agentIds, driverRelay, ghRun, ideaWork, prStates, workspaceInitiatives } from "./server/initiatives";
 import { Launchd } from "./server/launchd";
 import { Loop } from "./server/loop";
 import {
   controlAskPaths,
   controlRepoPaths,
+  expandHome,
   launchdPrefix,
   paseoSchedulesDir,
   socketPath,
@@ -76,7 +78,27 @@ export default function contribute(host: PluginServerContext) {
   // reads the same client. One that came due before the first client (a restart
   // inside the undo window) applies as soon as the first one arrives.
   let latest: Paseo | null = null;
-  const engine = new Engine({ client: () => latest, landed: (before, after) => cards.landed(before, after) });
+  // And the inbox tells you through Paseo's own push (server/inbox.ts): its provider, and the one session on it.
+  // A host without providers cannot carry it: Maestro then works as before, with no push of its own.
+  if (typeof host.registerProvider === "function") host.registerProvider(createInboxProvider());
+  else log("this Paseo takes no plugin providers, so Maestro's inbox cannot push; Needs you still shows in Maestro");
+  const inbox: Inbox = new Inbox(
+    () => latest,
+    async () => expandHome((await engine.settings()).workRoot),
+    log,
+    undefined,
+    undefined,
+    undefined,
+    // An orchestrator's own landing pushes only if it is still at your gate on that landing after the grace.
+    async (workId, landing) => {
+      const { item } = await engine.get(workId);
+      return item.state === "review" && item.landing === landing;
+    },
+  );
+  const engine: Engine = new Engine({
+    client: () => latest,
+    landed: (before, after) => Promise.all([cards.landed(before, after), inbox.landed(before, after)]),
+  });
   // The workspace's own asks: the control repo's ledgers, at their homes (spec #861 §5.2).
   const control = controlRepoPaths();
   const askPaths = controlAskPaths();
