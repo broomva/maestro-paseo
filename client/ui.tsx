@@ -29,7 +29,13 @@ export const size = { xs: 12, sm: 14, base: 16, lg: 18, xl: 22, xxl: 24 } as con
  * ARIA that react-native-web writes to the DOM but React Native's types omit.
  * Native ignores it, so pair it with accessibilityState for iOS and Android.
  */
-export function webAria(props: { "aria-pressed"?: boolean; "aria-current"?: boolean }): object {
+export function webAria(props: {
+  "aria-pressed"?: boolean;
+  "aria-current"?: boolean;
+  "aria-checked"?: boolean;
+  /** Roles React Native's types lack, for the web only (a menu of choices is `menuitemradio`). */
+  role?: "menuitemradio";
+}): object {
   return props;
 }
 

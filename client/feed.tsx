@@ -399,9 +399,11 @@ function DoneSection({
         <Pressable
           accessibilityRole="button"
           accessibilityState={{ expanded: open }}
+          aria-expanded={open}
           accessibilityLabel={`${open ? "Hide" : "Show"} the ${plural(done.count, "done item")}`}
           onPress={() => setOpen((value) => !value)}
-          hitSlop={8}
+          // A real box, not hitSlop: react-native-web ignores hitSlop.
+          style={{ minWidth: 32, minHeight: 32, alignItems: "center", justifyContent: "center" }}
         >
           <Icon name={open ? "ChevronUp" : "ChevronDown"} size={14} color={theme.colors.foregroundMuted} />
         </Pressable>
@@ -554,6 +556,7 @@ export function FeedControls({
                 key={name ?? "all"}
                 accessibilityRole="menuitem"
                 accessibilityState={{ checked: chosen }}
+                {...webAria({ role: "menuitemradio", "aria-checked": chosen })}
                 onPress={() => choose(name)}
                 style={({ pressed }) => ({
                   flexDirection: "row",

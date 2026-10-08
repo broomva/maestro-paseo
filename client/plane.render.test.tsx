@@ -4385,8 +4385,10 @@ describe("the Feed home (BRO-2906)", () => {
     expect(view.text()).toContain("today 1 · this week 1");
     // The Done list opens on demand.
     expect(view.text()).not.toContain("Work f");
+    expect(view.byLabel("Show the 1 done item")?.getAttribute("aria-expanded")).toBe("false");
     await view.press(view.byLabel("Show the 1 done item"));
     expect(view.text()).toContain("Work f");
+    expect(view.byLabel("Hide the 1 done item")?.getAttribute("aria-expanded")).toBe("true");
   });
 
   test("a card at your gate: its branch, its ask, Needs you and its verb, with no button inside the card", async () => {
@@ -4454,12 +4456,10 @@ describe("the Feed home (BRO-2906)", () => {
   test("the scope menu lists the initiatives and narrows the feed to one", async () => {
     const view = await mount(surface(false));
     await view.press(view.byLabel("Scope: all scopes"));
-    expect(view.all('[role="menuitem"]').map((el) => el.textContent?.split(/\d/)[0])).toEqual([
-      "All scopes",
-      "genesis",
-      "hawthorne",
-    ]);
-    await view.press(view.all('[role="menuitem"]').find((el) => el.textContent?.startsWith("genesis")));
+    const items = () => view.all('[role="menuitemradio"]');
+    expect(items().map((el) => el.textContent?.split(/\d/)[0])).toEqual(["All scopes", "genesis", "hawthorne"]);
+    expect(items().map((el) => el.getAttribute("aria-checked"))).toEqual(["true", "false", "false"]);
+    await view.press(items().find((el) => el.textContent?.startsWith("genesis")));
     expect(view.byLabel("Scope: genesis")).not.toBeNull();
     expect(view.text()).toContain("Work c");
     expect(view.text()).not.toContain("Work a");

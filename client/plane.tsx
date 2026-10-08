@@ -416,19 +416,11 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
             </View>
           ) : null
         ) : (
+          // Not wide means the Feed with an item picked: the item takes the rest of the window.
           <View style={{ flex: 1 }}>
             {current ? (
               <WorkDetail id={current} theme={theme} compact={false} navigation={navigation} open={requestIntent} />
-            ) : (
-              <View
-                style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: space[8], gap: space[2] }}
-              >
-                <Text style={text.title}>Pick a work item</Text>
-                <Text style={[text.muted, { textAlign: "center", maxWidth: 360 }]}>
-                  Its receipts, checks and the verb it needs from you show here.
-                </Text>
-              </View>
-            )}
+            ) : null}
           </View>
         )}
         {newWork}

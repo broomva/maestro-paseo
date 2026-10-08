@@ -195,14 +195,15 @@ describe("a card", () => {
   });
 
   test("failed checks are not drawn as a pass", () => {
-    const [failed, passed] = ["2 of 3 checks failed", "All 3 checks passed"].map(
+    // verdictOf's words (server/events.ts): one check, several, and a pass.
+    const evidence = ["1 of 1 check failed", "2 of 3 checks failed", "All 3 checks passed", "Check passed"].map(
       (verdict) => cardOf(fakeWork("v", "review", live, { verdict }), NOW).evidence,
     );
-    expect([failed?.icon, failed?.tone, passed?.icon, passed?.tone]).toEqual([
-      "CircleX",
-      "danger",
-      "CircleCheck",
-      "success",
+    expect(evidence.map((e) => [e?.icon, e?.tone])).toEqual([
+      ["CircleX", "danger"],
+      ["CircleX", "danger"],
+      ["CircleCheck", "success"],
+      ["CircleCheck", "success"],
     ]);
   });
 
