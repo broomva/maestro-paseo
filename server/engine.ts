@@ -32,6 +32,7 @@ import {
   type Verdict,
   verdictTarget,
 } from "../shared/states";
+import { adopterNames } from "./adopter-names";
 import { branchMerged, gitOf, type MergedPr, mergedPrs, watchedBranch } from "./branch-merge";
 import { runChecks } from "./checks";
 import { loadConfig } from "./config";
@@ -364,8 +365,8 @@ export class Engine {
   private lastReconcile = 0;
   /** Per agent, the daemon's `updatedAt` when reconcile last read its timeline for a missed end. */
   private readonly readAt = new Map<string, string>();
-  /** An adopter's session title by its agent id, once read; null when the daemon had no such session (BRO-2938). */
-  private readonly adopterNames = new Map<string, string | null>();
+  /** An adopter's session title by its agent id, read in the background (BRO-2938). */
+  private readonly adopterName: ReturnType<typeof adopterNames>;
   private readonly client: () => Paseo | null;
   private readonly timer: Timer;
   private readonly claimWaitMs: number;
@@ -381,6 +382,7 @@ export class Engine {
 
   constructor(options: EngineOptions = {}) {
     this.now = options.now ?? (() => new Date());
+    this.adopterName = adopterNames(() => this.now().getTime());
     this.readConfig = options.config ?? (() => loadConfig());
     this.log = options.log ?? ((message) => console.log(`[maestro] ${message}`));
     this.landed = options.landed ?? (() => undefined);
@@ -485,6 +487,28 @@ export class Engine {
     return found ? this.loadBound(store, found, agentId) : null;
   }
 
+  /**
+   * An adoption records its orchestrator by agent id (agent-socket.ts origin):
+   * the list says its session title instead, as far as it is known now. The
+   * read happens in the background (adopter-names.ts), so no list waits on it.
+   */
+  private namedAdopters(wire: WorkItem[], paseo?: Paseo): WorkItem[] {
+    const read = paseo
+      ? async (id: string) => {
+          const snapshot = await within(() => paseo.agents.ref(id).refresh(), this.claimWaitMs);
+          return snapshot?.agent.title ?? null;
+        }
+      : undefined;
+    return wire.map((item) =>
+      item.adoptedBy?.by ? { ...item, adoptedBy: { by: this.adopterName(item.adoptedBy.by, read) } } : item,
+    );
+  }
+
+  /** For a test: waits for the adopter names being read. */
+  adoptersSettled(): Promise<void> {
+    return this.adopterName.settled();
+  }
+
   // ── Reads ──────────────────────────────────────────────────────────────────
 
   /**
@@ -492,31 +516,6 @@ export class Engine {
    * whose undo window has closed; a session's read never does, so no session
    * can make one of your decisions land.
    */
-  /**
-   * An adoption records its orchestrator by agent id (agent-socket.ts origin):
-   * the Feed says its session title instead, read once per id. Unread or gone,
-   * it says nothing rather than the id (BRO-2938).
-   */
-  private async namedAdopters(wire: WorkItem[], paseo?: Paseo): Promise<WorkItem[]> {
-    const ids = [...new Set(wire.flatMap((item) => (item.adoptedBy?.by ? [item.adoptedBy.by] : [])))];
-    const unread = ids.filter((id) => !this.adopterNames.has(id));
-    if (paseo && unread.length > 0) {
-      await Promise.all(
-        unread.map(async (id) => {
-          const title = await within(() => paseo.agents.ref(id).refresh(), this.claimWaitMs).then(
-            (snapshot) => (snapshot ? snapshot.agent.title?.trim() || null : null),
-            () => undefined,
-          );
-          // A failed read is retried next list; only an answer is kept.
-          if (title !== undefined) this.adopterNames.set(id, title);
-        }),
-      );
-    }
-    return wire.map((item) =>
-      item.adoptedBy?.by ? { ...item, adoptedBy: { by: this.adopterNames.get(item.adoptedBy.by) ?? null } } : item,
-    );
-  }
-
   async list(
     paseo?: Paseo,
     options: { decide?: boolean } = {},
@@ -543,7 +542,7 @@ export class Engine {
     const now = this.now();
     const dayStart = new Date(now);
     dayStart.setHours(0, 0, 0, 0);
-    const wire = await this.namedAdopters(
+    const wire = this.namedAdopters(
       items.map((item) => toWire(item, now.getTime(), config)),
       paseo,
     );
