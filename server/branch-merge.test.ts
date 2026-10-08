@@ -51,20 +51,35 @@ describe("the evidence a branch merged", () => {
     expect(branchMerged(touched, PR)).toBeNull();
   });
 
+  /** A gh double: merged PRs by head branch, and the branches some PR targets as its base. */
+  const gh = (merged: Record<string, unknown[]>, bases: string[]) => {
+    const calls: string[][] = [];
+    const run = async (args: readonly string[]) => {
+      calls.push([...args]);
+      const at = (flag: string) => args[args.indexOf(flag) + 1] ?? "";
+      if (args.includes("--base")) return JSON.stringify(bases.includes(at("--base")) ? [{ number: 1 }] : []);
+      return JSON.stringify(merged[at("--head")] ?? []);
+    };
+    return { run, calls };
+  };
+
   test("lookups are cached per repo and branch for MERGED_EVERY_MS", async () => {
-    let calls = 0;
     let at = 0;
-    const lookup = mergedPrs(
-      async () => {
-        calls += 1;
-        return JSON.stringify([{ number: 9, mergedAt: PR.mergedAt }]);
-      },
-      () => at,
-    );
+    const { run, calls } = gh({ "feature/x": [{ number: 9, mergedAt: PR.mergedAt }] }, []);
+    const lookup = mergedPrs(run, () => at);
     await lookup("acme/app", "feature/x");
     await lookup("acme/app", "feature/x");
     at = MERGED_EVERY_MS;
-    expect([await lookup("acme/app", "feature/x"), calls]).toEqual([PR, 2]);
+    expect([await lookup("acme/app", "feature/x"), calls.length]).toEqual([PR, 4]);
+  });
+
+  test("a branch some PR targets as its base (dev, main) never counts, though its promotions merged", async () => {
+    const { run } = gh(
+      { dev: [{ number: 3, mergedAt: PR.mergedAt }], "feature/x": [{ number: 9, mergedAt: PR.mergedAt }] },
+      ["dev"],
+    );
+    const lookup = mergedPrs(run, () => 0);
+    expect([await lookup("acme/app", "dev"), await lookup("acme/app", "feature/x")]).toEqual([null, PR]);
   });
 
   test("blocked work closes Done only with branchMerged", () => {

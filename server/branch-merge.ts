@@ -69,31 +69,27 @@ export async function gitOf(cwd: string | null): Promise<{ branch: string | null
 /** Lookups are asked again after this long. */
 export const MERGED_EVERY_MS = 10 * 60_000;
 
-/** A branch's merged PR through gh, cached per repo and branch for MERGED_EVERY_MS. */
+/**
+ * A branch's merged PR through gh, cached per repo and branch for
+ * MERGED_EVERY_MS. A branch any PR targets as its base is an integration
+ * branch (dev, main), not one piece of work: its merges are promotions of
+ * everyone's work, so it never counts (GetStimulus/sri has 16 merged PRs
+ * whose head is dev).
+ */
 export function mergedPrs(run: Run = ghRun, now: () => number = Date.now) {
   const cache = new Map<string, { at: number; pr: MergedPr | null }>();
+  const rows = async (args: string[]) => JSON.parse((await run(["pr", "list", ...args])) || "[]") as unknown[];
   return async (repo: string, branch: string): Promise<MergedPr | null> => {
     const key = `${repo}#${branch}`;
     const hit = cache.get(key);
     if (hit && now() - hit.at < MERGED_EVERY_MS) return hit.pr;
-    const out = await run([
-      "pr",
-      "list",
-      "--repo",
-      repo,
-      "--head",
-      branch,
-      "--state",
-      "merged",
-      "--json",
-      "number,mergedAt",
-      "--limit",
-      "1",
+    const [merged, based] = await Promise.all([
+      rows(["--repo", repo, "--head", branch, "--state", "merged", "--json", "number,mergedAt", "--limit", "1"]),
+      rows(["--repo", repo, "--base", branch, "--state", "all", "--json", "number", "--limit", "1"]),
     ]);
-    const rows = JSON.parse(out || "[]") as { number?: unknown; mergedAt?: unknown }[];
-    const row = rows[0];
+    const row = merged[0] as { number?: unknown; mergedAt?: unknown } | undefined;
     const pr =
-      row && typeof row.number === "number" && typeof row.mergedAt === "string"
+      based.length === 0 && row && typeof row.number === "number" && typeof row.mergedAt === "string"
         ? { number: row.number, mergedAt: row.mergedAt }
         : null;
     cache.set(key, { at: now(), pr });
