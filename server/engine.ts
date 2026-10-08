@@ -1934,8 +1934,8 @@ export class Engine {
   /**
    * An orchestrator's child, Stuck only because its session ended unfinished,
    * closes Done when the branch recorded at its adoption merged after that
-   * (server/branch-merge.ts): the orchestrator finished it with another
-   * session. The lookup never waits on gh: it answers what is known and asks
+   * (server/branch-merge.ts). The receipt says only what was seen: which PR
+   * merged, and that it was after the adoption. The lookup never waits on gh: it answers what is known and asks
    * in the background, so a later reconcile acts on it.
    */
   private async closeIfBranchMerged(
@@ -1952,7 +1952,7 @@ export class Engine {
       to: "done",
       actor: "maestro",
       ctx: { branchMerged: true },
-      reason: `Its branch ${close.branch} merged as #${close.number}; its orchestrator finished it with another session`,
+      reason: `Its branch ${close.branch} merged as ${close.repo}#${close.number} after it was adopted`,
     });
   }
 

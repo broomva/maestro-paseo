@@ -1,8 +1,9 @@
 // An orchestrator's child that stopped because its session ended unfinished,
-// whose branch merged anyway (BRO-2923): the orchestrator finished that work
-// with another session, often one Maestro never tracked. The evidence is the
-// branch, recorded when the orchestrator adopted the session, while its own
-// worktree still existed: a PR from it merged after the adoption.
+// whose branch merged anyway (BRO-2923): the work landed, by that session
+// before it died or by another the orchestrator sent, often one Maestro never
+// tracked. The evidence is the branch, recorded when the orchestrator adopted
+// the session, while its own worktree still existed: a PR from it merged after
+// the adoption. The receipt claims only that.
 //
 // Narrow on purpose. Only work an agent adopted closes this way, as only its
 // landings are the orchestrator's to read (events.ts adopterClosed): work you
@@ -44,17 +45,19 @@ export interface MergedPr {
 /**
  * Whether to look a Stuck card's branch up at all, at `now`: an agent's
  * adoption with a branch and a GitHub repo, stopped only because its session
- * ended, untouched by you since, within WATCH_STUCK_MS. Pure.
+ * ended, untouched by you since the adoption, within WATCH_STUCK_MS. Pure.
  */
 export function watchedBranch(events: readonly WorkEvent[], now: number): { repo: string; branch: string } | null {
+  // Untouched by you since the adoption, not only since it stopped (P20 round 2).
   const at = events.findLastIndex((event) => event.type === "state");
   const last = events[at];
   if (last?.type !== "state" || last.to !== "blocked" || !ENDED_UNFINISHED.has(last.reason ?? "")) return null;
   if (!(now - Date.parse(last.ts) < WATCH_STUCK_MS)) return null;
-  // You touched it since it stopped: yours to close, not Maestro's.
-  if (events.slice(at + 1).some((event) => "actor" in event && event.actor === "human")) return null;
-  const bind = events.findLast((event) => event.type === "dispatched" || event.type === "adopted");
+  const bound = events.findLastIndex((event) => event.type === "dispatched" || event.type === "adopted");
+  const bind = events[bound];
   if (bind?.type !== "adopted" || bind.actor !== "agent" || !bind.branch || !bind.githubRepo) return null;
+  // Anything you did since the adoption (a Send back, an Unblock, a note) makes it yours to close, not Maestro's.
+  if (events.slice(bound + 1).some((event) => "actor" in event && event.actor === "human")) return null;
   return { repo: bind.githubRepo, branch: bind.branch };
 }
 
@@ -63,13 +66,13 @@ export function branchMerged(
   events: readonly WorkEvent[],
   merged: MergedPr | null,
   now: number,
-): { branch: string; number: number } | null {
+): { branch: string; repo: string; number: number } | null {
   const watched = watchedBranch(events, now);
   const bind = events.findLast((event) => event.type === "adopted");
   if (!watched || !merged || !bind) return null;
   // A PR merged before this work was adopted is an old one on a reused branch.
   if (!(Date.parse(merged.mergedAt) > Date.parse(bind.ts))) return null;
-  return { branch: watched.branch, number: merged.number };
+  return { branch: watched.branch, repo: watched.repo, number: merged.number };
 }
 
 /**
@@ -86,13 +89,15 @@ export async function gitOf(cwd: string | null): Promise<{ branch: string | null
         done(error ? null : stdout.trim() || null),
       );
     });
+  // Absolute paths from git itself: a relative one is relative to the physical cwd, so a symlinked
+  // subdirectory of a shared checkout would otherwise read as a separate worktree (P20 round 2).
   const [gitDir, commonDir, branch, remote] = await Promise.all([
-    git(["rev-parse", "--git-dir"]),
-    git(["rev-parse", "--git-common-dir"]),
+    git(["rev-parse", "--path-format=absolute", "--git-dir"]),
+    git(["rev-parse", "--path-format=absolute", "--git-common-dir"]),
     git(["rev-parse", "--abbrev-ref", "HEAD"]),
     git(["remote", "get-url", "origin"]),
   ]);
-  if (!gitDir || !commonDir || resolve(cwd, gitDir) === resolve(cwd, commonDir)) return none;
+  if (!gitDir || !commonDir || resolve(gitDir) === resolve(commonDir)) return none;
   return { branch: branch && branch !== "HEAD" ? branch : null, githubRepo: repoOf(remote) };
 }
 
@@ -114,10 +119,24 @@ export function mergedPrs(run: Run = ghRun, now: () => number = Date.now, log?: 
     let pr: MergedPr | null = null;
     try {
       const [merged, based] = await Promise.all([
-        rows(["--repo", repo, "--head", branch, "--state", "merged", "--json", "number,mergedAt", "--limit", "1"]),
+        rows([
+          "--repo",
+          repo,
+          "--head",
+          branch,
+          "--state",
+          "merged",
+          "--json",
+          "number,mergedAt,isCrossRepository",
+          "--limit",
+          "5",
+        ]),
         rows(["--repo", repo, "--base", branch, "--state", "all", "--json", "number", "--limit", "1"]),
       ]);
-      const row = merged[0] as { number?: unknown; mergedAt?: unknown } | undefined;
+      // A fork's PR with the same branch name is someone else's work.
+      const row = (merged as { number?: unknown; mergedAt?: unknown; isCrossRepository?: unknown }[]).find(
+        (entry) => entry.isCrossRepository === false,
+      );
       if (based.length === 0 && row && typeof row.number === "number" && typeof row.mergedAt === "string") {
         pr = { number: row.number, mergedAt: row.mergedAt };
       }
@@ -128,6 +147,7 @@ export function mergedPrs(run: Run = ghRun, now: () => number = Date.now, log?: 
   };
   const lookup = async (repo: string, branch: string): Promise<MergedPr | null> => {
     const key = `${repo}#${branch}`;
+    for (const [old, entry] of known) if (now() - entry.at >= WATCH_STUCK_MS) known.delete(old);
     const hit = known.get(key);
     if ((!hit || now() - hit.at >= MERGED_EVERY_MS) && !asking.has(key)) {
       asking.set(

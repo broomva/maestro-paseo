@@ -3322,9 +3322,34 @@ describe("an orchestrator's child whose branch merged after its session ended (B
     const { item: after } = await env.engine.get(item.id);
     expect([after.state, after.verdict, asked]).toEqual([
       "done",
-      "Its branch feature/x merged as #7; its orchestrator finished it with another session",
+      "Its branch feature/x merged as acme/app#7 after it was adopted",
       [["acme/app", "feature/x"]],
     ]);
+  });
+
+  test("a child you sent back before its session died is yours: it stays Stuck though its branch merged", async () => {
+    const asked: string[][] = [];
+    const env = await setup({}, { ...recorded, merged: merged(AFTER, asked) });
+    env.fake.agents.set("child", {
+      id: "child",
+      cwd: env.repo,
+      status: "running",
+      workspaceId: null,
+      provider: "claude",
+      title: "Child arc",
+      archivedAt: null,
+    } as never);
+    const item = await env.engine.adopt(env.fake.paseo, "child", "", ORCHESTRATOR);
+    await env.engine.onTurnEnded({ id: "child" }, { kind: "completed" }, [
+      { type: "assistant_message", text: "## Ask\nMerge it?" },
+    ] as never);
+    expect((await env.engine.get(item.id)).item.state).toBe("review");
+    const child = env.fake.agents.get("child");
+    if (child) child.status = "idle";
+    await env.decide(item.id, "revise", "Do not merge: change X first");
+    await env.engine.onArchived({ id: "child" });
+    await env.engine.list(env.fake.paseo);
+    expect([(await env.engine.get(item.id)).item.state, asked.length]).toEqual(["blocked", 0]);
   });
 
   test("a session you adopted is yours to close: it stays Stuck, and gh is not asked", async () => {
