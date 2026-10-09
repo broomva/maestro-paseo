@@ -212,20 +212,25 @@ export type QueueCard =
 export const ANSWERED_SHOWN_MS = 60 * 60 * 1000;
 
 /**
- * What the fleet needs from you: the one selector the health band, the
- * Needs-you tile, the Needs-you section and the fleet's share of the header
- * count all read. It counts what the header counts, each once:
- * - `ticks`: scopes whose tick needs you (FleetHealth.needsYou, a FleetNotice);
- * - `alerts`: the fleet's alert items that need you (needsHand);
- * - `asks`: the fleet's ask batches raised as work that needs you, one per
- *   item however many asks it carries;
- * - `decisions`: decision asks in the fleet's own roots that wait on you
- *   (`waiting`, the contract's isWaiting), one each.
+ * The fleet's health, and where the rest of what it raised is counted
+ * (BRO-2908: the Fleet view is Health; Needs you is counted once, on the
+ * server, and every surface is a view of it). The one selector the health
+ * band, the Health tile, the Health section and the fleet's share of the
+ * header count all read:
+ * - `ticks` (the only thing counted here, `total`): scopes whose tick needs
+ *   you (FleetHealth.needsYou), the FleetNotices the header counts;
+ * - `alerts`, `asks`: the fleet's own work items that need you, counted in
+ *   Needs you as work at your gate, so listed here under `elsewhere`;
+ * - `decisions`: decision asks in the fleet's roots that wait on you, counted
+ *   in Needs you as Decisions' asks, listed under `elsewhere` too.
  * `sessions` (in-scope sessions that want a look) is named beside it and never
  * in `total`: the header does not count sessions.
  */
 export interface FleetNeeds {
+  /** The scopes whose tick needs you: the only cards this view counts. */
   cards: QueueCard[];
+  /** The fleet's items at your gate and decisions waiting on you: shown here, counted where they live. */
+  elsewhere: QueueCard[];
   /** What the fleet holds open that does not need you now: listed, uncounted. */
   also: QueueCard[];
   ticks: number;
@@ -238,6 +243,7 @@ export interface FleetNeeds {
 
 export function fleetNeedsYou(reads: readonly ScopeRead[]): FleetNeeds {
   const cards: QueueCard[] = [];
+  const elsewhere: QueueCard[] = [];
   const also: QueueCard[] = [];
   const answered: QueueCard[] = [];
   for (const { scope, detail } of reads) {
@@ -245,7 +251,7 @@ export function fleetNeedsYou(reads: readonly ScopeRead[]): FleetNeeds {
     if (scope.health.needsYou) cards.push({ kind: "health", key: `health:${id}`, scope: id, health: scope.health });
     if (!detail) continue;
     for (const item of detail.alerts) {
-      (item.needsYou ? cards : also).push({ kind: "alert", key: `alert:${id}:${item.id}`, scope: id, item });
+      (item.needsYou ? elsewhere : also).push({ kind: "alert", key: `alert:${id}:${item.id}`, scope: id, item });
     }
     // One card per raised item that needs you, carrying all its asks; an ask not raised yet (or whose
     // work does not need you) is shown apart, uncounted.
@@ -256,10 +262,10 @@ export function fleetNeedsYou(reads: readonly ScopeRead[]): FleetNeeds {
     }
     for (const [item, asks] of byItem) {
       const [first] = asks;
-      if (first) cards.push({ kind: "ask", key: `item:${id}:${item}`, scope: id, ask: first, asks });
+      if (first) elsewhere.push({ kind: "ask", key: `item:${id}:${item}`, scope: id, ask: first, asks });
     }
     for (const ask of detail.decisions.filter((entry) => entry.waiting)) {
-      cards.push({ kind: "decision", key: `decision:${id}:${ask.ledger}:${ask.uid ?? ask.id}`, scope: id, ask });
+      elsewhere.push({ kind: "decision", key: `decision:${id}:${ask.ledger}:${ask.uid ?? ask.id}`, scope: id, ask });
     }
     const rest = detail.decisions.filter((entry) => !entry.waiting);
     const open = rest.filter((entry) => entry.state === "open").length;
@@ -267,7 +273,7 @@ export function fleetNeedsYou(reads: readonly ScopeRead[]): FleetNeeds {
       (open > 0 ? also : answered).push({ kind: "decisions", key: `decisions:${id}`, scope: id, asks: rest, open });
     }
   }
-  const count = (kind: QueueCard["kind"]) => cards.filter((card) => card.kind === kind).length;
+  const count = (kind: QueueCard["kind"]) => [...cards, ...elsewhere].filter((card) => card.kind === kind).length;
   const ticks = count("health");
   const alerts = count("alert");
   const asks = count("ask");
@@ -277,24 +283,23 @@ export function fleetNeedsYou(reads: readonly ScopeRead[]): FleetNeeds {
   const sessions = filterRoster({ inScope, out }, "attention", asked).length;
   return {
     cards,
+    elsewhere,
     also: [...also, ...answered],
     ticks,
     alerts,
     asks,
     decisions,
-    total: ticks + alerts + asks + decisions,
+    total: ticks,
     sessions,
   };
 }
 
 /**
  * The header's "N need you", split the way the Fleet view says it: the
- * fleet's share (here) and each other surface's, from the very pieces the
- * header counts (header-count.ts needsYouCount over work.attention): work
- * that needs you, fleet notices, timeline notices, decision asks that wait
- * (a fleet root's are the fleet's, the workspace's are Decisions'),
- * initiatives, and the answers batch (Decisions'). `fleetItems`: the ids of the fleet's own work (its alerts and
- * raised asks), which the header counts among the work.
+ * fleet's share (here, its health: the FleetNotices) and each other surface's,
+ * from the very pieces the header counts (header-count.ts needsYouCount over
+ * work.attention). The fleet's own work items are work at your gate, and a
+ * fleet root's decision asks are Decisions', as everywhere else (BRO-2908).
  */
 export interface HeaderShares {
   total: number;
@@ -307,7 +312,6 @@ export interface HeaderShares {
 
 export function headerShares(
   attention: Pick<Attention, "waiting" | "fleet" | "timeline" | "asks" | "initiatives" | "answers">,
-  fleetItems: ReadonlySet<string>,
 ): HeaderShares {
   const waiting = attention.waiting;
   const fleetNotices = attention.fleet ?? [];
@@ -315,26 +319,14 @@ export function headerShares(
   const asks = attention.asks ?? [];
   const initiatives = attention.initiatives ?? [];
   const answers = attention.answers ?? [];
-  const total = needsYouCount(waiting, fleetNotices, timeline, asks, initiatives, answers);
-  const fleetWork = needsYouCount(waiting.filter((item) => fleetItems.has(item.id)));
-  const fleetAsks = asks.filter((ask) => ask.scope !== null);
   return {
-    total,
-    fleet: fleetWork + fleetNotices.length + fleetAsks.length,
-    work: needsYouCount(waiting.filter((item) => !fleetItems.has(item.id))),
-    decisions: asks.length - fleetAsks.length + answers.length,
+    total: needsYouCount(waiting, fleetNotices, timeline, asks, initiatives, answers),
+    fleet: fleetNotices.length,
+    work: needsYouCount(waiting),
+    decisions: asks.length + answers.length,
     timeline: timeline.length,
     initiatives: initiatives.length,
   };
-}
-
-/** The fleet's own work items in Needs you: what the header counts among the work as the fleet's. */
-export function fleetItemIds(needs: Pick<FleetNeeds, "cards">): Set<string> {
-  return new Set(
-    needs.cards.flatMap((card) =>
-      card.kind === "alert" ? [card.item.id] : card.kind === "ask" && card.ask.item ? [card.ask.item.id] : [],
-    ),
-  );
 }
 
 /**

@@ -350,13 +350,15 @@ describe("Needs you", () => {
     ];
     const needs = fleetNeedsYou(reads);
     // Proposals are not in Needs you; a decision counts only when it waits on you (`waiting`); D1 does not.
-    expect(needs.cards.map((card) => card.kind)).toEqual(["health", "alert"]);
+    // Health is the only thing counted here; the alert item is counted at your gate, and shown here (BRO-2908).
+    expect(needs.cards.map((card) => card.kind)).toEqual(["health"]);
+    expect(needs.elsewhere.map((card) => card.kind)).toEqual(["alert"]);
     expect(needs.also.map((card) => card.kind)).toEqual(["decisions"]);
     const decisions = needs.also.find((card) => card.kind === "decisions");
     // Every answered ask stays findable with the open one, however long ago it was answered.
     expect(decisions?.kind === "decisions" ? decisions.asks.map((ask) => ask.id) : null).toEqual(["D1", "D2", "D3"]);
     // An alert is an alert, not an ask.
-    expect(needs).toMatchObject({ total: 2, asks: 0, alerts: 1, decisions: 0, ticks: 1 });
+    expect(needs).toMatchObject({ total: 1, asks: 0, alerts: 1, decisions: 0, ticks: 1 });
     expect(needsText(needs)).toBe("1 tick · 1 alert");
     // p1 and p2 are one group; p3's verdict is under an hour old, so its card stays and says so.
     expect(teachQueue(reads, NOW).map((card) => card.group.proposals.map((entry) => entry.session?.short))).toEqual([
@@ -861,9 +863,12 @@ describe("one number for what needs you", () => {
       (read.detail?.decisions ?? []).filter((ask) => ask.waiting).map((ask) => askNotice(ask, read.scope.id)),
     );
     const header = needsYouCount(fleetWork, notices, [], asks);
-    expect(needs).toMatchObject({ ticks: 1, alerts: 1, asks: 1, decisions: 1, total: 4 });
+    // Counted here: health only. Everything else the header counts for the fleet is shown once, where it lives.
+    expect(needs).toMatchObject({ ticks: 1, alerts: 1, asks: 1, decisions: 1, total: 1 });
     expect(needs.cards).toHaveLength(needs.total);
-    expect(header).toBe(needs.total);
+    expect(needs.total).toBe(needsYouCount([], notices));
+    expect(needs.elsewhere.map((card) => card.kind)).toEqual(["alert", "ask", "decision"]);
+    expect(header).toBe(needs.total + needs.elsewhere.length);
     const cells = new Map(
       reads.map((read) => [read.scope.id, healthCells(read.detail?.ticks ?? [], read.scope.health, 24, NOW)]),
     );
@@ -872,7 +877,7 @@ describe("one number for what needs you", () => {
       needsText: needsText(needs),
       sessions: needs.sessions,
     });
-    expect(band.title).toContain(`${needs.total} need you`);
+    expect(band.title).toContain(`${needs.total} needs you`);
     // Uncounted, still shown: the quiet alert, the ask not raised yet, the decisions that do not wait.
     expect(needs.also.map((card) => card.kind)).toEqual(["alert", "ask", "decisions"]);
   });
@@ -945,11 +950,9 @@ describe("the header's count, split", () => {
       ],
       initiatives: [],
     };
-    const shares = headerShares(
-      attention as unknown as Parameters<typeof headerShares>[0],
-      new Set(["w-ask", "w-alert"]),
-    );
-    expect(shares).toEqual({ total: 8, fleet: 4, work: 2, decisions: 1, timeline: 1, initiatives: 0 });
+    const shares = headerShares(attention as unknown as Parameters<typeof headerShares>[0]);
+    // The fleet's share is its health (the notice); its work items are work, its root's ask is Decisions' (BRO-2908).
+    expect(shares).toEqual({ total: 8, fleet: 1, work: 4, decisions: 2, timeline: 1, initiatives: 0 });
     expect(shares.fleet + shares.work + shares.decisions + shares.timeline + shares.initiatives).toBe(shares.total);
   });
 
@@ -969,7 +972,7 @@ describe("the header's count, split", () => {
         },
       ],
     };
-    const shares = headerShares(attention, new Set());
+    const shares = headerShares(attention);
     expect([shares.total, shares.decisions]).toEqual([1, 1]);
     expect(shares.fleet + shares.work + shares.decisions + shares.timeline + shares.initiatives).toBe(shares.total);
   });

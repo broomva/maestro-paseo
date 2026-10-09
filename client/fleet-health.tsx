@@ -181,8 +181,8 @@ export function HealthBand({
   const ink = toneInk(theme, verdict.tone as Tone);
   const relationLine =
     relation && relation.all > 0 ? (
-      <Text style={[t.muted, t.tabular]} accessibilityLabel={`${relation.here} need you here, ${relation.all} in all`}>
-        <Text style={[t.body, { fontWeight: "600" }]}>{`${relation.here} need you here`}</Text>
+      <Text style={[t.muted, t.tabular]} accessibilityLabel={`${needYou(relation.here)} here, ${relation.all} in all`}>
+        <Text style={[t.body, { fontWeight: "600" }]}>{`${needYou(relation.here)} here`}</Text>
         {` · ${relation.all} in all`}
         {relation.elsewhere.length > 0 ? " (" : ""}
         {relation.elsewhere.map((entry, index) => (
@@ -387,4 +387,9 @@ export function KpiRow({
     );
   }
   return <View style={{ flexDirection: "row", gap: space[3], flexWrap: "wrap" }}>{tiles.map(tile)}</View>;
+}
+
+/** `1 needs you`, `2 need you`. Pure. */
+function needYou(n: number): string {
+  return `${n} ${n === 1 ? "needs" : "need"} you`;
 }

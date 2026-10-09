@@ -983,13 +983,16 @@ function QueueCardView({
 }
 
 /**
- * Needs you: one card per thing the count counts (fleetNeedsYou), the first
- * leading with the page's one filled verb; then, apart and uncounted, what
- * the fleet holds open that does not need you now.
+ * Health: one card per scope whose tick needs you (fleetNeedsYou counts only
+ * these), the first leading with the page's one filled verb; then what the
+ * fleet raised that is counted where it lives (its items at your gate, its
+ * decisions in Decisions); then, apart and uncounted, what the fleet holds
+ * open that does not need you now (BRO-2908).
  */
 export function NeedsYouQueue({
   theme,
   cards,
+  elsewhere = [],
   also,
   context,
   phone,
@@ -999,6 +1002,7 @@ export function NeedsYouQueue({
 }: {
   theme: PluginTheme;
   cards: readonly QueueCard[];
+  elsewhere?: readonly QueueCard[];
   also: readonly QueueCard[];
   context: ScopeContext;
   phone: boolean;
@@ -1030,7 +1034,7 @@ export function NeedsYouQueue({
   );
   return (
     <View style={{ gap: space[3] }}>
-      <View style={{ gap: space[3] }} accessibilityLabel={`Needs you: ${plural(cards.length, "card")}`}>
+      <View style={{ gap: space[3] }} accessibilityLabel={`Health: ${plural(cards.length, "card")}`}>
         {cards.length === 0 ? (
           <View
             style={{
@@ -1041,20 +1045,33 @@ export function NeedsYouQueue({
               backgroundColor: theme.colors.surface1,
             }}
           >
-            <Text style={t.cardTitle}>Nothing needs you</Text>
-            <Text style={t.muted}>No tick, ask, alert or decision of the fleet's waits on you.</Text>
+            <Text style={t.cardTitle}>Every scope is on time</Text>
+            <Text style={t.muted}>No scope's tick is late or failing.</Text>
           </View>
         ) : null}
         {cards.map((card, index) => view(card, index === 0))}
       </View>
+      {elsewhere.length > 0 ? (
+        <View style={{ gap: space[3], paddingTop: space[2] }}>
+          <View style={{ gap: 2 }}>
+            <Text style={t.cardTitle} accessibilityRole="header">
+              Counted where they live
+            </Text>
+            <Text style={t.meta}>
+              The fleet's items at your gate and its decisions waiting on you. Needs you counts them there, once.
+            </Text>
+          </View>
+          {elsewhere.map((card) => view(card, false))}
+        </View>
+      ) : null}
       {notRaised.length > 0 ? (
         <View style={{ gap: space[3], paddingTop: space[2] }}>
           <View style={{ gap: 2 }}>
             <Text style={t.cardTitle} accessibilityRole="header">
-              Not raised to you yet
+              Not in Decisions yet
             </Text>
             <Text style={t.meta}>
-              {`The fleet raises these as work at its next tick${next ? ` (~${timeText(new Date(next).toISOString())})` : ""}; until then they aren't counted.`}
+              {`The fleet writes these to Decisions at its next tick${next ? ` (~${timeText(new Date(next).toISOString())})` : ""}; until then they aren't counted.`}
             </Text>
           </View>
           {notRaised.map((card) => view(card, false))}
