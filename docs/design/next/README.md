@@ -16,6 +16,7 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | D2 | `d2-incident-13b97ad9.png` | The 13b97ad9 incident (six answers became six blind sessions), step by step, today and with the conductor, with both prompts |
 | D3 | `d3-prompt-stack-and-lanes.png` | The five-layer prompt stack (harness, workspace rules, role base, lane overlay, tick context or brief), where the SRI tick prompt goes, lane profiles |
 | D4 | `d4-settings-lanes.png` | Settings › Lanes: the conductor, each lane's session, heartbeat, profile and prompt version, and the composed prompt |
+| D5 | `d5-conductor-tick-and-presence.png` | The conductor's tick as a governed autonomy loop (reconcile, sweep, allocate, govern, log, resume on events), code vs judgement, its invariants, and the owner-presence model for when waiting is needed (A3, A8) |
 | N0 | `n0-model.png` | Three nouns (work, ask, notice), one list, one verb each; six rules; what it retires |
 | N1 | `n1-wiring.png` | Producers, verbs on maestro.sock, one store per kind, needs.list, views, the return path |
 | N3 | `n3-lifecycles.png` | The states each kind passes through; the 10-09 Parser drift card, today vs next |
