@@ -123,7 +123,9 @@ export const LoopIntentSchema = z.object({
   reviewBy: z.string().nullable(),
   prompt: z.string().nullable(),
   session: z.enum(["bound", "fresh"]).nullable(),
-  /** The ledger file, as origin/main has it. */
+  /** The tick's snapshot script, `.broomva/loops/checks/<name>.sh` (BRO-2942); only beside a prompt. */
+  checks: z.string().nullable(),
+  /** The ledger file as its repo's ref has it; prefixed `<label>:` when it comes from a repo other than the control repo. */
   file: z.string(),
 });
 export type LoopIntent = z.infer<typeof LoopIntentSchema>;

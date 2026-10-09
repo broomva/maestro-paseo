@@ -18,7 +18,7 @@ import { paseoLabel } from "./server/labels";
 import { Launchd, launchdPresence } from "./server/launchd";
 import { Loop } from "./server/loop";
 import { homeWriter, Loops } from "./server/loops";
-import { gitLedger, loopPaths } from "./server/loops-ledger";
+import { gitLedger, loopPaths, loopReposPath, multiLedger } from "./server/loops-ledger";
 import {
   controlAskPaths,
   controlRepoPaths,
@@ -267,7 +267,10 @@ export default function contribute(host: PluginServerContext) {
   // observations plus GitHub Actions and p9, reconciled; drift transitions go to ~/.broomva/ledger/loops/drift.jsonl.
   const loopHome = loopPaths();
   const loops = new Loops({
-    ledger: control.repo ? gitLedger(control.repo, { fetch: true, log }) : null,
+    // Plus every repo loop-repos.json names, each at its own ref (BRO-2942): one orchestrator per owning repo.
+    ledger: control.repo
+      ? multiLedger(gitLedger(control.repo, { fetch: true, log }), { reposPath: loopReposPath() })
+      : null,
     timeline,
     schedulesDir: paseoSchedulesDir(),
     presence: prefix ? (labels) => launchdPresence(labels) : null,
