@@ -350,13 +350,15 @@ describe("Needs you", () => {
     ];
     const needs = fleetNeedsYou(reads);
     // Proposals are not in Needs you; a decision counts only when it waits on you (`waiting`); D1 does not.
-    expect(needs.cards.map((card) => card.kind)).toEqual(["health", "alert"]);
+    // Health is the only thing counted here; the alert item is counted at your gate, and shown here (BRO-2908).
+    expect(needs.cards.map((card) => card.kind)).toEqual(["health"]);
+    expect(needs.elsewhere.map((card) => card.kind)).toEqual(["alert"]);
     expect(needs.also.map((card) => card.kind)).toEqual(["decisions"]);
     const decisions = needs.also.find((card) => card.kind === "decisions");
     // Every answered ask stays findable with the open one, however long ago it was answered.
     expect(decisions?.kind === "decisions" ? decisions.asks.map((ask) => ask.id) : null).toEqual(["D1", "D2", "D3"]);
     // An alert is an alert, not an ask.
-    expect(needs).toMatchObject({ total: 2, asks: 0, alerts: 1, decisions: 0, ticks: 1 });
+    expect(needs).toMatchObject({ total: 1, asks: 0, alerts: 1, decisions: 0, ticks: 1 });
     expect(needsText(needs)).toBe("1 tick · 1 alert");
     // p1 and p2 are one group; p3's verdict is under an hour old, so its card stays and says so.
     expect(teachQueue(reads, NOW).map((card) => card.group.proposals.map((entry) => entry.session?.short))).toEqual([
@@ -557,10 +559,10 @@ describe("the owner's words", () => {
     const next = nextTickAt(schedule, ago(31 * 60_000));
     expect(next).toBe(NOW + 29 * 60_000);
     expect(askWhen({ item: null, batch: "12-1" }, next, NOW)).toBe(
-      "Not in Maestro yet: raised at the next tick, ~19:29.",
+      "Not in Decisions yet: written at the next tick, ~19:29.",
     );
     expect(askWhen({ item: null, batch: null }, null, NOW)).toBe(
-      "Not in Maestro yet: raised once it lasts, when a tick runs.",
+      "Not in Decisions yet: written once it lasts, when a tick runs.",
     );
     expect(nextTickAt({ scheduled: false, intervalMinutes: null }, ago(H))).toBeNull();
   });
@@ -788,7 +790,7 @@ describe("round 2", () => {
 describe("one number for what needs you", () => {
   test("the selector's total is its cards, the band's count, and the header's fleet share", () => {
     const waiting = (id: string, extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
-      ledger: "sri-coordinator.yaml",
+      ledger: "fleet-sri.yaml",
       uid: null,
       id,
       hash: "h",
@@ -861,9 +863,12 @@ describe("one number for what needs you", () => {
       (read.detail?.decisions ?? []).filter((ask) => ask.waiting).map((ask) => askNotice(ask, read.scope.id)),
     );
     const header = needsYouCount(fleetWork, notices, [], asks);
-    expect(needs).toMatchObject({ ticks: 1, alerts: 1, asks: 1, decisions: 1, total: 4 });
+    // Counted here: health only. Everything else the header counts for the fleet is shown once, where it lives.
+    expect(needs).toMatchObject({ ticks: 1, alerts: 1, asks: 1, decisions: 1, total: 1 });
     expect(needs.cards).toHaveLength(needs.total);
-    expect(header).toBe(needs.total);
+    expect(needs.total).toBe(needsYouCount([], notices));
+    expect(needs.elsewhere.map((card) => card.kind)).toEqual(["alert", "ask", "decision"]);
+    expect(header).toBe(needs.total + needs.elsewhere.length);
     const cells = new Map(
       reads.map((read) => [read.scope.id, healthCells(read.detail?.ticks ?? [], read.scope.health, 24, NOW)]),
     );
@@ -872,7 +877,7 @@ describe("one number for what needs you", () => {
       needsText: needsText(needs),
       sessions: needs.sessions,
     });
-    expect(band.title).toContain(`${needs.total} need you`);
+    expect(band.title).toContain(`${needs.total} needs you`);
     // Uncounted, still shown: the quiet alert, the ask not raised yet, the decisions that do not wait.
     expect(needs.also.map((card) => card.kind)).toEqual(["alert", "ask", "decisions"]);
   });
@@ -945,11 +950,9 @@ describe("the header's count, split", () => {
       ],
       initiatives: [],
     };
-    const shares = headerShares(
-      attention as unknown as Parameters<typeof headerShares>[0],
-      new Set(["w-ask", "w-alert"]),
-    );
-    expect(shares).toEqual({ total: 8, fleet: 4, work: 2, decisions: 1, timeline: 1, initiatives: 0 });
+    const shares = headerShares(attention as unknown as Parameters<typeof headerShares>[0]);
+    // The fleet's share is its health (the notice); its work items are work, its root's ask is Decisions' (BRO-2908).
+    expect(shares).toEqual({ total: 8, fleet: 1, work: 4, decisions: 2, timeline: 1, initiatives: 0 });
     expect(shares.fleet + shares.work + shares.decisions + shares.timeline + shares.initiatives).toBe(shares.total);
   });
 
@@ -969,9 +972,72 @@ describe("the header's count, split", () => {
         },
       ],
     };
-    const shares = headerShares(attention, new Set());
+    const shares = headerShares(attention);
     expect([shares.total, shares.decisions]).toEqual([1, 1]);
     expect(shares.fleet + shares.work + shares.decisions + shares.timeline + shares.initiatives).toBe(shares.total);
+  });
+});
+
+describe("an ask the fleet wrote to its own ledger is shown once, as the decision (BRO-2908)", () => {
+  test("the report's copy goes once its ledger entry exists; one not written yet stays; alerts are never hidden", () => {
+    const decision = (uid: string, extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
+      ledger: "fleet-sri.yaml",
+      uid,
+      id: uid,
+      hash: "h",
+      arc: null,
+      headline: uid,
+      question: null,
+      stakes: null,
+      whyYou: null,
+      options: [],
+      fallback: null,
+      blocking: true,
+      askedAt: null,
+      answeredAt: null,
+      answer: null,
+      answerOption: null,
+      state: "open",
+      origin: null,
+      refusal: null,
+      home: { kind: "root", path: "/state/sri/.control/asks", branch: null },
+      batched: false,
+      waiting: true,
+      ...extra,
+    });
+    const report = (id: string, ledgerUid: string | null) => ({
+      id,
+      key: `prompt:${id}`,
+      question: `Question ${id}?`,
+      class: "3",
+      className: null,
+      firstTick: 2,
+      session: null,
+      batch: "b7",
+      item: null,
+      ledgerUid,
+    });
+    const needs = fleetNeedsYou([
+      {
+        scope: scope("sri"),
+        detail: detail("sri", {
+          asks: [report("a1", "fleet-sri-aaa"), report("a2", "fleet-sri-bbb"), report("a3", "fleet-sri-ccc")],
+          decisions: [
+            decision("fleet-sri-aaa"),
+            // Answered in Maestro: the report still lists it for a tick or two (report runs before act ask).
+            decision("fleet-sri-ccc", { state: "answered", waiting: false, answer: "seen" }),
+            decision("fleet-sri-alert-tick-1", { blocking: false, waiting: false }),
+          ],
+        }),
+      },
+    ]);
+    // a1 is in the ledger: its waiting decision is counted where it lives, and the report's copy is gone.
+    expect(needs.elsewhere.map((card) => (card.kind === "decision" ? card.ask.uid : card.kind))).toEqual([
+      "fleet-sri-aaa",
+    ]);
+    // a2 is not written yet: the report's copy stays. The alert entry stays too, apart.
+    // a3 was answered: its decision is in the scope's list, and the report's lagging copy is not shown again.
+    expect(needs.also.map((card) => (card.kind === "ask" ? card.ask.id : card.kind))).toEqual(["a2", "decisions"]);
   });
 });
 

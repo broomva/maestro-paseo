@@ -174,28 +174,32 @@ export function HealthBand({
   relation?: {
     here: number;
     all: number;
-    elsewhere: readonly { label: string; count: number; onPress: () => void }[];
+    elsewhere: readonly { label: string; count: number; onPress?: () => void }[];
   } | null;
 }) {
   const t = ramp(theme);
   const ink = toneInk(theme, verdict.tone as Tone);
   const relationLine =
     relation && relation.all > 0 ? (
-      <Text style={[t.muted, t.tabular]} accessibilityLabel={`${relation.here} need you here, ${relation.all} in all`}>
-        <Text style={[t.body, { fontWeight: "600" }]}>{`${relation.here} need you here`}</Text>
+      <Text style={[t.muted, t.tabular]} accessibilityLabel={`${needYou(relation.here)} here, ${relation.all} in all`}>
+        <Text style={[t.body, { fontWeight: "600" }]}>{`${needYou(relation.here)} here`}</Text>
         {` · ${relation.all} in all`}
         {relation.elsewhere.length > 0 ? " (" : ""}
         {relation.elsewhere.map((entry, index) => (
           <Text key={entry.label}>
             {index > 0 ? ", " : ""}
-            <Text
-              accessibilityRole="link"
-              accessibilityLabel={`${entry.count} in ${entry.label}: open ${entry.label}`}
-              onPress={entry.onPress}
-              style={{ textDecorationLine: "underline" }}
-            >
-              {`${entry.count} in ${entry.label}`}
-            </Text>
+            {entry.onPress ? (
+              <Text
+                accessibilityRole="link"
+                accessibilityLabel={`${entry.count} in ${entry.label}: open ${entry.label}`}
+                onPress={entry.onPress}
+                style={{ textDecorationLine: "underline" }}
+              >
+                {`${entry.count} in ${entry.label}`}
+              </Text>
+            ) : (
+              `${entry.count} in ${entry.label}`
+            )}
           </Text>
         ))}
         {relation.elsewhere.length > 0 ? ")" : ""}
@@ -364,11 +368,7 @@ export function KpiRow({
       jumps={entry.id === "needs"}
       selected={selected === entry.id}
       accessibilityLabel={`${entry.label}: ${entry.value}${entry.sub ? `, ${entry.sub}` : ""}. ${
-        entry.id === "needs"
-          ? "Go to Needs you"
-          : selected === entry.id
-            ? "Filtering the sessions"
-            : "Show these sessions"
+        entry.id === "needs" ? "Go to Health" : selected === entry.id ? "Filtering the sessions" : "Show these sessions"
       }`}
       onPress={() => onPress(entry.id)}
     />
@@ -387,4 +387,9 @@ export function KpiRow({
     );
   }
   return <View style={{ flexDirection: "row", gap: space[3], flexWrap: "wrap" }}>{tiles.map(tile)}</View>;
+}
+
+/** `1 needs you`, `2 need you`. Pure. */
+function needYou(n: number): string {
+  return `${n} ${n === 1 ? "needs" : "need"} you`;
 }

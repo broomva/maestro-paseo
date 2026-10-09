@@ -11,6 +11,7 @@ import {
   coverOf,
   failedStepOf,
   fleetItem,
+  fleetLedgerUid,
   foldLedger,
   foldReviews,
   healthOf,
@@ -619,6 +620,9 @@ describe("the fleet's work in Maestro", () => {
       ["k2", "7-3", null, null],
       ["k9", null, null, null],
     ]);
+    // Each ask carries its uid in the fleet's own ledger, as skills fleetlib/ledger_ask.py uid() writes it
+    // for the batch the ledger names (values computed by that function); none without a batch (BRO-2908).
+    expect(asks.map((ask) => ask.ledgerUid)).toEqual(["fleet-alpha-e97027a98569", "fleet-alpha-b013917332f9", null]);
     // The item the ledger recorded comes first, even done, over any title that claims the batch.
     const spoof = work("spoof", "1 ask [fleet-reconcile alpha batch 2-3]", "review");
     const recorded = asksOf("alpha", [{ id: "a1", key: "k1" }], fold, [spoof, work("old-item", "renamed", "done")]);
@@ -758,5 +762,14 @@ describe("drilling into a tick and an ask", () => {
       "aaaaaaaa-88",
     );
     expect(askSession("records-without-process", sessions)).toBeNull();
+  });
+});
+
+describe("an ask's uid in the fleet's own ledger (BRO-2908)", () => {
+  test("is the fleet's own: the values skills fleetlib/ledger_ask.py uid() computes for the same key and batch", () => {
+    expect([
+      fleetLedgerUid("sri", "prompt:s1:waiting", "b7"),
+      fleetLedgerUid("broomva", "rules:acme/app", "e3f1"),
+    ]).toEqual(["fleet-sri-a22d8313ae85", "fleet-broomva-f3ed5dc7609d"]);
   });
 });

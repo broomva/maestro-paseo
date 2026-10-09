@@ -740,9 +740,18 @@ export function asksOf(
         session: askSession(key, sessions),
         batch,
         item: work ? fleetItem(work) : null,
+        ledgerUid: batch ? fleetLedgerUid(scope, key, batch) : null,
       },
     ];
   });
+}
+
+/**
+ * The uid the fleet writes an ask under in its own ledger (skills fleetlib/ledger_ask.py uid): the scope, and
+ * the first 12 hex of SHA-256 of the key and the batch that first asked it, joined by a newline. Pure.
+ */
+export function fleetLedgerUid(scope: string, key: string, batch: string): string {
+  return `fleet-${scope}-${createHash("sha256").update(`${key}\n${batch}`, "utf8").digest("hex").slice(0, 12)}`;
 }
 
 // ── Reviews ──────────────────────────────────────────────────────────────────

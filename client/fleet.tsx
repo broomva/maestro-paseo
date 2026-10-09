@@ -27,7 +27,6 @@ import {
   cadenceText,
   featuredScope,
   filterRoster,
-  fleetItemIds,
   fleetNeedsYou,
   headerShares,
   healthCells,
@@ -53,9 +52,8 @@ import { Roster, RosterChips, SessionInspector } from "./fleet-roster";
 import { LatestTick, POLL_MS, TickSheet, type TickSheetState } from "./fleet-ticks";
 import { Pill, ramp, SectionHead, Segmented, Verb } from "./fleet-ui";
 import { errorText, plural } from "./format";
-import { useAttention, useWorkList } from "./hooks";
+import { useAttention } from "./hooks";
 import { requestIntent } from "./intent";
-import { fleetOriginOf } from "./records-text";
 import { Button, Card, Notice, radius, space, useReducedMotion, useText } from "./ui";
 
 const TICKS = 24;
@@ -164,7 +162,6 @@ export function FleetView({
   const all = scope === null;
   const reads = useScopeReads(fleet.data, all, fleet.isError && fleet.data ? errorText(fleet.error) : null);
   const reduced = useReducedMotion();
-  const workList = useWorkList();
   // The header's own read (work.attention): what "N need you" counts everywhere.
   const attention = useAttention();
   const queueRef = useRef<View>(null);
@@ -229,16 +226,11 @@ export function FleetView({
     : null;
   const cadenceLine = cadence && all && reads.length > 1 && featured ? `${featured.scope.id}: ${cadence}` : cadence;
 
-  // One selector for what needs you: the band, the tile, the section and the header's fleet share agree.
+  // One selector for the fleet's health: the band, the tile, the section and the header's fleet share agree.
   const needs = fleetNeedsYou(reads);
   const teach = teachQueue(reads, now);
-  // The header's count, split into the fleet's share (here) and each other surface's.
-  // The fleet's own work, every scope's (an item's fleet marker, as #23 reads it), then what this read holds.
-  const fleetWork = new Set([
-    ...(workList.data?.items ?? []).filter((item) => fleetOriginOf(item) !== null).map((item) => item.id),
-    ...fleetItemIds(needs),
-  ]);
-  const shares = attention.data ? headerShares(attention.data, fleetWork) : null;
+  // The header's count, split into the fleet's share (here: its health) and each other surface's (BRO-2908).
+  const shares = attention.data ? headerShares(attention.data) : null;
   const elsewhere = shares
     ? [
         { label: "Work", count: shares.work, intent: { kind: "filter", group: "review" } as const },
@@ -260,7 +252,8 @@ export function FleetView({
   const runningScopes = new Set(filterRoster(roster, "running", asked).map((row) => row.scopeId)).size;
   const verdict = verdictOf(reads, cells, all, {
     needs: needs.total,
-    needsText: needsText(needs),
+    // The band counts health only; what the fleet raised is counted where it lives (BRO-2908).
+    needsText: needsText({ ticks: needs.ticks, asks: 0, alerts: 0, decisions: 0 }),
     sessions: needs.sessions,
     failed: counts.failed,
     blocked: counts.blocked,
@@ -269,9 +262,9 @@ export function FleetView({
     // The fleet's own: the header's count is all of Maestro's, so the tile names what it counts.
     {
       id: "needs",
-      label: "Needs you here",
+      label: "Health",
       value: needs.total,
-      sub: needs.total > 0 ? `fleet: ${needsText(needs)}` : needsText(needs),
+      sub: needs.total > 0 ? `${plural(needs.total, "scope")} whose tick needs you` : "no scope's tick needs you",
       tone: "warn",
     },
     {
@@ -395,10 +388,11 @@ export function FleetView({
 
   const queueView = (
     <View style={{ gap: space[3] }} ref={queueRef}>
-      <SectionHead theme={theme} title="Needs you" count={needs.total} />
+      <SectionHead theme={theme} title="Health" count={needs.total} />
       <NeedsYouQueue
         theme={theme}
         cards={needs.cards}
+        elsewhere={needs.elsewhere}
         also={needs.also}
         context={context}
         phone={phone}
@@ -472,7 +466,13 @@ export function FleetView({
                 all: shares.total,
                 elsewhere: [
                   ...(otherScopes > 0
-                    ? [{ label: "other scopes", count: otherScopes, onPress: () => onScope(null) }]
+                    ? [
+                        // All shown: what is left is the awake-clock check's notice (a scope's, but not its health),
+                        // shown in Needs you's notices, so it is named here and is not a link.
+                        all
+                          ? { label: "the clock check", count: otherScopes }
+                          : { label: "other scopes", count: otherScopes, onPress: () => onScope(null) },
+                      ]
                     : []),
                   ...elsewhere.map((entry) => ({
                     label: entry.label,

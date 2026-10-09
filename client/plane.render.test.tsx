@@ -426,6 +426,8 @@ const fleetProposals = (): FleetProposal[] => [
 const FLEET_REPORT =
   "# fleet-reconcile · broomva · tick 35\n\nReport only (phase 1).\n\n## Classes\n\n| # | class | sessions |\n|---|---|---|\n| 1 | out of scope | 53 |\n| 4 | error | 1 |\n";
 let fleetNotices: FleetNotice[] = [];
+/** While set, broomva's tick is on time: no health card, only what the fleet raised (BRO-2908). */
+let broomvaOnTime = false;
 /** While set, fleet.get answers only once it resolves: a refetch still on its way. */
 let fleetHeld: Promise<void> | null = null;
 /** While set, fleet.get for this scope fails: a scope that cannot be read. */
@@ -740,7 +742,7 @@ const fleetView = (scope: string | undefined): FleetView => {
       id: "broomva",
       mode: "report",
       dryRun: true,
-      health: missed,
+      health: broomvaOnTime ? { ...missed, status: "ok" as const, reason: "", needsYou: false } : missed,
       lastTick: { tick: 35, at: new Date(Date.now() - 3 * H).toISOString(), status: "ok" as const },
       unreviewed: proposalsNow.filter((entry) => entry.review === null).length,
       openAsks: 1,
@@ -1331,6 +1333,7 @@ afterEach(async () => {
   stopRefusal = null;
   stopHeld = null;
   fleetNotices = [];
+  broomvaOnTime = false;
   fleetHeld = null;
   fleetFails = null;
   rosterExtra = [];
@@ -2443,14 +2446,18 @@ describe("the Fleet view", () => {
     expect(sent("fleet.get")).toEqual([{ ticks: 24 }, { scope: "sri", ticks: 24 }]);
     const text = view.text();
     // Every scope that is not well is named, the worst first, and the session that wants a look too.
-    expect(text).toContain("broomva missed its tick · 2 need you · 1 session wants a look · sri not scheduled");
+    expect(text).toContain("broomva missed its tick · 1 needs you · 1 session wants a look · sri not scheduled");
     expect(text).toContain("No tick for 3h: the last was tick 35. It runs every hour.");
     expect(text).toContain("Dry run · report only");
     // A cell per tick with its words, and the scope's missed cell last.
     expect(starting(view, "Tick 35, passed")).toBeDefined();
     expect(starting(view, "No tick: missed for 3h")).toBeDefined();
-    // The tile names what it counts: the missed tick and the ask; dry-run proposals are not counted.
-    expect(starting(view, "Needs you here: 2, fleet: 1 tick · 1 ask")).toBeDefined();
+    // The tile is health: the missed tick. The ask is counted where it lives, at your gate (BRO-2908).
+    expect(starting(view, "Health: 1, 1 scope whose tick needs you")).toBeDefined();
+    expect(starting(view, "Health: 1")?.getAttribute("aria-label")).toContain("Go to Health");
+    expect(text).toContain("Counted where they live");
+    // The band says what it counts: the tick, not the ask counted at your gate.
+    expect(text).toContain("Needs you: 1 tick.");
     expect(starting(view, "Attention: 1, 1 failed")).toBeDefined();
     expect(starting(view, "Running: 1")).toBeDefined();
     expect(starting(view, "Failed: 1")).toBeDefined();
@@ -2696,13 +2703,15 @@ describe("the Fleet view", () => {
       const target = view.byLabel(label) as unknown as { firstElementChild: { style: { backgroundColor: string } } };
       return target.firstElementChild.style.backgroundColor.includes("84, 128, 199");
     };
-    expect(view.text()).toContain("Nothing needs you");
+    expect(view.text()).toContain("No scope's tick needs you");
+    expect(view.text()).toContain("A late or failing scope whose alert is at your gate is counted there.");
+    expect(starting(view, "Health: 0, no scope's tick needs you")).toBeDefined();
     expect(filled("Agree: report only, 4 sessions")).toBe(false);
     // Teach the fleet sits below the sessions.
     expect(view.text().indexOf("Teach the fleet")).toBeGreaterThan(view.text().indexOf("Sessions in scope"));
   });
 
-  test("one number: the band, the tile, the Needs-you cards and the header's fleet share agree", async () => {
+  test("one number: the band, the tile, the Health cards and the header's fleet share agree (BRO-2908)", async () => {
     // The shared fixture: broomva's missed tick, its ask's raised work (Work a, at your gate), one decision
     // that waits on you and one that does not.
     decisionsNow = [
@@ -2728,55 +2737,93 @@ describe("the Fleet view", () => {
     const view = await mount(surface(false));
     await view.goto("Fleet");
     for (let tries = 0; tries < 100 && !view.text().includes("Would list 4 unmanaged"); tries += 1) await settle(20);
-    // The header's fleet share, as work.attention carries it: the fleet's work that needs you, the scope's
-    // notice, and each decision ask that waits on you.
-    const fleetWork = items.filter((item) => item.id === "a");
+    // The fleet's share is its health: the scope's notice. Its raised work is Work's, its waiting decision
+    // Decisions', counted there once and shown here under "Counted where they live" (BRO-2908).
     const notices = [{ scope: "broomva" }];
     const asks = decisionsNow.filter((ask) => ask.waiting).map((ask) => askNotice(ask, "broomva"));
-    const fleetShare = needsYouCount(fleetWork, notices, [], asks);
-    expect(fleetShare).toBe(3);
-    // The header itself, rendered from the same pieces work.attention carries: the fleet's share and the rest.
-    const otherWork = needsYou(items).filter((item) => item.id !== "a");
+    const health = needsYouCount([], notices);
+    expect(health).toBe(1);
+    const work = needsYou(items).length;
     const header = needsYouCount(needsYou(items), notices, [], asks);
-    expect(header).toBe(fleetShare + otherWork.length);
+    expect(header).toBe(health + work + asks.length);
     expect(headerFace(header).label).toBe(`${header} need you`);
     // The band says both numbers, the rest pressable to its view.
     for (let tries = 0; tries < 100 && !view.text().includes("in all"); tries += 1) await settle(20);
-    expect(view.text()).toContain(`${fleetShare} need you here · ${header} in all (${otherWork.length} in Work)`);
+    expect(view.text()).toContain(
+      `${health} needs you here · ${header} in all (${work} in Work, ${asks.length} in Decisions)`,
+    );
     // The subtitle under Maestro's title says the same Maestro-wide number as the header and the band's "in all".
     // The summary sits on its own row under the title and its buttons (the Feed home, BRO-2906).
     expect(view.text().startsWith(`MaestroNew work${header} need you · `)).toBe(true);
-    expect(view.byLabel(`${otherWork.length} in Work: open Work`)).not.toBeNull();
-    expect(starting(view, `Needs you here: ${fleetShare}, fleet: 1 tick · 1 ask · 1 decision`)).toBeDefined();
-    const section = view.byLabel(`Needs you: ${fleetShare} cards`) as unknown as { children: { length: number } };
-    expect(section.children.length).toBe(fleetShare);
+    expect(view.byLabel(`${work} in Work: open Work`)).not.toBeNull();
+    expect(starting(view, `Health: ${health}, 1 scope whose tick needs you`)).toBeDefined();
+    const section = view.byLabel(`Health: ${health} card`) as unknown as { children: { length: number } };
+    expect(section.children.length).toBe(health);
+    // The raised work and the waiting decision are shown, uncounted here.
+    expect(view.text()).toContain("Counted where they live");
     // The decision that does not wait on you is listed apart, uncounted.
     expect(view.text()).toContain("Also open");
     // One scope shown: the fleet's share in the other scopes is named, so the parts still add up.
     await view.press(view.byLabel("sri, Not scheduled, 1 proposal to review"));
     for (let tries = 0; tries < 100 && !view.text().includes("other scopes"); tries += 1) await settle(20);
     expect(view.text()).toContain(
-      `0 need you here · ${header} in all (${fleetShare} in other scopes, ${otherWork.length} in Work)`,
+      `0 need you here · ${header} in all (${health} in other scopes, ${work} in Work, ${asks.length} in Decisions)`,
     );
   });
 
-  test("an ask the fleet has not raised as work yet says when it will be, and can still be copied", async () => {
+  test("an ask the fleet has not raised as work yet says where it is answered, and can still be copied", async () => {
+    askOverride = { item: null };
     const view = await mount(surface(false));
     await view.goto("Fleet");
     await settle(30);
     expect(view.byLabel("Copy the question of ask a1")).not.toBeNull();
+    // Not written to Decisions yet, and it says when it will be (skills#270, BRO-2908); never the filled verb.
+    expect(view.text()).toContain("Not in Decisions yet");
+    // broomva's tick is 3 h late: the next tick is due now, never a time already past.
+    expect(view.text()).toContain("The fleet writes these to Decisions at its next tick (now due)");
+    const copy = view.byLabel("Copy the question of ask a1") as unknown as {
+      firstElementChild: { style: { backgroundColor: string } };
+    };
+    expect(copy.firstElementChild.style.backgroundColor.includes("84, 128, 199")).toBe(false);
   });
 
-  test("Needs you jumps to the queue; a filter tile filters exactly what it counts and says Filtering", async () => {
+  test("with no tick that needs you, what the fleet raised is shown but never leads with the filled verb (BRO-2908)", async () => {
+    broomvaOnTime = true;
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    for (let tries = 0; tries < 100 && !view.text().includes("Would list 4 unmanaged"); tries += 1) await settle(20);
+    expect(view.text()).toContain("No scope's tick needs you");
+    expect(view.text()).toContain("Counted where they live");
+    const verb = view.all('[aria-label^="Open the fleet\'s work for ask"]')[0] as unknown as
+      | { firstElementChild: { style: { backgroundColor: string } } }
+      | undefined;
+    expect(verb).toBeDefined();
+    expect(verb?.firstElementChild.style.backgroundColor.includes("84, 128, 199")).toBe(false);
+  });
+
+  test("every scope shown: a notice that is no scope's health is named, plain, not a link (BRO-2908)", async () => {
+    const since = new Date(Date.now() - 3 * H).toISOString();
+    fleetNotices = [
+      { scope: "broomva", status: "missed", reason: "No tick since tick 35.", since },
+      { scope: "sri", status: "blind", reason: "The awake clock can't be read.", since },
+    ];
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    for (let tries = 0; tries < 100 && !view.text().includes("in all"); tries += 1) await settle(20);
+    expect(view.text()).toContain("1 in the clock check");
+    expect(view.byLabel("1 in the clock check: open the clock check")).toBeNull();
+  });
+
+  test("Health jumps to the queue; a filter tile filters exactly what it counts and says Filtering", async () => {
     const view = await mount(surface(false));
     await view.goto("Fleet");
     await settle(30);
     const rows = () => view.all('[aria-label*=". The fleet would: "]').length;
     const before = rows();
-    await view.press(starting(view, "Needs you here: "));
+    await view.press(starting(view, "Health: "));
     // Not a roster filter: the sessions are all still there, and the tile is not pressed.
     expect(rows()).toBe(before);
-    expect(starting(view, "Needs you here: ")?.getAttribute("aria-pressed")).toBe("false");
+    expect(starting(view, "Health: ")?.getAttribute("aria-pressed")).toBe("false");
     await view.press(starting(view, "Failed: 1"));
     expect(rows()).toBe(1);
     expect(starting(view, "Failed: 1")?.getAttribute("aria-label")).toContain("Filtering the sessions");
@@ -2974,7 +3021,7 @@ describe("the Fleet view", () => {
     expect(starting(view, "Out of scope: ")).toBeDefined();
     expect(starting(view, "Failed: ")).toBeDefined();
     for (let tries = 0; tries < 100 && !view.text().includes("Would list 4 unmanaged"); tries += 1) await settle(20);
-    expect(starting(view, "Needs you here: 2")).toBeDefined();
+    expect(starting(view, "Health: 1")).toBeDefined();
     // The legend is on the phone too, and an Agree-all card names every session it covers and lists them.
     expect(view.text()).toContain("no exit recorded");
     expect(view.text()).toContain("sri-aaaa1111 · sri-bbbb2222 · sri-cccc3333 · sri-dddd4444");

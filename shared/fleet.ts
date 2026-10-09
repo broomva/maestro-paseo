@@ -178,6 +178,11 @@ export const FleetAskSchema = z.object({
   /** The batch that carries it now (its ledger intent id), and the Maestro work raised for that batch. */
   batch: z.string().nullable(),
   item: FleetItemSchema.nullable(),
+  /**
+   * The ask's entry in the fleet's own ledger, `fleet-<scope>.yaml` (skills#270): the uid the fleet writes it
+   * under, `fleet-<scope>-<sha256(key "\n" batch)[:12]>`. Null without a batch; absent from an older daemon.
+   */
+  ledgerUid: z.string().nullable().optional(),
 });
 export type FleetAsk = z.infer<typeof FleetAskSchema>;
 
