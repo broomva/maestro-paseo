@@ -45,6 +45,11 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | J8 | `j8-initiatives.png` | Initiatives: lateness loudest, driver as a standing pulse, the skene review in the inspector with three answers |
 | J9 | `j9-new-work.png` | New work grows from its button over a dimmed Feed; a Who starts it row (the lane, A8) |
 | JE | `je-evaluation.png` | The nine rules of the J language (rule 9: Undertow marks Running only), a per-screen before and after, and what is still yours to decide |
+| M1a | `m1a-top-tabs.png` | Mobile (BRO-3025): J1 on iPhone as is: scrolling segmented tabs under Paseo's header, a 2×2 glance, the inspector as a pushed page |
+| M1b | `m1b-bottom-tab-bar.png` | Maestro's own bottom tab bar (Feed, Decisions, Work, Health + New work), large titles with the verdict line, a swipeable glance row |
+| M1c | `m1c-focus-deck.png` | One hold at a time with thumb-sized verbs; everything else in a sheet you pull up; sections in a title menu |
+| M1d | `m1d-inbox-swipe.png` | One dense grouped list, row verbs and swipe actions, a title menu and a bottom toolbar |
+| M1v | `m1v-mobile-compared.png` | The four compared; recommends M1b's tab bar with M1c's deck at the top of the Feed; what to check on a device |
 | N0 | `n0-model.png` | Three nouns (work, ask, notice), one list, one verb each; six rules; what it retires |
 | N1 | `n1-wiring.png` | Producers, verbs on maestro.sock, one store per kind, needs.list, views, the return path |
 | N3 | `n3-lifecycles.png` | The states each kind passes through; the 10-09 Parser drift card, today vs next |
