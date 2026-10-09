@@ -18,6 +18,9 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | D3 | `d3-prompt-stack-and-lanes.png` | The five-layer prompt stack (harness, workspace rules, role base, lane overlay, tick context or brief), where the SRI tick prompt goes, lane profiles |
 | D4 | `d4-settings-lanes.png` | Settings › Lanes: the conductor, each lane's session, heartbeat, profile and prompt version, and the composed prompt |
 | D5 | `d5-conductor-tick-and-presence.png` | The conductor's tick as a governed autonomy loop (reconcile, sweep, allocate, govern, log, resume on events), code vs judgement, its invariants, and the owner-presence model for when waiting is needed (A3, A8) |
+| I0 | `i0-inventory.png` | The inventory: 31 features, 25 pages, 24 components, 66 interfaces, 23 stores, 10 loops, each keep, change, new or retire against today's code (BRO-2994) |
+| I1 | `i1-articulation.png` | How it articulates: the layers, who calls whom (callers × handling layer), three traces (allow a merge, answer an ask, start new work), the rules the checker enforces |
+| I2 | `i2-findings.png` | 27 findings against the inventory by severity, each with its ticket (BRO-2990, 2995–3002), and the build order they suggest |
 | N0 | `n0-model.png` | Three nouns (work, ask, notice), one list, one verb each; six rules; what it retires |
 | N1 | `n1-wiring.png` | Producers, verbs on maestro.sock, one store per kind, needs.list, views, the return path |
 | N3 | `n3-lifecycles.png` | The states each kind passes through; the 10-09 Parser drift card, today vs next |
@@ -41,3 +44,20 @@ All data on the screens is illustrative.
 The measured data is in `reach-taxonomy.md`, with its machine-readable twin `reach-taxonomy.json`.
 
 Notifications (owner answer A5): `notifications-integration.md` maps every channel, the gap to one-tap Allow/Deny, ranked options, and the draft feature request to Paseo.
+
+## The inventory (BRO-2994)
+
+`inventory.yaml` is the source; I0–I2 are drawn from it. `scripts/inventory-check.ts` checks it on every `bun test`:
+- every feature reaches a page or a loop and has an interface;
+- every page has a frame and its export;
+- only the owner calls a gate verb;
+- only a lane launches a session (A8);
+- every store is written by its owning layer through one module, unless a ticket says otherwise;
+- findings above minor carry a ticket.
+
+```
+bun scripts/inventory-check.ts --summary
+```
+
+Code facts come from four read-only passes over maestro-paseo 3f8d9d8: interfaces, stores and loops, the client, and smells. Each cites file:line.
+
