@@ -432,6 +432,8 @@ export function multiLedger(
       } catch (error) {
         named = { repos: [], errors: [`could not be read: ${(error as Error).message}`] };
       }
+      // Nothing in force to carry (a restart with a bad file): what the file means is unknown, so it is unread.
+      const fileUnread = named.errors.length > 0 && inForce.length === 0;
       if (named.errors.length > 0) {
         const labels = new Set(named.repos.map((one) => one.label));
         named.repos.push(...inForce.filter((one) => !labels.has(one.label)));
@@ -468,7 +470,7 @@ export function multiLedger(
         ...named.errors.map((error) => ({ file: options.reposPath ?? "loop-repos.json", error })),
       ];
       let intents = [...main.intents];
-      const unread: string[] = [];
+      const unread: string[] = fileUnread ? [options.reposPath ?? "loop-repos.json"] : [];
       const key = (row: LoopIntent) => `${row.substrate.kind} ${row.substrate.ref}`;
       for (const { one, read, error } of extra) {
         if (error !== null) {

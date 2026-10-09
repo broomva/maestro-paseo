@@ -492,4 +492,11 @@ describe("several repos (BRO-2942)", () => {
     text = JSON.stringify({ repos: [] });
     expect(await ids()).toEqual(["a"]);
   });
+
+  test("a bad repos file with nothing in force (a restart) leaves the file unread; a missing one does not", async () => {
+    const torn = await multiLedger(fixed([]), { reposPath: "/r.json", readText: async () => '{"repos": [' }).read();
+    expect(torn.unread).toEqual(["/r.json"]);
+    const none = await multiLedger(fixed([]), { reposPath: "/r.json", readText: async () => null }).read();
+    expect(none.unread).toBeUndefined();
+  });
 });
