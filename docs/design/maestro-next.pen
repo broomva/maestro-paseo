@@ -151399,7 +151399,7 @@
                                   "name": "Conductor",
                                   "width": "fill_container",
                                   "height": 166,
-                                  "fill": "$needs-soft",
+                                  "fill": "$bg",
                                   "cornerRadius": 18,
                                   "stroke": "#0C101A0F",
                                   "strokeWidth": 1,
@@ -151429,20 +151429,18 @@
                                       "alignItems": "center",
                                       "children": [
                                         {
-                                          "type": "icon",
-                                          "id": "cxSZb",
-                                          "name": "i",
-                                          "width": 14,
-                                          "height": 14,
-                                          "icon": "radio-tower",
-                                          "library": "lucide",
-                                          "fill": "$needs"
+                                          "id": "hQOTu",
+                                          "type": "ref",
+                                          "ref": "S33Af8",
+                                          "name": "pulse (standing)",
+                                          "width": 13,
+                                          "height": 13
                                         },
                                         {
                                           "type": "text",
                                           "id": "q6zdC",
                                           "name": "t",
-                                          "fill": "$needs",
+                                          "fill": "$fg-2",
                                           "content": "Conductor and lanes",
                                           "lineHeight": 1.4,
                                           "fontFamily": "$font-ui",
@@ -170208,8 +170206,12 @@
                                       "fill": "$bg",
                                       "descendants": {
                                         "l7y8h": {
-                                          "icon": "loader",
-                                          "fill": "#5480C7"
+                                          "id": "yfcyl",
+                                          "type": "ref",
+                                          "ref": "L4xCf4",
+                                          "name": "tidepool (running)",
+                                          "width": 13,
+                                          "height": 13
                                         },
                                         "RUQr6": {
                                           "content": "Running",
@@ -173621,8 +173623,12 @@
                               "fill": "$bg",
                               "descendants": {
                                 "l7y8h": {
-                                  "icon": "loader",
-                                  "fill": "#5480C7"
+                                  "id": "w33KTB",
+                                  "type": "ref",
+                                  "ref": "L4xCf4",
+                                  "name": "tidepool (running)",
+                                  "width": 13,
+                                  "height": 13
                                 },
                                 "RUQr6": {
                                   "content": "Running",
@@ -175308,8 +175314,12 @@
                                   "fill": "$bg",
                                   "descendants": {
                                     "l7y8h": {
-                                      "icon": "monitor",
-                                      "fill": "$fg-2"
+                                      "id": "lVMGW",
+                                      "type": "ref",
+                                      "ref": "L4xCf4",
+                                      "name": "tidepool (running)",
+                                      "width": 13,
+                                      "height": 13
                                     },
                                     "RUQr6": {
                                       "content": "Sessions",
@@ -175368,15 +175378,19 @@
                                   "ref": "oatDw",
                                   "name": "tile Conductor",
                                   "width": "fill_container",
-                                  "fill": "$needs-soft",
+                                  "fill": "$bg",
                                   "descendants": {
                                     "l7y8h": {
-                                      "icon": "radio-tower",
-                                      "fill": "$needs"
+                                      "id": "qZ0eJ",
+                                      "type": "ref",
+                                      "ref": "S33Af8",
+                                      "name": "pulse (standing)",
+                                      "width": 13,
+                                      "height": 13
                                     },
                                     "RUQr6": {
                                       "content": "Conductor",
-                                      "fill": "$needs"
+                                      "fill": "$fg-2"
                                     },
                                     "K6d7o": {
                                       "content": "2"
@@ -201289,12 +201303,21 @@
                                   "height": 28,
                                   "fill": "#0C101A0A",
                                   "cornerRadius": 999,
+                                  "gap": 5,
                                   "padding": [
                                     0,
                                     9
                                   ],
                                   "alignItems": "center",
                                   "children": [
+                                    {
+                                      "id": "t6V3Eb",
+                                      "type": "ref",
+                                      "ref": "S33Af8",
+                                      "name": "pulse (standing)",
+                                      "width": 11,
+                                      "height": 11
+                                    },
                                     {
                                       "type": "text",
                                       "id": "D8wg2",
@@ -202164,8 +202187,12 @@
                                       "fill": "$bg",
                                       "descendants": {
                                         "l7y8h": {
-                                          "icon": "monitor",
-                                          "fill": "$fg-2"
+                                          "id": "T8fZR",
+                                          "type": "ref",
+                                          "ref": "L4xCf4",
+                                          "name": "tidepool (running)",
+                                          "width": 13,
+                                          "height": 13
                                         },
                                         "RUQr6": {
                                           "content": "Sessions",
@@ -202226,15 +202253,19 @@
                                       "name": "tile Conductor",
                                       "width": "fill_container",
                                       "height": 86,
-                                      "fill": "$needs-soft",
+                                      "fill": "$bg",
                                       "descendants": {
                                         "l7y8h": {
-                                          "icon": "radio-tower",
-                                          "fill": "$needs"
+                                          "id": "c7E9XM",
+                                          "type": "ref",
+                                          "ref": "S33Af8",
+                                          "name": "pulse (standing)",
+                                          "width": 13,
+                                          "height": 13
                                         },
                                         "RUQr6": {
                                           "content": "Conductor",
-                                          "fill": "$needs"
+                                          "fill": "$fg-2"
                                         },
                                         "K6d7o": {
                                           "content": "2"
@@ -203997,12 +204028,21 @@
                                   "height": 28,
                                   "fill": "#0C101A0A",
                                   "cornerRadius": 999,
+                                  "gap": 5,
                                   "padding": [
                                     0,
                                     9
                                   ],
                                   "alignItems": "center",
                                   "children": [
+                                    {
+                                      "id": "y3nCJu",
+                                      "type": "ref",
+                                      "ref": "S33Af8",
+                                      "name": "pulse (standing)",
+                                      "width": 11,
+                                      "height": 11
+                                    },
                                     {
                                       "type": "text",
                                       "id": "vWFik",
