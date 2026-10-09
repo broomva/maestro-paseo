@@ -61,7 +61,7 @@ those, and nothing Paseo already does.
 
 ## Install
 
-Requires Paseo 0.8 or later, with plugins enabled on the daemon.
+Requires Paseo 0.11 or later, with plugins enabled on the daemon.
 
 In the app, open **Settings, Plugins** and paste the absolute path of this directory as the plugin
 source. Or from a terminal that can reach the daemon:
@@ -935,7 +935,7 @@ npm run check      # tsc, Biome, bun test
 ```
 
 `@getpaseo/plugin` is a development dependency for types only; the host supplies it at runtime.
-It is pinned to 0.8.0 so one build serves 0.8 and 0.9 hosts.
+It is pinned to 0.11.1, the host it is built against; the screen API (`addScreen`, `openScreen`) needs a 0.11 host.
 
 ## Limits
 

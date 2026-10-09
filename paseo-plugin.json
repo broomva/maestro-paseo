@@ -2,7 +2,7 @@
   "id": "maestro",
   "description": "Work as folders, sessions as the verb, and one human verb: the gate",
   "requirements": {
-    "paseo": ">=0.8.0"
+    "paseo": ">=0.11.0"
   },
   "build": [["npm", "ci", "--omit=dev"]]
 }

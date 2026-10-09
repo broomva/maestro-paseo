@@ -35,7 +35,7 @@ const MAX_PAGES = 10;
 
 export type IntegrationClient = Pick<
   PluginClientContext,
-  "paseo" | "rpc" | "openSurface" | "addHeaderButton" | "addComposerPill"
+  "paseo" | "rpc" | "openScreen" | "addHeaderButton" | "addComposerPill"
 >;
 
 export interface IntegrationViews {
@@ -51,11 +51,14 @@ export interface IntegrationOptions {
   log?: (message: string) => void;
 }
 
-/** Opens Maestro at a target: leaves the intent, then opens the surface, which takes it. */
-export function opener(client: Pick<PluginClientContext, "openSurface">): (intent: MaestroIntent) => void {
+/** The id Maestro's screen is registered under (index.client.tsx). */
+export const MAESTRO_SCREEN = "maestro";
+
+/** Opens Maestro at a target: leaves the intent, then opens the screen, which takes it. */
+export function opener(client: Pick<PluginClientContext, "openScreen">): (intent: MaestroIntent) => void {
   return (intent) => {
     requestIntent(intent);
-    client.openSurface("maestro");
+    client.openScreen({ screenId: MAESTRO_SCREEN });
   };
 }
 
