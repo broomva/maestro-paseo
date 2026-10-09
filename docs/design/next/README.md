@@ -25,6 +25,9 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | G1 | `g1-glass-feed-mac.png` | Liquid Glass: the Feed on the Mac, with a glass sidebar (lanes, presence), toolbar and inspector over solid cards |
 | G2 | `g2-glass-iphone.png` | Liquid Glass on iPhone: a lock-screen push with Allow, Deny and Open; the Feed with a floating tab bar; an Ask as a sheet |
 | G3 | `g3-glass-settings-lanes.png` | Liquid Glass: Settings › Lanes, with the conductor, each lane and the fleet as grouped forms |
+| H1 | `h1-interim-feed-desktop.png` | Interim (BRO-3005): the Feed inside Paseo on the desktop. broomva tokens, Apple behaviors (springs, an Ask that grows from its card, an Undo capsule), frost only on floating chrome. Every element is tagged with the API that builds it |
+| H2 | `h2-interim-phone.png` | Interim on iPhone: the real push ("Agent finished", body ≤220, no buttons), then the gate card in the session, then Paseo's own 65% sheet |
+| H3 | `h3-interim-feasibility.png` | What a Paseo plugin can truly build: 19 elements, YES / PARTIAL / NO on desktop and iPhone, what waits on Paseo, the build order |
 | N0 | `n0-model.png` | Three nouns (work, ask, notice), one list, one verb each; six rules; what it retires |
 | N1 | `n1-wiring.png` | Producers, verbs on maestro.sock, one store per kind, needs.list, views, the return path |
 | N3 | `n3-lifecycles.png` | The states each kind passes through; the 10-09 Parser drift card, today vs next |
@@ -65,3 +68,4 @@ bun scripts/inventory-check.ts --summary
 
 Code facts come from four read-only passes over maestro-paseo 3f8d9d8: interfaces, stores and loops, the client, and smells. Each cites file:line.
 
+`paseo-plugin-capabilities.md` is the audit behind H3: what the Paseo 0.11.1 host lets a plugin render, with file and bundle-offset evidence. Read it before designing anything that floats, blurs, pushes or animates.

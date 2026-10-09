@@ -33,3 +33,15 @@
 **Compatibility.** Ask 1 needs no plugin changes. Asks 2-4 are additive to the plugin SDK. We already build against the provider `session.permission` contract and can test any beta.
 
 **Related:** #2622 (iOS background suspension suppresses pushes inside the 180 s presence window), #4841 (stale presence suppresses permission banners), #306 (quick permission approvals from the watch, closed). Ask 1 would also give #306's use case a lock-screen path.
+
+## Also needed by the interim design (BRO-3005)
+
+These come from a read of the 0.11.1 host. Evidence: `paseo-plugin-capabilities.md` in the same folder.
+
+- **Deep links to plugin screens.** Today `paseo://` reaches only agents, so a push cannot open the screen where the decision lives.
+- **Sheet options for `Modal`.** Detents, size, and presentation from a source rect, so a sheet can grow from the card that opened it.
+- **A shortcut registration API.** Plugins currently listen for `keydown` while focused, and only on web.
+- **Haptics** for plugins. Paseo already ships expo-haptics.
+- **An appearance flag** (light or dark) in the plugin theme, next to the 11 colors.
+- **Native blur.** Electron vibrancy or a blur view for plugins, if translucent chrome is ever wanted.
+
