@@ -559,10 +559,10 @@ describe("the owner's words", () => {
     const next = nextTickAt(schedule, ago(31 * 60_000));
     expect(next).toBe(NOW + 29 * 60_000);
     expect(askWhen({ item: null, batch: "12-1" }, next, NOW)).toBe(
-      "Not in Maestro yet: raised at the next tick, ~19:29.",
+      "Not in Decisions yet: written at the next tick, ~19:29.",
     );
     expect(askWhen({ item: null, batch: null }, null, NOW)).toBe(
-      "Not in Maestro yet: raised once it lasts, when a tick runs.",
+      "Not in Decisions yet: written once it lasts, when a tick runs.",
     );
     expect(nextTickAt({ scheduled: false, intervalMinutes: null }, ago(H))).toBeNull();
   });
@@ -1021,9 +1021,11 @@ describe("an ask the fleet wrote to its own ledger is shown once, as the decisio
       {
         scope: scope("sri"),
         detail: detail("sri", {
-          asks: [report("a1", "fleet-sri-aaa"), report("a2", "fleet-sri-bbb")],
+          asks: [report("a1", "fleet-sri-aaa"), report("a2", "fleet-sri-bbb"), report("a3", "fleet-sri-ccc")],
           decisions: [
             decision("fleet-sri-aaa"),
+            // Answered in Maestro: the report still lists it for a tick or two (report runs before act ask).
+            decision("fleet-sri-ccc", { state: "answered", waiting: false, answer: "seen" }),
             decision("fleet-sri-alert-tick-1", { blocking: false, waiting: false }),
           ],
         }),
@@ -1034,6 +1036,7 @@ describe("an ask the fleet wrote to its own ledger is shown once, as the decisio
       "fleet-sri-aaa",
     ]);
     // a2 is not written yet: the report's copy stays. The alert entry stays too, apart.
+    // a3 was answered: its decision is in the scope's list, and the report's lagging copy is not shown again.
     expect(needs.also.map((card) => (card.kind === "ask" ? card.ask.id : card.kind))).toEqual(["a2", "decisions"]);
   });
 });

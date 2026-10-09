@@ -1071,7 +1071,7 @@ export function NeedsYouQueue({
               Not in Decisions yet
             </Text>
             <Text style={t.meta}>
-              {`The fleet writes these to Decisions at its next tick${next ? ` (~${timeText(new Date(next).toISOString())})` : ""}, once they have lasted; until then they aren't counted.`}
+              {`The fleet writes these to Decisions at its next tick${next === null ? "" : next <= Date.now() ? " (now due)" : ` (~${timeText(new Date(next).toISOString())})`}, once they have lasted; until then they aren't counted.`}
             </Text>
           </View>
           {notRaised.map((card) => view(card, false))}

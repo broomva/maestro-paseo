@@ -106,11 +106,14 @@ export function nextTickAt(schedule: FleetDetail["schedule"] | null, lastAt: str
 export function askWhen(ask: Pick<FleetAsk, "item" | "batch">, next: number | null, now: number = Date.now()): string {
   if (ask.item) return ask.item.needsYou ? "In Needs you as Maestro work" : "Raised as Maestro work";
   const at = next === null ? null : next <= now ? "now due" : `~${timeText(new Date(next).toISOString())}`;
+  // Since skills#270 the fleet writes an ask to its ledger, which Decisions reads, not as Maestro work.
   if (ask.batch)
-    return at ? `Not in Maestro yet: raised at the next tick, ${at}.` : "Not in Maestro yet: raised when a tick runs.";
+    return at
+      ? `Not in Decisions yet: written at the next tick, ${at}.`
+      : "Not in Decisions yet: written when a tick runs.";
   return at
-    ? `Not in Maestro yet: raised once it lasts; the next tick is ${at}.`
-    : "Not in Maestro yet: raised once it lasts, when a tick runs.";
+    ? `Not in Decisions yet: written once it lasts; the next tick is ${at}.`
+    : "Not in Decisions yet: written once it lasts, when a tick runs.";
 }
 
 /** A canonical session UUID (8-4-4-4-12 hex): nothing else is ever put in a command. */

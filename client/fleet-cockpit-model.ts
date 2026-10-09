@@ -256,8 +256,8 @@ export function fleetNeedsYou(reads: readonly ScopeRead[]): FleetNeeds {
     // An ask the fleet wrote to its own ledger (skills#270) is that ledger's decision below: answered and counted
     // there, shown once as the decision card, never again as the report's copy (BRO-2908).
     const inLedger = new Set(detail.decisions.map((entry) => entry.uid).filter(Boolean));
-    // One card per raised item that needs you, carrying all its asks; an ask not in the ledger yet (or whose
-    // work does not need you) is shown apart, uncounted.
+    // One card per raised item that needs you, carrying all its asks; any other ask not in the ledger yet
+    // (whether or not it has work) is shown apart, uncounted.
     const byItem = new Map<string, FleetAsk[]>();
     for (const ask of detail.asks) {
       if (ask.item?.needsYou) byItem.set(ask.item.id, [...(byItem.get(ask.item.id) ?? []), ask]);

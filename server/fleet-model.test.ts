@@ -620,6 +620,9 @@ describe("the fleet's work in Maestro", () => {
       ["k2", "7-3", null, null],
       ["k9", null, null, null],
     ]);
+    // Each ask carries its uid in the fleet's own ledger, as skills fleetlib/ledger_ask.py uid() writes it
+    // for the batch the ledger names (values computed by that function); none without a batch (BRO-2908).
+    expect(asks.map((ask) => ask.ledgerUid)).toEqual(["fleet-alpha-e97027a98569", "fleet-alpha-b013917332f9", null]);
     // The item the ledger recorded comes first, even done, over any title that claims the batch.
     const spoof = work("spoof", "1 ask [fleet-reconcile alpha batch 2-3]", "review");
     const recorded = asksOf("alpha", [{ id: "a1", key: "k1" }], fold, [spoof, work("old-item", "renamed", "done")]);

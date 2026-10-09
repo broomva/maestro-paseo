@@ -2779,7 +2779,8 @@ describe("the Fleet view", () => {
     expect(view.byLabel("Copy the question of ask a1")).not.toBeNull();
     // Not written to Decisions yet, and it says when it will be (skills#270, BRO-2908); never the filled verb.
     expect(view.text()).toContain("Not in Decisions yet");
-    expect(view.text()).toContain("The fleet writes these to Decisions at its next tick");
+    // broomva's tick is 3 h late: the next tick is due now, never a time already past.
+    expect(view.text()).toContain("The fleet writes these to Decisions at its next tick (now due)");
     const copy = view.byLabel("Copy the question of ask a1") as unknown as {
       firstElementChild: { style: { backgroundColor: string } };
     };
