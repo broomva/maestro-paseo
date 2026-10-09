@@ -463,4 +463,33 @@ describe("several repos (BRO-2942)", () => {
     expect(read.intents.map((one) => one.file)).toEqual([`${LEDGER_DIR}/sri-tick.yaml`]);
     expect(read.errors[0]?.error).toContain("already has the id sri-tick");
   });
+
+  test("a torn or unreadable repos file, or a bad entry, never drops a repo named before", async () => {
+    let text: string | Error = JSON.stringify({
+      repos: [
+        { label: "two", repo: "/two" },
+        { label: "three", repo: "/three" },
+      ],
+    });
+    const ledger = multiLedger(fixed([row("a")]), {
+      reposPath: "/r.json",
+      readText: async () => {
+        if (text instanceof Error) throw text;
+        return text;
+      },
+      source: (one) => fixed([row(one.label)]),
+    });
+    const ids = async () => (await ledger.read()).intents.map((one) => one.id).sort();
+    expect(await ids()).toEqual(["a", "three", "two"]);
+    text = '{"repos": [{"label"'; // a torn save
+    expect(await ids()).toEqual(["a", "three", "two"]);
+    text = Object.assign(new Error("EACCES"), { code: "EACCES" });
+    expect(await ids()).toEqual(["a", "three", "two"]);
+    text = JSON.stringify({ repos: [{ label: "two", repo: "/two", ref: "main" }] }); // two invalid, three gone
+    expect(await ids()).toEqual(["a", "three", "two"]);
+    text = JSON.stringify({ repos: [{ label: "two", repo: "/two" }] }); // a clean edit removes three
+    expect(await ids()).toEqual(["a", "two"]);
+    text = JSON.stringify({ repos: [] });
+    expect(await ids()).toEqual(["a"]);
+  });
 });

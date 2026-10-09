@@ -418,16 +418,25 @@ export function multiLedger(
   const sources = new Map<string, LedgerSource>();
   /** Each source's last good read: a transient failure judges on it, never on nothing (no false unregistered). */
   const lastGood = new Map<string, LedgerRead>();
+  let inForce: LoopRepo[] = [];
   return {
     where: primary.where,
     async read() {
-      let named: { repos: LoopRepo[]; errors: string[] } = { repos: [], errors: [] };
+      // The repos in force. A file that will not read, or names a repo in a shape this reader does not take,
+      // never drops a repo it named before (a torn save would read as "gone", and every loop that repo claims
+      // would read as unregistered): those stay in force, on their last read, until a clean edit removes them.
+      let named: { repos: LoopRepo[]; errors: string[] };
       try {
         const text = options.reposPath ? await readText(options.reposPath) : null;
-        if (text !== null) named = parseLoopRepos(text);
+        named = text === null ? { repos: [], errors: [] } : parseLoopRepos(text);
       } catch (error) {
         named = { repos: [], errors: [`could not be read: ${(error as Error).message}`] };
       }
+      if (named.errors.length > 0) {
+        const labels = new Set(named.repos.map((one) => one.label));
+        named.repos.push(...inForce.filter((one) => !labels.has(one.label)));
+      }
+      inForce = named.repos;
       // A source no longer named is dropped, with its fetch clock and its last read.
       const keys = new Set(named.repos.map((one) => JSON.stringify(one)));
       for (const key of [...sources.keys()]) {
