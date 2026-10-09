@@ -51,6 +51,13 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | M1d | `m1d-inbox-swipe.png` | One dense grouped list, row verbs and swipe actions, a title menu and a bottom toolbar |
 | M1v | `m1v-mobile-compared.png` | The four compared; recommends M1b's tab bar with M1c's deck at the top of the Feed; what to check on a device |
 | M1 | `m1-feed-home-mobile.png` | **Chosen** mobile home: M1c's deck with a pull-up sheet that peeks from the bottom edge; M1b's tab bar rides on the sheet's top edge; M1d's row swipes and undo toast on sheet rows only; the Decisions tab uses the same shape |
+| M2–M4 | `m2-m4-briefings-mobile.png` | Briefings on the phone: approval, ask and notice as pushed pages with their verbs pinned above the home indicator |
+| M5 | `m5-decisions-mobile.png` | Decisions: the open asks in the deck; the sheet holds where your answers went (stranded ones loudest); answering advances the deck with a toast |
+| M6 | `m6-work-mobile.png` | Work: the deck holds work that needs you (hold, lifecycle, receipts); the sheet is the board with a lane switcher; running cards wear the Undertow; a running item's page |
+| M7 | `m7-health-mobile.png` | Health: notices in the deck with what closes each; the sheet is the fleet (four tiles incl. the conductor) and schedules with swipe actions |
+| M8 | `m8-initiatives-mobile.png` | Initiatives: a due review joins the Feed deck as a hold; the list is a page from Health's sheet; answering moves the review date |
+| M9 | `m9-new-work-mobile.png` | New work: the composer grows from + over a dimmed Feed, rises with the keyboard, and Dispatch lands the work in Queued (the lane starts it, A8) |
+| M10 | `m10-from-a-push.png` | From a push: Paseo's fixed-title push, the asking session with Maestro's card and Open in Maestro, then M1's deck on the same hold |
 | N0 | `n0-model.png` | Three nouns (work, ask, notice), one list, one verb each; six rules; what it retires |
 | N1 | `n1-wiring.png` | Producers, verbs on maestro.sock, one store per kind, needs.list, views, the return path |
 | N3 | `n3-lifecycles.png` | The states each kind passes through; the 10-09 Parser drift card, today vs next |
