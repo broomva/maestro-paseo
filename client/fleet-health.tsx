@@ -174,7 +174,7 @@ export function HealthBand({
   relation?: {
     here: number;
     all: number;
-    elsewhere: readonly { label: string; count: number; onPress: () => void }[];
+    elsewhere: readonly { label: string; count: number; onPress?: () => void }[];
   } | null;
 }) {
   const t = ramp(theme);
@@ -188,14 +188,18 @@ export function HealthBand({
         {relation.elsewhere.map((entry, index) => (
           <Text key={entry.label}>
             {index > 0 ? ", " : ""}
-            <Text
-              accessibilityRole="link"
-              accessibilityLabel={`${entry.count} in ${entry.label}: open ${entry.label}`}
-              onPress={entry.onPress}
-              style={{ textDecorationLine: "underline" }}
-            >
-              {`${entry.count} in ${entry.label}`}
-            </Text>
+            {entry.onPress ? (
+              <Text
+                accessibilityRole="link"
+                accessibilityLabel={`${entry.count} in ${entry.label}: open ${entry.label}`}
+                onPress={entry.onPress}
+                style={{ textDecorationLine: "underline" }}
+              >
+                {`${entry.count} in ${entry.label}`}
+              </Text>
+            ) : (
+              `${entry.count} in ${entry.label}`
+            )}
           </Text>
         ))}
         {relation.elsewhere.length > 0 ? ")" : ""}

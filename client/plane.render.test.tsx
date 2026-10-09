@@ -2454,6 +2454,7 @@ describe("the Fleet view", () => {
     expect(starting(view, "No tick: missed for 3h")).toBeDefined();
     // The tile is health: the missed tick. The ask is counted where it lives, at your gate (BRO-2908).
     expect(starting(view, "Health: 1, 1 scope whose tick needs you")).toBeDefined();
+    expect(starting(view, "Health: 1")?.getAttribute("aria-label")).toContain("Go to Health");
     expect(text).toContain("Counted where they live");
     // The band says what it counts: the tick, not the ask counted at your gate.
     expect(text).toContain("Needs you: 1 tick.");
@@ -2703,6 +2704,7 @@ describe("the Fleet view", () => {
       return target.firstElementChild.style.backgroundColor.includes("84, 128, 199");
     };
     expect(view.text()).toContain("No scope's tick needs you");
+    expect(view.text()).toContain("A late or failing scope whose alert is at your gate is counted there.");
     expect(starting(view, "Health: 0, no scope's tick needs you")).toBeDefined();
     expect(filled("Agree: report only, 4 sessions")).toBe(false);
     // Teach the fleet sits below the sessions.
@@ -2775,8 +2777,13 @@ describe("the Fleet view", () => {
     await view.goto("Fleet");
     await settle(30);
     expect(view.byLabel("Copy the question of ask a1")).not.toBeNull();
-    // The report's asks say where they are answered and counted: Decisions (BRO-2908).
-    expect(view.text()).toContain("From the fleet's report");
+    // Not written to Decisions yet, and it says when it will be (skills#270, BRO-2908); never the filled verb.
+    expect(view.text()).toContain("Not in Decisions yet");
+    expect(view.text()).toContain("The fleet writes these to Decisions at its next tick");
+    const copy = view.byLabel("Copy the question of ask a1") as unknown as {
+      firstElementChild: { style: { backgroundColor: string } };
+    };
+    expect(copy.firstElementChild.style.backgroundColor.includes("84, 128, 199")).toBe(false);
   });
 
   test("with no tick that needs you, what the fleet raised is shown but never leads with the filled verb (BRO-2908)", async () => {
@@ -2791,6 +2798,19 @@ describe("the Fleet view", () => {
       | undefined;
     expect(verb).toBeDefined();
     expect(verb?.firstElementChild.style.backgroundColor.includes("84, 128, 199")).toBe(false);
+  });
+
+  test("every scope shown: a notice that is no scope's health is named, plain, not a link (BRO-2908)", async () => {
+    const since = new Date(Date.now() - 3 * H).toISOString();
+    fleetNotices = [
+      { scope: "broomva", status: "missed", reason: "No tick since tick 35.", since },
+      { scope: "sri", status: "blind", reason: "The awake clock can't be read.", since },
+    ];
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    for (let tries = 0; tries < 100 && !view.text().includes("in all"); tries += 1) await settle(20);
+    expect(view.text()).toContain("1 in the clock check");
+    expect(view.byLabel("1 in the clock check: open the clock check")).toBeNull();
   });
 
   test("Health jumps to the queue; a filter tile filters exactly what it counts and says Filtering", async () => {

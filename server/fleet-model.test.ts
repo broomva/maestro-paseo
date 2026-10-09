@@ -11,6 +11,7 @@ import {
   coverOf,
   failedStepOf,
   fleetItem,
+  fleetLedgerUid,
   foldLedger,
   foldReviews,
   healthOf,
@@ -758,5 +759,14 @@ describe("drilling into a tick and an ask", () => {
       "aaaaaaaa-88",
     );
     expect(askSession("records-without-process", sessions)).toBeNull();
+  });
+});
+
+describe("an ask's uid in the fleet's own ledger (BRO-2908)", () => {
+  test("is the fleet's own: the values skills fleetlib/ledger_ask.py uid() computes for the same key and batch", () => {
+    expect([
+      fleetLedgerUid("sri", "prompt:s1:waiting", "b7"),
+      fleetLedgerUid("broomva", "rules:acme/app", "e3f1"),
+    ]).toEqual(["fleet-sri-a22d8313ae85", "fleet-broomva-f3ed5dc7609d"]);
   });
 });

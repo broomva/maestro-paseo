@@ -467,9 +467,10 @@ export function FleetView({
                 elsewhere: [
                   ...(otherScopes > 0
                     ? [
-                        // All shown: what is left is a notice no scope carries (the awake clock unread), not a scope.
+                        // All shown: what is left is the awake-clock check's notice (a scope's, but not its health),
+                        // shown in Needs you's notices, so it is named here and is not a link.
                         all
-                          ? { label: "the clock check", count: otherScopes, onPress: () => onScope(null) }
+                          ? { label: "the clock check", count: otherScopes }
                           : { label: "other scopes", count: otherScopes, onPress: () => onScope(null) },
                       ]
                     : []),

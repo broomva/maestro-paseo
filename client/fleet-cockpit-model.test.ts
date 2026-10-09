@@ -790,7 +790,7 @@ describe("round 2", () => {
 describe("one number for what needs you", () => {
   test("the selector's total is its cards, the band's count, and the header's fleet share", () => {
     const waiting = (id: string, extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
-      ledger: "sri-coordinator.yaml",
+      ledger: "fleet-sri.yaml",
       uid: null,
       id,
       hash: "h",
@@ -978,21 +978,15 @@ describe("the header's count, split", () => {
   });
 });
 
-describe("the fleet's own ask ledger is the report's asks, shown once (BRO-2908)", () => {
-  test("a decision in fleet-<scope>.yaml is not listed again; a hand-written ledger beside it is", async () => {
-    const { isFleetLedger } = await import("./fleet-cockpit-model");
-    expect(
-      ["fleet-sri.yaml", "sri/fleet-sri.yaml", "fleet-broomva.yml", "sri-coordinator.yaml", "my-fleet-notes.yaml"].map(
-        isFleetLedger,
-      ),
-    ).toEqual([true, true, true, false, false]);
-    const ask = (ledger: string, id: string): DecisionAsk => ({
-      ledger,
-      uid: null,
-      id,
+describe("an ask the fleet wrote to its own ledger is shown once, as the decision (BRO-2908)", () => {
+  test("the report's copy goes once its ledger entry exists; one not written yet stays; alerts are never hidden", () => {
+    const decision = (uid: string, extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
+      ledger: "fleet-sri.yaml",
+      uid,
+      id: uid,
       hash: "h",
       arc: null,
-      headline: id,
+      headline: uid,
       question: null,
       stakes: null,
       whyYou: null,
@@ -1009,10 +1003,38 @@ describe("the fleet's own ask ledger is the report's asks, shown once (BRO-2908)
       home: { kind: "root", path: "/state/sri/.control/asks", branch: null },
       batched: false,
       waiting: true,
+      ...extra,
     });
-    const decisions = [ask("fleet-sri.yaml", "F1"), ask("sri-coordinator.yaml", "C1")];
-    const needs = fleetNeedsYou([{ scope: scope("sri"), detail: detail("sri", { decisions }) }]);
-    expect(needs.elsewhere.map((card) => (card.kind === "decision" ? card.ask.id : card.kind))).toEqual(["C1"]);
+    const report = (id: string, ledgerUid: string | null) => ({
+      id,
+      key: `prompt:${id}`,
+      question: `Question ${id}?`,
+      class: "3",
+      className: null,
+      firstTick: 2,
+      session: null,
+      batch: "b7",
+      item: null,
+      ledgerUid,
+    });
+    const needs = fleetNeedsYou([
+      {
+        scope: scope("sri"),
+        detail: detail("sri", {
+          asks: [report("a1", "fleet-sri-aaa"), report("a2", "fleet-sri-bbb")],
+          decisions: [
+            decision("fleet-sri-aaa"),
+            decision("fleet-sri-alert-tick-1", { blocking: false, waiting: false }),
+          ],
+        }),
+      },
+    ]);
+    // a1 is in the ledger: its waiting decision is counted where it lives, and the report's copy is gone.
+    expect(needs.elsewhere.map((card) => (card.kind === "decision" ? card.ask.uid : card.kind))).toEqual([
+      "fleet-sri-aaa",
+    ]);
+    // a2 is not written yet: the report's copy stays. The alert entry stays too, apart.
+    expect(needs.also.map((card) => (card.kind === "ask" ? card.ask.id : card.kind))).toEqual(["a2", "decisions"]);
   });
 });
 

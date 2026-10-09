@@ -241,11 +241,6 @@ export interface FleetNeeds {
   sessions: number;
 }
 
-/** The fleet's own ask ledger in a scope's root, `fleet-<scope>.yaml` (skills#270): its asks are the report's. */
-export function isFleetLedger(ledger: string): boolean {
-  return /(^|\/)fleet-[^/]+\.ya?ml$/.test(ledger);
-}
-
 export function fleetNeedsYou(reads: readonly ScopeRead[]): FleetNeeds {
   const cards: QueueCard[] = [];
   const elsewhere: QueueCard[] = [];
@@ -258,16 +253,18 @@ export function fleetNeedsYou(reads: readonly ScopeRead[]): FleetNeeds {
     for (const item of detail.alerts) {
       (item.needsYou ? elsewhere : also).push({ kind: "alert", key: `alert:${id}:${item.id}`, scope: id, item });
     }
-    // One card per raised item that needs you, carrying all its asks; the report's other asks are listed
-    // apart, uncounted, with the fleet's own context (session, resume) a decision card does not carry.
+    // An ask the fleet wrote to its own ledger (skills#270) is that ledger's decision below: answered and counted
+    // there, shown once as the decision card, never again as the report's copy (BRO-2908).
+    const inLedger = new Set(detail.decisions.map((entry) => entry.uid).filter(Boolean));
+    // One card per raised item that needs you, carrying all its asks; an ask not in the ledger yet (or whose
+    // work does not need you) is shown apart, uncounted.
     const byItem = new Map<string, FleetAsk[]>();
     for (const ask of detail.asks) {
       if (ask.item?.needsYou) byItem.set(ask.item.id, [...(byItem.get(ask.item.id) ?? []), ask]);
-      else also.push({ kind: "ask", key: `ask:${id}:${ask.batch}:${ask.key}`, scope: id, ask, asks: [ask] });
+      else if (!ask.ledgerUid || !inLedger.has(ask.ledgerUid))
+        also.push({ kind: "ask", key: `ask:${id}:${ask.batch}:${ask.key}`, scope: id, ask, asks: [ask] });
     }
-    // The fleet's own ledger (fleet-<scope>.yaml, skills#270) holds those same asks as decisions: answered and
-    // counted in Decisions, shown here once, as the report's asks above (BRO-2908).
-    const decisions = detail.decisions.filter((entry) => !isFleetLedger(entry.ledger));
+    const decisions = detail.decisions;
     for (const [item, asks] of byItem) {
       const [first] = asks;
       if (first) elsewhere.push({ kind: "ask", key: `item:${id}:${item}`, scope: id, ask: first, asks });
