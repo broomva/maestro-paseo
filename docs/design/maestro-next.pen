@@ -173039,6 +173039,175 @@
               "fontWeight": "normal"
             }
           ]
+        },
+        {
+          "type": "frame",
+          "id": "Faf21",
+          "name": "M/Detail header",
+          "reusable": true,
+          "width": 393,
+          "fill": "$bg",
+          "cornerRadius": [
+            22,
+            22,
+            0,
+            0
+          ],
+          "stroke": "#0C101A10",
+          "strokeWidth": {
+            "bottom": 1
+          },
+          "layout": "vertical",
+          "gap": 4,
+          "padding": [
+            6,
+            14,
+            8,
+            14
+          ],
+          "children": [
+            {
+              "type": "frame",
+              "id": "W1A9qO",
+              "name": "grabber row",
+              "width": "fill_container",
+              "justifyContent": "center",
+              "children": [
+                {
+                  "type": "rectangle",
+                  "cornerRadius": 3,
+                  "id": "zKZsh",
+                  "name": "grabber",
+                  "fill": "#0C101A26",
+                  "width": 36,
+                  "height": 5
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "k8SQ0",
+              "name": "bar",
+              "width": "fill_container",
+              "gap": 10,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "thI5f",
+                  "name": "close btn",
+                  "width": 36,
+                  "height": 36,
+                  "fill": "#0C101A0D",
+                  "cornerRadius": 999,
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "aT8Nq",
+                      "name": "i",
+                      "width": 19,
+                      "height": 19,
+                      "icon": "chevron-down",
+                      "library": "lucide",
+                      "fill": "$fg"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "oPTsK",
+                  "name": "mid",
+                  "width": "fill_container",
+                  "layout": "vertical",
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "u6ieX",
+                      "name": "label",
+                      "fill": "$fg",
+                      "content": "Approval · 1 of 4",
+                      "lineHeight": 1.35,
+                      "fontFamily": "$font-ui",
+                      "fontSize": 13,
+                      "fontWeight": "600"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "z8FG9",
+                      "name": "segments",
+                      "gap": 4,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 2,
+                          "id": "PT5fd",
+                          "name": "seg1",
+                          "fill": "$needs",
+                          "width": 18,
+                          "height": 4
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 2,
+                          "id": "a0MBA",
+                          "name": "seg2",
+                          "fill": "#0C101A1F",
+                          "width": 18,
+                          "height": 4
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 2,
+                          "id": "oWRJf",
+                          "name": "seg3",
+                          "fill": "#0C101A1F",
+                          "width": 18,
+                          "height": 4
+                        },
+                        {
+                          "type": "rectangle",
+                          "cornerRadius": 2,
+                          "id": "aFjbK",
+                          "name": "seg4",
+                          "fill": "#0C101A1F",
+                          "width": 18,
+                          "height": 4
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "bIuRR",
+                  "name": "more btn",
+                  "width": 36,
+                  "height": 36,
+                  "fill": "#0C101A0D",
+                  "cornerRadius": 999,
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "PxcqA",
+                      "name": "i",
+                      "width": 19,
+                      "height": 19,
+                      "icon": "ellipsis",
+                      "library": "lucide",
+                      "fill": "$fg"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
         }
       ]
     },
@@ -190351,7 +190520,7 @@
           "fill": "$fg",
           "textGrowth": "fixed-width",
           "width": "fill_container",
-          "content": "One page per kind, pushed from the deck's \"Details\" link or a sheet row. The tab bar steps aside; the verbs stay pinned above the home indicator.",
+          "content": "Each item opens as a card that rises from the deck: a grabber, a round button to close it, and where you are (Approval · 1 of 4). Swipe it down to close, sideways for the next; the verbs stay pinned at the bottom.",
           "lineHeight": 1.25,
           "fontFamily": "$font-ui",
           "fontSize": 26,
@@ -190524,67 +190693,32 @@
                       "clip": true,
                       "width": "fill_container",
                       "height": "fill_container",
-                      "fill": "$bg-sunken",
+                      "fill": "#C9CDD4",
                       "layout": "vertical",
+                      "padding": [
+                        10,
+                        0,
+                        0,
+                        0
+                      ],
                       "children": [
                         {
-                          "type": "frame",
-                          "id": "TtLW5",
-                          "name": "pushed nav (in-surface)",
+                          "id": "XGLKP",
+                          "type": "ref",
+                          "ref": "Faf21",
+                          "name": "detail header",
                           "width": "fill_container",
-                          "height": 44,
-                          "fill": "$bg",
-                          "stroke": "#0C101A10",
-                          "strokeWidth": {
-                            "bottom": 1
-                          },
-                          "gap": 4,
-                          "padding": [
-                            0,
-                            12
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "sc4lB",
-                              "name": "i",
-                              "width": 22,
-                              "height": 22,
-                              "icon": "chevron-left",
-                              "library": "lucide",
-                              "fill": "$info"
+                          "descendants": {
+                            "u6ieX": {
+                              "content": "Approval · 1 of 4"
                             },
-                            {
-                              "type": "text",
-                              "id": "lP4DY",
-                              "name": "t",
-                              "fill": "$info",
-                              "content": "Feed",
-                              "lineHeight": 1.35,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 16,
-                              "fontWeight": "normal"
+                            "z8FG9": {
+                              "enabled": true
                             },
-                            {
-                              "type": "frame",
-                              "id": "l9Umb9",
-                              "name": "sp",
-                              "width": "fill_container",
-                              "height": 1
-                            },
-                            {
-                              "type": "text",
-                              "id": "faEd1",
-                              "name": "t",
-                              "fill": "$fg-muted",
-                              "content": "1 of 4",
-                              "lineHeight": 1.35,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 12,
-                              "fontWeight": "normal"
+                            "PT5fd": {
+                              "fill": "$needs"
                             }
-                          ]
+                          }
                         },
                         {
                           "type": "frame",
@@ -190622,7 +190756,7 @@
                                   "id": "c5D9I",
                                   "name": "t",
                                   "fill": "$fg-muted",
-                                  "content": "Approval · workspace#933 · 35 min",
+                                  "content": "workspace#933 · 35 min",
                                   "lineHeight": 1.35,
                                   "fontFamily": "$font-mono",
                                   "fontSize": 11.5,
@@ -191333,67 +191467,38 @@
                       "clip": true,
                       "width": "fill_container",
                       "height": "fill_container",
-                      "fill": "$bg-sunken",
+                      "fill": "#C9CDD4",
                       "layout": "vertical",
+                      "padding": [
+                        10,
+                        0,
+                        0,
+                        0
+                      ],
                       "children": [
                         {
-                          "type": "frame",
-                          "id": "igabs",
-                          "name": "pushed nav (in-surface)",
+                          "id": "jlYWD",
+                          "type": "ref",
+                          "ref": "Faf21",
+                          "name": "detail header",
                           "width": "fill_container",
-                          "height": 44,
-                          "fill": "$bg",
-                          "stroke": "#0C101A10",
-                          "strokeWidth": {
-                            "bottom": 1
-                          },
-                          "gap": 4,
-                          "padding": [
-                            0,
-                            12
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "GdOCd",
-                              "name": "i",
-                              "width": 22,
-                              "height": 22,
-                              "icon": "chevron-left",
-                              "library": "lucide",
-                              "fill": "$info"
+                          "descendants": {
+                            "u6ieX": {
+                              "content": "Ask · 3 of 4"
                             },
-                            {
-                              "type": "text",
-                              "id": "n2EVYm",
-                              "name": "t",
-                              "fill": "$info",
-                              "content": "Feed",
-                              "lineHeight": 1.35,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 16,
-                              "fontWeight": "normal"
+                            "z8FG9": {
+                              "enabled": true
                             },
-                            {
-                              "type": "frame",
-                              "id": "Fkm7t",
-                              "name": "sp",
-                              "width": "fill_container",
-                              "height": 1
+                            "PT5fd": {
+                              "fill": "$ok"
                             },
-                            {
-                              "type": "text",
-                              "id": "pTBFb",
-                              "name": "t",
-                              "fill": "$fg-muted",
-                              "content": "3 of 4",
-                              "lineHeight": 1.35,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 12,
-                              "fontWeight": "normal"
+                            "a0MBA": {
+                              "fill": "$ok"
+                            },
+                            "oWRJf": {
+                              "fill": "$needs"
                             }
-                          ]
+                          }
                         },
                         {
                           "type": "frame",
@@ -191441,7 +191546,7 @@
                                       "id": "eIIBO",
                                       "name": "t",
                                       "fill": "$fg-muted",
-                                      "content": "Ask · claude-code-mods · reversible",
+                                      "content": "claude-code-mods · reversible",
                                       "lineHeight": 1.35,
                                       "fontFamily": "$font-mono",
                                       "fontSize": 11.5,
@@ -192016,67 +192121,32 @@
                       "clip": true,
                       "width": "fill_container",
                       "height": "fill_container",
-                      "fill": "$bg-sunken",
+                      "fill": "#C9CDD4",
                       "layout": "vertical",
+                      "padding": [
+                        10,
+                        0,
+                        0,
+                        0
+                      ],
                       "children": [
                         {
-                          "type": "frame",
-                          "id": "i3P1gl",
-                          "name": "pushed nav (in-surface)",
+                          "id": "Xyevl",
+                          "type": "ref",
+                          "ref": "Faf21",
+                          "name": "detail header",
                           "width": "fill_container",
-                          "height": 44,
-                          "fill": "$bg",
-                          "stroke": "#0C101A10",
-                          "strokeWidth": {
-                            "bottom": 1
-                          },
-                          "gap": 4,
-                          "padding": [
-                            0,
-                            12
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "Mwm2n",
-                              "name": "i",
-                              "width": 22,
-                              "height": 22,
-                              "icon": "chevron-left",
-                              "library": "lucide",
-                              "fill": "$info"
+                          "descendants": {
+                            "u6ieX": {
+                              "content": "Notice · 1 of 4"
                             },
-                            {
-                              "type": "text",
-                              "id": "IzJJB",
-                              "name": "t",
-                              "fill": "$info",
-                              "content": "Health",
-                              "lineHeight": 1.35,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 16,
-                              "fontWeight": "normal"
+                            "z8FG9": {
+                              "enabled": true
                             },
-                            {
-                              "type": "frame",
-                              "id": "E9Uca",
-                              "name": "sp",
-                              "width": "fill_container",
-                              "height": 1
-                            },
-                            {
-                              "type": "text",
-                              "id": "UkRRD",
-                              "name": "t",
-                              "fill": "$fg-muted",
-                              "content": "from Health",
-                              "lineHeight": 1.35,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 12,
-                              "fontWeight": "normal"
+                            "PT5fd": {
+                              "fill": "$needs"
                             }
-                          ]
+                          }
                         },
                         {
                           "type": "frame",
@@ -192114,7 +192184,7 @@
                                   "id": "QIr6e",
                                   "name": "t",
                                   "fill": "$fg-muted",
-                                  "content": "Health · sri · STI-3593 · 9 h",
+                                  "content": "sri · STI-3593 · 9 h",
                                   "lineHeight": 1.35,
                                   "fontFamily": "$font-mono",
                                   "fontSize": 11.5,
@@ -192683,7 +192753,7 @@
                   "fill": "$fg-2",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "A pushed page over the M1 shape: the sheet and tab bar step aside while it is open; back with the link or an edge swipe; \"1 of 4\" says where you are in the deck, and the next hold is one swipe away after you act.",
+                  "content": "A card sheet over the M1 shape, not a pushed page: a sliver of the dimmed screen stays above it, so it reads as a layer. The round chevron (or a swipe down) closes it; the centre says the kind and its place in the deck with segments; ⋯ holds Open session, Copy link and Snooze. No text back link, no second bar under Paseo's header.",
                   "lineHeight": 1.5,
                   "fontFamily": "$font-ui",
                   "fontSize": 13,
@@ -192725,7 +192795,7 @@
                   "fill": "$fg-2",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "An in-surface View pushed with Animated translateX; the edge swipe is PanResponder (Paseo's own back gesture is not involved). The action bar is a solid View with the home-indicator inset, since there is no blur on iOS.",
+                  "content": "An in-surface View with Animated translateY; the swipe down and the sideways swipe are PanResponder with velocity hand-off (dismiss past a projected threshold, else spring back). The header is the reusable M/Detail header; the action bar is solid with the home-indicator inset (no blur on iOS).",
                   "lineHeight": 1.5,
                   "fontFamily": "$font-ui",
                   "fontSize": 13,
@@ -199628,67 +199698,29 @@
                       "clip": true,
                       "width": "fill_container",
                       "height": "fill_container",
-                      "fill": "$bg-sunken",
+                      "fill": "#C9CDD4",
                       "layout": "vertical",
+                      "padding": [
+                        10,
+                        0,
+                        0,
+                        0
+                      ],
                       "children": [
                         {
-                          "type": "frame",
-                          "id": "RNGCA",
-                          "name": "pushed nav (in-surface)",
+                          "id": "GEIJN",
+                          "type": "ref",
+                          "ref": "Faf21",
+                          "name": "detail header",
                           "width": "fill_container",
-                          "height": 44,
-                          "fill": "$bg",
-                          "stroke": "#0C101A10",
-                          "strokeWidth": {
-                            "bottom": 1
-                          },
-                          "gap": 4,
-                          "padding": [
-                            0,
-                            12
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "DY7R7",
-                              "name": "i",
-                              "width": 22,
-                              "height": 22,
-                              "icon": "chevron-left",
-                              "library": "lucide",
-                              "fill": "$info"
+                          "descendants": {
+                            "u6ieX": {
+                              "content": "Running · sri · STI-3684"
                             },
-                            {
-                              "type": "text",
-                              "id": "kTK06",
-                              "name": "t",
-                              "fill": "$info",
-                              "content": "Work",
-                              "lineHeight": 1.35,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 16,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "frame",
-                              "id": "QLlCa",
-                              "name": "sp",
-                              "width": "fill_container",
-                              "height": 1
-                            },
-                            {
-                              "type": "text",
-                              "id": "nKtqN",
-                              "name": "t",
-                              "fill": "$fg-muted",
-                              "content": "Running",
-                              "lineHeight": 1.35,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 12,
-                              "fontWeight": "normal"
+                            "z8FG9": {
+                              "enabled": false
                             }
-                          ]
+                          }
                         },
                         {
                           "type": "frame",
@@ -206093,66 +206125,29 @@
                       "clip": true,
                       "width": "fill_container",
                       "height": "fill_container",
-                      "fill": "$bg-sunken",
+                      "fill": "#C9CDD4",
                       "layout": "vertical",
+                      "padding": [
+                        10,
+                        0,
+                        0,
+                        0
+                      ],
                       "children": [
                         {
-                          "type": "frame",
-                          "id": "S0zHg",
-                          "name": "pushed nav (in-surface)",
+                          "id": "A0Jzcr",
+                          "type": "ref",
+                          "ref": "Faf21",
+                          "name": "detail header",
                           "width": "fill_container",
-                          "height": 44,
-                          "fill": "$bg",
-                          "stroke": "#0C101A10",
-                          "strokeWidth": {
-                            "bottom": 1
-                          },
-                          "gap": 4,
-                          "padding": [
-                            0,
-                            12
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "H8Zrk",
-                              "name": "i",
-                              "width": 22,
-                              "height": 22,
-                              "icon": "chevron-left",
-                              "library": "lucide",
-                              "fill": "$info"
+                          "descendants": {
+                            "u6ieX": {
+                              "content": "from Health"
                             },
-                            {
-                              "type": "text",
-                              "id": "UQB5W",
-                              "name": "t",
-                              "fill": "$info",
-                              "content": "Health",
-                              "lineHeight": 1.35,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 16,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "frame",
-                              "id": "VaO8t",
-                              "name": "sp",
-                              "width": "fill_container",
-                              "height": 1
-                            },
-                            {
-                              "type": "text",
-                              "id": "n4V6N",
-                              "name": "t",
-                              "fill": "$fg-muted",
-                              "lineHeight": 1.35,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 12,
-                              "fontWeight": "normal"
+                            "z8FG9": {
+                              "enabled": false
                             }
-                          ]
+                          }
                         },
                         {
                           "type": "frame",
@@ -206160,7 +206155,7 @@
                           "name": "initiatives page",
                           "width": "fill_container",
                           "height": "fill_container",
-                          "fill": "$bg-sunken",
+                          "fill": "$bg",
                           "layout": "vertical",
                           "gap": 10,
                           "padding": [
@@ -207178,66 +207173,29 @@
                       "clip": true,
                       "width": "fill_container",
                       "height": "fill_container",
-                      "fill": "$bg-sunken",
+                      "fill": "#C9CDD4",
                       "layout": "vertical",
+                      "padding": [
+                        10,
+                        0,
+                        0,
+                        0
+                      ],
                       "children": [
                         {
-                          "type": "frame",
-                          "id": "aGwBm",
-                          "name": "pushed nav (in-surface)",
+                          "id": "jjiMe",
+                          "type": "ref",
+                          "ref": "Faf21",
+                          "name": "detail header",
                           "width": "fill_container",
-                          "height": 44,
-                          "fill": "$bg",
-                          "stroke": "#0C101A10",
-                          "strokeWidth": {
-                            "bottom": 1
-                          },
-                          "gap": 4,
-                          "padding": [
-                            0,
-                            12
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "icon",
-                              "id": "Efv5P",
-                              "name": "i",
-                              "width": 22,
-                              "height": 22,
-                              "icon": "chevron-left",
-                              "library": "lucide",
-                              "fill": "$info"
+                          "descendants": {
+                            "u6ieX": {
+                              "content": "from Health"
                             },
-                            {
-                              "type": "text",
-                              "id": "AdKZB",
-                              "name": "t",
-                              "fill": "$info",
-                              "content": "Health",
-                              "lineHeight": 1.35,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 16,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "frame",
-                              "id": "jyyTv",
-                              "name": "sp",
-                              "width": "fill_container",
-                              "height": 1
-                            },
-                            {
-                              "type": "text",
-                              "id": "NSDml",
-                              "name": "t",
-                              "fill": "$fg-muted",
-                              "lineHeight": 1.35,
-                              "fontFamily": "$font-ui",
-                              "fontSize": 12,
-                              "fontWeight": "normal"
+                            "z8FG9": {
+                              "enabled": false
                             }
-                          ]
+                          }
                         },
                         {
                           "type": "frame",
@@ -207245,7 +207203,7 @@
                           "name": "initiatives page",
                           "width": "fill_container",
                           "height": "fill_container",
-                          "fill": "$bg-sunken",
+                          "fill": "$bg",
                           "layout": "vertical",
                           "gap": 10,
                           "padding": [

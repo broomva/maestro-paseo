@@ -51,7 +51,7 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | M1d | `m1d-inbox-swipe.png` | One dense grouped list, row verbs and swipe actions, a title menu and a bottom toolbar |
 | M1v | `m1v-mobile-compared.png` | The four compared; recommends M1b's tab bar with M1c's deck at the top of the Feed; what to check on a device |
 | M1 | `m1-feed-home-mobile.png` | **Chosen** mobile home: M1c's deck with a pull-up sheet that peeks from the bottom edge; M1b's tab bar rides on the sheet's top edge; M1d's row swipes and undo toast on sheet rows only; the Decisions tab uses the same shape |
-| M2–M4 | `m2-m4-briefings-mobile.png` | Briefings on the phone: approval, ask and notice as pushed pages with their verbs pinned above the home indicator |
+| M2–M4 | `m2-m4-briefings-mobile.png` | Briefings on the phone: approval, ask and notice as cards that rise from the deck (M/Detail header: grabber, round close, "Approval · 1 of 4" with segments, ⋯), verbs pinned above the home indicator |
 | M5 | `m5-decisions-mobile.png` | Decisions: the open asks in the deck; the sheet holds where your answers went (stranded ones loudest); answering advances the deck with a toast |
 | M6 | `m6-work-mobile.png` | Work: the deck holds work that needs you (hold, lifecycle, receipts); the sheet is the board with a lane switcher; running cards wear the Undertow; a running item's page |
 | M7 | `m7-health-mobile.png` | Health: notices in the deck with what closes each; the sheet is the fleet (four tiles incl. the conductor) and schedules with swipe actions |
