@@ -2,8 +2,9 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { LoopRow } from "../shared/loops";
 import type { TimelineSource, TimelineView } from "../shared/timeline";
-import { type DriftWriter, envelopes, Loops, type LoopsOptions, stateOf, WRITE_BACKOFF_MS } from "./loops";
+import { type DriftWriter, envelopes, judgedRows, Loops, type LoopsOptions, stateOf, WRITE_BACKOFF_MS } from "./loops";
 import { dirLedger } from "./loops-ledger";
 import heartbeat from "./testdata/heartbeat-103a1850.json";
 
@@ -320,5 +321,26 @@ describe("the streams", () => {
     expect(await stateOf(join(root, "ok.yaml"))).toBe("ok");
     expect(await stateOf(join(root, "bad.yaml"))).toBe("unparseable");
     expect(await stateOf(join(root, "none.yaml"))).toBe("missing");
+  });
+});
+
+describe("judgedRows (BRO-2942): an extra repo never read leaves unclaimed observations unjudged", () => {
+  const drift = [{ kind: "unregistered" as const, detail: "d", fix: "f", needsYou: true }];
+  const claimed = { id: "a", section: "loops", drift, unread: false } as unknown as LoopRow;
+  const unclaimed = { id: null, section: "loops", drift, unread: false } as unknown as LoopRow;
+  const ephemeral = { id: null, section: "ephemeral", drift, unread: false } as unknown as LoopRow;
+  const read = (unread?: string[]) => ({ intents: [], errors: [], sha: null, ...(unread ? { unread } : {}) });
+
+  test("every repo read: judged as computed", () => {
+    expect(judgedRows(read(), [claimed, unclaimed])).toEqual([claimed, unclaimed]);
+  });
+  test("one never read: unclaimed rows unread with no drift; claimed and ephemeral rows judged", () => {
+    const out = judgedRows(read(["sri"]), [claimed, unclaimed, ephemeral]);
+    expect(out[0]).toBe(claimed);
+    expect(out[1]).toMatchObject({ drift: [], unread: true });
+    expect(out[2]).toBe(ephemeral);
+  });
+  test("no ledger: nothing judged", () => {
+    expect(judgedRows(null, [claimed]).every((row) => row.unread && row.drift.length === 0)).toBe(true);
   });
 });

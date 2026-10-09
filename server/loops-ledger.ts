@@ -11,10 +11,15 @@
 //
 // One resolver, loopPaths(), names every place the layer reads or writes, so
 // moving the ledger or the home is a one-line change (spec §1).
+//
+// Several repos (BRO-2942): the control repo's ledger, plus the ledgers that
+// loop-repos.json names, each read at its own ref. A repo that owns a scope
+// (the SRI repo owns sri) records intent for that scope's rows; the control
+// repo's intent-less mirror of such a row yields to the owner's row.
 
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, posix } from "node:path";
+import { dirname, isAbsolute, join, posix } from "node:path";
 import { parseDocument } from "yaml";
 import {
   DESIRED,
@@ -27,10 +32,12 @@ import {
   type SubstrateKind,
 } from "../shared/loops";
 import { catFiles, git } from "./control-home";
+import { configPath, expandHome } from "./paths";
 
 /** The ledger folder, repo-relative. */
 export const LEDGER_DIR = ".broomva/loops";
 export const PROMPTS_DIR = `${LEDGER_DIR}/prompts`;
+export const CHECKS_DIR = `${LEDGER_DIR}/checks`;
 export const MAIN_REF = "origin/main";
 /** origin/main is fetched at most this often (as the asks are). */
 export const LEDGER_FETCH_MS = 5 * 60_000;
@@ -67,6 +74,7 @@ const OPTIONAL = [
   "notes",
   "prompt",
   "session",
+  "checks",
 ] as const;
 const KNOWN = new Set<string>([...REQUIRED, ...OPTIONAL]);
 const SUBSTRATE_KEYS = new Set(["kind", "ref"]);
@@ -78,22 +86,34 @@ const BINDABLE: readonly SubstrateKind[] = ["paseo-heartbeat"];
 const BOUND_OWNERS = ["coordinator", "fleet", "owner"];
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PROMPT = /^\.broomva\/loops\/prompts\/[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*\.md$/;
+const CHECKS = /^\.broomva\/loops\/checks\/[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*\.sh$/;
 
 export interface LedgerRead {
   intents: LoopIntent[];
   errors: LedgerError[];
   /** The commit read; null for a folder, or when it could not be read. */
   sha: string | null;
+  /**
+   * Labels of extra repos with no read at all yet: what they would claim is unknown, so no unclaimed observation
+   * is judged unregistered this pass (server/loops.ts judgedRows). A repo that read before is judged on its last read.
+   */
+  unread?: string[];
 }
 
 const str = (value: unknown): string | null => (typeof value === "string" ? value : null);
 
 /**
  * One row from its bytes; `files` is every path the ledger folder holds, so a
- * prompt that names no file there is an error. Throws nothing: an error is a
- * string.
+ * prompt that names no file there is an error. `owns` is the scope the row's
+ * repo records intent for (the control repo owns none of sri). Throws nothing:
+ * an error is a string.
  */
-export function parseRow(file: string, text: string, files: ReadonlySet<string>): LoopIntent | string {
+export function parseRow(
+  file: string,
+  text: string,
+  files: ReadonlySet<string>,
+  owns: LoopScope | null = null,
+): LoopIntent | string {
   if (text.length > ROW_LIMIT) return `it is over ${ROW_LIMIT} bytes`;
   const doc = parseDocument(text, { uniqueKeys: true, prettyErrors: false });
   if (doc.errors.length > 0) return `unparseable YAML: ${doc.errors[0]?.message.split("\n")[0]}`;
@@ -134,8 +154,10 @@ export function parseRow(file: string, text: string, files: ReadonlySet<string>)
   const desired = "desired" in row ? str(row.desired) : null;
   if (desired !== null && !DESIRED.includes(desired as Desired)) errors.push(`desired must be ${DESIRED.join("|")}`);
   if ("desired" in row && desired === null) errors.push("desired must be text");
-  if (scope === "sri" && "desired" in row) errors.push("a scope sri row has no desired");
-  if (scope && scope !== "sri" && !("desired" in row)) errors.push("desired is required unless the scope is sri");
+  // A scope sri row is a read-only mirror unless it is read from the repo that owns sri.
+  const mirror = scope === "sri" && owns !== "sri";
+  if (mirror && "desired" in row) errors.push("a scope sri row has no desired");
+  if (scope && !mirror && !("desired" in row)) errors.push("desired is required unless the scope is sri");
   const prompt = "prompt" in row ? str(row.prompt) : null;
   if ("prompt" in row) {
     if (!prompt || !PROMPT.test(prompt)) errors.push(`prompt must be a file under ${PROMPTS_DIR}/`);
@@ -153,6 +175,12 @@ export function parseRow(file: string, text: string, files: ReadonlySet<string>)
       if (!BOUND_OWNERS.includes(str(row.owner) ?? ""))
         errors.push(`session: bound needs owner ${BOUND_OWNERS.join("|")}`);
     }
+  }
+  const checks = "checks" in row ? str(row.checks) : null;
+  if ("checks" in row) {
+    if (!checks || !CHECKS.test(checks)) errors.push(`checks must be a file under ${CHECKS_DIR}/`);
+    else if (!files.has(checks)) errors.push(`checks ${checks} is not in the ledger`);
+    if (!("prompt" in row)) errors.push("checks needs a prompt: it is the snapshot a prompted tick runs first");
   }
   const initiative = row.initiative ?? null;
   if (initiative !== null && typeof initiative !== "string") errors.push("initiative must be text or null");
@@ -175,12 +203,16 @@ export function parseRow(file: string, text: string, files: ReadonlySet<string>)
     reviewBy: str(row.review_by),
     prompt,
     session: session as LoopIntent["session"],
+    checks,
     file,
   };
 }
 
 /** Every row of a set of files: the YAML ones directly in the folder; anything else is not a row. */
-export function parseLedger(files: ReadonlyMap<string, string | null>): Omit<LedgerRead, "sha"> {
+export function parseLedger(
+  files: ReadonlyMap<string, string | null>,
+  owns: LoopScope | null = null,
+): Omit<LedgerRead, "sha"> {
   const intents: LoopIntent[] = [];
   const errors: LedgerError[] = [];
   const names = new Set(files.keys());
@@ -188,9 +220,11 @@ export function parseLedger(files: ReadonlyMap<string, string | null>): Omit<Led
   for (const [file, text] of [...files].sort(([a], [b]) => a.localeCompare(b))) {
     const rel = file.slice(LEDGER_DIR.length + 1);
     if (rel.includes("/")) {
-      // prompts/*.md is the one subfolder (§1a); anything else below the folder is said, not read.
-      if (!(rel.startsWith("prompts/") && rel.endsWith(".md") && !rel.slice(8).includes("/"))) {
-        errors.push({ file, error: "not a ledger row: only prompts/*.md may sit below the folder" });
+      // prompts/*.md (§1a) and checks/*.sh (BRO-2942) are the subfolders; anything else below is said, not read.
+      const flat = (dir: string, ext: string) =>
+        rel.startsWith(`${dir}/`) && rel.endsWith(ext) && !rel.slice(dir.length + 1).includes("/");
+      if (!(flat("prompts", ".md") || flat("checks", ".sh"))) {
+        errors.push({ file, error: "not a ledger row: only prompts/*.md and checks/*.sh may sit below the folder" });
       }
       continue;
     }
@@ -199,7 +233,7 @@ export function parseLedger(files: ReadonlyMap<string, string | null>): Omit<Led
       errors.push({ file, error: "could not be read" });
       continue;
     }
-    const row = parseRow(file, text, names);
+    const row = parseRow(file, text, names, owns);
     if (typeof row === "string") {
       errors.push({ file, error: row });
       continue;
@@ -223,30 +257,41 @@ export interface LedgerSource {
   readonly where: { repo: string; path: string };
 }
 
-/** The ledger on a repo's origin/main, fetched at most every LEDGER_FETCH_MS (off for a test without a remote). */
+/** The ledger on a repo's ref (origin/main unless named), fetched at most every LEDGER_FETCH_MS (off for a test without a remote). */
 export function gitLedger(
   repo: string,
-  options: { fetch?: boolean; now?: () => number; log?: (message: string) => void } = {},
+  options: {
+    fetch?: boolean;
+    now?: () => number;
+    log?: (message: string) => void;
+    /** A remote-tracking ref, `origin/<branch>`. */
+    ref?: string;
+    /** The scope this repo records intent for. */
+    owns?: LoopScope | null;
+  } = {},
 ): LedgerSource {
   const now = options.now ?? Date.now;
+  const ref = options.ref ?? MAIN_REF;
+  const branch = ref.startsWith("origin/") ? ref.slice("origin/".length) : null;
   let fetchedAt = Number.NEGATIVE_INFINITY;
   let fetching: Promise<void> | null = null;
   const fetchMain = async () => {
     if (!options.fetch || now() - fetchedAt < LEDGER_FETCH_MS) return;
     fetchedAt = now();
-    fetching ??= git(repo, ["fetch", "-q", "origin", "main"], 60_000)
+    if (!branch) return;
+    fetching ??= git(repo, ["fetch", "-q", "origin", branch], 60_000)
       .then(() => undefined)
-      .catch((error) => options.log?.(`loops: fetching origin/main: ${(error as Error).message}`))
+      .catch((error) => options.log?.(`loops: fetching ${ref} in ${repo}: ${(error as Error).message}`))
       .finally(() => {
         fetching = null;
       });
     await fetching;
   };
   return {
-    where: { repo, path: `${MAIN_REF}:${LEDGER_DIR}` },
+    where: { repo, path: `${ref}:${LEDGER_DIR}` },
     async read() {
       await fetchMain();
-      const sha = (await git(repo, ["rev-parse", "--verify", "-q", `${MAIN_REF}^{commit}`])).trim();
+      const sha = (await git(repo, ["rev-parse", "--verify", "-q", `${ref}^{commit}`])).trim();
       const listed = await git(repo, ["ls-tree", "-r", "--full-tree", "--name-only", sha, "--", `${LEDGER_DIR}/`]);
       const paths = listed.split("\n").filter((line) => line.startsWith(`${LEDGER_DIR}/`));
       const blobs = await catFiles(
@@ -254,7 +299,213 @@ export function gitLedger(
         paths.map((path) => `${sha}:${path}`),
       );
       const files = new Map(paths.map((path) => [path, blobs.get(`${sha}:${path}`)?.toString("utf8") ?? null]));
-      return { ...parseLedger(files), sha };
+      return { ...parseLedger(files, options.owns ?? null), sha };
+    },
+  };
+}
+
+/** One extra ledger repo, as loop-repos.json names it. */
+export interface LoopRepo {
+  /** Prefixes its files in the view: `<label>:.broomva/loops/<id>.yaml`. */
+  label: string;
+  repo: string;
+  /** A remote-tracking ref, `origin/<branch>`. */
+  ref: string;
+  owns: LoopScope | null;
+}
+
+const LABEL = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const TRACKING_REF = /^origin\/[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
+/** Where the extra ledger repos are named: MAESTRO_PASEO_LOOP_REPOS (a file, or "off"), else beside the config. */
+export function loopReposPath(env: NodeJS.ProcessEnv = process.env): string | null {
+  const chosen = env.MAESTRO_PASEO_LOOP_REPOS?.trim();
+  if (chosen === "off") return null;
+  return chosen ? expandHome(chosen) : join(dirname(configPath(env)), "loop-repos.json");
+}
+
+/**
+ * The extra repos, from `{"repos": [{"label", "repo", "ref"?, "owns"?}]}`. A missing file is none; a file that
+ * will not parse, or an entry in a shape this reader does not take, is an error said beside the rows. Strict.
+ */
+export function parseLoopRepos(text: string): { repos: LoopRepo[]; errors: string[] } {
+  const repos: LoopRepo[] = [];
+  const errors: string[] = [];
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    return { repos, errors: [`unparseable JSON: ${(error as Error).message}`] };
+  }
+  const list = (data as { repos?: unknown } | null)?.repos;
+  if (
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data) ||
+    Object.keys(data).join() !== "repos" ||
+    !Array.isArray(list)
+  ) {
+    return { repos, errors: ['the top level must be exactly {"repos": [...]}'] };
+  }
+  const seen = new Set<string>();
+  for (const [index, entry] of list.entries()) {
+    const at = `repos[${index}]`;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      errors.push(`${at} must be an object`);
+      continue;
+    }
+    const one = entry as Record<string, unknown>;
+    const extra = Object.keys(one).filter((key) => !["label", "repo", "ref", "owns"].includes(key));
+    if (extra.length > 0) {
+      errors.push(`${at}: unknown key ${extra.join(", ")}`);
+      continue;
+    }
+    const label = str(one.label);
+    const repo = str(one.repo)?.trim();
+    const ref = "ref" in one ? str(one.ref) : MAIN_REF;
+    const owns = "owns" in one ? str(one.owns) : null;
+    if (!label || !LABEL.test(label)) {
+      errors.push(`${at}: label must be a lowercase slug`);
+      continue;
+    }
+    if (seen.has(label)) {
+      errors.push(`${at}: label ${label} is named twice`);
+      continue;
+    }
+    if (!repo || !isAbsolute(expandHome(repo))) {
+      errors.push(`${at}: repo must be an absolute path, or ~/...`);
+      continue;
+    }
+    if (!ref || !TRACKING_REF.test(ref)) {
+      errors.push(`${at}: ref must be origin/<branch>`);
+      continue;
+    }
+    if ("owns" in one && !LOOP_SCOPES.includes(owns as LoopScope)) {
+      errors.push(`${at}: owns must be ${LOOP_SCOPES.join("|")}`);
+      continue;
+    }
+    seen.add(label);
+    repos.push({ label, repo: expandHome(repo), ref, owns: owns as LoopScope | null });
+  }
+  return { repos, errors };
+}
+
+/**
+ * The control repo's ledger plus every extra repo's, as one source. Read each time, so an edit to the repos file
+ * applies on the next read; a source keeps its fetch clock across reads. The primary failing throws (nothing is
+ * judged); an extra repo failing costs only its rows, and is an error.
+ */
+export function multiLedger(
+  primary: LedgerSource,
+  options: {
+    reposPath: string | null;
+    source?: (one: LoopRepo) => LedgerSource;
+    /** The file's text; null only when there is no file. Anything else unreadable throws, and is said. */
+    readText?: (path: string) => Promise<string | null>;
+    log?: (message: string) => void;
+  },
+): LedgerSource {
+  const make =
+    options.source ??
+    ((one: LoopRepo) => gitLedger(one.repo, { fetch: true, ref: one.ref, owns: one.owns, log: options.log }));
+  const readText =
+    options.readText ??
+    ((path: string) =>
+      readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      }));
+  const sources = new Map<string, LedgerSource>();
+  /** Each source's last good read: a transient failure judges on it, never on nothing (no false unregistered). */
+  const lastGood = new Map<string, LedgerRead>();
+  let inForce: LoopRepo[] = [];
+  return {
+    where: primary.where,
+    async read() {
+      // The repos in force. A file that will not read, or names a repo in a shape this reader does not take,
+      // never drops a repo it named before (a torn save would read as "gone", and every loop that repo claims
+      // would read as unregistered): those stay in force, on their last read, until a clean edit removes them.
+      let named: { repos: LoopRepo[]; errors: string[] };
+      try {
+        const text = options.reposPath ? await readText(options.reposPath) : null;
+        named = text === null ? { repos: [], errors: [] } : parseLoopRepos(text);
+      } catch (error) {
+        named = { repos: [], errors: [`could not be read: ${(error as Error).message}`] };
+      }
+      // Nothing in force to carry (a restart with a bad file): what the file means is unknown, so it is unread.
+      const fileUnread = named.errors.length > 0 && inForce.length === 0;
+      if (named.errors.length > 0) {
+        const labels = new Set(named.repos.map((one) => one.label));
+        named.repos.push(...inForce.filter((one) => !labels.has(one.label)));
+      }
+      inForce = named.repos;
+      // A source no longer named is dropped, with its fetch clock and its last read.
+      const keys = new Set(named.repos.map((one) => JSON.stringify(one)));
+      for (const key of [...sources.keys()]) {
+        if (!keys.has(key)) {
+          sources.delete(key);
+          lastGood.delete(key);
+        }
+      }
+      const [main, ...extra] = await Promise.all([
+        primary.read(),
+        ...named.repos.map(async (one) => {
+          const key = JSON.stringify(one);
+          let source = sources.get(key);
+          if (!source) {
+            source = make(one);
+            sources.set(key, source);
+          }
+          try {
+            const read = await source.read();
+            lastGood.set(key, read);
+            return { one, read, error: null };
+          } catch (error) {
+            return { one, read: lastGood.get(key) ?? null, error: (error as Error).message };
+          }
+        }),
+      ]);
+      const errors: LedgerError[] = [
+        ...main.errors,
+        ...named.errors.map((error) => ({ file: options.reposPath ?? "loop-repos.json", error })),
+      ];
+      let intents = [...main.intents];
+      const unread: string[] = fileUnread ? [options.reposPath ?? "loop-repos.json"] : [];
+      const key = (row: LoopIntent) => `${row.substrate.kind} ${row.substrate.ref}`;
+      for (const { one, read, error } of extra) {
+        if (error !== null) {
+          const stands = read ? `; its last read (${read.sha?.slice(0, 9) ?? "a folder"}) stands in` : "";
+          errors.push({
+            file: `${one.label}:${LEDGER_DIR}`,
+            error: `could not be read at ${one.ref}: ${error}${stands}`,
+          });
+        }
+        if (!read) {
+          unread.push(one.label);
+          continue;
+        }
+        errors.push(...read.errors.map((e) => ({ ...e, file: `${one.label}:${e.file}` })));
+        for (const row of read.intents) {
+          const labelled = { ...row, file: `${one.label}:${row.file}` };
+          // The owner's row replaces the control repo's intent-less mirror of it (same id or same substrate).
+          const owned = one.owns !== null && row.scope === one.owns;
+          const clash = intents.filter((other) => other.id === row.id || key(other) === key(row));
+          const mirrors = clash.filter((other) => owned && other.scope === one.owns && other.desired === null);
+          if (clash.length > mirrors.length) {
+            const first = clash.find((other) => !mirrors.includes(other)) as LoopIntent;
+            errors.push({
+              file: labelled.file,
+              error:
+                first.id === row.id
+                  ? `${first.file} already has the id ${row.id}`
+                  : `${first.file} already claims ${row.substrate.kind} ${row.substrate.ref}`,
+            });
+            continue;
+          }
+          intents = [...intents.filter((other) => !mirrors.includes(other)), labelled];
+        }
+      }
+      return { intents, errors, sha: main.sha, ...(unread.length > 0 ? { unread } : {}) };
     },
   };
 }

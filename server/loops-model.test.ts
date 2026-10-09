@@ -45,6 +45,7 @@ function intent(extra: Partial<LoopIntent> = {}): LoopIntent {
     reviewBy: "2026-10-21",
     prompt: null,
     session: null,
+    checks: null,
     file: ".broomva/loops/kg-lint.yaml",
     ...extra,
   };

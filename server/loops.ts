@@ -130,6 +130,17 @@ export function timelineObservation(
   };
 }
 
+/**
+ * What may be judged. An unread ledger judges nothing: every observation would read as unregistered. A ledger
+ * with an extra repo never read (BRO-2942) judges every row it has, but no unclaimed observation, since that repo
+ * may claim it. An unread row keeps whatever drift it had open (transitions).
+ */
+export function judgedRows(ledger: LedgerRead | null, rows: readonly LoopRow[]): LoopRow[] {
+  if (!ledger) return rows.map((row) => ({ ...row, drift: [], unread: true }));
+  if (!ledger.unread?.length) return [...rows];
+  return rows.map((row) => (row.id === null && row.section === "loops" ? { ...row, drift: [], unread: true } : row));
+}
+
 /** A launchd label a ledger row names that the Timeline does not read (not broomva's prefix): presence only. */
 export function labelObservation(label: string, presence: "on" | "off" | "gone"): LoopObservation | null {
   if (presence === "gone") return null;
@@ -449,8 +460,7 @@ export class Loops {
     const canWrite = ledger ? await this.loadOpen(warnings) : false;
     const rows = reconcile(intents, observations, now, { ...evidence, unread, baselines: this.baselines });
     this.baselines = nextBaselines(rows, this.baselines, now, evidence.rollovers);
-    // An unread ledger judges nothing: every observation would read as unregistered.
-    const judged = ledger ? rows : rows.map((row) => ({ ...row, drift: [], unread: true }));
+    const judged = judgedRows(ledger, rows);
     if (canWrite) await this.record(judged, unread, warnings);
     const said = warnings.join("\n");
     if (said && said !== this.logged) this.log(`loops: ${warnings.join("; ")}`);
