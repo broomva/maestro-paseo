@@ -50,6 +50,7 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | M1c | `m1c-focus-deck.png` | One hold at a time with thumb-sized verbs; everything else in a sheet you pull up; sections in a title menu |
 | M1d | `m1d-inbox-swipe.png` | One dense grouped list, row verbs and swipe actions, a title menu and a bottom toolbar |
 | M1v | `m1v-mobile-compared.png` | The four compared; recommends M1b's tab bar with M1c's deck at the top of the Feed; what to check on a device |
+| M1 | `m1-feed-home-mobile.png` | **Chosen** mobile home: M1c's deck with a pull-up sheet that peeks from the bottom edge; M1b's tab bar rides on the sheet's top edge; M1d's row swipes and undo toast on sheet rows only; the Decisions tab uses the same shape |
 | N0 | `n0-model.png` | Three nouns (work, ask, notice), one list, one verb each; six rules; what it retires |
 | N1 | `n1-wiring.png` | Producers, verbs on maestro.sock, one store per kind, needs.list, views, the return path |
 | N3 | `n3-lifecycles.png` | The states each kind passes through; the 10-09 Parser drift card, today vs next |
