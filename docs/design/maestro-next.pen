@@ -10255,7 +10255,7 @@
       "type": "frame",
       "id": "gcul5",
       "x": 1700,
-      "y": 2599,
+      "y": 12700,
       "name": "S1 · Feed home, wide: stream + rail on needs.list",
       "theme": {
         "mode": "light"
@@ -100080,8 +100080,8 @@
     {
       "type": "frame",
       "id": "Au6C9",
-      "x": 32000,
-      "y": 500,
+      "x": 3356,
+      "y": 12700,
       "name": "J1 · Sweet spot · S1's dashboard, Apple's touch",
       "theme": {
         "mode": "light"
@@ -106158,8 +106158,8 @@
     {
       "type": "frame",
       "id": "aIqPF",
-      "x": 33700,
-      "y": 500,
+      "x": 5012,
+      "y": 12700,
       "name": "J2 · Sweet spot · glance strip over the dashboard",
       "theme": {
         "mode": "light"
@@ -112112,8 +112112,8 @@
     {
       "type": "frame",
       "id": "Qmp6D",
-      "x": 35400,
-      "y": 500,
+      "x": 6668,
+      "y": 12700,
       "name": "J3 · Sweet spot · list + inspector",
       "theme": {
         "mode": "light"
@@ -116492,8 +116492,8 @@
     {
       "type": "frame",
       "id": "cDMyJ",
-      "x": 37100,
-      "y": 500,
+      "x": 9980,
+      "y": 12700,
       "name": "J0 · Sweet spot: J1, J2 and J3 against S1 and H1",
       "theme": {
         "mode": "light"
@@ -118196,8 +118196,8 @@
     {
       "type": "frame",
       "id": "E4dLZ1",
-      "x": 38800,
-      "y": 500,
+      "x": 8324,
+      "y": 12700,
       "name": "J4 · Sweet spot · J2's home with J3's inspector open",
       "theme": {
         "mode": "light"
@@ -125227,6 +125227,38 @@
               ]
             }
           ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "tzfJD",
+      "x": 1700,
+      "y": 12550,
+      "name": "Compare · the Feed home: S1 and the sweet-spot variations J1–J4",
+      "width": 10000,
+      "layout": "vertical",
+      "gap": 6,
+      "children": [
+        {
+          "type": "text",
+          "id": "rF9tj",
+          "name": "t",
+          "fill": "$fg",
+          "content": "Compare · the Feed home, left to right: S1 (today's design) → J1 → J2 → J3 → J4 (recommended) → J0 (the comparison table)",
+          "fontFamily": "$font-ui",
+          "fontSize": 32,
+          "fontWeight": "600"
+        },
+        {
+          "type": "text",
+          "id": "puJCd",
+          "name": "t",
+          "fill": "$fg-muted",
+          "content": "S1 moved here from the S column; the S column keeps S0 and S2–S10. BRO-3012.",
+          "fontFamily": "$font-ui",
+          "fontSize": 18,
+          "fontWeight": "normal"
         }
       ]
     }
