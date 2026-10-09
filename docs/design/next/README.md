@@ -38,3 +38,5 @@ The mockups use Inter and JetBrains Mono because Pen cannot load the system stac
 All data on the screens is illustrative.
 
 The measured data is in `reach-taxonomy.md`, with its machine-readable twin `reach-taxonomy.json`.
+
+Notifications (owner answer A5): `notifications-integration.md` maps every channel, the gap to one-tap Allow/Deny, ranked options, and the draft feature request to Paseo.
