@@ -6,6 +6,11 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | --- | --- | --- |
 | A0 | `a0-what-needs-you.png` | Work never asks you to approve it. A session needs you only while it holds an ask, an approval (one exact action a policy layer held) or an owner step; the approval layers L0–L3 |
 | A2 | `a2-after-you-click.png` | Each action, step by step, to the receipt on the card: answer, allow, deny, done, unblock, cancel, and the retired Approve |
+| B1 | `b1-one-tap-approvals.png` | Approvals from three sources (the agent's own reasoning, a Claude Code permission prompt, a gate) on one card: Allow, Deny, Chat beside it; what never reached you |
+| B2 | `b2-settings-loop-fleet.png` | Settings: the Maestro loop, the fleet kill switch, each scope's mode (off, dry run, act), run tick now, pause |
+| B3 | `b3-settings-loops-notices-approvals.png` | Settings: loops with pause, resume, run now; the notice source registry (`.broomva/notices.yaml`); approval rules and grants |
+| C0 | `c0-how-agents-reach-you.png` | Measured: how agent sessions reach you over 30 days, 678 sessions, 11,232 turn ends, clustered and mapped to kinds |
+| C1 | `c1-what-the-measurements-change.png` | Seven changes the measurements call for, each with the card it produces, and the agents' typed contract |
 | N0 | `n0-model.png` | Three nouns (work, ask, notice), one list, one verb each; six rules; what it retires |
 | N1 | `n1-wiring.png` | Producers, verbs on maestro.sock, one store per kind, needs.list, views, the return path |
 | N3 | `n3-lifecycles.png` | The states each kind passes through; the 10-09 Parser drift card, today vs next |
@@ -25,3 +30,5 @@ Navigation goes from nine tabs to five: Feed, Decisions, Work, Health, Initiativ
 The mockups use Inter and JetBrains Mono because Pen cannot load the system stack. The plugin ships `ui-sans-serif` and `ui-monospace`.
 
 All data on the screens is illustrative.
+
+The measured data is in `reach-taxonomy.md`, with its machine-readable twin `reach-taxonomy.json`.
