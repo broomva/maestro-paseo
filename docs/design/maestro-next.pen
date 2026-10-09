@@ -28878,6 +28878,135 @@
                     },
                     {
                       "type": "text",
+                      "id": "Gnr8c",
+                      "name": "Finished",
+                      "fill": "$fg-muted",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Finished",
+                      "lineHeight": 1.5,
+                      "fontFamily": "$font-ui",
+                      "fontSize": 14,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "OWwDx",
+                      "name": "Finished card",
+                      "width": "fill_container",
+                      "fill": "$bg",
+                      "cornerRadius": 12,
+                      "stroke": "$border",
+                      "strokeWidth": 1,
+                      "layout": "vertical",
+                      "gap": 8,
+                      "padding": 16,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "S1VJxi",
+                          "name": "k",
+                          "gap": 8,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "vuqnc",
+                              "name": "i circle-check",
+                              "width": 14,
+                              "height": 14,
+                              "icon": "circle-check",
+                              "library": "lucide",
+                              "fill": "$ok"
+                            },
+                            {
+                              "type": "text",
+                              "id": "M4si9",
+                              "name": "A1 adopted: design uses ",
+                              "fill": "$fg",
+                              "content": "A1 adopted: design uses the revised kinds",
+                              "lineHeight": 1.5,
+                              "fontFamily": "$font-ui",
+                              "fontSize": 14,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "FxOgk",
+                          "name": "Next: add Finished and P",
+                          "fill": "$fg-2",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Next: add Finished and Proposals to the Feed · continues in 9 min",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12
+                        },
+                        {
+                          "type": "frame",
+                          "id": "h5QWhD",
+                          "name": "btns",
+                          "width": "fill_container",
+                          "gap": 8,
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "qedq1",
+                              "name": "Btn Change course",
+                              "width": "fill_container",
+                              "height": 44,
+                              "fill": "$bg",
+                              "cornerRadius": 9999,
+                              "stroke": "$border-strong",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "Hd2dC",
+                                  "name": "Change course",
+                                  "fill": "$fg",
+                                  "content": "Change course",
+                                  "lineHeight": 1.5,
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 14,
+                                  "fontWeight": "500"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "oHNc2",
+                              "name": "Btn Continue",
+                              "width": "fill_container",
+                              "height": 44,
+                              "fill": "$accent",
+                              "cornerRadius": 9999,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "z7nou",
+                                  "name": "Continue",
+                                  "fill": "$accent-fg",
+                                  "content": "Continue",
+                                  "lineHeight": 1.5,
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 14,
+                                  "fontWeight": "500"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
                       "id": "q0CDwo",
                       "name": "Health",
                       "fill": "$fg-muted",
@@ -29647,6 +29776,135 @@
                                   "name": "Allow merge",
                                   "fill": "$accent-fg",
                                   "content": "Allow merge",
+                                  "lineHeight": 1.5,
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 14,
+                                  "fontWeight": "500"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "enp84",
+                      "name": "Finished",
+                      "fill": "$fg-muted",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Finished",
+                      "lineHeight": 1.5,
+                      "fontFamily": "$font-ui",
+                      "fontSize": 14,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "UaQpk",
+                      "name": "Finished card",
+                      "width": "fill_container",
+                      "fill": "$bg",
+                      "cornerRadius": 12,
+                      "stroke": "$border",
+                      "strokeWidth": 1,
+                      "layout": "vertical",
+                      "gap": 8,
+                      "padding": 16,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "Gy6NZ",
+                          "name": "k",
+                          "gap": 8,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "T3dq9",
+                              "name": "i circle-check",
+                              "width": 14,
+                              "height": 14,
+                              "icon": "circle-check",
+                              "library": "lucide",
+                              "fill": "$ok"
+                            },
+                            {
+                              "type": "text",
+                              "id": "P7KaYq",
+                              "name": "A1 adopted: design uses ",
+                              "fill": "$fg",
+                              "content": "A1 adopted: design uses the revised kinds",
+                              "lineHeight": 1.5,
+                              "fontFamily": "$font-ui",
+                              "fontSize": 14,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "AG7Ls",
+                          "name": "Next: add Finished and P",
+                          "fill": "$fg-2",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Next: add Finished and Proposals to the Feed · continues in 9 min",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12
+                        },
+                        {
+                          "type": "frame",
+                          "id": "jnGDj",
+                          "name": "btns",
+                          "width": "fill_container",
+                          "gap": 8,
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "G1iGb",
+                              "name": "Btn Change course",
+                              "width": "fill_container",
+                              "height": 44,
+                              "fill": "$bg",
+                              "cornerRadius": 9999,
+                              "stroke": "$border-strong",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "QRlcf",
+                                  "name": "Change course",
+                                  "fill": "$fg",
+                                  "content": "Change course",
+                                  "lineHeight": 1.5,
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 14,
+                                  "fontWeight": "500"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "KyzbJ",
+                              "name": "Btn Continue",
+                              "width": "fill_container",
+                              "height": 44,
+                              "fill": "$accent",
+                              "cornerRadius": 9999,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "DGkS1",
+                                  "name": "Continue",
+                                  "fill": "$accent-fg",
+                                  "content": "Continue",
                                   "lineHeight": 1.5,
                                   "fontFamily": "$font-ui",
                                   "fontSize": 14,
