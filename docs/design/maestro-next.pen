@@ -49038,7 +49038,7 @@
                       "fill": "$fg-2",
                       "textGrowth": "fixed-width",
                       "width": "fill_container",
-                      "content": "Prompt: .broomva/loops/prompts/coordinator-tick.md, origin/main, 102 lines",
+                      "content": "Prompt: shared base bstack references/orchestrator-tick.md (274 lines, bstack#133) + overlay .broomva/loops/prompts/coordinator-tick.md (#954), live since 10-09 08:41Z",
                       "lineHeight": 1.5,
                       "fontFamily": "$font-ui",
                       "fontSize": 12
@@ -49890,7 +49890,7 @@
                   "fill": "$danger",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "Prompts in four places",
+                  "content": "Prompts in three places, one lane already on the base",
                   "lineHeight": 1.5,
                   "fontFamily": "$font-ui",
                   "fontSize": 14,
@@ -49903,7 +49903,7 @@
                   "fill": "$fg-2",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "origin/main, a local file in ~/.config, inline schedule prompts, and TypeScript. No shared base, no versions, no review.",
+                  "content": "The coordinator already runs on base + overlay (#954). The SRI prompt is still a local file in ~/.config, one-shot schedules are inline, and Maestro's are TypeScript.",
                   "lineHeight": 1.5,
                   "fontFamily": "$font-ui",
                   "fontSize": 12
@@ -50878,7 +50878,7 @@
                               "fill": "$fg-2",
                               "textGrowth": "fixed-width",
                               "width": "fill_container",
-                              "content": "Prompt: base + lane overlay broomva.md",
+                              "content": "Prompt: bstack base + coordinator-tick.md overlay, live (the A11 pilot)",
                               "lineHeight": 1.5,
                               "fontFamily": "$font-ui",
                               "fontSize": 12
@@ -51011,7 +51011,7 @@
                               "fill": "$fg-2",
                               "textGrowth": "fixed-width",
                               "width": "fill_container",
-                              "content": "Prompt: base + lane overlay sri.md, moved into the SRI repo",
+                              "content": "Prompt: the same base + sri.md overlay, after the pilot week (BRO-2983, gate 10-16)",
                               "lineHeight": 1.5,
                               "fontFamily": "$font-ui",
                               "fontSize": 12
@@ -53545,7 +53545,7 @@
                           "fill": "$fg-2",
                           "textGrowth": "fixed-width",
                           "width": "fill_container",
-                          "content": "prompts/roles/conductor.md · orchestrator.md · worker.md: the tick protocol, snapshot, ledger, ask shape, typed reaches, ARC-STATUS, and which rule wins",
+                          "content": "bstack references/orchestrator-tick.md, already shared by orchestrators (bstack#133): the tick contract, tiers, snapshot, census, close-out, guards, owner answers, rollover, report. Next: conductor.md and worker.md beside it.",
                           "lineHeight": 1.5,
                           "fontFamily": "$font-ui",
                           "fontSize": 12
@@ -53565,7 +53565,7 @@
                           "fill": "$fg-muted",
                           "textGrowth": "fixed-width",
                           "width": "fill_container",
-                          "content": "Maestro · PR",
+                          "content": "bstack · PR",
                           "lineHeight": 1.5,
                           "fontFamily": "$font-ui",
                           "fontSize": 12
@@ -53636,7 +53636,7 @@
                           "fill": "$fg-2",
                           "textGrowth": "fixed-width",
                           "width": "fill_container",
-                          "content": "prompts/lanes/broomva.md · sri.md (in the SRI repo): scope, authority, hard rules, cadence tiers, merge order",
+                          "content": ".broomva/loops/prompts/coordinator-tick.md, live (#954) · sri.md in the SRI repo after the pilot week (A11, BRO-2983): scope, authority, hard rules, cadence tiers, merge order",
                           "lineHeight": 1.5,
                           "fontFamily": "$font-ui",
                           "fontSize": 12
@@ -53813,7 +53813,7 @@
                   "fill": "$fg",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "Where today's SRI tick prompt goes",
+                  "content": "Where the SRI tick prompt goes after the Broomva pilot week (A11, gate 2026-10-16)",
                   "lineHeight": 1.5,
                   "fontFamily": "$font-ui",
                   "fontSize": 16,
@@ -53879,7 +53879,7 @@
                           "id": "w2aVXr",
                           "name": "role base: orchestrator.",
                           "fill": "$needs",
-                          "content": "role base: orchestrator.md",
+                          "content": "shared base: bstack orchestrator-tick.md",
                           "lineHeight": 1.5,
                           "fontFamily": "$font-ui",
                           "fontSize": 12,
@@ -54053,7 +54053,7 @@
                           "id": "zEZPQ",
                           "name": "role base (shared shape)",
                           "fill": "$needs",
-                          "content": "role base (shared shape)",
+                          "content": "shared base (same shape)",
                           "lineHeight": 1.5,
                           "fontFamily": "$font-ui",
                           "fontSize": 12,
@@ -54128,7 +54128,7 @@
                   "fill": "$fg-2",
                   "textGrowth": "fixed-width",
                   "width": "fill_container",
-                  "content": "The Broomva coordinator's tick-prompt splits the same way. Both lanes then share one protocol and differ only in their overlay.",
+                  "content": "The Broomva coordinator has run this way since 10-09 08:41Z (#954): 4 of 4 ticks ok, 7–10 tool calls each, at 15:50Z. A one-shot check on 10-16 measures the week (BRO-2983); SRI moves only if it passes.",
                   "lineHeight": 1.5,
                   "fontFamily": "$font-ui",
                   "fontSize": 12
@@ -54624,7 +54624,7 @@
                       "fill": "$fg",
                       "textGrowth": "fixed-width",
                       "width": "fill_container",
-                      "content": "lanes/broomva.md",
+                      "content": "loops/prompts/coordinator-tick.md",
                       "lineHeight": 1.5,
                       "fontFamily": "$font-mono",
                       "fontSize": 12
@@ -57020,6 +57020,16 @@
           ]
         }
       ]
+    },
+    {
+      "type": "text",
+      "id": "zJXuU",
+      "x": 12635,
+      "y": 12181,
+      "fill": "#000000",
+      "fontFamily": "Inter",
+      "fontSize": 16,
+      "fontWeight": "normal"
     }
   ],
   "themes": {
