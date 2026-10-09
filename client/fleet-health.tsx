@@ -364,11 +364,7 @@ export function KpiRow({
       jumps={entry.id === "needs"}
       selected={selected === entry.id}
       accessibilityLabel={`${entry.label}: ${entry.value}${entry.sub ? `, ${entry.sub}` : ""}. ${
-        entry.id === "needs"
-          ? "Go to Needs you"
-          : selected === entry.id
-            ? "Filtering the sessions"
-            : "Show these sessions"
+        entry.id === "needs" ? "Go to Health" : selected === entry.id ? "Filtering the sessions" : "Show these sessions"
       }`}
       onPress={() => onPress(entry.id)}
     />

@@ -241,6 +241,11 @@ export interface FleetNeeds {
   sessions: number;
 }
 
+/** The fleet's own ask ledger in a scope's root, `fleet-<scope>.yaml` (skills#270): its asks are the report's. */
+export function isFleetLedger(ledger: string): boolean {
+  return /(^|\/)fleet-[^/]+\.ya?ml$/.test(ledger);
+}
+
 export function fleetNeedsYou(reads: readonly ScopeRead[]): FleetNeeds {
   const cards: QueueCard[] = [];
   const elsewhere: QueueCard[] = [];
@@ -253,21 +258,24 @@ export function fleetNeedsYou(reads: readonly ScopeRead[]): FleetNeeds {
     for (const item of detail.alerts) {
       (item.needsYou ? elsewhere : also).push({ kind: "alert", key: `alert:${id}:${item.id}`, scope: id, item });
     }
-    // One card per raised item that needs you, carrying all its asks; an ask not raised yet (or whose
-    // work does not need you) is shown apart, uncounted.
+    // One card per raised item that needs you, carrying all its asks; the report's other asks are listed
+    // apart, uncounted, with the fleet's own context (session, resume) a decision card does not carry.
     const byItem = new Map<string, FleetAsk[]>();
     for (const ask of detail.asks) {
       if (ask.item?.needsYou) byItem.set(ask.item.id, [...(byItem.get(ask.item.id) ?? []), ask]);
       else also.push({ kind: "ask", key: `ask:${id}:${ask.batch}:${ask.key}`, scope: id, ask, asks: [ask] });
     }
+    // The fleet's own ledger (fleet-<scope>.yaml, skills#270) holds those same asks as decisions: answered and
+    // counted in Decisions, shown here once, as the report's asks above (BRO-2908).
+    const decisions = detail.decisions.filter((entry) => !isFleetLedger(entry.ledger));
     for (const [item, asks] of byItem) {
       const [first] = asks;
       if (first) elsewhere.push({ kind: "ask", key: `item:${id}:${item}`, scope: id, ask: first, asks });
     }
-    for (const ask of detail.decisions.filter((entry) => entry.waiting)) {
+    for (const ask of decisions.filter((entry) => entry.waiting)) {
       elsewhere.push({ kind: "decision", key: `decision:${id}:${ask.ledger}:${ask.uid ?? ask.id}`, scope: id, ask });
     }
-    const rest = detail.decisions.filter((entry) => !entry.waiting);
+    const rest = decisions.filter((entry) => !entry.waiting);
     const open = rest.filter((entry) => entry.state === "open").length;
     if (rest.length > 0) {
       (open > 0 ? also : answered).push({ kind: "decisions", key: `decisions:${id}`, scope: id, asks: rest, open });
@@ -499,7 +507,7 @@ export interface Verdict {
 
 /** What else the verdict weighs beside the ticks: what needs you (fleetNeedsYou), and sessions that want a look. */
 export interface VerdictLoad {
-  /** fleetNeedsYou's total and its words: the same number the tile, the section and the header count. */
+  /** fleetNeedsYou's total (the fleet's health) and its words: the tile's and the section's number, the header's fleet share. */
   needs: number;
   needsText?: string;
   /** In-scope sessions that want a look (the Attention filter); never "need you": the header does not count them. */
@@ -514,7 +522,7 @@ const RANK: Record<Verdict["tone"], number> = { danger: 3, warn: 2, muted: 1, su
 /**
  * The health band's verdict. It leads with the problem and never overclaims:
  * it is "healthy" (success) only when every scope was read, ticks on time,
- * nothing needs you (fleetNeedsYou) and no session wants a look. Each
+ * no scope's tick needs you (fleetNeedsYou) and no session wants a look. Each
  * scope that cannot be read, is failing, missed its tick, is paused or is not
  * scheduled is named; sessions that want a look are named whatever the
  * scope's state (a paused scope never hides them); a scope still loading says

@@ -978,6 +978,44 @@ describe("the header's count, split", () => {
   });
 });
 
+describe("the fleet's own ask ledger is the report's asks, shown once (BRO-2908)", () => {
+  test("a decision in fleet-<scope>.yaml is not listed again; a hand-written ledger beside it is", async () => {
+    const { isFleetLedger } = await import("./fleet-cockpit-model");
+    expect(
+      ["fleet-sri.yaml", "sri/fleet-sri.yaml", "fleet-broomva.yml", "sri-coordinator.yaml", "my-fleet-notes.yaml"].map(
+        isFleetLedger,
+      ),
+    ).toEqual([true, true, true, false, false]);
+    const ask = (ledger: string, id: string): DecisionAsk => ({
+      ledger,
+      uid: null,
+      id,
+      hash: "h",
+      arc: null,
+      headline: id,
+      question: null,
+      stakes: null,
+      whyYou: null,
+      options: [],
+      fallback: null,
+      blocking: true,
+      askedAt: null,
+      answeredAt: null,
+      answer: null,
+      answerOption: null,
+      state: "open",
+      origin: null,
+      refusal: null,
+      home: { kind: "root", path: "/state/sri/.control/asks", branch: null },
+      batched: false,
+      waiting: true,
+    });
+    const decisions = [ask("fleet-sri.yaml", "F1"), ask("sri-coordinator.yaml", "C1")];
+    const needs = fleetNeedsYou([{ scope: scope("sri"), detail: detail("sri", { decisions }) }]);
+    expect(needs.elsewhere.map((card) => (card.kind === "decision" ? card.ask.id : card.kind))).toEqual(["C1"]);
+  });
+});
+
 describe("the ask body clamp (BRO-2852)", () => {
   test("one predicate: short text is never clamped, long text always is", async () => {
     const { clampedBody } = await import("./fleet-cockpit-model");

@@ -47,7 +47,6 @@ import { groupSubject, keysFor, proposalSubject } from "./fleet-model";
 import { TickDetail, type TickSheetState } from "./fleet-ticks";
 import { copy, isDark, Pill, ramp, type Tone, tint, Verb } from "./fleet-ui";
 import { errorText, plural } from "./format";
-import { timeText } from "./history-model";
 import { useRefresh } from "./hooks";
 import { titleText } from "./records-text";
 import { radius, space, Unbroken } from "./ui";
@@ -1011,14 +1010,9 @@ export function NeedsYouQueue({
   onOpenTick: (sheet: TickSheetState) => void;
 }) {
   const t = ramp(theme);
-  // Asks the fleet has not raised as work yet are said apart, with when it will.
+  // The report's asks, with the fleet's own context; they are answered and counted in Decisions.
   const notRaised = also.filter((card) => card.kind === "ask");
   const rest = also.filter((card) => card.kind !== "ask");
-  const next =
-    notRaised
-      .map((card) => context.next(card.scope))
-      .filter((at): at is number => at !== null)
-      .sort((a, b) => a - b)[0] ?? null;
   const view = (card: QueueCard, lead: boolean) => (
     <QueueCardView
       key={card.key}
@@ -1045,8 +1039,8 @@ export function NeedsYouQueue({
               backgroundColor: theme.colors.surface1,
             }}
           >
-            <Text style={t.cardTitle}>Every scope is on time</Text>
-            <Text style={t.muted}>No scope's tick is late or failing.</Text>
+            <Text style={t.cardTitle}>No scope's tick needs you</Text>
+            <Text style={t.muted}>A late or failing scope whose alert is at your gate is counted there.</Text>
           </View>
         ) : null}
         {cards.map((card, index) => view(card, index === 0))}
@@ -1068,10 +1062,11 @@ export function NeedsYouQueue({
         <View style={{ gap: space[3], paddingTop: space[2] }}>
           <View style={{ gap: 2 }}>
             <Text style={t.cardTitle} accessibilityRole="header">
-              Not in Decisions yet
+              From the fleet's report
             </Text>
             <Text style={t.meta}>
-              {`The fleet writes these to Decisions at its next tick${next ? ` (~${timeText(new Date(next).toISOString())})` : ""}; until then they aren't counted.`}
+              Answer them in Decisions, where Needs you counts the ones that hold a session. The fleet writes each there
+              once it has lasted past its next tick.
             </Text>
           </View>
           {notRaised.map((card) => view(card, false))}

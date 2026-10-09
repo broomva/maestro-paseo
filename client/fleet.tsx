@@ -264,7 +264,7 @@ export function FleetView({
       id: "needs",
       label: "Health",
       value: needs.total,
-      sub: needs.total > 0 ? `${plural(needs.total, "scope")} late or failing` : "every scope on time",
+      sub: needs.total > 0 ? `${plural(needs.total, "scope")} whose tick needs you` : "no scope's tick needs you",
       tone: "warn",
     },
     {
@@ -466,7 +466,12 @@ export function FleetView({
                 all: shares.total,
                 elsewhere: [
                   ...(otherScopes > 0
-                    ? [{ label: "other scopes", count: otherScopes, onPress: () => onScope(null) }]
+                    ? [
+                        // All shown: what is left is a notice no scope carries (the awake clock unread), not a scope.
+                        all
+                          ? { label: "the clock check", count: otherScopes, onPress: () => onScope(null) }
+                          : { label: "other scopes", count: otherScopes, onPress: () => onScope(null) },
+                      ]
                     : []),
                   ...elsewhere.map((entry) => ({
                     label: entry.label,

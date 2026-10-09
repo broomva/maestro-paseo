@@ -426,6 +426,8 @@ const fleetProposals = (): FleetProposal[] => [
 const FLEET_REPORT =
   "# fleet-reconcile · broomva · tick 35\n\nReport only (phase 1).\n\n## Classes\n\n| # | class | sessions |\n|---|---|---|\n| 1 | out of scope | 53 |\n| 4 | error | 1 |\n";
 let fleetNotices: FleetNotice[] = [];
+/** While set, broomva's tick is on time: no health card, only what the fleet raised (BRO-2908). */
+let broomvaOnTime = false;
 /** While set, fleet.get answers only once it resolves: a refetch still on its way. */
 let fleetHeld: Promise<void> | null = null;
 /** While set, fleet.get for this scope fails: a scope that cannot be read. */
@@ -740,7 +742,7 @@ const fleetView = (scope: string | undefined): FleetView => {
       id: "broomva",
       mode: "report",
       dryRun: true,
-      health: missed,
+      health: broomvaOnTime ? { ...missed, status: "ok" as const, reason: "", needsYou: false } : missed,
       lastTick: { tick: 35, at: new Date(Date.now() - 3 * H).toISOString(), status: "ok" as const },
       unreviewed: proposalsNow.filter((entry) => entry.review === null).length,
       openAsks: 1,
@@ -1331,6 +1333,7 @@ afterEach(async () => {
   stopRefusal = null;
   stopHeld = null;
   fleetNotices = [];
+  broomvaOnTime = false;
   fleetHeld = null;
   fleetFails = null;
   rosterExtra = [];
@@ -2450,7 +2453,7 @@ describe("the Fleet view", () => {
     expect(starting(view, "Tick 35, passed")).toBeDefined();
     expect(starting(view, "No tick: missed for 3h")).toBeDefined();
     // The tile is health: the missed tick. The ask is counted where it lives, at your gate (BRO-2908).
-    expect(starting(view, "Health: 1, 1 scope late or failing")).toBeDefined();
+    expect(starting(view, "Health: 1, 1 scope whose tick needs you")).toBeDefined();
     expect(text).toContain("Counted where they live");
     // The band says what it counts: the tick, not the ask counted at your gate.
     expect(text).toContain("Needs you: 1 tick.");
@@ -2699,7 +2702,8 @@ describe("the Fleet view", () => {
       const target = view.byLabel(label) as unknown as { firstElementChild: { style: { backgroundColor: string } } };
       return target.firstElementChild.style.backgroundColor.includes("84, 128, 199");
     };
-    expect(view.text()).toContain("Every scope is on time");
+    expect(view.text()).toContain("No scope's tick needs you");
+    expect(starting(view, "Health: 0, no scope's tick needs you")).toBeDefined();
     expect(filled("Agree: report only, 4 sessions")).toBe(false);
     // Teach the fleet sits below the sessions.
     expect(view.text().indexOf("Teach the fleet")).toBeGreaterThan(view.text().indexOf("Sessions in scope"));
@@ -2750,7 +2754,7 @@ describe("the Fleet view", () => {
     // The summary sits on its own row under the title and its buttons (the Feed home, BRO-2906).
     expect(view.text().startsWith(`MaestroNew work${header} need you · `)).toBe(true);
     expect(view.byLabel(`${work} in Work: open Work`)).not.toBeNull();
-    expect(starting(view, `Health: ${health}, 1 scope late or failing`)).toBeDefined();
+    expect(starting(view, `Health: ${health}, 1 scope whose tick needs you`)).toBeDefined();
     const section = view.byLabel(`Health: ${health} card`) as unknown as { children: { length: number } };
     expect(section.children.length).toBe(health);
     // The raised work and the waiting decision are shown, uncounted here.
@@ -2765,11 +2769,28 @@ describe("the Fleet view", () => {
     );
   });
 
-  test("an ask the fleet has not raised as work yet says when it will be, and can still be copied", async () => {
+  test("an ask the fleet has not raised as work yet says where it is answered, and can still be copied", async () => {
+    askOverride = { item: null };
     const view = await mount(surface(false));
     await view.goto("Fleet");
     await settle(30);
     expect(view.byLabel("Copy the question of ask a1")).not.toBeNull();
+    // The report's asks say where they are answered and counted: Decisions (BRO-2908).
+    expect(view.text()).toContain("From the fleet's report");
+  });
+
+  test("with no tick that needs you, what the fleet raised is shown but never leads with the filled verb (BRO-2908)", async () => {
+    broomvaOnTime = true;
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    for (let tries = 0; tries < 100 && !view.text().includes("Would list 4 unmanaged"); tries += 1) await settle(20);
+    expect(view.text()).toContain("No scope's tick needs you");
+    expect(view.text()).toContain("Counted where they live");
+    const verb = view.all('[aria-label^="Open the fleet\'s work for ask"]')[0] as unknown as
+      | { firstElementChild: { style: { backgroundColor: string } } }
+      | undefined;
+    expect(verb).toBeDefined();
+    expect(verb?.firstElementChild.style.backgroundColor.includes("84, 128, 199")).toBe(false);
   });
 
   test("Health jumps to the queue; a filter tile filters exactly what it counts and says Filtering", async () => {
