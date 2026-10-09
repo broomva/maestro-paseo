@@ -798,10 +798,10 @@
           "type": "text",
           "id": "VIogu",
           "name": "MAESTRO NEXT · N0 · BRO-",
-          "fill": "$fg-muted",
+          "fill": "$warn",
           "textGrowth": "fixed-width",
           "width": "fill_container",
-          "content": "N0 · BRO-2980 · 2026-10-09",
+          "content": "N0 · superseded by A0 and C1, adopted 2026-10-09 (A1)",
           "lineHeight": 1.4,
           "fontFamily": "$font-mono",
           "fontSize": 12
@@ -10125,7 +10125,7 @@
       "type": "frame",
       "id": "gcul5",
       "x": 1700,
-      "y": 2309,
+      "y": 2465,
       "name": "S1 · Feed home, wide: stream + rail on needs.list",
       "theme": {
         "mode": "light"
@@ -10737,6 +10737,525 @@
                               "name": "Done",
                               "fill": "$accent-fg",
                               "content": "Done",
+                              "lineHeight": 1.5,
+                              "fontFamily": "$font-ui",
+                              "fontSize": 14,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "tVth3",
+                  "name": "Section Finished",
+                  "width": "fill_container",
+                  "gap": 8,
+                  "padding": [
+                    12,
+                    0,
+                    0,
+                    0
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "PQIfQ",
+                      "name": "Finished",
+                      "fill": "$fg",
+                      "content": "Finished",
+                      "lineHeight": 1.5,
+                      "fontFamily": "$font-ui",
+                      "fontSize": 14,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "bbFd5",
+                      "name": "n",
+                      "fill": "$raised-2",
+                      "cornerRadius": 9999,
+                      "padding": [
+                        0,
+                        8
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "yeCTh",
+                          "name": "2",
+                          "fill": "$fg-2",
+                          "content": "2",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "w3u6Q",
+                      "name": "· turns that ended with ",
+                      "fill": "$fg-muted",
+                      "content": "· turns that ended with a next step; reversible ones continue on their own",
+                      "lineHeight": 1.5,
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "N0SlaQ",
+                  "name": "Finished A1 adopted: the ",
+                  "width": "fill_container",
+                  "fill": "$bg",
+                  "cornerRadius": 12,
+                  "stroke": "$border",
+                  "strokeWidth": 1,
+                  "layout": "vertical",
+                  "gap": 8,
+                  "padding": [
+                    12,
+                    16
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "woZTV",
+                      "name": "Kicker",
+                      "width": "fill_container",
+                      "gap": 8,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "Wr5Ne",
+                          "name": "i circle-check",
+                          "width": 14,
+                          "height": 14,
+                          "icon": "circle-check",
+                          "library": "lucide",
+                          "fill": "$ok"
+                        },
+                        {
+                          "type": "text",
+                          "id": "I4CEa",
+                          "name": "broomva · BRO-2980 · des",
+                          "fill": "$fg-muted",
+                          "content": "broomva · BRO-2980 · design",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-mono",
+                          "fontSize": 12
+                        },
+                        {
+                          "type": "frame",
+                          "id": "HAAUk",
+                          "name": "sp",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "PWETm",
+                          "name": "3m",
+                          "fill": "$fg-muted",
+                          "content": "3m",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "ypWeU",
+                      "name": "A1 adopted: the design n",
+                      "fill": "$fg",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "A1 adopted: the design now uses the revised kinds",
+                      "lineHeight": 1.5,
+                      "fontFamily": "$font-ui",
+                      "fontSize": 16,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "n8Jke",
+                      "name": "Next",
+                      "width": "fill_container",
+                      "fill": "$bg-sunken",
+                      "cornerRadius": 8,
+                      "gap": 8,
+                      "padding": [
+                        8,
+                        12
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "rec9s",
+                          "name": "Next",
+                          "fill": "$fg-muted",
+                          "content": "Next",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12
+                        },
+                        {
+                          "type": "text",
+                          "id": "cNYAe",
+                          "name": "Add the Finished and Pro",
+                          "fill": "$fg",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Add the Finished and Proposal kinds to the Feed and the phone; then take A2–A11 as they are answered",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "KTag4",
+                      "name": "Footer",
+                      "width": "fill_container",
+                      "gap": 8,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "R41eE",
+                          "name": "Pill Finished",
+                          "fill": "$ok-soft",
+                          "cornerRadius": 9999,
+                          "gap": 4,
+                          "padding": [
+                            4,
+                            8
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "ellipse",
+                              "id": "mA0Q9",
+                              "name": "dot",
+                              "fill": "$ok",
+                              "width": 6,
+                              "height": 6
+                            },
+                            {
+                              "type": "text",
+                              "id": "hKEEu",
+                              "name": "Finished",
+                              "fill": "$ok",
+                              "content": "Finished",
+                              "lineHeight": 1.5,
+                              "fontFamily": "$font-ui",
+                              "fontSize": 12,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "vEySU",
+                          "name": "reversible · continues i",
+                          "fill": "$fg-muted",
+                          "content": "reversible · continues in 9 min",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12
+                        },
+                        {
+                          "type": "frame",
+                          "id": "JZqn6",
+                          "name": "sp",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "frame",
+                          "id": "H9ux77",
+                          "name": "Btn Change course",
+                          "fill": "$bg",
+                          "cornerRadius": 9999,
+                          "stroke": "$border-strong",
+                          "strokeWidth": 1,
+                          "padding": [
+                            8,
+                            16
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "RMSI9",
+                              "name": "Change course",
+                              "fill": "$fg",
+                              "content": "Change course",
+                              "lineHeight": 1.5,
+                              "fontFamily": "$font-ui",
+                              "fontSize": 14,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "l8rsj",
+                          "name": "Btn Continue",
+                          "fill": "$accent",
+                          "cornerRadius": 9999,
+                          "padding": [
+                            8,
+                            16
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "Y7u5zT",
+                              "name": "Continue",
+                              "fill": "$accent-fg",
+                              "content": "Continue",
+                              "lineHeight": 1.5,
+                              "fontFamily": "$font-ui",
+                              "fontSize": 14,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "P4qW4",
+                  "name": "Finished Agent GitHub ide",
+                  "width": "fill_container",
+                  "fill": "$bg",
+                  "cornerRadius": 12,
+                  "stroke": "$border",
+                  "strokeWidth": 1,
+                  "layout": "vertical",
+                  "gap": 8,
+                  "padding": [
+                    12,
+                    16
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "NnTNY",
+                      "name": "Kicker",
+                      "width": "fill_container",
+                      "gap": 8,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "ygriW",
+                          "name": "i circle-check",
+                          "width": 14,
+                          "height": 14,
+                          "icon": "circle-check",
+                          "library": "lucide",
+                          "fill": "$ok"
+                        },
+                        {
+                          "type": "text",
+                          "id": "C8F4ze",
+                          "name": "holon · BRO-2930",
+                          "fill": "$fg-muted",
+                          "content": "holon · BRO-2930",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-mono",
+                          "fontSize": 12
+                        },
+                        {
+                          "type": "frame",
+                          "id": "x4iZo",
+                          "name": "sp",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "a05Vu",
+                          "name": "18m",
+                          "fill": "$fg-muted",
+                          "content": "18m",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "rJBZd",
+                      "name": "Agent GitHub identity: t",
+                      "fill": "$fg",
+                      "textGrowth": "fixed-width",
+                      "width": "fill_container",
+                      "content": "Agent GitHub identity: token scoped, PR #12 merged by gates",
+                      "lineHeight": 1.5,
+                      "fontFamily": "$font-ui",
+                      "fontSize": 16,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "WP8nt",
+                      "name": "Next",
+                      "width": "fill_container",
+                      "fill": "$bg-sunken",
+                      "cornerRadius": 8,
+                      "gap": 8,
+                      "padding": [
+                        8,
+                        12
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "g563n",
+                          "name": "Next",
+                          "fill": "$fg-muted",
+                          "content": "Next",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12
+                        },
+                        {
+                          "type": "text",
+                          "id": "ZsHoJ",
+                          "name": "Rotate the old admin tok",
+                          "fill": "$fg",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Rotate the old admin token and remove it from the fleet config",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "x1Kmi",
+                      "name": "Footer",
+                      "width": "fill_container",
+                      "gap": 8,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "CNI2C",
+                          "name": "Pill Finished",
+                          "fill": "$ok-soft",
+                          "cornerRadius": 9999,
+                          "gap": 4,
+                          "padding": [
+                            4,
+                            8
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "ellipse",
+                              "id": "iNzTi",
+                              "name": "dot",
+                              "fill": "$ok",
+                              "width": 6,
+                              "height": 6
+                            },
+                            {
+                              "type": "text",
+                              "id": "jwNGA",
+                              "name": "Finished",
+                              "fill": "$ok",
+                              "content": "Finished",
+                              "lineHeight": 1.5,
+                              "fontFamily": "$font-ui",
+                              "fontSize": 12,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "GfOrM",
+                          "name": "not reversible · waits f",
+                          "fill": "$fg-muted",
+                          "content": "not reversible · waits for Continue",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12
+                        },
+                        {
+                          "type": "frame",
+                          "id": "c7tqd",
+                          "name": "sp",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "frame",
+                          "id": "l9HMq",
+                          "name": "Btn Change course",
+                          "fill": "$bg",
+                          "cornerRadius": 9999,
+                          "stroke": "$border-strong",
+                          "strokeWidth": 1,
+                          "padding": [
+                            8,
+                            16
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "CqHFr",
+                              "name": "Change course",
+                              "fill": "$fg",
+                              "content": "Change course",
+                              "lineHeight": 1.5,
+                              "fontFamily": "$font-ui",
+                              "fontSize": 14,
+                              "fontWeight": "500"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "cjqpn",
+                          "name": "Btn Continue",
+                          "fill": "$accent",
+                          "cornerRadius": 9999,
+                          "padding": [
+                            8,
+                            16
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "ZUzk6",
+                              "name": "Continue",
+                              "fill": "$accent-fg",
+                              "content": "Continue",
                               "lineHeight": 1.5,
                               "fontFamily": "$font-ui",
                               "fontSize": 14,
@@ -12557,6 +13076,206 @@
                 },
                 {
                   "type": "frame",
+                  "id": "Y6hHDW",
+                  "name": "Section Proposals",
+                  "width": "fill_container",
+                  "gap": 8,
+                  "padding": [
+                    12,
+                    0,
+                    0,
+                    0
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "h7dqy",
+                      "name": "Proposals",
+                      "fill": "$fg",
+                      "content": "Proposals",
+                      "lineHeight": 1.5,
+                      "fontFamily": "$font-ui",
+                      "fontSize": 14,
+                      "fontWeight": "500"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "uvyvy",
+                      "name": "n",
+                      "fill": "$raised-2",
+                      "cornerRadius": 9999,
+                      "padding": [
+                        0,
+                        8
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "vqA0N",
+                          "name": "5",
+                          "fill": "$fg-2",
+                          "content": "5",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "text",
+                      "id": "q8dAHw",
+                      "name": "· weekly digest, parked ",
+                      "fill": "$fg-muted",
+                      "content": "· weekly digest, parked by default",
+                      "lineHeight": 1.5,
+                      "fontFamily": "$font-ui",
+                      "fontSize": 12
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "VndmA",
+                  "name": "Proposals digest",
+                  "width": "fill_container",
+                  "fill": "#F1EEFD",
+                  "cornerRadius": 12,
+                  "layout": "vertical",
+                  "gap": 8,
+                  "padding": 16,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "hg0N7",
+                      "name": "Voxel-world ev",
+                      "width": "fill_container",
+                      "gap": 8,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "U1qRO",
+                          "name": "i lightbulb",
+                          "width": 14,
+                          "height": 14,
+                          "icon": "lightbulb",
+                          "library": "lucide",
+                          "fill": "#7C6CF0"
+                        },
+                        {
+                          "type": "text",
+                          "id": "og3Ke",
+                          "name": "Voxel-world eval harness",
+                          "fill": "$fg",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Voxel-world eval harness on Craftium",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "pk6Ee",
+                      "name": "Recapture pars",
+                      "width": "fill_container",
+                      "gap": 8,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "Ke6Da",
+                          "name": "i lightbulb",
+                          "width": 14,
+                          "height": 14,
+                          "icon": "lightbulb",
+                          "library": "lucide",
+                          "fill": "#7C6CF0"
+                        },
+                        {
+                          "type": "text",
+                          "id": "URKMi",
+                          "name": "Recapture parsers on eve",
+                          "fill": "$fg",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Recapture parsers on every CLI upgrade",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "u6aJug",
+                      "name": "Lago index for",
+                      "width": "fill_container",
+                      "gap": 8,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "B2HaD",
+                          "name": "i lightbulb",
+                          "width": 14,
+                          "height": 14,
+                          "icon": "lightbulb",
+                          "library": "lucide",
+                          "fill": "#7C6CF0"
+                        },
+                        {
+                          "type": "text",
+                          "id": "lvViG",
+                          "name": "Lago index for the knowl",
+                          "fill": "$fg",
+                          "textGrowth": "fixed-width",
+                          "width": "fill_container",
+                          "content": "Lago index for the knowledge graph",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "w69BTV",
+                      "name": "link",
+                      "gap": 4,
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "LZZRE",
+                          "name": "Open the digest · next M",
+                          "fill": "#7C6CF0",
+                          "content": "Open the digest · next Monday 09:00",
+                          "lineHeight": 1.5,
+                          "fontFamily": "$font-ui",
+                          "fontSize": 12,
+                          "fontWeight": "500"
+                        },
+                        {
+                          "type": "icon",
+                          "id": "KXCiJ",
+                          "name": "i arrow-right",
+                          "width": 12,
+                          "height": 12,
+                          "icon": "arrow-right",
+                          "library": "lucide",
+                          "fill": "#7C6CF0"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
                   "id": "tv0Qt",
                   "name": "Section Today",
                   "width": "fill_container",
@@ -12748,7 +13467,7 @@
       "type": "frame",
       "id": "oWMTo",
       "x": 1700,
-      "y": 3877,
+      "y": 4424,
       "name": "S2–S4 · Briefings: one per kind, each with its own verbs",
       "theme": {
         "mode": "light"
@@ -14380,7 +15099,7 @@
       "type": "frame",
       "id": "qzneN",
       "x": 1700,
-      "y": 4929,
+      "y": 5476,
       "name": "S5 · Decisions: one at a time, and where each answer went",
       "theme": {
         "mode": "light"
@@ -16061,7 +16780,7 @@
       "type": "frame",
       "id": "ukSou",
       "x": 1700,
-      "y": 6027,
+      "y": 6574,
       "name": "S6 · Work: board · list · history in one destination",
       "theme": {
         "mode": "light"
@@ -18163,7 +18882,7 @@
       "type": "frame",
       "id": "f6IibL",
       "x": 1700,
-      "y": 6974,
+      "y": 7521,
       "name": "S7 · Health: fleet ticks + schedules + loops + sessions (was Fleet, Timeline, Loops)",
       "theme": {
         "mode": "light"
@@ -24495,7 +25214,7 @@
       "type": "frame",
       "id": "DcOYb",
       "x": 1700,
-      "y": 8505,
+      "y": 9052,
       "name": "S8 · Initiatives: intent, driver, review date, and what hangs off each",
       "theme": {
         "mode": "light"
@@ -26407,7 +27126,7 @@
       "type": "frame",
       "id": "zijFm",
       "x": 1700,
-      "y": 9590,
+      "y": 10137,
       "name": "S9 · New work: the composer, as a floating sheet",
       "theme": {
         "mode": "light"
@@ -27239,7 +27958,7 @@
       "type": "frame",
       "id": "hRa0W",
       "x": 1700,
-      "y": 10610,
+      "y": 11157,
       "name": "S10 · Phone: the push and the same list, light and dark",
       "theme": {
         "mode": "light"
@@ -29251,10 +29970,10 @@
           "type": "text",
           "id": "zDwka",
           "name": "A0 · BRO-2980 · supersed",
-          "fill": "$fg-muted",
+          "fill": "$ok",
           "textGrowth": "fixed-width",
           "width": "fill_container",
-          "content": "A0 · BRO-2980 · supersedes the Review kind",
+          "content": "A0 · BRO-2980 · adopted 2026-10-09 (A1): the reference model, with C1 and B1",
           "lineHeight": 1.5,
           "fontFamily": "$font-ui",
           "fontSize": 12
