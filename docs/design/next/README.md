@@ -28,6 +28,9 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | H1 | `h1-interim-feed-desktop.png` | Interim (BRO-3005): the Feed inside Paseo on the desktop. broomva tokens, Apple behaviors (springs, an Ask that grows from its card, an Undo capsule), frost only on floating chrome. Every element is tagged with the API that builds it |
 | H2 | `h2-interim-phone.png` | Interim on iPhone: the real push ("Agent finished", body ≤220, no buttons), then the gate card in the session, then Paseo's own 65% sheet |
 | H3 | `h3-interim-feasibility.png` | What a Paseo plugin can truly build: 19 elements, YES / PARTIAL / NO on desktop and iPhone, what waits on Paseo, the build order |
+| K0 | `k0-push-to-card-flow.png` | Cards in sessions (BRO-3008): from a notification to the asking session, to the card at its tail (one tap, 10 s undo, receipt), to Open in Maestro |
+| K1 | `k1-session-cards.png` | Every Maestro card kind (approval, ask, owner step, finished, health, inbox digest) and state (pending, undo, receipt, resolved elsewhere), plus how a card behaves |
+| K2 | `k2-session-page.png` | The Maestro page for one session: identity, holds (the same card), work, history, controls; opened with openScreen params |
 | N0 | `n0-model.png` | Three nouns (work, ask, notice), one list, one verb each; six rules; what it retires |
 | N1 | `n1-wiring.png` | Producers, verbs on maestro.sock, one store per kind, needs.list, views, the return path |
 | N3 | `n3-lifecycles.png` | The states each kind passes through; the 10-09 Parser drift card, today vs next |
@@ -68,4 +71,4 @@ bun scripts/inventory-check.ts --summary
 
 Code facts come from four read-only passes over maestro-paseo 3f8d9d8: interfaces, stores and loops, the client, and smells. Each cites file:line.
 
-`paseo-plugin-capabilities.md` is the audit behind H3: what the Paseo 0.11.1 host lets a plugin render, with file and bundle-offset evidence. Read it before designing anything that floats, blurs, pushes or animates.
+`paseo-feature-request.md` was filed upstream as getpaseo/paseo#6472 on 2026-10-09. `paseo-plugin-capabilities.md` is the audit behind H3: what the Paseo 0.11.1 host lets a plugin render, with file and bundle-offset evidence. Read it before designing anything that floats, blurs, pushes or animates.

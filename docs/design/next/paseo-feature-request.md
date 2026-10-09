@@ -20,7 +20,9 @@
 - Action presses come back through `server.onNotificationAction(handler)` with `{ notificationId, actionId, text?, responder }`.
 - Apply the same presence policy as attention, but don't skip delegated agents; the plugin decides what is worth a push.
 
-**Ask 4: plugin deep links.** `paseo://h/<serverId>/plugin/<pluginId>/<route>`, also usable as a push `target`, so a tap lands on the exact item rather than on a session.
+**Ask 4: deep links that land on the exact item.**
+- Plugin screens: `paseo://h/<serverId>/plugin/<pluginId>/<route>`, also usable as a push `target`.
+- Timeline items: let a push target `{ kind: "agent", agentId, timelineItemId }`, so a tap opens the session scrolled to a plugin's timeline card. Our plugin renders its approval and question cards inside the asking session with `addTimelineRenderer`. Landing on that card turns "tap, find, act" into "tap, act" with today's card UI.
 
 **Ask 5 (small):** expose the push-token lease state. A 48 h lease renewed only by opening the app can silently stop phone pushes. Either show "push will stop in N h" in the app, or renew from background fetch.
 
@@ -34,14 +36,9 @@
 
 **Related:** #2622 (iOS background suspension suppresses pushes inside the 180 s presence window), #4841 (stale presence suppresses permission banners), #306 (quick permission approvals from the watch, closed). Ask 1 would also give #306's use case a lock-screen path.
 
-## Also needed by the interim design (BRO-3005)
-
-These come from a read of the 0.11.1 host. Evidence: `paseo-plugin-capabilities.md` in the same folder.
-
-- **Deep links to plugin screens.** Today `paseo://` reaches only agents, so a push cannot open the screen where the decision lives.
-- **Sheet options for `Modal`.** Detents, size, and presentation from a source rect, so a sheet can grow from the card that opened it.
-- **A shortcut registration API.** Plugins currently listen for `keydown` while focused, and only on web.
-- **Haptics** for plugins. Paseo already ships expo-haptics.
+**Smaller asks for plugin authors** (from reading the 0.11.1 host):
+- **`Modal` sheet options:** detents, size, and presentation from a source rect, so a sheet can grow from the card that opened it.
+- **Shortcut registration.** Plugins currently listen for `keydown` while focused, and only on web.
+- **Haptics.** The app already ships expo-haptics.
 - **An appearance flag** (light or dark) in the plugin theme, next to the 11 colors.
-- **Native blur.** Electron vibrancy or a blur view for plugins, if translucent chrome is ever wanted.
 
