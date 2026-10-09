@@ -19,7 +19,7 @@
 
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, posix } from "node:path";
+import { dirname, isAbsolute, join, posix } from "node:path";
 import { parseDocument } from "yaml";
 import {
   DESIRED,
@@ -93,6 +93,11 @@ export interface LedgerRead {
   errors: LedgerError[];
   /** The commit read; null for a folder, or when it could not be read. */
   sha: string | null;
+  /**
+   * Labels of extra repos with no read at all yet: what they would claim is unknown, so no unclaimed observation
+   * is judged unregistered this pass (server/loops.ts judgedRows). A repo that read before is judged on its last read.
+   */
+  unread?: string[];
 }
 
 const str = (value: unknown): string | null => (typeof value === "string" ? value : null);
@@ -367,8 +372,8 @@ export function parseLoopRepos(text: string): { repos: LoopRepo[]; errors: strin
       errors.push(`${at}: label ${label} is named twice`);
       continue;
     }
-    if (!repo) {
-      errors.push(`${at}: repo must be a path`);
+    if (!repo || !isAbsolute(expandHome(repo))) {
+      errors.push(`${at}: repo must be an absolute path, or ~/...`);
       continue;
     }
     if (!ref || !TRACKING_REF.test(ref)) {
@@ -395,18 +400,42 @@ export function multiLedger(
   options: {
     reposPath: string | null;
     source?: (one: LoopRepo) => LedgerSource;
+    /** The file's text; null only when there is no file. Anything else unreadable throws, and is said. */
     readText?: (path: string) => Promise<string | null>;
+    log?: (message: string) => void;
   },
 ): LedgerSource {
   const make =
-    options.source ?? ((one: LoopRepo) => gitLedger(one.repo, { fetch: true, ref: one.ref, owns: one.owns }));
-  const readText = options.readText ?? ((path: string) => readFile(path, "utf8").catch(() => null));
+    options.source ??
+    ((one: LoopRepo) => gitLedger(one.repo, { fetch: true, ref: one.ref, owns: one.owns, log: options.log }));
+  const readText =
+    options.readText ??
+    ((path: string) =>
+      readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      }));
   const sources = new Map<string, LedgerSource>();
+  /** Each source's last good read: a transient failure judges on it, never on nothing (no false unregistered). */
+  const lastGood = new Map<string, LedgerRead>();
   return {
     where: primary.where,
     async read() {
-      const text = options.reposPath ? await readText(options.reposPath) : null;
-      const named = text === null ? { repos: [], errors: [] } : parseLoopRepos(text);
+      let named: { repos: LoopRepo[]; errors: string[] } = { repos: [], errors: [] };
+      try {
+        const text = options.reposPath ? await readText(options.reposPath) : null;
+        if (text !== null) named = parseLoopRepos(text);
+      } catch (error) {
+        named = { repos: [], errors: [`could not be read: ${(error as Error).message}`] };
+      }
+      // A source no longer named is dropped, with its fetch clock and its last read.
+      const keys = new Set(named.repos.map((one) => JSON.stringify(one)));
+      for (const key of [...sources.keys()]) {
+        if (!keys.has(key)) {
+          sources.delete(key);
+          lastGood.delete(key);
+        }
+      }
       const [main, ...extra] = await Promise.all([
         primary.read(),
         ...named.repos.map(async (one) => {
@@ -417,9 +446,11 @@ export function multiLedger(
             sources.set(key, source);
           }
           try {
-            return { one, read: await source.read() };
+            const read = await source.read();
+            lastGood.set(key, read);
+            return { one, read, error: null };
           } catch (error) {
-            return { one, read: null, error: (error as Error).message };
+            return { one, read: lastGood.get(key) ?? null, error: (error as Error).message };
           }
         }),
       ]);
@@ -428,10 +459,18 @@ export function multiLedger(
         ...named.errors.map((error) => ({ file: options.reposPath ?? "loop-repos.json", error })),
       ];
       let intents = [...main.intents];
+      const unread: string[] = [];
       const key = (row: LoopIntent) => `${row.substrate.kind} ${row.substrate.ref}`;
-      for (const { one, read, error } of extra as { one: LoopRepo; read: LedgerRead | null; error?: string }[]) {
+      for (const { one, read, error } of extra) {
+        if (error !== null) {
+          const stands = read ? `; its last read (${read.sha?.slice(0, 9) ?? "a folder"}) stands in` : "";
+          errors.push({
+            file: `${one.label}:${LEDGER_DIR}`,
+            error: `could not be read at ${one.ref}: ${error}${stands}`,
+          });
+        }
         if (!read) {
-          errors.push({ file: `${one.label}:${LEDGER_DIR}`, error: `could not be read at ${one.ref}: ${error}` });
+          unread.push(one.label);
           continue;
         }
         errors.push(...read.errors.map((e) => ({ ...e, file: `${one.label}:${e.file}` })));
@@ -455,7 +494,7 @@ export function multiLedger(
           intents = [...intents.filter((other) => !mirrors.includes(other)), labelled];
         }
       }
-      return { intents, errors, sha: main.sha };
+      return { intents, errors, sha: main.sha, ...(unread.length > 0 ? { unread } : {}) };
     },
   };
 }

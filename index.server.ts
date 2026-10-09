@@ -269,7 +269,7 @@ export default function contribute(host: PluginServerContext) {
   const loops = new Loops({
     // Plus every repo loop-repos.json names, each at its own ref (BRO-2942): one orchestrator per owning repo.
     ledger: control.repo
-      ? multiLedger(gitLedger(control.repo, { fetch: true, log }), { reposPath: loopReposPath() })
+      ? multiLedger(gitLedger(control.repo, { fetch: true, log }), { reposPath: loopReposPath(), log })
       : null,
     timeline,
     schedulesDir: paseoSchedulesDir(),

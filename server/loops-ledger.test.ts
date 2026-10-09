@@ -388,4 +388,79 @@ describe("several repos (BRO-2942)", () => {
     expect(read.intents.length).toBeGreaterThanOrEqual(23);
     await expect(gitLedger(repo).read()).rejects.toThrow();
   });
+
+  test("a repo that fails stands on its last good read; one never read is reported unread", async () => {
+    let fail = false;
+    const ledger = multiLedger(fixed([row("a")]), {
+      reposPath: "/r.json",
+      readText: repos([{ label: "two", repo: "/two" }]),
+      source: () =>
+        ({
+          where: { repo: "/two", path: "" },
+          read: async () => {
+            if (fail) throw new Error("lock");
+            return { intents: [row("b")], errors: [], sha: "b".repeat(40) };
+          },
+        }) as LedgerSource,
+    });
+    expect((await ledger.read()).unread).toBeUndefined();
+    fail = true;
+    const after = await ledger.read();
+    expect(after.intents.map((one) => one.id)).toEqual(["a", "b"]);
+    expect(after.unread).toBeUndefined();
+    expect(after.errors[0]?.error).toBe("could not be read at origin/main: lock; its last read (bbbbbbbbb) stands in");
+    const never = await multiLedger(fixed([row("a")]), {
+      reposPath: "/r.json",
+      readText: repos([{ label: "down", repo: "/down" }]),
+      source: () =>
+        ({ where: { repo: "/down", path: "" }, read: () => Promise.reject(new Error("x")) }) as LedgerSource,
+    }).read();
+    expect(never.unread).toEqual(["down"]);
+    expect(never.intents.map((one) => one.id)).toEqual(["a"]);
+  });
+
+  test("a repo dropped from the file is forgotten: re-added, it is made afresh", async () => {
+    let list: unknown[] = [{ label: "two", repo: "/two" }];
+    let made = 0;
+    const ledger = multiLedger(fixed([]), {
+      reposPath: "/r.json",
+      readText: async () => JSON.stringify({ repos: list }),
+      source: () => {
+        made += 1;
+        return fixed([row("b")]);
+      },
+    });
+    await ledger.read();
+    list = [];
+    expect((await ledger.read()).intents).toEqual([]);
+    list = [{ label: "two", repo: "/two" }];
+    await ledger.read();
+    expect(made).toBe(2);
+  });
+
+  test("the repos file: absent is none; present but unreadable is said", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "loop-repos-"));
+    roots.push(dir);
+    expect((await multiLedger(fixed([]), { reposPath: join(dir, "none.json") }).read()).errors).toEqual([]);
+    const said = await multiLedger(fixed([]), { reposPath: dir }).read(); // a directory: EISDIR
+    expect(said.errors[0]).toMatchObject({ file: dir, error: expect.stringContaining("could not be read") });
+    expect(parseLoopRepos('{"repos": [{"label": "a", "repo": "rel/path"}]}').errors[0]).toContain("absolute path");
+  });
+
+  test("only the owner's row in the owned scope replaces a mirror", async () => {
+    const mirror = row("sri-tick", {
+      scope: "sri",
+      desired: null,
+      owner: "sri-orchestrator",
+      substrate: { kind: "paseo-heartbeat", ref: "name:sri-tick" },
+    });
+    const read = await multiLedger(fixed([mirror]), {
+      reposPath: "/r.json",
+      readText: repos([{ label: "sri", repo: "/s", owns: "sri" }]),
+      // the owner repo's broomva-scope row with the mirror's id: a clash, not a replacement
+      source: () => fixed([row("sri-tick", { substrate: { kind: "launchd", ref: "com.x.other" } })]),
+    }).read();
+    expect(read.intents.map((one) => one.file)).toEqual([`${LEDGER_DIR}/sri-tick.yaml`]);
+    expect(read.errors[0]?.error).toContain("already has the id sri-tick");
+  });
 });
