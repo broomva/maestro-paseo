@@ -33,11 +33,18 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | K2 | `k2-session-page.png` | The Maestro page for one session: identity, holds (the same card), work, history, controls; opened with openScreen params |
 | R0 | `r0-paseo-real-frame.png` | Paseo's real frame, measured from the running app (1920 × 986): Paseo owns the 440 px sidebar (one Maestro row) and the 35 px header; Maestro owns 1480 × 951, of which today's Feed uses a centred 712 px column |
 | S1r | `s1r-s1-in-real-frame.png` | S1 unchanged inside the real frame: it fits the 1480 px area; its big title repeats Paseo's header |
-| J0 | `j0-sweet-spot-compared.png` | Sweet spot (BRO-3012): S1, H1 and J1–J4 compared on information, dashboard feel, Apple feel, acting without opening, evidence, phone and build cost; recommends J4 |
-| J1 | `j1-dashboard-apple-touch.png` | S1's dashboard (stream + rail, full cards) inside Paseo's real frame (R0), with Apple touches only: a frosted top header (segmented tabs, workspace menu shown open, presence, search, New work), an Ask that answers in place, an undo capsule |
-| J2 | `j2-glance-strip.png` | J1 plus four glance tiles (Needs you, Running, Handled today, Unsupervised); holds stay full cards, watched kinds become two-line rows and grouped lists |
-| J3 | `j3-list-inspector.png` | Mail-style: every item a two-line row with its safe verb inline, the selected item in an inspector (evidence tiles, what happens after you act, session, history, frosted action bar) |
-| J4 | `j4-recommended.png` | Recommended: J2's home with J3's inspector opened from a card, in place of the rail |
+| V0 | `v0-variations-compared.png` | Variations (BRO-3012): S1, H1 and V1–V4 compared on information, dashboard feel, Apple feel, acting without opening, evidence, phone and build cost |
+| V1 | `v1-dashboard-apple-touch.png` | S1's dashboard in Paseo's real frame with Apple touches: frosted top header (segmented tabs, workspace menu shown open, presence, search, New work), an Ask answered in place, an undo capsule |
+| V2 | `v2-glance-strip.png` | V1 plus four glance tiles; holds stay full cards, watched kinds become two-line rows and grouped lists |
+| V3 | `v3-list-inspector.png` | Mail-style list with safe verbs inline and an inspector for the selected item |
+| J1 | `j1-feed-home.png` | **Chosen** (was V4): V2's home with V3's inspector opened from a card. The J series (BRO-3024) redraws S2–S9 in this language |
+| J2–J4 | `j2-j4-briefings.png` | S2–S4's briefings as J1's inspector, one per kind: approval, ask (options, default countdown, words), notice (log, closes when, no Approve) |
+| J5 | `j5-decisions.png` | Decisions one at a time: sort and ledger filter, four answer tiles (Waiting to land as a warn tile with a verb), the decision at full width, Up next, where your last answers went |
+| J6 | `j6-work.png` | Work as five trays (Queued, Running, Standing, Needs you, Done); Running cards wear the Undertow; Done shows who closed it |
+| J7 | `j7-health.png` | Health: verdict line, four tiles (tick grid, sessions bar, schedules, the conductor and its lanes), notices with what closes each, per-schedule 24 h bars, sessions |
+| J8 | `j8-initiatives.png` | Initiatives: lateness loudest, driver as a standing pulse, the skene review in the inspector with three answers |
+| J9 | `j9-new-work.png` | New work grows from its button over a dimmed Feed; a Who starts it row (the lane, A8) |
+| JE | `je-evaluation.png` | The nine rules of the J language (rule 9: Undertow marks Running only), a per-screen before and after, and what is still yours to decide |
 | N0 | `n0-model.png` | Three nouns (work, ask, notice), one list, one verb each; six rules; what it retires |
 | N1 | `n1-wiring.png` | Producers, verbs on maestro.sock, one store per kind, needs.list, views, the return path |
 | N3 | `n3-lifecycles.png` | The states each kind passes through; the 10-09 Parser drift card, today vs next |
