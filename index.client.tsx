@@ -2,7 +2,7 @@ import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { createWorkPanel } from "./client/agent-panel";
 import { createPillContent, PILL_ICONS } from "./client/composer-pill";
 import { createGateCard } from "./client/gate-card";
-import { opener, startIntegrations } from "./client/integrations";
+import { MAESTRO_SCREEN, opener, startIntegrations } from "./client/integrations";
 import { requestIntent } from "./client/intent";
 import { MaestroSurface } from "./client/plane";
 import { MaestroSettings } from "./client/settings";
@@ -15,8 +15,10 @@ export default function contribute(client: PluginClientContext) {
   client.addTheme(BROOMVA_LIGHT);
   client.addTheme(BROOMVA_DARK);
 
-  client.addSurface("maestro", MaestroSurface);
-  client.addSidebarItem({ id: "maestro", title: "Maestro", icon: "LayoutDashboard", surface: "maestro" });
+  client.addScreen({ id: MAESTRO_SCREEN, title: "Maestro", Component: MaestroSurface });
+  // Kept on the 0.8 call on purpose: the host routes a legacy sidebar item to /sidebar/<id> and heads the
+  // screen with this item's title and icon. addSidebarHeaderItem routes to /surface/<id> and drops the icon.
+  client.addSidebarItem({ id: "maestro", title: "Maestro", icon: "LayoutDashboard", surface: MAESTRO_SCREEN });
   client.addSettingsScreen({ id: "maestro", title: "Maestro", icon: "LayoutDashboard", Component: MaestroSettings });
   // The loop's panel opens Settings, which only this context can do, and only on a host that has the call (client/settings-link.ts).
   const unlinkSettings = linkSettingsOf(client, "maestro");
@@ -38,7 +40,7 @@ export default function contribute(client: PluginClientContext) {
     icon: "LayoutDashboard",
     keywords: ["work", "gate", "needs you"],
     context: "global",
-    onSelect: ({ openSurface }) => openSurface("maestro"),
+    onSelect: ({ openScreen }) => openScreen({ screenId: MAESTRO_SCREEN }),
   });
   client.addCommandCenterItem({
     id: "new-work",
@@ -46,9 +48,9 @@ export default function contribute(client: PluginClientContext) {
     icon: "Plus",
     keywords: ["work", "dispatch", "brief", "task"],
     context: "global",
-    onSelect: ({ openSurface }) => {
+    onSelect: ({ openScreen }) => {
       requestIntent({ kind: "new" });
-      openSurface("maestro");
+      openScreen({ screenId: MAESTRO_SCREEN });
     },
   });
   client.addCommandCenterItem({
@@ -57,9 +59,9 @@ export default function contribute(client: PluginClientContext) {
     icon: "Inbox",
     keywords: ["gate", "review", "approve", "needs you"],
     context: "global",
-    onSelect: ({ openSurface }) => {
+    onSelect: ({ openScreen }) => {
       requestIntent({ kind: "filter", group: "review" });
-      openSurface("maestro");
+      openScreen({ screenId: MAESTRO_SCREEN });
     },
   });
   client.addCommandCenterItem({

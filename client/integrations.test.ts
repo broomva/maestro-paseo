@@ -82,7 +82,7 @@ function fakeClient() {
       if (state.attention instanceof Error) throw state.attention;
       return state.attention;
     },
-    openSurface: (id: string) => opened.push(id),
+    openScreen: ({ screenId }: { screenId: string }) => opened.push(screenId),
     addHeaderButton: (contribution: Omit<Registered, "patches" | "removed">) => register(headers, contribution),
     addComposerPill: (contribution: Omit<Registered, "patches" | "removed">) => register(pills, contribution),
   } as unknown as IntegrationClient;

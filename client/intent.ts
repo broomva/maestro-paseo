@@ -1,5 +1,5 @@
 // Navigation intents: how a command, a header button or a timeline card asks
-// the Maestro surface to open at something. openSurface() takes no argument,
+// the Maestro surface to open at something. openScreen() is called without params,
 // so the caller leaves the intent here and then opens the surface; the surface
 // takes it when it mounts, or at once when it is already open.
 //
@@ -35,7 +35,7 @@ let listeners: Array<() => void> = [];
 /** Leaves an intent for the surface. A later request replaces an untaken one. */
 export function requestIntent(intent: MaestroIntent, now: number = Date.now()): void {
   pending = { intent, at: now };
-  // The newest surface hears it first: that is the one openSurface() just showed.
+  // The newest surface hears it first: that is the one openScreen() just showed.
   for (const listener of [...listeners].reverse()) listener();
 }
 
