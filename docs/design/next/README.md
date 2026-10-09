@@ -21,6 +21,10 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | I0 | `i0-inventory.png` | The inventory: 31 features, 25 pages, 24 components, 66 interfaces, 23 stores, 10 loops, each keep, change, new or retire against today's code (BRO-2994) |
 | I1 | `i1-articulation.png` | How it articulates: the layers, who calls whom (callers × handling layer), three traces (allow a merge, answer an ask, start new work), the rules the checker enforces |
 | I2 | `i2-findings.png` | 27 findings against the inventory by severity, each with its ticket (BRO-2990, 2995–3002), and the build order they suggest |
+| G0 | `g0-two-languages.png` | Liquid Glass alternative (BRO-3003): S1 and G1 side by side; what changes (material, color, type, shape, navigation, push); how it moves (springs from /apple-design); what it buys and costs; a middle path |
+| G1 | `g1-glass-feed-mac.png` | Liquid Glass: the Feed on the Mac, with a glass sidebar (lanes, presence), toolbar and inspector over solid cards |
+| G2 | `g2-glass-iphone.png` | Liquid Glass on iPhone: a lock-screen push with Allow, Deny and Open; the Feed with a floating tab bar; an Ask as a sheet |
+| G3 | `g3-glass-settings-lanes.png` | Liquid Glass: Settings › Lanes, with the conductor, each lane and the fleet as grouped forms |
 | N0 | `n0-model.png` | Three nouns (work, ask, notice), one list, one verb each; six rules; what it retires |
 | N1 | `n1-wiring.png` | Producers, verbs on maestro.sock, one store per kind, needs.list, views, the return path |
 | N3 | `n3-lifecycles.png` | The states each kind passes through; the 10-09 Parser drift card, today vs next |
