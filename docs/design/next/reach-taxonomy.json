@@ -1,1056 +1,837 @@
 {
- "generated": "2026-10-09T15:25Z",
- "ticket": "BRO-2980",
- "method": {
-  "transcripts": "top-level ~/.claude/projects/*/*.jsonl modified in last 30 days, all files streamed (no sampling); subagent files excluded",
-  "window": [
-   "2026-08-26T01:16",
-   "2026-10-09T15:21"
-  ],
-  "sessions_scanned": 1521,
-  "sessions_by_origin": {
-   "paseo-owner": 293,
-   "paseo-auto": 221,
-   "nonpaseo": 164,
-   "automation": 359,
-   "synthetic": 484
-  },
-  "excluded": "synthetic (/tmp, /var/folders eval/probe cwds) and automation (CI runner, headless scorer/probe one-shots)",
-  "owner_prompt_rule": "human-origin user record, not task-notification/peer/scheduled/meta, not matching a prompt sent by another agent via paseo send_agent_prompt/create_agent",
-  "stops_total": 11232,
-  "stops_next": {
-   "human": 4640,
-   "stophook": 3,
-   "interrupt": 96,
-   "agent-prompt": 362,
-   "notification": 3240,
-   "eof": 582,
-   "peer": 506,
-   "scheduled": 1803
-  },
-  "reaching_stops": 3079,
-  "reaching_share": 0.2741,
-  "owner_sessions": 580,
-  "owner_sessions_with_reach": 383,
-  "bridged_conversation_logs": {
-   "recent_logs_with_session_id": 576,
-   "not_in_local_transcripts": 339,
-   "of_which_vps_paths": 322
-  },
-  "ledgers": {
-   "workspace": 55,
-   "fleet-reconcile": 31,
-   "sri": 8
-  },
-  "maestro": {
-   "work_items": 109,
-   "window": [
-    "2026-09-29T14:56",
-    "2026-10-09T15:13"
-   ],
-   "tool_permission": {
-    "resolved": 20,
-    "unresolved": 5,
-    "median_latency_min": 0.5
-   },
-   "auq_via_permission": {
-    "resolved": 44,
-    "unresolved": 0,
-    "median_latency_min": 5.5
-   },
-   "gate_verdicts": {
-    "approve": 21,
-    "block": 4,
-    "revise": 1
-   },
-   "state_to_blocked": 26,
-   "loop_flags": {
-    "quiet": 8,
-    "failed": 1,
-    "yours": 2
-   },
-   "receipts": {
-    "ask.answered": 181,
-    "routing.began": 1,
-    "ask.routed": 35
-   },
-   "receipts_window": [
-    "2026-10-05",
-    "2026-10-09"
-   ]
-  },
-  "paseo_agents": {
-   "total": 575,
-   "attention": {
-    "False/None": 409,
-    "True/finished": 165,
-    "True/error": 1
-   },
-   "modes": {
-    "bypassPermissions": 500,
-    "default": 25,
-    "full-access": 7,
-    "auto": 35,
-    "null": 6,
-    "auto-review": 1,
-    "acceptEdits": 1
-   }
-  },
-  "limits": [
-   "prose clusters are regex classifiers; spot checks found false positives in continue-offer, decision-section and owner-step (status lines, mixed lists)",
-   "latency = last assistant message to next owner prompt; it measures agent idle time, not owner effort",
-   "owner-vs-agent prompt attribution is heuristic; coordinator prompts injected outside paseo MCP tools are counted as owner",
-   "ctx board and Maestro cover ~10 days (from 2026-09-29), transcripts ~44 days of activity in files touched in the last 30",
-   "arc-continuation Stop-hook blocks are not recorded in transcripts; arc state files are the only evidence"
-  ]
- },
- "owner_side": {
-  "owner_prompts": 5604,
-  "sessions": 580,
-  "noninterrupt": 5395,
-  "interrupts": 209,
-  "interrupt_sessions": 99,
-  "bare_approvals": 60,
-  "bare_approval_share": 0.0111,
-  "bare_examples": [
-   [
-    "go",
-    19
-   ],
-   [
-    "continue",
-    14
-   ],
-   [
-    "do it",
-    11
-   ],
-   [
-    "yeah",
-    4
-   ],
-   [
-    "ok",
-    4
-   ],
-   [
-    "merge it",
-    3
-   ],
-   [
-    "2",
-    2
-   ],
-   [
-    "yes, merge",
-    1
-   ]
-  ],
-  "approval_led_prompts": 228,
-  "approval_led_share": 0.0423,
-  "approval_led_after_reach": 143,
-  "reaches_answered": 1649,
-  "nudges": 156,
-  "nudge_share": 0.0289,
-  "sessions_with_nudge": 114,
-  "continuation_slash": 285,
-  "slash_commands": [
-   [
-    "/resume",
-    222
-   ],
-   [
-    "/checkit",
-    131
-   ],
-   [
-    "/arc",
-    48
-   ],
-   [
-    "/mcp",
-    46
-   ],
-   [
-    "/compact",
-    43
-   ],
-   [
-    "/p9",
-    16
-   ],
-   [
-    "/model",
-    13
-   ],
-   [
-    "/loop",
-    10
-   ],
-   [
-    "/login",
-    9
-   ],
-   [
-    "/handoff",
-    6
-   ],
-   [
-    "/project-pulse",
-    6
-   ],
-   [
-    "/autonomous",
-    4
-   ],
-   [
-    "/dogfood-local",
-    3
-   ],
-   [
-    "/autonomous-maintainer",
-    3
-   ],
-   [
-    "/snapshot",
-    2
-   ]
-  ],
-  "nudge_examples": [
-   "continue please",
-   "continue please",
-   "is it all merged? arc finished?",
-   "Is it merged? Did you update the paseo plugin?",
-   "Is the arc finished? Is it all merged and updated?",
-   "Please make sure the whole arc is finished fully and its all ready merged"
-  ]
- },
- "clusters": [
-  {
-   "name": "AskUserQuestion (structured question)",
-   "channel": "AskUserQuestion tool -> Paseo permission sheet / Maestro",
-   "trigger": "agent wants a choice, approval or owner action and uses the native picker",
-   "kind": "Ask (481 calls) / Approval (247) / Owner step (86), by question text",
-   "count": 814,
-   "questions": 1341,
-   "sessions": 102,
-   "blocked_share": 1.0,
-   "median_latency_min": 8.2,
-   "p25_latency_min": 2.2,
-   "p75_latency_min": 27.1,
-   "calls_with_recommended_option": 750,
-   "answers": {
-    "recommended": 838,
-    "other-offered": 355,
-    "free-text": 84,
-    "unparsed": 19,
-    "offered+note": 24
-   },
-   "answer_recommended_share": 0.644,
-   "by_kind": {
-    "choice": 481,
-    "approval": 247,
-    "owner-step": 86
-   },
-   "by_kind_answers": {
-    "choice": {
-     "recommended": 400,
-     "other-offered": 207,
-     "free-text": 73,
-     "offered+note": 15
+  "generated": "2026-10-09T15:25Z",
+  "ticket": "BRO-2980",
+  "method": {
+    "transcripts": "top-level ~/.claude/projects/*/*.jsonl modified in last 30 days, all files streamed (no sampling); subagent files excluded",
+    "window": ["2026-08-26T01:16", "2026-10-09T15:21"],
+    "sessions_scanned": 1521,
+    "sessions_by_origin": {
+      "paseo-owner": 293,
+      "paseo-auto": 221,
+      "nonpaseo": 164,
+      "automation": 359,
+      "synthetic": 484
     },
-    "approval": {
-     "recommended": 310,
-     "other-offered": 129,
-     "offered+note": 9,
-     "free-text": 4
+    "excluded": "synthetic (/tmp, /var/folders eval/probe cwds) and automation (CI runner, headless scorer/probe one-shots)",
+    "owner_prompt_rule": "human-origin user record, not task-notification/peer/scheduled/meta, not matching a prompt sent by another agent via paseo send_agent_prompt/create_agent",
+    "stops_total": 11232,
+    "stops_next": {
+      "human": 4640,
+      "stophook": 3,
+      "interrupt": 96,
+      "agent-prompt": 362,
+      "notification": 3240,
+      "eof": 582,
+      "peer": 506,
+      "scheduled": 1803
     },
-    "owner-step": {
-     "recommended": 128,
-     "other-offered": 19,
-     "free-text": 7
+    "reaching_stops": 3079,
+    "reaching_share": 0.2741,
+    "owner_sessions": 580,
+    "owner_sessions_with_reach": 383,
+    "bridged_conversation_logs": {
+      "recent_logs_with_session_id": 576,
+      "not_in_local_transcripts": 339,
+      "of_which_vps_paths": 322
+    },
+    "ledgers": {
+      "workspace": 55,
+      "fleet-reconcile": 31,
+      "sri": 8
+    },
+    "maestro": {
+      "work_items": 109,
+      "window": ["2026-09-29T14:56", "2026-10-09T15:13"],
+      "tool_permission": {
+        "resolved": 20,
+        "unresolved": 5,
+        "median_latency_min": 0.5
+      },
+      "auq_via_permission": {
+        "resolved": 44,
+        "unresolved": 0,
+        "median_latency_min": 5.5
+      },
+      "gate_verdicts": {
+        "approve": 21,
+        "block": 4,
+        "revise": 1
+      },
+      "state_to_blocked": 26,
+      "loop_flags": {
+        "quiet": 8,
+        "failed": 1,
+        "yours": 2
+      },
+      "receipts": {
+        "ask.answered": 181,
+        "routing.began": 1,
+        "ask.routed": 35
+      },
+      "receipts_window": ["2026-10-05", "2026-10-09"]
+    },
+    "paseo_agents": {
+      "total": 575,
+      "attention": {
+        "False/None": 409,
+        "True/finished": 165,
+        "True/error": 1
+      },
+      "modes": {
+        "bypassPermissions": 500,
+        "default": 25,
+        "full-access": 7,
+        "auto": 35,
+        "null": 6,
+        "auto-review": 1,
+        "acceptEdits": 1
+      }
+    },
+    "limits": [
+      "prose clusters are regex classifiers; spot checks found false positives in continue-offer, decision-section and owner-step (status lines, mixed lists)",
+      "latency = last assistant message to next owner prompt; it measures agent idle time, not owner effort",
+      "owner-vs-agent prompt attribution is heuristic; coordinator prompts injected outside paseo MCP tools are counted as owner",
+      "ctx board and Maestro cover ~10 days (from 2026-09-29), transcripts ~44 days of activity in files touched in the last 30",
+      "arc-continuation Stop-hook blocks are not recorded in transcripts; arc state files are the only evidence"
+    ]
+  },
+  "owner_side": {
+    "owner_prompts": 5604,
+    "sessions": 580,
+    "noninterrupt": 5395,
+    "interrupts": 209,
+    "interrupt_sessions": 99,
+    "bare_approvals": 60,
+    "bare_approval_share": 0.0111,
+    "bare_examples": [
+      ["go", 19],
+      ["continue", 14],
+      ["do it", 11],
+      ["yeah", 4],
+      ["ok", 4],
+      ["merge it", 3],
+      ["2", 2],
+      ["yes, merge", 1]
+    ],
+    "approval_led_prompts": 228,
+    "approval_led_share": 0.0423,
+    "approval_led_after_reach": 143,
+    "reaches_answered": 1649,
+    "nudges": 156,
+    "nudge_share": 0.0289,
+    "sessions_with_nudge": 114,
+    "continuation_slash": 285,
+    "slash_commands": [
+      ["/resume", 222],
+      ["/checkit", 131],
+      ["/arc", 48],
+      ["/mcp", 46],
+      ["/compact", 43],
+      ["/p9", 16],
+      ["/model", 13],
+      ["/loop", 10],
+      ["/login", 9],
+      ["/handoff", 6],
+      ["/project-pulse", 6],
+      ["/autonomous", 4],
+      ["/dogfood-local", 3],
+      ["/autonomous-maintainer", 3],
+      ["/snapshot", 2]
+    ],
+    "nudge_examples": [
+      "continue please",
+      "continue please",
+      "is it all merged? arc finished?",
+      "Is it merged? Did you update the paseo plugin?",
+      "Is the arc finished? Is it all merged and updated?",
+      "Please make sure the whole arc is finished fully and its all ready merged"
+    ]
+  },
+  "clusters": [
+    {
+      "name": "AskUserQuestion (structured question)",
+      "channel": "AskUserQuestion tool -> Paseo permission sheet / Maestro",
+      "trigger": "agent wants a choice, approval or owner action and uses the native picker",
+      "kind": "Ask (481 calls) / Approval (247) / Owner step (86), by question text",
+      "count": 814,
+      "questions": 1341,
+      "sessions": 102,
+      "blocked_share": 1.0,
+      "median_latency_min": 8.2,
+      "p25_latency_min": 2.2,
+      "p75_latency_min": 27.1,
+      "calls_with_recommended_option": 750,
+      "answers": {
+        "recommended": 838,
+        "other-offered": 355,
+        "free-text": 84,
+        "unparsed": 19,
+        "offered+note": 24
+      },
+      "answer_recommended_share": 0.644,
+      "by_kind": {
+        "choice": 481,
+        "approval": 247,
+        "owner-step": 86
+      },
+      "by_kind_answers": {
+        "choice": {
+          "recommended": 400,
+          "other-offered": 207,
+          "free-text": 73,
+          "offered+note": 15
+        },
+        "approval": {
+          "recommended": 310,
+          "other-offered": 129,
+          "offered+note": 9,
+          "free-text": 4
+        },
+        "owner-step": {
+          "recommended": 128,
+          "other-offered": 19,
+          "free-text": 7
+        }
+      },
+      "dismissed": 8,
+      "client_calls": 21,
+      "examples": [
+        "Pencil isn't running: Pen.app is installed but closed ... How should I proceed?",
+        "PR #662 hit a P20 stop (6->4). The session recommends splitting: merge the ... corrections now; hold ...",
+        "How far should I take the context evals?"
+      ],
+      "recommendation": "Keep as the Ask transport; when the recommended option is reversible, take it and post a Notice (owner picked it in 64% of parsed answers).",
+      "blocked_basis": "by construction (the tool waits for an answer)"
+    },
+    {
+      "name": "Tool permission prompt",
+      "channel": "Claude Code permission prompt (Paseo sheet, Maestro permission.asked)",
+      "trigger": "tool call not covered by mode/rules",
+      "kind": "Approval",
+      "count": 196,
+      "parts": {
+        "always_allow_clicked": 51,
+        "user_rejected": 70,
+        "user_cancelled": 75,
+        "maestro_tool_permission": {
+          "resolved": 20,
+          "unresolved": 5,
+          "median_latency_min": 0.5
+        }
+      },
+      "blocked_share": 1.0,
+      "median_latency_min": 0.5,
+      "examples": [
+        "Maestro: \"Run a command\": cat ~/.claude/projects/.../memory/<note>.md; ls ~/broomva/apps",
+        "rejected: Agent \"P20 post-structural r2 Stratum C\"",
+        "rejected: mcp__paseo__speak"
+      ],
+      "recommendation": "Rare because Paseo agents run bypassPermissions; the residue is read-only commands in default-mode sessions. Auto-allow reads; keep Approval for writes.",
+      "blocked_basis": "by construction"
+    },
+    {
+      "name": "Gate-handled tool calls",
+      "channel": "auto-mode classifier, settings deny rules, control-gate PreToolUse hook",
+      "trigger": "policy matched before the owner saw anything",
+      "kind": "should-never-reach-owner (gate decides)",
+      "count": 573,
+      "parts": {
+        "classifier_accept": 291,
+        "classifier_deny": 9,
+        "deny_rule": 70,
+        "control_gate_blocks": 203
+      },
+      "blocked_share": 0.0,
+      "median_latency_min": null,
+      "examples": [
+        "classifier [Merge Without Review]: git diff --stat origin/main origin/maestro/answers -- .control/asks/",
+        "[control-gate] BLOCKED by .control/policy.yaml: rm -rf on / or home",
+        "Permission to use Bash with command rm -rf /tmp/... has been denied"
+      ],
+      "recommendation": "Never surface; log as audit. Only escalate when the agent cannot reroute (then it becomes a ledger Approval).",
+      "blocked_basis": "by construction (gate answers inline)"
+    },
+    {
+      "name": "Control-surface write block",
+      "channel": "check-file-write-safety PreToolUse hook -> later prose / ledger ask",
+      "trigger": "agent tried to edit .control/policy.yaml or .claude/settings.json",
+      "kind": "Approval executed by the owner (today an Owner step)",
+      "count": 24,
+      "blocked_share": null,
+      "median_latency_min": null,
+      "examples": [
+        "[check-file-write-safety] BLOCKED: write to '.control/policy.yaml' targets a control surface",
+        "ledger: Apply the v4 policy patch, which human-merges every other file a hook executes?",
+        "ledger: Turn on automatic memory commits by adding two hooks to your settings?"
+      ],
+      "recommendation": "Model as Approval with an owner-identity executor: show the exact diff, one tap applies it. Removes copy-paste.",
+      "blocked_basis": "not measured"
+    },
+    {
+      "name": "Status stop, owner gives next instruction",
+      "channel": "end-of-turn report with no question (Paseo \"finished\" attention)",
+      "trigger": "turn ended; nothing asked",
+      "kind": "Notice (finished)",
+      "count": 3086,
+      "sessions": 296,
+      "blocked_share": 1.0,
+      "median_latency_min": 5.3,
+      "p25_latency_min": 1.1,
+      "p75_latency_min": 16.3,
+      "owner_answers": 3086,
+      "agent_idle_hours_capped24": 2820.6,
+      "client_sessions_stops": 234,
+      "owner_reply": {
+        "interrupt": 95,
+        "slash": 261,
+        "bare-approval": 11,
+        "instruction": 2642,
+        "nudge": 77
+      },
+      "examples": [
+        "Toolbar and sidebar are in. Next is the board: imagery, your selection, and the agent's focus ...",
+        "`db974c5` has #757's first Codex review round running. It has frozen its tree ...",
+        "main is green on all four repos; the skills re-run passed. All four sessions are running."
+      ],
+      "recommendation": "Notice, not a reach. Maestro should show \"finished + what next was planned\" and auto-dispatch the stated next step when one exists.",
+      "blocked_basis": "measured: next input was the owner or nothing"
+    },
+    {
+      "name": "Offer to continue (\"Want me to / Should I / say the word\")",
+      "channel": "end-of-turn prose",
+      "trigger": "agent hands back a reversible next step it could take itself",
+      "kind": "should-never-reach-owner",
+      "count": 959,
+      "sessions": 274,
+      "blocked_share": 0.697,
+      "median_latency_min": 11.7,
+      "p25_latency_min": 2.2,
+      "p75_latency_min": 56.4,
+      "owner_answers": 603,
+      "agent_idle_hours_capped24": 1088.3,
+      "client_sessions_stops": 142,
+      "owner_reply": {
+        "instruction": 516,
+        "nudge": 43,
+        "slash": 24,
+        "bare-approval": 19,
+        "interrupt": 1
+      },
+      "approval_led_replies": 77,
+      "examples": [
+        "Want me to open the PR for the 5 entities, and file BRO tickets for ...?",
+        "Say the word and I'll open a Linear ticket for #1.",
+        "Want me to land it?"
+      ],
+      "recommendation": "Take the step by default (preauth for PR/ticket/commit); prior measurement: 86 PR/commit asks, none refused.",
+      "blocked_basis": "measured: next input was the owner or nothing"
+    },
+    {
+      "name": "Handback / decision section",
+      "channel": "end-of-turn \"## Decisions for you\" / \"Blocked on you\" / \"Waiting on you\" list",
+      "trigger": "agent batches several items for the owner",
+      "kind": "Bundle (mixed Ask/Approval/Owner step) - must be split",
+      "count": 901,
+      "sessions": 100,
+      "blocked_share": 0.37,
+      "median_latency_min": 5.9,
+      "p25_latency_min": 2.0,
+      "p75_latency_min": 14.9,
+      "owner_answers": 303,
+      "agent_idle_hours_capped24": 116.7,
+      "client_sessions_stops": 758,
+      "owner_reply": {
+        "instruction": 276,
+        "slash": 21,
+        "nudge": 6
+      },
+      "examples": [
+        "Run this, or press Merge on the PR: gh pr merge 933 --repo broomva/workspace --squash ...",
+        "Waiting on you: - Sign Linear back in with /mcp ... - Merge sri#1857 after updating its branch.",
+        "(client) orchestrator tick decision tables - counted only"
+      ],
+      "recommendation": "Parse into one item per row with its own kind; a message is not a reach unit.",
+      "blocked_basis": "measured: next input was the owner or nothing"
+    },
+    {
+      "name": "Owner step in prose",
+      "channel": "end-of-turn prose naming an action only the owner can do",
+      "trigger": "re-auth, /mcp, /login, credits, reload, paste config, macOS permission",
+      "kind": "Owner step",
+      "count": 618,
+      "sessions": 159,
+      "blocked_share": 0.667,
+      "median_latency_min": 7.5,
+      "p25_latency_min": 1.5,
+      "p75_latency_min": 25.8,
+      "owner_answers": 370,
+      "agent_idle_hours_capped24": 379.7,
+      "client_sessions_stops": 76,
+      "owner_reply": {
+        "instruction": 339,
+        "slash": 13,
+        "nudge": 7,
+        "bare-approval": 11
+      },
+      "examples": [
+        "`broomva handoff push` needs you to log in (`broomva auth login`).",
+        "parked until Chrome's Interceptor extension is reloaded. That needs you to unlock the Mac and reload it",
+        "Sign Linear back in with `/mcp`, so the stdlib-bypass ticket can be filed."
+      ],
+      "recommendation": "Owner step with a deep link / one-click action and a stated fallback; dedupe across sessions (Linear sign-in recurs).",
+      "blocked_basis": "measured: next input was the owner or nothing"
+    },
+    {
+      "name": "Choice question in prose",
+      "channel": "end-of-turn prose question with alternatives",
+      "trigger": "real design/direction choice",
+      "kind": "Ask",
+      "count": 310,
+      "sessions": 146,
+      "blocked_share": 0.79,
+      "median_latency_min": 11.3,
+      "p25_latency_min": 3.1,
+      "p75_latency_min": 64.0,
+      "owner_answers": 236,
+      "agent_idle_hours_capped24": 555.8,
+      "client_sessions_stops": 54,
+      "owner_reply": {
+        "instruction": 211,
+        "nudge": 13,
+        "bare-approval": 4,
+        "slash": 8
+      },
+      "examples": [
+        "Scope - all 20 primitives, or start with the 5 that already have control-layer references ...?",
+        "Which do you want next?",
+        "Want me to wire AuthUIProvider and swap it in, or keep our menu ...?"
+      ],
+      "recommendation": "Ask; require options + default so silence is safe (79% of these blocked the session).",
+      "blocked_basis": "measured: next input was the owner or nothing"
+    },
+    {
+      "name": "Approval question in prose",
+      "channel": "end-of-turn prose asking to merge/deploy/send/delete",
+      "trigger": "exact externally visible or irreversible action",
+      "kind": "Approval",
+      "count": 187,
+      "sessions": 83,
+      "blocked_share": 0.513,
+      "median_latency_min": 4.4,
+      "p25_latency_min": 0.7,
+      "p75_latency_min": 42.5,
+      "owner_answers": 86,
+      "agent_idle_hours_capped24": 122.5,
+      "client_sessions_stops": 58,
+      "owner_reply": {
+        "instruction": 71,
+        "nudge": 10,
+        "bare-approval": 4,
+        "slash": 1
+      },
+      "sub": {
+        "merge": 37,
+        "other-action": 135,
+        "pr/commit/push": 15
+      },
+      "examples": [
+        "Decision for you: should I merge?",
+        "Should I send it?",
+        "Remove arcan-old's stale Vercel project?"
+      ],
+      "recommendation": "Approval with the exact command; PR/commit/push offers should be preauthorized instead.",
+      "blocked_basis": "measured: next input was the owner or nothing"
+    },
+    {
+      "name": "Rename-session ask",
+      "channel": "prose + ledger",
+      "trigger": "agent wants a canonical session name",
+      "kind": "should-never-reach-owner",
+      "count": 95,
+      "sessions": 50,
+      "blocked_share": 0.558,
+      "median_latency_min": 30.0,
+      "p25_latency_min": 9.7,
+      "p75_latency_min": 152.2,
+      "owner_answers": 43,
+      "agent_idle_hours_capped24": 84.8,
+      "client_sessions_stops": 24,
+      "owner_reply": {
+        "instruction": 36,
+        "nudge": 6,
+        "bare-approval": 1
+      },
+      "ledger_asks": 9,
+      "examples": [
+        "Rename this session to serene-puma-holon-acp?",
+        "Rename this session so peers can address it?",
+        "...the optional `/rename`."
+      ],
+      "recommendation": "Drop entirely (owner said stop asking on 2026-10-06); let Paseo set titles.",
+      "blocked_basis": "measured: next input was the owner or nothing"
+    },
+    {
+      "name": "Ask ledger entry",
+      "channel": ".control/asks/*.yaml -> Maestro \"Needs you\" -> answered_by owner:maestro",
+      "trigger": "arc-level human dependency with exhausted autonomy ladder",
+      "kind": "Ask / Approval / Owner step / Proposal (by headline+class)",
+      "count": 250,
+      "answered": 201,
+      "blocking_true": 4,
+      "blocked_share": 0.016,
+      "median_latency_min": 131.0,
+      "latency_note": "workspace asks with asked_at (n=52); fleet-reconcile median 203.8 min from opened (n=85)",
+      "by_kind": {
+        "Approval": 73,
+        "Owner step": 54,
+        "Ask": 91,
+        "Proposal (idea triage)": 23,
+        "never (rename)": 9
+      },
+      "by_class": {
+        "authority": 65,
+        "decision": 93,
+        "scope": 7,
+        "credential": 30,
+        "idea": 23,
+        "external": 28,
+        "artifact": 1,
+        "capability": 1,
+        "design-authority": 1,
+        "owner-decision": 1
+      },
+      "answered_via_maestro": 158,
+      "examples": [
+        "Merge PR 718 now, or leave it open?",
+        "Refill Codex credits so cross-vendor review (Strata A) works again?",
+        "Name the workspace app now, or keep the working name skene until the first release?"
+      ],
+      "recommendation": "The right shape (default + options + exhausted ladder). Make it the only Ask/Approval/Owner-step sink.",
+      "blocked_basis": "ledger blocking:true flag"
+    },
+    {
+      "name": "Idea triage (park or build)",
+      "channel": "ledger class=idea",
+      "trigger": "research/checkit produced follow-up ideas",
+      "kind": "new kind: Proposal (non-blocking, backlog)",
+      "count": 23,
+      "answered": 2,
+      "blocked_share": 0.0,
+      "median_latency_min": 1133.0,
+      "examples": [
+        "Prototype an explainer video made from a research entity, or park it?",
+        "Build a voxel-world eval harness and action recorder on Craftium, or park it?",
+        "Add conversation-level prompt caching to Arcan, or park it?"
+      ],
+      "recommendation": "Do not put in \"Needs you\"; batch weekly as a Proposal digest with park as default.",
+      "blocked_basis": "ledger blocking flag"
+    },
+    {
+      "name": "Maestro review gate",
+      "channel": "Maestro gate (approve / block / revise) on a work item",
+      "trigger": "work item reached review",
+      "kind": "Approval",
+      "count": 26,
+      "verdicts": {
+        "approve": 21,
+        "block": 4,
+        "revise": 1
+      },
+      "blocked_share": null,
+      "median_latency_min": null,
+      "examples": ["gate verdict approve", "gate verdict block", "gate verdict revise"],
+      "recommendation": "Keep; it is the Approval surface. Feed it from REQUIRE_HUMAN merges.",
+      "blocked_basis": "not measured"
+    },
+    {
+      "name": "Session death (rate limit / auth)",
+      "channel": "ctx board session.died; owner types /resume, /login, /mcp",
+      "trigger": "API rate limit, expired login, OAuth org not allowed",
+      "kind": "Notice (rate_limit) / Owner step (authentication_failed, oauth_org_not_allowed)",
+      "count": 390,
+      "died": {
+        "model_not_found": 1,
+        "rate_limit": 262,
+        "authentication_failed": 104,
+        "invalid_request": 6,
+        "oauth_org_not_allowed": 17
+      },
+      "owner_followups": {
+        "resume": 222,
+        "mcp": 46,
+        "login": 9,
+        "sessions_with_resume": 106
+      },
+      "blocked_share": 1.0,
+      "median_latency_min": null,
+      "window": ["2026-09-29T23:05", "2026-10-09T15:18"],
+      "examples": [
+        "session.died error=rate_limit",
+        "session.died error=authentication_failed",
+        "owner prompt: /resume"
+      ],
+      "recommendation": "Auto-resume after the rate-limit window (Notice only); one fleet-wide Owner step for re-auth instead of one per dead session.",
+      "blocked_basis": "by construction (session ended)"
+    },
+    {
+      "name": "ARC-STATUS end line",
+      "channel": "ctx session.stop arc_line",
+      "trigger": "session closing its arc",
+      "kind": "Notice (CLOSED/DONE/MERGED) / Bundle (HANDBACK, BLOCKED) / Approval (REQUIRE_HUMAN)",
+      "count": 182,
+      "arc_status": {
+        "DONE": 18,
+        "MERGED": 5,
+        "BLOCKED": 7,
+        "REQUIRE_HUMAN": 2,
+        "HANDBACK": 66,
+        "CLOSED": 76,
+        "IN-PROGRESS": 7,
+        "COMPLETE": 1
+      },
+      "blocked_share": null,
+      "median_latency_min": null,
+      "examples": [
+        "ARC-STATUS: REQUIRE_HUMAN on #851. It is green and CLEAN with P20 PASS. Next: you merge #851",
+        "ARC-STATUS: BLOCKED #842 awaits your merge after P20 STOP",
+        "ARC-STATUS: HANDBACK 1 decision"
+      ],
+      "recommendation": "Make the status line typed: emit kind + item ids so Maestro does not parse prose.",
+      "blocked_basis": "not measured"
+    },
+    {
+      "name": "Peer escalation (agent to coordinator)",
+      "channel": "cross-session SendMessage / Paseo send_agent_prompt",
+      "trigger": "worker blocked; relays to coordinator who relays to owner",
+      "kind": "should-never-reach-owner directly (route to ledger)",
+      "count": 73,
+      "peer_messages": 518,
+      "client_escalations": 38,
+      "blocked_share": null,
+      "median_latency_min": null,
+      "examples": [
+        "STI-#### blocker: no machine credential can read Sentry or PostHog. Filed ...; it needs a human. (client, paraphrased)",
+        "fleet-wide blocker: the machine's neonctl credentials are gone (client, paraphrased)",
+        "PR ready ... P20 8/10 ... (client, paraphrased)"
+      ],
+      "recommendation": "Workers write ledger entries; the coordinator dedupes; Maestro shows one item.",
+      "blocked_basis": "not measured"
+    },
+    {
+      "name": "Maestro loop flag",
+      "channel": "Maestro loop.flagged",
+      "trigger": "session quiet / waiting on you / failed",
+      "kind": "Notice",
+      "count": 11,
+      "flags": {
+        "quiet": 8,
+        "failed": 1,
+        "yours": 2
+      },
+      "blocked_share": null,
+      "median_latency_min": null,
+      "examples": ["Quiet for 55 minutes, worth a look."],
+      "recommendation": "Notice; \"yours\" flags are Asks in disguise - link them to the item.",
+      "blocked_basis": "not measured"
+    },
+    {
+      "name": "Dormant channels",
+      "channel": "ExitPlanMode, PushNotification, Stop-hook block (arc-continuation / handback contract)",
+      "trigger": "-",
+      "kind": "n/a",
+      "count": 0,
+      "parts": {
+        "exit_plan_mode": 0,
+        "push_notification": 2,
+        "stop_hook_inputs": 5,
+        "arc_files_in_window_total_blocks": 0
+      },
+      "blocked_share": null,
+      "median_latency_min": null,
+      "examples": [
+        "Eve turns failing: Vertex returns 429 Too Many Requests for claude-opus-5 (2 attempts). Sonnet 4.6 worked a minute earlier. Switch model in the picker to keep t"
+      ],
+      "recommendation": "Do not design Maestro around these; the handback contract leaves no trace when it does not fire.",
+      "blocked_basis": "not measured"
     }
-   },
-   "dismissed": 8,
-   "client_calls": 21,
-   "examples": [
-    "Pencil isn't running: Pen.app is installed but closed ... How should I proceed?",
-    "PR #662 hit a P20 stop (6->4). The session recommends splitting: merge the ... corrections now; hold ...",
-    "How far should I take the context evals?"
-   ],
-   "recommendation": "Keep as the Ask transport; when the recommended option is reversible, take it and post a Notice (owner picked it in 64% of parsed answers).",
-   "blocked_basis": "by construction (the tool waits for an answer)"
-  },
-  {
-   "name": "Tool permission prompt",
-   "channel": "Claude Code permission prompt (Paseo sheet, Maestro permission.asked)",
-   "trigger": "tool call not covered by mode/rules",
-   "kind": "Approval",
-   "count": 196,
-   "parts": {
-    "always_allow_clicked": 51,
-    "user_rejected": 70,
-    "user_cancelled": 75,
-    "maestro_tool_permission": {
-     "resolved": 20,
-     "unresolved": 5,
-     "median_latency_min": 0.5
+  ],
+  "ledger": {
+    "files": {
+      "workspace": 55,
+      "fleet-reconcile": 31,
+      "sri": 8
+    },
+    "asks": 250,
+    "answered": 201,
+    "blocking_true": 4,
+    "with_default": 236,
+    "with_options": 209,
+    "answered_via_maestro": 158,
+    "by_class": {
+      "authority": 65,
+      "decision": 93,
+      "scope": 7,
+      "credential": 30,
+      "idea": 23,
+      "external": 28,
+      "artifact": 1,
+      "capability": 1,
+      "design-authority": 1,
+      "owner-decision": 1
+    },
+    "by_kind": {
+      "Approval": 73,
+      "Owner step": 54,
+      "Ask": 91,
+      "Proposal (idea triage)": 23,
+      "never (rename)": 9
+    },
+    "latency_workspace_asked_at": [131.0, 52],
+    "latency_fleet_opened": [203.8, 85],
+    "per_source": {
+      "workspace": {
+        "total": 150,
+        "kind": {
+          "Approval": 46,
+          "Owner step": 34,
+          "Ask": 39,
+          "Proposal (idea triage)": 23,
+          "never (rename)": 8
+        },
+        "answered": {
+          "Approval": 34,
+          "Owner step": 34,
+          "Ask": 32,
+          "Proposal (idea triage)": 2,
+          "never (rename)": 8
+        },
+        "median_latency_min": {
+          "Approval": 5760.0,
+          "Owner step": 10464.2,
+          "Ask": 2033.2,
+          "Proposal (idea triage)": 1133.0,
+          "never (rename)": 18434.2
+        },
+        "class_x_kind": [
+          ["authority", "Approval", 32],
+          ["decision", "Ask", 25],
+          ["idea", "Proposal (idea triage)", 23],
+          ["credential", "Owner step", 19],
+          ["decision", "Approval", 10],
+          ["authority", "Owner step", 9],
+          ["external", "Ask", 9],
+          ["external", "never (rename)", 7],
+          ["external", "Owner step", 5],
+          ["scope", "Ask", 4],
+          ["external", "Approval", 3],
+          ["decision", "Owner step", 1],
+          ["scope", "Approval", 1],
+          ["artifact", "Ask", 1],
+          ["decision", "never (rename)", 1]
+        ],
+        "examples": {
+          "Approval": [
+            "Merge the .broomva ledger hardening, which touches two files only you can merge?",
+            "May work in this session run several helper agents at once, or stay one at a time?",
+            "Can Sourcer create profile pages for people who never contacted you?"
+          ],
+          "Owner step": [
+            "The phone push waits for Codex, which is out of credits: refill it, or change the condition?",
+            "Log in to the Broomva CLI so the finished handoff reaches the queue?",
+            "Codex is out of credits: merge the gate fix on the fresh reviewer's pass, or wait?"
+          ],
+          "Ask": [
+            "Prove the decision log catches problems the review gate misses, before building more on it?",
+            "Start building Sourcer now \u2014 the two missing pieces, the whole pipeline, or neither?",
+            "Make one .broomva folder the single home and ledger for everything agents create?"
+          ],
+          "Proposal (idea triage)": [
+            "Prototype an explainer video made from a research entity, or park it?",
+            "Write the piece on AI building on two years of human reverse engineering, or park it?",
+            "Try the game-modding plugin on a Windows machine, or drop it?"
+          ],
+          "never (rename)": [
+            "Rename this session to serene-puma-holon-acp?",
+            "Rename this session so it can be referred to by name, or keep the generated one?",
+            "Rename this session so peers can address it?"
+          ]
+        }
+      },
+      "fleet-reconcile": {
+        "total": 91,
+        "kind": {
+          "Ask": 46,
+          "Owner step": 20,
+          "Approval": 24,
+          "never (rename)": 1
+        },
+        "answered": {
+          "Ask": 46,
+          "Owner step": 20,
+          "Approval": 24,
+          "never (rename)": 1
+        },
+        "median_latency_min": {
+          "Ask": 193.2,
+          "Owner step": 539.5,
+          "Approval": 409.1,
+          "never (rename)": 37.2
+        },
+        "class_x_kind": [
+          ["decision", "Ask", 45],
+          ["authority", "Approval", 16],
+          ["credential", "Owner step", 11],
+          ["decision", "Approval", 6],
+          ["authority", "Owner step", 5],
+          ["decision", "Owner step", 4],
+          ["external", "Approval", 2],
+          ["scope", "Ask", 1],
+          ["external", "never (rename)", 1]
+        ],
+        "examples": {
+          "Ask": [
+            "Positioning: reopen 'relationship-intelligence memory layer', or keep 'One relationship brain for buyers and suppliers'?",
+            "Expose a tenant sandbox with files and bash to any agent over the MCP, or keep bash inside Eve's jobs?",
+            "How do agent-authored recipes get started: an internal start for Eve only, or eval-gated promotion into a typed kind?"
+          ],
+          "Owner step": [
+            "Redeploy main (870db5d1c or later) to sri-eve without the build cache, and to sri-app, so STI-3534 can run?",
+            "Redeploy main's tip so the STI-3485 fix (65194bdf1) reaches production?",
+            "Swap has grown to 16 GB and holds the disk at about 11 GiB free: restart the Mac, lower the launch floor, or wait?"
+          ],
+          "Approval": [
+            "Run an 8th P20 review on #2212's last commit, which merged unreviewed (ask_stimulus on the MCP)?",
+            "Delete 228 GB of stale Chrome code-sign clones so the Mac stops running out of disk?",
+            "The disk is back at the 20 GiB launch floor: clear about 7 GB of rebuildable caches so SRI arcs can start again?"
+          ],
+          "never (rename)": ["Rename this session to snotty-baboon-sti-3549-gate-proof so peers can address it?"]
+        }
+      },
+      "sri": {
+        "total": 9,
+        "kind": {
+          "Approval": 3,
+          "Ask": 6
+        },
+        "answered": {
+          "Approval": 0,
+          "Ask": 0
+        },
+        "median_latency_min": {
+          "Approval": null,
+          "Ask": null
+        },
+        "class_x_kind": [
+          ["authority", "Approval", 3],
+          ["external", "Ask", 1],
+          ["decision", "Ask", 1],
+          ["capability", "Ask", 1],
+          ["design-authority", "Ask", 1],
+          ["owner-decision", "Ask", 1],
+          ["scope", "Ask", 1]
+        ],
+        "examples": {}
+      }
     }
-   },
-   "blocked_share": 1.0,
-   "median_latency_min": 0.5,
-   "examples": [
-    "Maestro: \"Run a command\": cat ~/.claude/projects/.../memory/<note>.md; ls ~/broomva/apps",
-    "rejected: Agent \"P20 post-structural r2 Stratum C\"",
-    "rejected: mcp__paseo__speak"
-   ],
-   "recommendation": "Rare because Paseo agents run bypassPermissions; the residue is read-only commands in default-mode sessions. Auto-allow reads; keep Approval for writes.",
-   "blocked_basis": "by construction"
-  },
-  {
-   "name": "Gate-handled tool calls",
-   "channel": "auto-mode classifier, settings deny rules, control-gate PreToolUse hook",
-   "trigger": "policy matched before the owner saw anything",
-   "kind": "should-never-reach-owner (gate decides)",
-   "count": 573,
-   "parts": {
-    "classifier_accept": 291,
-    "classifier_deny": 9,
-    "deny_rule": 70,
-    "control_gate_blocks": 203
-   },
-   "blocked_share": 0.0,
-   "median_latency_min": null,
-   "examples": [
-    "classifier [Merge Without Review]: git diff --stat origin/main origin/maestro/answers -- .control/asks/",
-    "[control-gate] BLOCKED by .control/policy.yaml: rm -rf on / or home",
-    "Permission to use Bash with command rm -rf /tmp/... has been denied"
-   ],
-   "recommendation": "Never surface; log as audit. Only escalate when the agent cannot reroute (then it becomes a ledger Approval).",
-   "blocked_basis": "by construction (gate answers inline)"
-  },
-  {
-   "name": "Control-surface write block",
-   "channel": "check-file-write-safety PreToolUse hook -> later prose / ledger ask",
-   "trigger": "agent tried to edit .control/policy.yaml or .claude/settings.json",
-   "kind": "Approval executed by the owner (today an Owner step)",
-   "count": 24,
-   "blocked_share": null,
-   "median_latency_min": null,
-   "examples": [
-    "[check-file-write-safety] BLOCKED: write to '.control/policy.yaml' targets a control surface",
-    "ledger: Apply the v4 policy patch, which human-merges every other file a hook executes?",
-    "ledger: Turn on automatic memory commits by adding two hooks to your settings?"
-   ],
-   "recommendation": "Model as Approval with an owner-identity executor: show the exact diff, one tap applies it. Removes copy-paste.",
-   "blocked_basis": "not measured"
-  },
-  {
-   "name": "Status stop, owner gives next instruction",
-   "channel": "end-of-turn report with no question (Paseo \"finished\" attention)",
-   "trigger": "turn ended; nothing asked",
-   "kind": "Notice (finished)",
-   "count": 3086,
-   "sessions": 296,
-   "blocked_share": 1.0,
-   "median_latency_min": 5.3,
-   "p25_latency_min": 1.1,
-   "p75_latency_min": 16.3,
-   "owner_answers": 3086,
-   "agent_idle_hours_capped24": 2820.6,
-   "client_sessions_stops": 234,
-   "owner_reply": {
-    "interrupt": 95,
-    "slash": 261,
-    "bare-approval": 11,
-    "instruction": 2642,
-    "nudge": 77
-   },
-   "examples": [
-    "Toolbar and sidebar are in. Next is the board: imagery, your selection, and the agent's focus ...",
-    "`db974c5` has #757's first Codex review round running. It has frozen its tree ...",
-    "main is green on all four repos; the skills re-run passed. All four sessions are running."
-   ],
-   "recommendation": "Notice, not a reach. Maestro should show \"finished + what next was planned\" and auto-dispatch the stated next step when one exists.",
-   "blocked_basis": "measured: next input was the owner or nothing"
-  },
-  {
-   "name": "Offer to continue (\"Want me to / Should I / say the word\")",
-   "channel": "end-of-turn prose",
-   "trigger": "agent hands back a reversible next step it could take itself",
-   "kind": "should-never-reach-owner",
-   "count": 959,
-   "sessions": 274,
-   "blocked_share": 0.697,
-   "median_latency_min": 11.7,
-   "p25_latency_min": 2.2,
-   "p75_latency_min": 56.4,
-   "owner_answers": 603,
-   "agent_idle_hours_capped24": 1088.3,
-   "client_sessions_stops": 142,
-   "owner_reply": {
-    "instruction": 516,
-    "nudge": 43,
-    "slash": 24,
-    "bare-approval": 19,
-    "interrupt": 1
-   },
-   "approval_led_replies": 77,
-   "examples": [
-    "Want me to open the PR for the 5 entities, and file BRO tickets for ...?",
-    "Say the word and I'll open a Linear ticket for #1.",
-    "Want me to land it?"
-   ],
-   "recommendation": "Take the step by default (preauth for PR/ticket/commit); prior measurement: 86 PR/commit asks, none refused.",
-   "blocked_basis": "measured: next input was the owner or nothing"
-  },
-  {
-   "name": "Handback / decision section",
-   "channel": "end-of-turn \"## Decisions for you\" / \"Blocked on you\" / \"Waiting on you\" list",
-   "trigger": "agent batches several items for the owner",
-   "kind": "Bundle (mixed Ask/Approval/Owner step) - must be split",
-   "count": 901,
-   "sessions": 100,
-   "blocked_share": 0.37,
-   "median_latency_min": 5.9,
-   "p25_latency_min": 2.0,
-   "p75_latency_min": 14.9,
-   "owner_answers": 303,
-   "agent_idle_hours_capped24": 116.7,
-   "client_sessions_stops": 758,
-   "owner_reply": {
-    "instruction": 276,
-    "slash": 21,
-    "nudge": 6
-   },
-   "examples": [
-    "Run this, or press Merge on the PR: gh pr merge 933 --repo broomva/workspace --squash ...",
-    "Waiting on you: - Sign Linear back in with /mcp ... - Merge sri#1857 after updating its branch.",
-    "(client) orchestrator tick decision tables - counted only"
-   ],
-   "recommendation": "Parse into one item per row with its own kind; a message is not a reach unit.",
-   "blocked_basis": "measured: next input was the owner or nothing"
-  },
-  {
-   "name": "Owner step in prose",
-   "channel": "end-of-turn prose naming an action only the owner can do",
-   "trigger": "re-auth, /mcp, /login, credits, reload, paste config, macOS permission",
-   "kind": "Owner step",
-   "count": 618,
-   "sessions": 159,
-   "blocked_share": 0.667,
-   "median_latency_min": 7.5,
-   "p25_latency_min": 1.5,
-   "p75_latency_min": 25.8,
-   "owner_answers": 370,
-   "agent_idle_hours_capped24": 379.7,
-   "client_sessions_stops": 76,
-   "owner_reply": {
-    "instruction": 339,
-    "slash": 13,
-    "nudge": 7,
-    "bare-approval": 11
-   },
-   "examples": [
-    "`broomva handoff push` needs you to log in (`broomva auth login`).",
-    "parked until Chrome's Interceptor extension is reloaded. That needs you to unlock the Mac and reload it",
-    "Sign Linear back in with `/mcp`, so the stdlib-bypass ticket can be filed."
-   ],
-   "recommendation": "Owner step with a deep link / one-click action and a stated fallback; dedupe across sessions (Linear sign-in recurs).",
-   "blocked_basis": "measured: next input was the owner or nothing"
-  },
-  {
-   "name": "Choice question in prose",
-   "channel": "end-of-turn prose question with alternatives",
-   "trigger": "real design/direction choice",
-   "kind": "Ask",
-   "count": 310,
-   "sessions": 146,
-   "blocked_share": 0.79,
-   "median_latency_min": 11.3,
-   "p25_latency_min": 3.1,
-   "p75_latency_min": 64.0,
-   "owner_answers": 236,
-   "agent_idle_hours_capped24": 555.8,
-   "client_sessions_stops": 54,
-   "owner_reply": {
-    "instruction": 211,
-    "nudge": 13,
-    "bare-approval": 4,
-    "slash": 8
-   },
-   "examples": [
-    "Scope - all 20 primitives, or start with the 5 that already have control-layer references ...?",
-    "Which do you want next?",
-    "Want me to wire AuthUIProvider and swap it in, or keep our menu ...?"
-   ],
-   "recommendation": "Ask; require options + default so silence is safe (79% of these blocked the session).",
-   "blocked_basis": "measured: next input was the owner or nothing"
-  },
-  {
-   "name": "Approval question in prose",
-   "channel": "end-of-turn prose asking to merge/deploy/send/delete",
-   "trigger": "exact externally visible or irreversible action",
-   "kind": "Approval",
-   "count": 187,
-   "sessions": 83,
-   "blocked_share": 0.513,
-   "median_latency_min": 4.4,
-   "p25_latency_min": 0.7,
-   "p75_latency_min": 42.5,
-   "owner_answers": 86,
-   "agent_idle_hours_capped24": 122.5,
-   "client_sessions_stops": 58,
-   "owner_reply": {
-    "instruction": 71,
-    "nudge": 10,
-    "bare-approval": 4,
-    "slash": 1
-   },
-   "sub": {
-    "merge": 37,
-    "other-action": 135,
-    "pr/commit/push": 15
-   },
-   "examples": [
-    "Decision for you: should I merge?",
-    "Should I send it?",
-    "Remove arcan-old's stale Vercel project?"
-   ],
-   "recommendation": "Approval with the exact command; PR/commit/push offers should be preauthorized instead.",
-   "blocked_basis": "measured: next input was the owner or nothing"
-  },
-  {
-   "name": "Rename-session ask",
-   "channel": "prose + ledger",
-   "trigger": "agent wants a canonical session name",
-   "kind": "should-never-reach-owner",
-   "count": 95,
-   "sessions": 50,
-   "blocked_share": 0.558,
-   "median_latency_min": 30.0,
-   "p25_latency_min": 9.7,
-   "p75_latency_min": 152.2,
-   "owner_answers": 43,
-   "agent_idle_hours_capped24": 84.8,
-   "client_sessions_stops": 24,
-   "owner_reply": {
-    "instruction": 36,
-    "nudge": 6,
-    "bare-approval": 1
-   },
-   "ledger_asks": 9,
-   "examples": [
-    "Rename this session to serene-puma-holon-acp?",
-    "Rename this session so peers can address it?",
-    "...the optional `/rename`."
-   ],
-   "recommendation": "Drop entirely (owner said stop asking on 2026-10-06); let Paseo set titles.",
-   "blocked_basis": "measured: next input was the owner or nothing"
-  },
-  {
-   "name": "Ask ledger entry",
-   "channel": ".control/asks/*.yaml -> Maestro \"Needs you\" -> answered_by owner:maestro",
-   "trigger": "arc-level human dependency with exhausted autonomy ladder",
-   "kind": "Ask / Approval / Owner step / Proposal (by headline+class)",
-   "count": 250,
-   "answered": 201,
-   "blocking_true": 4,
-   "blocked_share": 0.016,
-   "median_latency_min": 131.0,
-   "latency_note": "workspace asks with asked_at (n=52); fleet-reconcile median 203.8 min from opened (n=85)",
-   "by_kind": {
-    "Approval": 73,
-    "Owner step": 54,
-    "Ask": 91,
-    "Proposal (idea triage)": 23,
-    "never (rename)": 9
-   },
-   "by_class": {
-    "authority": 65,
-    "decision": 93,
-    "scope": 7,
-    "credential": 30,
-    "idea": 23,
-    "external": 28,
-    "artifact": 1,
-    "capability": 1,
-    "design-authority": 1,
-    "owner-decision": 1
-   },
-   "answered_via_maestro": 158,
-   "examples": [
-    "Merge PR 718 now, or leave it open?",
-    "Refill Codex credits so cross-vendor review (Strata A) works again?",
-    "Name the workspace app now, or keep the working name skene until the first release?"
-   ],
-   "recommendation": "The right shape (default + options + exhausted ladder). Make it the only Ask/Approval/Owner-step sink.",
-   "blocked_basis": "ledger blocking:true flag"
-  },
-  {
-   "name": "Idea triage (park or build)",
-   "channel": "ledger class=idea",
-   "trigger": "research/checkit produced follow-up ideas",
-   "kind": "new kind: Proposal (non-blocking, backlog)",
-   "count": 23,
-   "answered": 2,
-   "blocked_share": 0.0,
-   "median_latency_min": 1133.0,
-   "examples": [
-    "Prototype an explainer video made from a research entity, or park it?",
-    "Build a voxel-world eval harness and action recorder on Craftium, or park it?",
-    "Add conversation-level prompt caching to Arcan, or park it?"
-   ],
-   "recommendation": "Do not put in \"Needs you\"; batch weekly as a Proposal digest with park as default.",
-   "blocked_basis": "ledger blocking flag"
-  },
-  {
-   "name": "Maestro review gate",
-   "channel": "Maestro gate (approve / block / revise) on a work item",
-   "trigger": "work item reached review",
-   "kind": "Approval",
-   "count": 26,
-   "verdicts": {
-    "approve": 21,
-    "block": 4,
-    "revise": 1
-   },
-   "blocked_share": null,
-   "median_latency_min": null,
-   "examples": [
-    "gate verdict approve",
-    "gate verdict block",
-    "gate verdict revise"
-   ],
-   "recommendation": "Keep; it is the Approval surface. Feed it from REQUIRE_HUMAN merges.",
-   "blocked_basis": "not measured"
-  },
-  {
-   "name": "Session death (rate limit / auth)",
-   "channel": "ctx board session.died; owner types /resume, /login, /mcp",
-   "trigger": "API rate limit, expired login, OAuth org not allowed",
-   "kind": "Notice (rate_limit) / Owner step (authentication_failed, oauth_org_not_allowed)",
-   "count": 390,
-   "died": {
-    "model_not_found": 1,
-    "rate_limit": 262,
-    "authentication_failed": 104,
-    "invalid_request": 6,
-    "oauth_org_not_allowed": 17
-   },
-   "owner_followups": {
-    "resume": 222,
-    "mcp": 46,
-    "login": 9,
-    "sessions_with_resume": 106
-   },
-   "blocked_share": 1.0,
-   "median_latency_min": null,
-   "window": [
-    "2026-09-29T23:05",
-    "2026-10-09T15:18"
-   ],
-   "examples": [
-    "session.died error=rate_limit",
-    "session.died error=authentication_failed",
-    "owner prompt: /resume"
-   ],
-   "recommendation": "Auto-resume after the rate-limit window (Notice only); one fleet-wide Owner step for re-auth instead of one per dead session.",
-   "blocked_basis": "by construction (session ended)"
-  },
-  {
-   "name": "ARC-STATUS end line",
-   "channel": "ctx session.stop arc_line",
-   "trigger": "session closing its arc",
-   "kind": "Notice (CLOSED/DONE/MERGED) / Bundle (HANDBACK, BLOCKED) / Approval (REQUIRE_HUMAN)",
-   "count": 182,
-   "arc_status": {
-    "DONE": 18,
-    "MERGED": 5,
-    "BLOCKED": 7,
-    "REQUIRE_HUMAN": 2,
-    "HANDBACK": 66,
-    "CLOSED": 76,
-    "IN-PROGRESS": 7,
-    "COMPLETE": 1
-   },
-   "blocked_share": null,
-   "median_latency_min": null,
-   "examples": [
-    "ARC-STATUS: REQUIRE_HUMAN on #851. It is green and CLEAN with P20 PASS. Next: you merge #851",
-    "ARC-STATUS: BLOCKED #842 awaits your merge after P20 STOP",
-    "ARC-STATUS: HANDBACK 1 decision"
-   ],
-   "recommendation": "Make the status line typed: emit kind + item ids so Maestro does not parse prose.",
-   "blocked_basis": "not measured"
-  },
-  {
-   "name": "Peer escalation (agent to coordinator)",
-   "channel": "cross-session SendMessage / Paseo send_agent_prompt",
-   "trigger": "worker blocked; relays to coordinator who relays to owner",
-   "kind": "should-never-reach-owner directly (route to ledger)",
-   "count": 73,
-   "peer_messages": 518,
-   "client_escalations": 38,
-   "blocked_share": null,
-   "median_latency_min": null,
-   "examples": [
-    "STI-#### blocker: no machine credential can read Sentry or PostHog. Filed ...; it needs a human. (client, paraphrased)",
-    "fleet-wide blocker: the machine's neonctl credentials are gone (client, paraphrased)",
-    "PR ready ... P20 8/10 ... (client, paraphrased)"
-   ],
-   "recommendation": "Workers write ledger entries; the coordinator dedupes; Maestro shows one item.",
-   "blocked_basis": "not measured"
-  },
-  {
-   "name": "Maestro loop flag",
-   "channel": "Maestro loop.flagged",
-   "trigger": "session quiet / waiting on you / failed",
-   "kind": "Notice",
-   "count": 11,
-   "flags": {
-    "quiet": 8,
-    "failed": 1,
-    "yours": 2
-   },
-   "blocked_share": null,
-   "median_latency_min": null,
-   "examples": [
-    "Quiet for 55 minutes, worth a look."
-   ],
-   "recommendation": "Notice; \"yours\" flags are Asks in disguise - link them to the item.",
-   "blocked_basis": "not measured"
-  },
-  {
-   "name": "Dormant channels",
-   "channel": "ExitPlanMode, PushNotification, Stop-hook block (arc-continuation / handback contract)",
-   "trigger": "-",
-   "kind": "n/a",
-   "count": 0,
-   "parts": {
-    "exit_plan_mode": 0,
-    "push_notification": 2,
-    "stop_hook_inputs": 5,
-    "arc_files_in_window_total_blocks": 0
-   },
-   "blocked_share": null,
-   "median_latency_min": null,
-   "examples": [
-    "Eve turns failing: Vertex returns 429 Too Many Requests for claude-opus-5 (2 attempts). Sonnet 4.6 worked a minute earlier. Switch model in the picker to keep t"
-   ],
-   "recommendation": "Do not design Maestro around these; the handback contract leaves no trace when it does not fire.",
-   "blocked_basis": "not measured"
   }
- ],
- "ledger": {
-  "files": {
-   "workspace": 55,
-   "fleet-reconcile": 31,
-   "sri": 8
-  },
-  "asks": 250,
-  "answered": 201,
-  "blocking_true": 4,
-  "with_default": 236,
-  "with_options": 209,
-  "answered_via_maestro": 158,
-  "by_class": {
-   "authority": 65,
-   "decision": 93,
-   "scope": 7,
-   "credential": 30,
-   "idea": 23,
-   "external": 28,
-   "artifact": 1,
-   "capability": 1,
-   "design-authority": 1,
-   "owner-decision": 1
-  },
-  "by_kind": {
-   "Approval": 73,
-   "Owner step": 54,
-   "Ask": 91,
-   "Proposal (idea triage)": 23,
-   "never (rename)": 9
-  },
-  "latency_workspace_asked_at": [
-   131.0,
-   52
-  ],
-  "latency_fleet_opened": [
-   203.8,
-   85
-  ],
-  "per_source": {
-   "workspace": {
-    "total": 150,
-    "kind": {
-     "Approval": 46,
-     "Owner step": 34,
-     "Ask": 39,
-     "Proposal (idea triage)": 23,
-     "never (rename)": 8
-    },
-    "answered": {
-     "Approval": 34,
-     "Owner step": 34,
-     "Ask": 32,
-     "Proposal (idea triage)": 2,
-     "never (rename)": 8
-    },
-    "median_latency_min": {
-     "Approval": 5760.0,
-     "Owner step": 10464.2,
-     "Ask": 2033.2,
-     "Proposal (idea triage)": 1133.0,
-     "never (rename)": 18434.2
-    },
-    "class_x_kind": [
-     [
-      "authority",
-      "Approval",
-      32
-     ],
-     [
-      "decision",
-      "Ask",
-      25
-     ],
-     [
-      "idea",
-      "Proposal (idea triage)",
-      23
-     ],
-     [
-      "credential",
-      "Owner step",
-      19
-     ],
-     [
-      "decision",
-      "Approval",
-      10
-     ],
-     [
-      "authority",
-      "Owner step",
-      9
-     ],
-     [
-      "external",
-      "Ask",
-      9
-     ],
-     [
-      "external",
-      "never (rename)",
-      7
-     ],
-     [
-      "external",
-      "Owner step",
-      5
-     ],
-     [
-      "scope",
-      "Ask",
-      4
-     ],
-     [
-      "external",
-      "Approval",
-      3
-     ],
-     [
-      "decision",
-      "Owner step",
-      1
-     ],
-     [
-      "scope",
-      "Approval",
-      1
-     ],
-     [
-      "artifact",
-      "Ask",
-      1
-     ],
-     [
-      "decision",
-      "never (rename)",
-      1
-     ]
-    ],
-    "examples": {
-     "Approval": [
-      "Merge the .broomva ledger hardening, which touches two files only you can merge?",
-      "May work in this session run several helper agents at once, or stay one at a time?",
-      "Can Sourcer create profile pages for people who never contacted you?"
-     ],
-     "Owner step": [
-      "The phone push waits for Codex, which is out of credits: refill it, or change the condition?",
-      "Log in to the Broomva CLI so the finished handoff reaches the queue?",
-      "Codex is out of credits: merge the gate fix on the fresh reviewer's pass, or wait?"
-     ],
-     "Ask": [
-      "Prove the decision log catches problems the review gate misses, before building more on it?",
-      "Start building Sourcer now \u2014 the two missing pieces, the whole pipeline, or neither?",
-      "Make one .broomva folder the single home and ledger for everything agents create?"
-     ],
-     "Proposal (idea triage)": [
-      "Prototype an explainer video made from a research entity, or park it?",
-      "Write the piece on AI building on two years of human reverse engineering, or park it?",
-      "Try the game-modding plugin on a Windows machine, or drop it?"
-     ],
-     "never (rename)": [
-      "Rename this session to serene-puma-holon-acp?",
-      "Rename this session so it can be referred to by name, or keep the generated one?",
-      "Rename this session so peers can address it?"
-     ]
-    }
-   },
-   "fleet-reconcile": {
-    "total": 91,
-    "kind": {
-     "Ask": 46,
-     "Owner step": 20,
-     "Approval": 24,
-     "never (rename)": 1
-    },
-    "answered": {
-     "Ask": 46,
-     "Owner step": 20,
-     "Approval": 24,
-     "never (rename)": 1
-    },
-    "median_latency_min": {
-     "Ask": 193.2,
-     "Owner step": 539.5,
-     "Approval": 409.1,
-     "never (rename)": 37.2
-    },
-    "class_x_kind": [
-     [
-      "decision",
-      "Ask",
-      45
-     ],
-     [
-      "authority",
-      "Approval",
-      16
-     ],
-     [
-      "credential",
-      "Owner step",
-      11
-     ],
-     [
-      "decision",
-      "Approval",
-      6
-     ],
-     [
-      "authority",
-      "Owner step",
-      5
-     ],
-     [
-      "decision",
-      "Owner step",
-      4
-     ],
-     [
-      "external",
-      "Approval",
-      2
-     ],
-     [
-      "scope",
-      "Ask",
-      1
-     ],
-     [
-      "external",
-      "never (rename)",
-      1
-     ]
-    ],
-    "examples": {
-     "Ask": [
-      "Positioning: reopen 'relationship-intelligence memory layer', or keep 'One relationship brain for buyers and suppliers'?",
-      "Expose a tenant sandbox with files and bash to any agent over the MCP, or keep bash inside Eve's jobs?",
-      "How do agent-authored recipes get started: an internal start for Eve only, or eval-gated promotion into a typed kind?"
-     ],
-     "Owner step": [
-      "Redeploy main (870db5d1c or later) to sri-eve without the build cache, and to sri-app, so STI-3534 can run?",
-      "Redeploy main's tip so the STI-3485 fix (65194bdf1) reaches production?",
-      "Swap has grown to 16 GB and holds the disk at about 11 GiB free: restart the Mac, lower the launch floor, or wait?"
-     ],
-     "Approval": [
-      "Run an 8th P20 review on #2212's last commit, which merged unreviewed (ask_stimulus on the MCP)?",
-      "Delete 228 GB of stale Chrome code-sign clones so the Mac stops running out of disk?",
-      "The disk is back at the 20 GiB launch floor: clear about 7 GB of rebuildable caches so SRI arcs can start again?"
-     ],
-     "never (rename)": [
-      "Rename this session to snotty-baboon-sti-3549-gate-proof so peers can address it?"
-     ]
-    }
-   },
-   "sri": {
-    "total": 9,
-    "kind": {
-     "Approval": 3,
-     "Ask": 6
-    },
-    "answered": {
-     "Approval": 0,
-     "Ask": 0
-    },
-    "median_latency_min": {
-     "Approval": null,
-     "Ask": null
-    },
-    "class_x_kind": [
-     [
-      "authority",
-      "Approval",
-      3
-     ],
-     [
-      "external",
-      "Ask",
-      1
-     ],
-     [
-      "decision",
-      "Ask",
-      1
-     ],
-     [
-      "capability",
-      "Ask",
-      1
-     ],
-     [
-      "design-authority",
-      "Ask",
-      1
-     ],
-     [
-      "owner-decision",
-      "Ask",
-      1
-     ],
-     [
-      "scope",
-      "Ask",
-      1
-     ]
-    ],
-    "examples": {}
-   }
-  }
- }
 }
