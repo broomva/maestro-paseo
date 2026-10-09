@@ -11,6 +11,11 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | B3 | `b3-settings-loops-notices-approvals.png` | Settings: loops with pause, resume, run now; the notice source registry (`.broomva/notices.yaml`); approval rules and grants |
 | C0 | `c0-how-agents-reach-you.png` | Measured: how agent sessions reach you over 30 days, 678 sessions, 11,232 turn ends, clustered and mapped to kinds |
 | C1 | `c1-what-the-measurements-change.png` | Seven changes the measurements call for, each with the card it produces, and the agents' typed contract |
+| D0 | `d0-today-loops-and-thinkers.png` | Today: six schedulers (launchd, Paseo heartbeats and schedules, Maestro's plugin cron, session crons, GHA), four kinds of thinker, and who owns what they launch (BRO-2982) |
+| D1 | `d1-target-conductor.png` | Target: you, then the Maestro conductor (a Paseo session with its own heartbeat; the plugin as its hands), then lane orchestrators, then workers; which scheduler each loop belongs on; bstack at every layer |
+| D2 | `d2-incident-13b97ad9.png` | The 13b97ad9 incident (six answers became six blind sessions), step by step, today and with the conductor, with both prompts |
+| D3 | `d3-prompt-stack-and-lanes.png` | The five-layer prompt stack (harness, workspace rules, role base, lane overlay, tick context or brief), where the SRI tick prompt goes, lane profiles |
+| D4 | `d4-settings-lanes.png` | Settings › Lanes: the conductor, each lane's session, heartbeat, profile and prompt version, and the composed prompt |
 | N0 | `n0-model.png` | Three nouns (work, ask, notice), one list, one verb each; six rules; what it retires |
 | N1 | `n1-wiring.png` | Producers, verbs on maestro.sock, one store per kind, needs.list, views, the return path |
 | N3 | `n3-lifecycles.png` | The states each kind passes through; the 10-09 Parser drift card, today vs next |
