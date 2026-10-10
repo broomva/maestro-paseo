@@ -5,9 +5,19 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# The job runs on the owner's Mac (BRO-3056): GitHub will not start hosted jobs
+# while the account's Actions billing is blocked, and the owner chose local
+# runners over adding budget (2026-10-10). The pool is registered with
+# `CI_RUNNER_REPO=broomva/maestro-paseo … scripts/ci-runner.sh start` in
+# broomva/workspace (label `maestro-local`; docs/references/local-ci-runner.md).
+# Going back to hosted runners is only `runs-on: ubuntu-latest`.
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, maestro-local]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
