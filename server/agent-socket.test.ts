@@ -49,6 +49,8 @@ async function setup() {
   };
   const engine = new Engine({ config: async () => config, log: () => {} });
   const fake = fakePaseo();
+  // The calling session is a lane in bypass: a run it starts takes that mode, never Always ask (BRO-2990).
+  fake.addSession("session-1", { modeId: "bypassPermissions" });
   let handle: Paseo | null = fake.paseo;
   const methods = agentMethods(engine, () => handle);
   const ask = async (method: string, input: unknown = {}, caller: string | null = "session-1") => {
@@ -278,10 +280,10 @@ describe("what a session is offered", () => {
     if (!response.ok) throw new Error(response.error);
     const { item, notice } = response.output as { item: WorkItem; notice: string | null };
     expect(item.group).toBe("queued");
-    expect(notice).toContain("At capacity: 1 running. It stays queued.");
+    expect(notice).toContain("At capacity: 1 of 1 slot taken (1 running). It stays queued.");
     // The session holds the id, so it retries the dispatch, which refuses again without adding anything.
     const retry = await ask("work.dispatch", { id: item.id });
-    expect(!retry.ok && retry.error).toBe("At capacity: 1 running. It stays queued.");
+    expect(!retry.ok && retry.error).toBe("At capacity: 1 of 1 slot taken (1 running). It stays queued.");
     expect((await engine.list()).items.map((entry) => entry.title).sort()).toEqual(["First", "Second"]);
     expect(fake.created).toHaveLength(1);
   });
@@ -344,7 +346,7 @@ describe("what a session is offered", () => {
     const { item } = await ok("work.create", {
       title: "Loosened",
       repo,
-      modeId: "bypassPermissions",
+      modeId: "acceptEdits",
       provider: "codex/gpt-5.5",
       isolation: "directory",
       thinkingOptionId: "max",
@@ -353,10 +355,28 @@ describe("what a session is offered", () => {
     });
     const file = await readFile(join(config.workRoot, item.path, "_work.md"), "utf8");
     for (const key of ["provider:", "isolation:", "mode:", "thinking:", "features:"]) expect(file).not.toContain(key);
+    // The mode is the lane profile's (session-1 runs in bypass), never the one the input named.
     expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({
       provider: "claude/test-model",
+      modeId: "bypassPermissions",
     });
     expect(item.worker?.branch).toMatch(/^run\//);
+  });
+
+  test("a session in a mode that asks cannot start a run: it would wait on a permission nobody answers", async () => {
+    const { repo, ask, ok, engine, fake } = await setup();
+    fake.addSession("session-2", { modeId: "default" });
+    const { item, notice } = (await ok("work.create", { title: "Unwatched", repo, dispatch: true }, "session-2")) as {
+      item: WorkItem;
+      notice: string | null;
+    };
+    // Filed and queued, with its id and why it did not start: you, or a lane that does not ask, may start it.
+    expect(item.state).toBe("proposed");
+    expect(notice).toStartWith(`Created ${item.id}, not started. A run nobody watches never starts in Always ask`);
+    expect(fake.created).toHaveLength(0);
+    const retry = await ask("work.dispatch", { id: item.id }, "session-2");
+    expect(!retry.ok && retry.error).toContain("asks before it acts");
+    expect((await engine.list()).items.map((listed) => listed.state)).toEqual(["proposed"]);
   });
 
   test("a session cannot start work that carries a mode you chose", async () => {

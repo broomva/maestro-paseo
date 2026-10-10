@@ -33,6 +33,7 @@ import {
   cutAtWord,
   decisionAsks,
   fateLine,
+  forTheConductor,
   headlineOf,
   isTriaged,
   ledgerName,
@@ -570,6 +571,7 @@ export function DecisionsView({
   const totalOpen = rail.reduce((sum, entry) => sum + entry.open, 0);
   const totalWaiting = rail.reduce((sum, entry) => sum + entry.waiting, 0);
   const answeredList = recentlyAnswered(all);
+  const conductorList = forTheConductor(all);
   // M: every ask queued this visit; answered: those of them no longer open (here or elsewhere). Skips stay open.
   const visit = new Set([...seen, ...queue.map(askKey)]);
   const stillOpen = new Set(queue.map(askKey));
@@ -822,6 +824,36 @@ export function DecisionsView({
       </View>
     ) : null;
 
+  // Never folded away: an answer that would once have started work waits here, visibly, for the conductor (A8).
+  const conductorView =
+    conductorList.length > 0 ? (
+      <View style={{ gap: space[2] }} accessibilityLabel={`For the conductor · ${conductorList.length}`}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space[1] }}>
+          <Icon name="Clock" size={14} color={theme.colors.statusWarning} />
+          <Text style={[text.small, text.tabular, { fontWeight: "600" }]}>
+            {`For the conductor · ${conductorList.length}`}
+          </Text>
+        </View>
+        <Text style={text.small}>
+          Their askers are gone and no session on their arcs could take them. Nothing was started: each waits for the
+          conductor to give it to a lane.
+        </Text>
+        {conductorList.map((ask) => (
+          <View key={askKey(ask)} style={{ gap: 2, paddingLeft: space[4] }}>
+            <Text style={[text.body, { fontSize: 13 }]}>{headlineOf(ask).headline}</Text>
+            <Text style={[text.small, { color: theme.colors.statusWarning }]}>
+              {`${answeredLine(ask)} · ${ledgerName(ledgerOf(ask))}`}
+            </Text>
+            {ask.answer ? (
+              <Text style={text.small} selectable>
+                {ask.answer}
+              </Text>
+            ) : null}
+          </View>
+        ))}
+      </View>
+    ) : null;
+
   const answeredView =
     answeredList.length > 0 ? (
       <View style={{ gap: space[2] }}>
@@ -913,6 +945,7 @@ export function DecisionsView({
         </Card>
       )}
       {upNextView}
+      {conductorView}
       {answeredView}
     </View>
   );

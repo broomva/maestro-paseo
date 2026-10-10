@@ -494,6 +494,18 @@ export function handedAsks(asks: readonly DecisionAsk[], cwd: string | null | un
 }
 
 /** The answered asks the tab lists, newest first. */
+/**
+ * Answers that wait for the conductor (fate stage `conductor`, BRO-2990): their
+ * asker is gone and no session on their arc could take them, so nothing was
+ * started; the conductor gives each to a lane. Oldest answer first, the order
+ * they were queued in. Decisions keeps them in view, not folded with the rest.
+ */
+export function forTheConductor(asks: readonly DecisionAsk[]): DecisionAsk[] {
+  return asks
+    .filter((ask) => ask.fate?.stage === "conductor")
+    .sort((a, b) => (a.answeredAt ?? "").localeCompare(b.answeredAt ?? ""));
+}
+
 export function recentlyAnswered(asks: readonly DecisionAsk[]): DecisionAsk[] {
   return asks
     .filter((ask) => ask.state !== "open" && !ask.idea)

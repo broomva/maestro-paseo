@@ -89,12 +89,16 @@ test("the plugin's handlers and hooks hand the agent socket its daemon client", 
     await expect(early).rejects.toBeInstanceOf(Refused);
     await expect(early).rejects.toThrow(NO_HANDLE);
 
-    // Any hook the daemon delivers carries the client; the socket can then start runs.
+    // Any hook the daemon delivers carries the client; the socket can then start runs for a lane,
+    // in the lane's mode (BRO-2990): here a session in bypass.
     const fake = fakePaseo();
+    fake.addSession("lane-1", { modeId: "bypassPermissions" });
     const created = hooks.get("agent.created");
     if (!created) throw new Error("agent.created is not subscribed");
     await created({ agent: { id: "someone" } }, { paseo: fake.paseo, signal: new AbortController().signal });
-    const { item: running } = (await call("work.dispatch", { id: item.id }, { path })) as { item: { state: string } };
+    const { item: running } = (await call("work.dispatch", { id: item.id }, { path, caller: "lane-1" })) as {
+      item: { state: string };
+    };
     expect(running.state).toBe("running");
     expect(fake.created).toHaveLength(1);
 
@@ -371,12 +375,15 @@ test("the loop is wired: off by default, Settings arm and disarm it, a wake now 
     expect(ahead).toBeGreaterThanOrEqual(5 * 60_000);
     expect(ahead).toBeLessThan(5 * 60_000 + 10_000);
 
-    // A wake now is yours to ask for: it says so, and starts the queued work as the loop.
+    // A wake now is yours to ask for: it says so, and starts nothing (A8): the work stays queued.
     const woke = await run("loop.wake", {});
-    expect(woke).toMatchObject({ cause: "manual", dispatched: [{ id: item.id, title: "Loop me" }] });
-    expect(fake.created).toHaveLength(1);
+    expect(woke).toMatchObject({ cause: "manual", dispatched: [], deferred: [] });
+    expect(fake.created).toHaveLength(0);
     expect((await run("loop.get", {})).recent.map((entry: { tickId: string }) => entry.tickId)).toEqual([woke.tickId]);
     expect((await stat(join(root, "wake-log.jsonl"))).isFile()).toBe(true);
+    // Your Dispatch still starts it.
+    expect((await run("work.dispatch", { id: item.id })).item.state).toBe("running");
+    expect(fake.created).toHaveLength(1);
 
     // Off again: nothing is armed.
     await run("config.set", { ...settings, loopMinutes: null });

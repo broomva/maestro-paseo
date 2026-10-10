@@ -122,10 +122,10 @@ export const PendingSchema = z.object({
 export type Pending = z.infer<typeof PendingSchema>;
 
 /**
- * Why the loop put work in Needs you, raised by a wake: queued work it leaves
- * to you to start (`yours`), a start it tried that failed (`failed`), or a run
- * quiet for 30 minutes or more (`quiet`). Being deferred at the run cap is
- * not one: that work starts when a slot frees.
+ * Why the loop put work in Needs you, raised by a wake: a run quiet for 30
+ * minutes or more (`quiet`). Since the loop stopped starting work (A8,
+ * BRO-2990) it raises no other kind; `yours` (queued work it left to you) and
+ * `failed` (a start it tried that failed) stay so older flags still read.
  */
 export const FLAG_KINDS = ["yours", "failed", "quiet"] as const;
 export type FlagKind = (typeof FLAG_KINDS)[number];
@@ -253,10 +253,10 @@ export const ConfigSchema = z.object({
   /** The gate new work gets when the form does not say. */
   defaultGate: z.enum(GATE_MODES),
   /**
-   * How often the loop (server/loop.ts) wakes to start queued work, in
-   * minutes; null for off. Off by default: the loop starts work on its own,
-   * so it is yours to turn on. At most a day, so the next wake is always a
-   * time a timer can hold.
+   * How often the loop (server/loop.ts) wakes to flag quiet runs and act on
+   * your answers, in minutes; null for off. It never starts work (A8,
+   * BRO-2990). Off by default, so it is yours to turn on. At most a day, so
+   * the next wake is always a time a timer can hold.
    */
   loopMinutes: z.number().int(LOOP_EVERY).positive(LOOP_EVERY).max(LOOP_MAX_MINUTES, LOOP_EVERY).nullable(),
 });

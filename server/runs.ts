@@ -5,7 +5,7 @@
 
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { MaestroConfig, NextRun, Worker } from "../shared/contracts";
-import { skipsPrompts } from "../shared/run";
+import { type ModeFlag, modeSkipsPrompts, skipsPrompts } from "../shared/run";
 import { ticketOf } from "../shared/text";
 import { runFolder } from "./folders";
 import { briefOf } from "./frontmatter";
@@ -73,21 +73,84 @@ export function providerFamily(selection: string): string {
 }
 
 /**
+ * The lane a run nobody watches starts for, and the mode its profile gives
+ * that run (frame D3: workers take the lane's mode, "never Always ask"). Until
+ * `.broomva/lanes.yaml` exists (S-lanes, BRO-2989), the lane is the session
+ * that asked for the run, and its profile is how that session runs now
+ * (callerLane). `modes` is the provider's list, so modeSkipsPrompts can read
+ * Paseo's own flag.
+ */
+export interface LaneProfile {
+  /** The lane in words: its session's title, else its id. */
+  name: string;
+  provider: string;
+  modeId: string | null;
+  modes?: readonly ModeFlag[] | null;
+}
+
+/**
+ * Why a run nobody watches may not start with this lane profile, or null
+ * (BRO-2990, owner answer A8). Such a run takes the lane profile's mode, and
+ * `modeId: null` never means Paseo's default, which is Always ask: a run that
+ * asks with nobody to answer stops at its first command, as the six in
+ * 13b97ad9 did. So there must be a profile, it must name a mode, the mode must
+ * be the run's own provider's, and it must not ask. Pure.
+ */
+export function unattendedRefusal(lane: LaneProfile | null, selection: string): string | null {
+  const start = "A run nobody watches never starts in Always ask, so this one was not started";
+  const yours =
+    "start it yourself in Maestro, or dispatch it from a lane whose session runs in a mode that does not ask.";
+  if (!lane)
+    return `${start}: Maestro could not tell which lane asked for it, so it has no lane profile. ${capital(yours)}`;
+  if (!lane.modeId) return `${start}: the lane (${lane.name}) names no mode for it. ${capital(yours)}`;
+  if (providerFamily(lane.provider) !== providerFamily(selection)) {
+    return `${start}: the lane (${lane.name}) runs ${providerFamily(lane.provider)} and this work runs ${providerFamily(selection)}, and a mode is a provider's own. ${capital(yours)}`;
+  }
+  if (!modeSkipsPrompts(lane.provider, lane.modeId, lane.modes)) {
+    return `${start}: the lane's mode (${lane.modeId}, ${lane.name}) asks before it acts, so the run would stop at its first command. ${capital(yours)}`;
+  }
+  return null;
+}
+
+function capital(words: string): string {
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+}
+
+/**
+ * The lane profile of the session that asked for a run (LaneProfile): its
+ * provider, its mode now and the provider's modes, as Paseo reports them.
+ * Null when no session is named, or Paseo has no record of it, or it is gone.
+ */
+export async function callerLane(agentId: string | null, paseo: Paseo): Promise<LaneProfile | null> {
+  if (!agentId) return null;
+  const snapshot = await paseo.agents.ref(agentId).refresh();
+  const agent = snapshot?.agent;
+  if (!agent || agent.archivedAt || agent.status === "closed") return null;
+  return {
+    name: agent.title?.trim() || agentId,
+    provider: agent.provider,
+    modeId: agent.currentModeId ?? null,
+    modes: agent.availableModes ?? null,
+  };
+}
+
+/**
  * How this item's runs start: what the work chose, else Settings. A mode is a
  * provider's own, so the Settings mode applies only while the run uses the
  * Settings provider; thinking and features are the work's alone. Dispatch
  * starts from this, and the wire shows it as `nextRun`, so the card and the
- * run cannot disagree.
+ * run cannot disagree. A run nobody watches (`lane`, already cleared by
+ * unattendedRefusal) takes the lane profile's mode instead of Settings'.
  */
-export function runSettings(config: MaestroConfig, item: StoredWork) {
+export function runSettings(config: MaestroConfig, item: StoredWork, lane?: LaneProfile | null) {
   const contract = item.contract;
   const selection = contract.provider ?? config.provider;
   const sameProvider = providerFamily(selection) === providerFamily(config.provider);
-  const modeId = contract.modeId ?? (sameProvider ? config.modeId : null);
+  const modeId = lane?.modeId ?? contract.modeId ?? (sameProvider ? config.modeId : null);
   const fromSettings: NextRun["fromSettings"] = [];
   if (!contract.provider) fromSettings.push("provider");
   if (!contract.isolation) fromSettings.push("isolation");
-  if (!contract.modeId && modeId) fromSettings.push("modeId");
+  if (!lane?.modeId && !contract.modeId && modeId) fromSettings.push("modeId");
   return {
     selection,
     isolation: contract.isolation ?? config.isolation,
@@ -135,11 +198,17 @@ export function leftToYou(next: NextRun): string | null {
   return null;
 }
 
-export async function startRun(paseo: Paseo, config: MaestroConfig, item: StoredWork): Promise<Worker> {
+/** Start the item's run; `lane` for a run nobody watches, which takes the lane profile's mode (runSettings). */
+export async function startRun(
+  paseo: Paseo,
+  config: MaestroConfig,
+  item: StoredWork,
+  lane?: LaneProfile | null,
+): Promise<Worker> {
   if (!item.contract.repo) {
     throw new DispatchError("This work has no repository to run in. Add a repo: line to _work.md.");
   }
-  const run = runSettings(config, item);
+  const run = runSettings(config, item, lane);
   // Every run starts here, whichever verb reached it: the folder is checked where it is used.
   const folder = await runFolder(item.contract.repo, { workRoot: config.workRoot, isolation: run.isolation });
   if (folder.refusal) throw new DispatchError(folder.refusal);

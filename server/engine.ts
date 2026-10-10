@@ -81,7 +81,17 @@ import { inspectFolder, repoRefusal } from "./folders";
 import { briefOf, type RunKeys, workTitle } from "./frontmatter";
 import { type LabelAgent, WORK_LABELS, workLabels } from "./labels";
 import { describePermission, type PermissionLike } from "./permissions";
-import { HELD_FOR_YOU, leftToYou, MODED_BY_YOU, nextRun, type Paseo, startRun, WORK_LABEL } from "./runs";
+import {
+  callerLane,
+  HELD_FOR_YOU,
+  type LaneProfile,
+  MODED_BY_YOU,
+  type Paseo,
+  runSettings,
+  startRun,
+  unattendedRefusal,
+  WORK_LABEL,
+} from "./runs";
 import { type Mutation, placement, type StoredWork, WorkStore, withLock } from "./store";
 import { toWire } from "./wire";
 import { type WorktreeStatus, worktreeStatus } from "./worktree";
@@ -99,6 +109,29 @@ export class UserError extends Error {
 
 /** A dispatch refused at the concurrency cap. The work is unchanged: it stays queued (or stuck). */
 export class AtCapacity extends UserError {}
+
+/** A run nobody would watch, refused for its lane profile (runs.ts unattendedRefusal). The work stays queued. */
+export class Unwatched extends UserError {}
+
+/** Why a run holds one of the cap's slots (BRO-2990): the cap counts every run that still has its session. */
+export type Slot = "running" | "asking" | "stuck" | "starting";
+
+const SLOT_WORDS: Record<Slot, string> = {
+  running: "running",
+  asking: "waiting on a permission",
+  stuck: "stuck",
+  starting: "starting",
+};
+
+/** "3 of 3 slots taken (1 running, 2 stuck)": what holds the cap's slots, in the order a person reads them. */
+export function capacityWords(busy: ReadonlyMap<string, Slot>, cap: number): string {
+  const counts = new Map<Slot, number>();
+  for (const slot of busy.values()) counts.set(slot, (counts.get(slot) ?? 0) + 1);
+  const parts = (Object.keys(SLOT_WORDS) as Slot[])
+    .filter((slot) => counts.has(slot))
+    .map((slot) => `${counts.get(slot)} ${SLOT_WORDS[slot]}`);
+  return `${busy.size} of ${cap} ${cap === 1 ? "slot" : "slots"} taken (${parts.join(", ")})`;
+}
 
 /** Why work adopted from an idle session is at your gate: its last turn handed you something (adoptOnce). */
 export const IDLE_WHEN_TRACKED = "The session was idle when tracked";
@@ -250,6 +283,12 @@ export interface EngineOptions {
   merged?: (repo: string, branch: string) => Promise<MergedPr | null>;
   /** Sets labels on a session: the plugin passes server/labels.ts paseoLabel (the paseo CLI); absent, nothing is labelled. */
   label?: LabelAgent;
+  /**
+   * The lane profile a run nobody watches starts with, for the session that
+   * asked for it (runs.ts LaneProfile). Absent: that session's own provider
+   * and mode, as Paseo reports them (callerLane). BRO-2989 reads lanes.yaml.
+   */
+  lane?: (agentId: string | null, paseo: Paseo) => Promise<LaneProfile | null>;
 }
 
 /** What work.create takes: the work, where it runs, how it is judged, and optionally how its runs start. */
@@ -333,15 +372,20 @@ export const CLIENT_WAIT_MS = 5_000;
 
 type ApplyOutcome = "applied" | "dropped" | "early" | "waiting" | "settled";
 
+/** Why Maestro itself never starts a run (owner answer A8, BRO-2990). */
+export const NEVER_BY_RULE =
+  "Maestro never starts work by a rule of its own: you start it with Dispatch, or a lane or the conductor does.";
+
 /**
  * Why this caller may not start this work, or null. You may start queued or
  * stuck work, or a run with no session recorded. A session may start only
  * queued work (restarting stuck work is unblocking, and that is yours), and
  * never work that carries a mode you chose for it: the mode is yours to use,
- * nor work held for you (`hold`).
- * The loop starts only queued work too, and never work leftToYou names.
+ * nor work held for you (`hold`). Its run is one nobody watches, so dispatch
+ * also needs its lane profile's mode (unattendedRefusal).
+ * Maestro itself (the loop, answer routing) starts nothing (A8): it queues.
  */
-function startRefusal(item: StoredWork, origin: Origin, config: MaestroConfig): string | null {
+function startRefusal(item: StoredWork, origin: Origin): string | null {
   const state = item.contract.state;
   switch (origin.actor) {
     case "agent":
@@ -350,8 +394,7 @@ function startRefusal(item: StoredWork, origin: Origin, config: MaestroConfig): 
       // auto_accept is a mode by another name: it skips the prompts too (shared/run.ts).
       return item.contract.modeId || skipsPrompts({ featureValues: item.contract.featureValues }) ? MODED_BY_YOU : null;
     case "maestro":
-      if (!isDispatchable(state)) return "The loop starts only queued work. Stuck work is yours to unblock.";
-      return leftToYou(nextRun(config, item));
+      return NEVER_BY_RULE;
     case "human":
       if (isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events))) return null;
       return "Only queued or stuck work can be dispatched.";
@@ -402,6 +445,7 @@ export class Engine {
   private readonly applying = new Set<string>();
   /** Dispatches that passed the capacity check and have not finished: each holds a slot. */
   private readonly admitted = new Set<string>();
+  private readonly lane: NonNullable<EngineOptions["lane"]>;
   private closed = false;
 
   constructor(options: EngineOptions = {}) {
@@ -417,6 +461,7 @@ export class Engine {
     this.merged = options.merged ?? mergedPrs(undefined, undefined, this.log);
     // No label unless one is passed: index.server.ts passes the paseo CLI, so no test can label a real session.
     this.label = options.label ?? (async () => undefined);
+    this.lane = options.lane ?? callerLane;
   }
 
   /**
@@ -809,9 +854,11 @@ export class Engine {
   }
 
   /**
-   * Create work and, when asked, dispatch it. At the concurrency cap the work
-   * is still created: it comes back queued with the reason, so the caller
-   * holds its id and a retry dispatches it rather than creating it again.
+   * Create work and, when asked, dispatch it. At the concurrency cap, or when
+   * a session's run would have nobody watching it in a mode that asks
+   * (Unwatched), the work is still created: it comes back queued with the
+   * reason, so the caller holds its id and a retry dispatches it rather than
+   * creating it again.
    */
   async createWork(
     paseo: Paseo | null,
@@ -824,27 +871,35 @@ export class Engine {
     try {
       return { item: await this.dispatch(paseo, item.id, origin), notice: null };
     } catch (error) {
-      if (!(error instanceof AtCapacity)) throw error;
+      if (!(error instanceof AtCapacity || error instanceof Unwatched)) throw error;
       return { item: (await this.get(item.id)).item, notice: `Created ${item.id}, not started. ${error.message}` };
     }
   }
 
   async dispatch(paseo: Paseo, id: string, origin: Origin = BY_HUMAN): Promise<WorkItem> {
+    // Maestro itself starts nothing (A8): refused before it takes a slot or reads a file.
+    if (origin.actor === "maestro") throw new UserError(NEVER_BY_RULE);
     if (this.dispatching.has(id)) throw new UserError("This work is already being dispatched.");
     this.dispatching.add(id);
     // Take a slot before reading anything: every dispatch admitted ahead of this one is
-    // counted from here, whether or not the files say it is running by the time they are read.
+    // counted from here, whether or not the files say it holds a slot by the time they are read.
     const ahead = [...this.admitted];
     this.admitted.add(id);
     try {
       const { store, config } = await this.store();
       const item = await store.findById(id);
-      const refusal = startRefusal(item, origin, config);
+      const refusal = startRefusal(item, origin);
       if (refusal) throw new UserError(refusal);
-      this.checkCapacity(item, ahead, await this.running(store), config.concurrencyCap);
+      this.checkCapacity(item, ahead, await this.occupied(store), config.concurrencyCap);
+      // A session's run is one nobody watches: it takes its lane profile's mode, and never Always ask (A8).
+      const lane = origin.actor === "agent" ? await this.laneOf(origin.by, paseo) : null;
+      if (origin.actor === "agent") {
+        const unattended = unattendedRefusal(lane, runSettings(config, item).selection);
+        if (unattended) throw new Unwatched(unattended);
+      }
       let worker: Awaited<ReturnType<typeof startRun>>;
       try {
-        worker = await startRun(paseo, config, item);
+        worker = await startRun(paseo, config, item, lane);
       } catch (error) {
         const message = (error as Error).message;
         await store.mutate(id, () => ({ events: [this.note(`Dispatch failed: ${message}`)] }), item.dir);
@@ -856,8 +911,7 @@ export class Engine {
         bound = await store.mutate(
           id,
           (fresh) => {
-            if (startRefusal(fresh, origin, config))
-              throw new UserError("The work changed while the run was starting.");
+            if (startRefusal(fresh, origin)) throw new UserError("The work changed while the run was starting.");
             return {
               to: "running",
               actor: origin.actor,
@@ -910,26 +964,52 @@ export class Engine {
     }
   }
 
-  /** Ids of the work running now, as the files say. */
-  private async running(store: WorkStore): Promise<Set<string>> {
-    const { items } = await store.scan();
-    return new Set(items.filter((other) => other.contract.state === "running").map((other) => other.contract.id));
+  /** The lane profile of the session that asked for a run, bounded; one that cannot be read is none. */
+  private async laneOf(agentId: string | null, paseo: Paseo): Promise<LaneProfile | null> {
+    return within(() => this.lane(agentId, paseo), this.claimWaitMs).catch((error) => {
+      this.log(`reading the lane profile of ${agentId ?? "an unnamed session"}: ${(error as Error).message}`);
+      return null;
+    });
   }
 
   /**
-   * Refuse at the cap. Busy is what the files say is running plus every
-   * dispatch that took a slot before this one did (`ahead`, read before the
-   * files). A dispatch holds its slot until it ends, so past the point its run
-   * is recorded running, or until it fails: each one ahead is counted by the
-   * files or by its slot, since the files are read after the slot list, and a
-   * run counted by both is one id, counted once.
+   * The work whose run holds a slot now, as the files say, by why (BRO-2990):
+   * running, waiting on a permission (at the gate with a question pending), or
+   * stuck. A run that stopped to ask, or stopped, still has its session; only
+   * one that landed at your gate with nothing pending, or ended, frees its slot.
    */
-  private checkCapacity(item: StoredWork, ahead: readonly string[], running: Set<string>, cap: number | null): void {
-    const busy = new Set([...running, ...ahead]);
+  private async occupied(store: WorkStore): Promise<Map<string, Slot>> {
+    const { items } = await store.scan();
+    const held = new Map<string, Slot>();
+    for (const other of items) {
+      const state = other.contract.state;
+      if (state === "running") held.set(other.contract.id, "running");
+      else if (state === "blocked") held.set(other.contract.id, "stuck");
+      else if (phaseOf(state, other.events) === "asking") held.set(other.contract.id, "asking");
+    }
+    return held;
+  }
+
+  /**
+   * Refuse at the cap. Busy is every run the files say holds a slot (occupied)
+   * plus every dispatch that took a slot before this one did (`ahead`, read
+   * before the files). A dispatch holds its slot until it ends, so past the
+   * point its run is recorded running, or until it fails: each one ahead is
+   * counted by the files or by its slot, since the files are read after the
+   * slot list, and a run counted by both is one id, counted once.
+   */
+  private checkCapacity(
+    item: StoredWork,
+    ahead: readonly string[],
+    occupied: ReadonlyMap<string, Slot>,
+    cap: number | null,
+  ): void {
+    const busy = new Map<string, Slot>(ahead.map((id) => [id, "starting"]));
+    for (const [id, slot] of occupied) busy.set(id, slot);
     busy.delete(item.contract.id);
     if (cap !== null && busy.size >= cap) {
       throw new AtCapacity(
-        `At capacity: ${busy.size} running. It stays ${PLAIN_VOICE[item.contract.state].label.toLowerCase()}.`,
+        `At capacity: ${capacityWords(busy, cap)}. It stays ${PLAIN_VOICE[item.contract.state].label.toLowerCase()}.`,
       );
     }
   }

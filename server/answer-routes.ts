@@ -8,29 +8,42 @@
 //     alive and idle: the answer is sent to it, quoted verbatim. Alive and at
 //     work, or asking for a permission: the delivery waits for it to go idle
 //     (a turn's end, or the loop's next wake). A turn is never interrupted.
-//   - Gone, or none named: relayed (BRO-2918) to the session that asked
-//     another ask in the same ledger, newest first, then to the initiative's
-//     driver when it names a session; one at work holds it for RELAY_WAIT_MS
-//     from when it first waited on that session (an `ask.waiting` line), then
-//     the next is asked. An owner-only ask (ownerOnly) is never relayed: it is
-//     held work, never started. With no one to relay to: a work item, queued
-//     with gate human, briefed from the ask and the answer, in the ask's
-//     initiative when it names one, and filed once (Contract.answer). An answer that takes an option the ledger
-//     marks `status_quo: true` needs none; nor does an idea's, whose develop
-//     answer files its own (index.server.ts). Read from the ask's own keys,
-//     never from the words of an option.
+//   - Gone, or none named, in this order (BRO-2990, owner answer A8):
+//     1. an answer that takes an option the ledger marks `status_quo: true`
+//        closes as a no-op; so does an idea's, whose develop answer files its
+//        own held work (index.server.ts). Read from the ask's own keys, never
+//        from the words of an option;
+//     2. an owner-only ask (ownerOnly) is held work for you, never relayed and
+//        never started by anyone but you (BRO-2910);
+//     3. relayed (BRO-2918) to the session that asked another ask in the same
+//        ledger, newest first, then to the initiative's driver when it names a
+//        session; one at work holds it for RELAY_WAIT_MS from when it first
+//        waited on that session (an `ask.waiting` line), then the next is asked;
+//     4. with no one to relay to: queued for the conductor, as a `lane.assign`
+//        candidate carrying the ask, your answer and pointers
+//        (shared/answers.ts ConductorCandidate), written once on the answer's
+//        `ask.routed` line, which is the queue. It is never queued work: in
+//        13b97ad9 six answers filed that way became six sessions nobody
+//        watched. Decisions shows it waiting "for the conductor".
 // Answers given before routing first ran (`routing.began`, by time, so the
 // order its line and an answer's are appended in does not matter) are never
 // routed: they were acted on by hand, or not, before Maestro could. An answer
 // whose ask now records another outcome where it lives (main's wins, §5.2) is
 // superseded: recorded, never acted on, its words kept in its receipt. A
 // fleet scope's own asks are the fleet's to act on, and are never routed here.
-// Routing never decides: the delivery is your answer verbatim, the work item
-// waits at your gate, and how the loop starts it is the loop's own rule.
+// Routing never decides and never starts work: the delivery is your answer
+// verbatim, held work waits for you, and a candidate waits for the conductor.
 
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
-import { type AnswerFate, type AnswersLanding, answersWord, type Route } from "../shared/answers";
+import {
+  type AnswerFate,
+  type AnswersLanding,
+  answersWord,
+  type ConductorCandidate,
+  ConductorCandidateSchema,
+  type Route,
+} from "../shared/answers";
 import type { DecisionAsk } from "../shared/fleet";
 import { isRow, text } from "./control-asks";
 import { homeWords, type WorkspaceRead } from "./control-home";
@@ -42,7 +55,7 @@ import type { Paseo } from "./runs";
 /** The longest a route waits for a session to say how it is. */
 export const SESSION_MS = 10_000;
 
-/** How long an answer waits on a relay at work before the next one is asked, and at the end, work is filed. */
+/** How long an answer waits on a relay at work before the next one is asked; after the last, it waits for the conductor. */
 export const RELAY_WAIT_MS = 2 * 60 * 60_000;
 
 /** A work item's title, at most this long. */
@@ -76,6 +89,8 @@ export interface RoutedReceipt {
   work: { id: string; title: string } | null;
   /** Why, in words. */
   reason: string;
+  /** Route `conductor` only: what the conductor needs to give the answer to a lane (BRO-2990). */
+  candidate?: ConductorCandidate;
 }
 
 /** One answer by its receipt: the ask's handle and the moment it was answered. */
@@ -326,6 +341,39 @@ export function routedWork(
   return { title, brief: lines.join("\n") };
 }
 
+/**
+ * An answer no session could take, as the conductor gets it (shared/answers.ts
+ * ConductorCandidate): the ask, your answer verbatim, and where to look. Pure.
+ */
+export function conductorCandidate(
+  receipt: AnsweredReceipt,
+  ask: DecisionAsk,
+  askedBy: string | null,
+  repo: string,
+): ConductorCandidate {
+  return {
+    for: "lane.assign",
+    ask: {
+      ledger: receipt.ledger,
+      uid: receipt.uid,
+      id: receipt.id,
+      headline: ask.headline ?? ask.question ?? receipt.id,
+      question: ask.question,
+      stakes: ask.stakes,
+      options: ask.options.map((option) => ({ id: option.id, label: option.label, consequence: option.consequence })),
+    },
+    answer: { option: receipt.answerOption, words: receipt.answer ?? ask.answer, at: receipt.at },
+    pointers: {
+      key: answerKey(receipt),
+      home: receipt.home,
+      homeKind: receipt.homeKind,
+      askedBy,
+      repo,
+      initiative: ask.initiative ?? null,
+    },
+  };
+}
+
 function clip(words: string, max: number): string {
   if (words.length <= max) return words;
   const cut = words.slice(0, max - 1);
@@ -550,6 +598,7 @@ export class AnswerRouter {
     }
     const relayed = await this.relay(paseo, receipt, ask, read, log, why);
     if (relayed) return relayed;
+    // Filed as work by a Maestro before BRO-2990, its receipt never written (a crash between): that item stands.
     const existing = (await this.options.engine.answered()).get(key);
     if (existing) {
       return this.routed(receipt, {
@@ -559,35 +608,40 @@ export class AnswerRouter {
         reason: `${why} Filed as work before; that item stands.`,
       });
     }
-    const { title, brief } = routedWork(receipt, ask, why);
-    const item = await this.options.engine.create(
-      paseo,
-      {
-        title,
-        brief,
-        repo: await this.repoFor(ask),
-        gate: "human",
-        check: "",
-        initiative: ask?.initiative ?? "",
-        dispatch: false,
-        answer: key,
-      },
-      LOOP,
-    );
-    this.options.log?.(`answers: ${receipt.ledger} ${receipt.id}: ${why} Filed ${item.id}, queued, gate human`);
+    // No one to take it: queued for the conductor, never as work (A8). In 13b97ad9 the work this filed was started.
+    const candidate = conductorCandidate(receipt, ask, agentId, await this.repoFor(ask));
+    this.options.log?.(`answers: ${receipt.ledger} ${receipt.id}: ${why} Queued for the conductor (lane.assign)`);
     return this.routed(receipt, {
-      route: "work",
+      route: "conductor",
       agentId,
-      work: { id: item.id, title: item.title },
-      reason: `${why} Filed as work, queued, for your gate.`,
+      work: null,
+      reason: `${why} No session on its arc could take it, so it waits for the conductor to give it to a lane. Nothing was started.`,
+      candidate,
     });
+  }
+
+  /**
+   * The answers queued for the conductor (route `conductor`), oldest first:
+   * the `lane.assign` candidates the conductor (BRO-2989) reads. Pure: a read
+   * of the receipt log, which is the queue. A line whose candidate does not
+   * parse is skipped, never guessed at.
+   */
+  async candidates(): Promise<ConductorCandidate[]> {
+    const log = await this.log();
+    const out: ConductorCandidate[] = [];
+    for (const routed of log.routed.values()) {
+      if (routed.route !== "conductor") continue;
+      const parsed = ConductorCandidateSchema.safeParse(routed.candidate);
+      if (parsed.success) out.push(parsed.data);
+    }
+    return out;
   }
 
   /**
    * An answer its asker cannot take, sent to the first session that can: the
    * arc's other askers, newest first, then the initiative's driver. One at
    * work holds the answer until it is idle; one gone is passed over. Null when
-   * none is left, and the answer is filed as work (BRO-2918).
+   * none is left, and the answer is queued for the conductor (BRO-2918, BRO-2990).
    */
   private async relay(
     paseo: Paseo | null,
@@ -716,7 +770,7 @@ export class AnswerRouter {
 
   private async routed(
     receipt: AnsweredReceipt,
-    fields: Pick<RoutedReceipt, "route" | "agentId" | "work" | "reason">,
+    fields: Pick<RoutedReceipt, "route" | "agentId" | "work" | "reason" | "candidate">,
   ): Promise<RouteOutcome> {
     const key = answerKey(receipt);
     const line: RoutedReceipt = {
@@ -801,7 +855,7 @@ export class AnswerRouter {
     const blank = { route: null, pr: null, work: null, agentId: null };
     if (routed) {
       return {
-        stage: routed.route === "superseded" ? "superseded" : "acted",
+        stage: routed.route === "superseded" ? "superseded" : routed.route === "conductor" ? "conductor" : "acted",
         words: fateWords(routed),
         route: routed.route,
         pr: null,
@@ -847,6 +901,10 @@ export class AnswerRouter {
   }
 }
 
+/** A routed answer waiting for the conductor, as Decisions says it. */
+export const FOR_THE_CONDUCTOR =
+  "For the conductor: no session on its arc could take your answer, so it waits for the conductor to give it to a lane. Nothing was started.";
+
 /** A routed answer, in a sentence. */
 export function fateWords(routed: Pick<RoutedReceipt, "route" | "work" | "reason">): string {
   if (routed.route === "delivered") return "Acted on: sent to the session that asked.";
@@ -854,5 +912,6 @@ export function fateWords(routed: Pick<RoutedReceipt, "route" | "work" | "reason
   if (routed.route === "work")
     return `Acted on: filed as work, ${routed.work ? `"${routed.work.title}"` : "an item"}, for your gate.`;
   if (routed.route === "superseded") return `Not acted on. ${routed.reason}`;
+  if (routed.route === "conductor") return FOR_THE_CONDUCTOR;
   return `Acted on: nothing to do. ${routed.reason}`;
 }

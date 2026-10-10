@@ -2,7 +2,8 @@
 // origin/main (server/answers-landing.ts), and each answer turned into action
 // once it is there (server/answer-routes.ts). The loop does both on each wake;
 // neither decides anything: an answer is yours, a batch lands through a PR
-// gated like any other, and Maestro never merges it.
+// gated like any other, and Maestro never merges it. Neither starts work
+// either (A8): an answer no session can take waits for the conductor.
 
 import { z } from "zod";
 
@@ -46,19 +47,58 @@ export type AnswersLanding = z.infer<typeof AnswersLandingSchema>;
  * - `acted`: routed, once, by its receipt (`route`);
  * - `superseded`: the ask was closed another way where it lives (main's
  *   outcome wins, §5.2), so your answer was recorded and not acted on;
- * - `before`: answered before Maestro routed answers, so nothing acted on it.
+ * - `before`: answered before Maestro routed answers, so nothing acted on it;
+ * - `conductor`: its asker is gone and no one on its arc could take it, so it
+ *   waits for the conductor to give it to a lane (route `conductor`). Nothing
+ *   was started for it (A8, BRO-2990).
  */
-export const ANSWER_STAGES = ["unlanded", "unrouted", "acted", "superseded", "before"] as const;
+export const ANSWER_STAGES = ["unlanded", "unrouted", "acted", "superseded", "before", "conductor"] as const;
 export type AnswerStage = (typeof ANSWER_STAGES)[number];
 
 /**
  * What routing did with an answer: told the session that asked, told another
  * session on its arc or its initiative's driver when the asker is gone
- * (relayed), filed work, nothing to do (and why), or nothing because the ask
- * was closed another way.
+ * (relayed), filed work, nothing to do (and why), nothing because the ask
+ * was closed another way, or queued it for the conductor (`conductor`) when
+ * no session could take it. Routing never starts work (A8).
  */
-export const ROUTES = ["delivered", "relayed", "work", "none", "superseded"] as const;
+export const ROUTES = ["delivered", "relayed", "work", "none", "superseded", "conductor"] as const;
 export type Route = (typeof ROUTES)[number];
+
+/**
+ * An answer queued for the conductor (BRO-2990, A8): what a `lane.assign`
+ * needs to give it to a lane, read from the ask and its `ask.answered`
+ * receipt and written once, on the answer's `ask.routed` line in the asks'
+ * receipt log, which is the queue. The conductor (BRO-2989) decides which
+ * lane takes it, and whether it needs work at all; Maestro only queues it.
+ * - `ask`: the ask as it read when the answer was routed;
+ * - `answer`: the option taken and your words, verbatim;
+ * - `pointers`: where to look: the ledger at its home, the session that asked
+ *   (gone), the folder a lane would work in (the asker's when it is still a
+ *   repository, else the control repo), the initiative, and the receipt key.
+ */
+export const ConductorCandidateSchema = z.object({
+  for: z.literal("lane.assign"),
+  ask: z.object({
+    ledger: z.string(),
+    uid: z.string().nullable(),
+    id: z.string(),
+    headline: z.string(),
+    question: z.string().nullable(),
+    stakes: z.string().nullable(),
+    options: z.array(z.object({ id: z.string(), label: z.string(), consequence: z.string().nullable() })),
+  }),
+  answer: z.object({ option: z.string().nullable(), words: z.string().nullable(), at: z.string().nullable() }),
+  pointers: z.object({
+    key: z.string(),
+    home: z.string(),
+    homeKind: z.enum(["main", "checkout", "root"]),
+    askedBy: z.string().nullable(),
+    repo: z.string(),
+    initiative: z.string().nullable(),
+  }),
+});
+export type ConductorCandidate = z.infer<typeof ConductorCandidateSchema>;
 
 export const AnswerFateSchema = z.object({
   stage: z.enum(ANSWER_STAGES),

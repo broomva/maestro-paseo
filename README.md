@@ -96,10 +96,16 @@ maestro mine                   # the work this session is running
   `gate: human`.
 - **A session cannot write a done check.** Checks run as you, with no session and no permission
   prompt in the loop, so they come from you: add one to the work's `_work.md` (`done.check`).
-- **A dispatch runs in the mode you configured.** Work a session creates carries none of the run
-  choices the composer offers you (provider, isolation, mode, thinking, features), so it runs as
-  Settings say. That is no more than a session can already do: Paseo's own `create_agent` tool,
-  which every session holds, starts an agent in any mode.
+- **A session's run takes its lane's mode, and never starts in Always ask.** A run a session starts
+  is one nobody watches, so it takes the lane profile's mode (owner answer A8, BRO-2990): until
+  `.broomva/lanes.yaml` exists, the lane is the calling session itself, and its profile is the
+  provider and mode that session runs in now. `modeId: null` never falls through to Paseo's default
+  (Always ask) for such a run: with no lane named (no `PASEO_AGENT_ID`), a lane with no mode, a
+  lane on another provider, or a lane whose mode asks before it acts, the start is refused with the
+  reason, nothing starts, and `maestro new --dispatch` still files the work, queued, with its id and
+  why. Work a session creates carries none of the run choices the composer offers you (provider,
+  isolation, mode, thinking, features). That is no more than a session can already do: Paseo's own
+  `create_agent` tool, which every session holds, starts an agent in any mode.
 - **A mode you chose for one work is yours to use.** A session cannot start work that carries its
   own mode: it is told "This work runs in a mode you chose; start it yourself."
 - **Receipts say which session it said it was.** Everything done through the socket is recorded as
@@ -229,29 +235,32 @@ under a human gate reaches Done without an approve verdict.
 ## The loop
 
 Off by default. Give it a period in Settings (`loopMinutes`) and Maestro wakes on that schedule to
-start queued work, the way the Maestro runtime's tick does. Each wake reads the work (reconciling
-sessions and applying decisions whose undo window closed), then walks the Queued group, triggered
-first, then the rest, each the longest-waiting first, and starts what it can through the same
-dispatch you use, recorded as Maestro's ("by the loop"), never as yours and never as a look.
+look after the work. **It never starts work** (owner answer A8, BRO-2990): the plugin queues, and
+you (Dispatch), a lane or the conductor start it. In Paseo session 13b97ad9 the loop's old start
+step turned six answers into six sessions nobody watched, so that step is gone, and the loop is
+typed against an engine with no dispatch. Each wake reads the work (reconciling sessions and
+applying decisions whose undo window closed), counts what needs you, flags quiet runs, and lands
+and routes your answers.
 
-- **It stops at the run cap.** The first start refused at the cap defers that work and the rest of
-  the queue, "at the run cap". Work it would never start (below) keeps its own reason, before the
-  cap or after it.
-- **It never starts what is yours to start.** Work whose run would skip permission prompts (a mode
-  that does, the work's own or Settings', or an auto-approving feature), and work you gave a mode
-  of its own, are left alone with the reason. It never touches stuck work, and never stops, sends
-  back, or decides anything.
-- **What it leaves to you lands in Needs you.** A wake flags three things on the work itself, so
-  they show in Maestro's Needs you (the feed's and the list's section, the chip, the board's
-  column, the header count, `maestro ls`; one definition, `shared/needs-you.ts`) with the reason
-  on the card and in the detail: queued work it leaves to you ("Start it yourself: ..."), a start
-  it tried that failed ("Could not start: ..."), and a run quiet for 30 minutes or more ("Quiet for
-  N minutes, worth a look"). Each flag is one `loop.flagged` receipt, written only when the work's
-  current flag is not already of that kind, so a wake every minute adds nothing. Anything else
-  that happens to the work (your dispatch or cancel, a turn, a state change, a note) clears it,
-  and the loop does not try a failed start again until then. Waiting at the run cap is not
-  flagged: that work starts when a slot frees. Flags go through Maestro and Paseo, never a desktop
-  notification.
+- **Only you, a lane or the conductor start a run.** Your Dispatch (and Unblock) starts work as
+  Settings say. A session starts it through the agent socket (`maestro dispatch`), in its lane's
+  mode (above). Maestro itself is refused outright: `dispatch` as Maestro answers "Maestro never
+  starts work by a rule of its own".
+- **The run cap counts every run that still has its session.** Running, waiting on a permission
+  (at your gate with a question pending), stuck, and starting (a dispatch in flight) each hold a
+  slot; only a run that landed at your gate with nothing pending, or ended, frees one. At the cap a
+  dispatch, yours or a lane's, is refused and says what holds the slots: "At capacity: 3 of 3 slots
+  taken (1 running, 2 stuck). It stays queued."
+- **What needs you lands in Needs you.** A wake flags a run quiet for 30 minutes or more ("Quiet for
+  N minutes, worth a look") on the work itself, so it shows in Maestro's Needs you (the feed's and
+  the list's section, the chip, the board's column, the header count, `maestro ls`; one definition,
+  `shared/needs-you.ts`) with the reason on the card and in the detail. Each flag is one
+  `loop.flagged` receipt, written only when the work's current flag is not already of that kind, so
+  a wake every minute adds nothing. Anything else that happens to the work (your dispatch or cancel,
+  a turn, a state change, a note) clears it. Queued work is never flagged: it waits for you, a lane
+  or the conductor. Flags an older Maestro raised on queued work ("Start it yourself: ...", "Could
+  not start: ...") still read, and clear the same way. Flags go through Maestro and Paseo, never a
+  desktop notification.
 - **Quiet means the session is quiet too.** Maestro hears only turn boundaries, so a run quiet by
   Maestro's events is flagged only when its session has done nothing for as long: the wake asks
   Paseo for the session's last activity (bounded at 10 s), and a long turn that is still working
@@ -298,10 +307,13 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
     relayed session is told it decides, and that nothing was filed. An owner-only answer is never
     relayed: it is held work for you, never started, and its brief says not to perform the act;
     so is an answer whose checkout ask no read holds, whose class cannot be known. With no one to
-    relay to: a work item, queued with gate human, briefed from the ask and your answer, in the
-    ask's `initiative` when it names one (the ask's own key, else the ledger's), filed once
-    (`answer:` on the work). An answer whose option the ledger marks `status_quo: true` needs no
-    work, nor does an idea's (develop files its own). Only that key says an option changes nothing, never its words. An ask that by
+    relay to, it is **queued for the conductor** (owner answer A8, BRO-2990), never as work: a
+    `lane.assign` candidate carrying the ask, your answer verbatim, and pointers (the ledger at its
+    home, the session that asked, the folder a lane would work in, the initiative), written once on
+    the answer's `ask.routed` line, which is the queue the conductor (BRO-2989) reads. Decisions
+    shows it under **For the conductor**, never folded away and never as done. An answer whose
+    option the ledger marks `status_quo: true` needs nothing, nor does an idea's (develop files its
+    own held work). Only that key says an option changes nothing, never its words. An ask that by
     then records another outcome where it lives (main's wins) is *superseded*: never acted on, your
     words kept in the receipt. An answer whose ask no
     ledger holds by its name any more (moved, renamed, removed: Maestro does not guess which) is a stop
@@ -312,26 +324,27 @@ dispatch you use, recorded as Maestro's ("by the loop"), never as yours and neve
   - *In Maestro.* While answers wait to land, or the batch cannot take main, Needs you says so
     above every view ("3 answers wait to land: PR #915", with **Open PR #915**) and the header
     counts it. In Decisions an answered ask says what became of your answer: it waits to land, it
-    has landed (or is written in its checkout) and waits to be acted on, it was acted on (sent, or
-    filed as work), superseded (the ask was closed another way on main, whose outcome wins), or it
-    was answered before Maestro acted on answers. Only an answer acted on reads as done.
+    has landed (or is written in its checkout) and waits to be acted on, it was acted on (sent,
+    relayed, or held as work for you), it waits for the conductor, superseded (the ask was closed
+    another way on main, whose outcome wins), or it was answered before Maestro acted on answers.
+    Only an answer acted on reads as done.
 
     | Answers waiting to land (amber, with the PR) | Landed and acted on |
     | --- | --- |
     | ![Answers waiting to land](docs/answers-waiting.png) | ![Answers acted on](docs/answers-acted.png) |
 - **Every wake leaves a receipt.** One line per wake in `wake-log.jsonl` beside the config
-  (override with `MAESTRO_PASEO_WAKE_LOG`): why it woke, what it started, what it left alone and
-  why, what needs you, running work quiet for 30 minutes or more, sessions it could not ask, the
+  (override with `MAESTRO_PASEO_WAKE_LOG`): why it woke, what needs you, running work quiet for 30 minutes or more, sessions it could not ask, the
   flags it raised, the quiet flags it took down, and the answers batch and the answers it routed. It keeps the newest 500 once it passes 1000 lines. The next wake is due a
   period after the last one there, so a restart keeps the cadence.
 - **One wake at a time.** A wake asked for while one runs is recorded as skipped, not queued. With
-  no Paseo client yet (right after a restart) a wake records that it could not start work, and the
-  first client to arrive runs another, once that wake ends if it arrives while the wake still runs.
+  no Paseo client yet (right after a restart) a wake records that it could not ask any session, and
+  the first client to arrive runs another, once that wake ends if it arrives while the wake still
+  runs.
 - **In Maestro.** Under the header line, a control says "Loop off", "Next wake in 12 min" or
   "Waking…". It opens the loop's panel: how often it wakes (with a press to Settings), **Wake
   now**, and the recent wakes, newest first, each with its time, its cause ("on schedule" or "you
-  asked") and what it did in words. While the loop is on, the Queued section reads "The loop
-  starts these on its next wake, under the run cap". Settings, Plugins, Maestro, **The loop**:
+  asked") and what it did in words. While the loop is on, the Queued section reads "Started by
+  you, a lane or the conductor; the loop never starts them". Settings, Plugins, Maestro, **The loop**:
   off, or every 5, 15, 30 or 60 minutes.
 - `loop.get` and `loop.wake` (wake now) are plugin RPCs for Maestro's own surfaces, never on the
   agent socket.
@@ -950,8 +963,8 @@ It is pinned to 0.11.1, the host it is built against; the screen API (`addScreen
   working.
 - Answers land and are routed only while the loop is on: with `loopMinutes` empty the batch waits,
   and Decisions says it waits to land. An answer in its checkout is routed at once either way.
-- Work filed for an answer starts under the loop's own rules: at the run cap it waits, listed in the
-  wake's "Left alone: … at the run cap", and its Decisions card names the item it was filed as.
+- An answer queued for the conductor waits until the conductor (BRO-2989) exists and takes it: until
+  then nothing reads the queue but Decisions, so start what it needs yourself, or hand it to a lane.
 - Why a delivery still waits (the session at work) is kept in memory: after a restart the card says
   only that Maestro acts on it at its next check, until a wake or the session's turn end routes it.
 - The Timeline sees what the Mac and the daemon keep, nothing more:
