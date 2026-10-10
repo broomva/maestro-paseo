@@ -224,6 +224,12 @@ export function check(inv: Inventory, root: string): string[] {
     if (p.phone_png && typeof p.png === "string" && /^m\d/.test(p.png))
       out.push(`${id}: png ${p.png} is a phone export; the desktop export goes in png and the phone one in phone_png`);
     const ownerVerbs = (p.writes ?? []).filter((w) => has("interfaces", w) && inv.interfaces[w].gate === "owner");
+    if (
+      (p.writes ?? []).includes("I-undo") &&
+      has("features", "F-undo") &&
+      !(inv.features["F-undo"].pages ?? []).includes(id)
+    )
+      out.push(`${id}: writes I-undo but F-undo does not list it`);
     if (p.frame !== "today" && ownerVerbs.some((w) => w !== "I-undo") && !(p.writes ?? []).includes("I-undo"))
       out.push(
         `${id}: writes owner verbs (${ownerVerbs.join(", ")}) without I-undo; every owner verb has the 8 s undo (B4)`,
@@ -348,8 +354,9 @@ export function contractDrift(inv: Inventory, markdown: string): string[] {
   return out;
 }
 
-// Every frame and component id the inventory names must exist in the saved .pen (plain JSON). A stale
-// .pen, or a frame deleted from the canvas, fails here instead of reaching a builder.
+// Every frame and component id the inventory names must exist in the saved .pen (plain JSON). An unsaved
+// canvas whose new frames never reached disk, or a frame deleted from it, fails here. This checks ids,
+// not content: an edited-but-unsaved text inside an existing frame is not detected (save, then export).
 export function penIds(root: string): Set<string> {
   const ids = new Set<string>();
   const walk = (n: unknown): void => {

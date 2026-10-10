@@ -146,6 +146,25 @@ describe("inventory-check", () => {
       /phone_frame and phone_png come together/,
     ],
     [
+      "owner verb without undo",
+      (i) => {
+        i.pages["P-feed"].writes = ["I-answer"];
+      },
+      /writes owner verbs \(I-answer\) without I-undo/,
+    ],
+    [
+      "phone export as the desktop png",
+      (i) => (i.pages["P-feed"].png = "m1-feed-home-mobile.png"),
+      /is a phone export; the desktop export goes in png/,
+    ],
+    [
+      "undo page missing from F-undo",
+      (i) => {
+        i.features["F-undo"] = { name: "Undo", status: "keep", kind: "control", pages: [], interfaces: ["I-undo"] };
+      },
+      /P-feed: writes I-undo but F-undo does not list it/,
+    ],
+    [
       "phone export without frame",
       (i) => delete i.pages["P-feed"].phone_frame,
       /phone_frame and phone_png come together/,
