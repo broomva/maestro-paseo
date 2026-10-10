@@ -768,7 +768,7 @@ findings:
     code: [server/answer-routes.ts:563, server/loop.ts:512]
 
   FND-undo-ten-seconds:
-    name: UNDO_MS is 10 s in the code; the owner set 8 s everywhere (B4)
+    name: UNDO_MS was 10 s in the code; the owner set 8 s everywhere (B4), now shared/undo.ts
     severity: minor
     state: fixed
     ticket: BRO-3032
