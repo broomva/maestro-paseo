@@ -407,7 +407,7 @@ export default function contribute(host: PluginServerContext) {
   const needsNow = async (kind?: NeedKind) => {
     // A source that cannot be read this time costs its rows, never their first-seen times.
     let partial = false;
-    const [read, [asks, asksRead], reviews, landing] = await Promise.all([
+    const [read, [asks, asksRead], reviews, landing, sessionAgents] = await Promise.all([
       workItems(),
       allAsks(),
       (initiatives?.reviews() ?? Promise.resolve([])).catch((error) => {
@@ -419,11 +419,21 @@ export default function contribute(host: PluginServerContext) {
         partial = true;
         return null;
       }),
+      // Which Paseo agent each Claude session is, from the fleet's reports: one prompt counts once.
+      fleet.sessionAgents().catch((error) => {
+        log(`needs: reading the fleet's sessions: ${(error as Error).message}`);
+        return new Map<string, string>();
+      }),
     ]);
     // The work that could not be read costs its own rows, never the asks', the reviews' or the batch's.
     const items = read ?? [];
     const now = Date.now();
-    const needs = needsOf({ items, asks, reviews, landing, workspace: workspaceName }, now, kind, firstSeen.at);
+    const needs = needsOf(
+      { items, asks, reviews, landing, sessionAgents, workspace: workspaceName },
+      now,
+      kind,
+      firstSeen.at,
+    );
     if (!kind)
       firstSeen.keep(
         needs.rows.map((row) => row.key),

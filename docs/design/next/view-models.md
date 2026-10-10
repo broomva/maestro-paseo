@@ -79,10 +79,18 @@ Where each hold comes from today:
   does not wait on you; Decisions lists it. So is an idea filed for an initiative: a proposal, which
   Initiatives triages and which holds no session. Work's own lists put stuck work under Stuck and a quiet run under
   Running (`shared/needs-you.ts`), so no surface counts them.
-- **One prompt is one hold.** fleet-reconcile files a blocking "Session … is waiting at a prompt" ask, keyed
-  `prompt:<session>:…` (`DecisionAsk.promptSession`). When that session's work already holds the prompt as an
-  approval, the ask is dropped and the prompt counts once. When Maestro does not track the session, the
-  ask stays, since it is then the prompt's only hold.
+- **One prompt is one hold.** fleet-reconcile files a blocking "Session … is waiting at a prompt" ask.
+  - **The key:** `ledger_ask.py` (`ask_entry`) writes `fleet: {scope, key, class, batch, ask, tick}`, and
+    `report.py` builds the key as `prompt:<session_id>:<tag>`. `session_id` is the **Claude** session id
+    (`parsers.py`: `sessionId`, from `runtimeInfo` or `persistence`), never the Paseo agent id Maestro's work
+    names. The ask keeps it as `DecisionAsk.promptSession`.
+  - **The join:** `Fleet.sessionAgents()` reads each scope's newest report, whose rows carry `session_id` and
+    `paseo_agent`. That gives the agent for the session. An open prompt ask's session is always in the
+    newest report, because the first tick that sees the wait end withdraws the ask.
+  - **The drop:** when that agent's work holds the prompt as an approval with `heldBy: permission`, the ask is
+    dropped and the prompt counts once. Work at Maestro's own gate is a different hold, so it never drops one.
+  - **What stays:** an ask whose session Maestro does not track, or that no report names, still counts; it
+    is then the prompt's only hold.
 - **An answer that waits for the conductor is not a need.** Its asker is gone, and the conductor gives it to
   a lane (BRO-2990). File as work and Dismiss stay your verbs in Decisions (`conductor.decide`, with the 8 s
   undo), but nothing holds on you: an unrouted answer delays a lane, not you. It is `answers.status.held`

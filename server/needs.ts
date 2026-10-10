@@ -93,6 +93,11 @@ export interface NeedSources {
   reviews: readonly Initiative[];
   /** The answers batch as the last wake left it, or null. */
   landing: AnswersLanding | null;
+  /**
+   * Which Paseo agent each Claude session is (the fleet's newest reports, Fleet.sessionAgents): a fleet
+   * prompt ask names the Claude session, the work names the Paseo agent. Absent: none known.
+   */
+  sessionAgents?: ReadonlyMap<string, string>;
   /** The workspace's name (the control repo's folder): the scope of its asks, reviews and batch. */
   workspace: string;
 }
@@ -350,11 +355,17 @@ export function summaryOf(rows: readonly NeedRow[]): NeedSummary {
 export function needsOf(sources: NeedSources, now: number, kind?: NeedKind, seen?: FirstSeen): Needs {
   const work = sources.items.map(workNeed);
   // One prompt is one hold: fleet-reconcile's "Session … is waiting at a prompt" ask is the same permission
-  // prompt the session's work holds as an approval, so it counts once, as the approval.
-  const approving = new Set(
-    work.flatMap((row) => (row?.kind === "approval" && row.session ? [row.session.agentId] : [])),
+  // prompt the session's work holds as an approval (held by that prompt, not by Maestro's gate), so it counts
+  // once, as the approval. The ask names the Claude session; the work, the Paseo agent: joined through the
+  // fleet's own report, or met directly when the key already names the agent.
+  const prompted = new Set(
+    work.flatMap((row) =>
+      row?.kind === "approval" && row.body.heldBy === "permission" && row.session ? [row.session.agentId] : [],
+    ),
   );
-  const asks = sources.asks.filter((ask) => !(ask.promptSession && approving.has(ask.promptSession)));
+  const heldByPrompt = (session: string) =>
+    prompted.has(session) || prompted.has(sources.sessionAgents?.get(session) ?? "");
+  const asks = sources.asks.filter((ask) => !(ask.promptSession && heldByPrompt(ask.promptSession)));
   const all = [
     ...work,
     ...asks.map((ask) => askNeed(ask, sources.workspace, now, seen)),

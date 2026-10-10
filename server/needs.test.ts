@@ -239,50 +239,85 @@ describe("needs.list's kinds (owner answer A1)", () => {
     expect(needsOf(sources({ asks: [waiting] }), NOW).rows).toEqual([]);
   });
 
-  test("one permission prompt is one hold: fleet-reconcile's prompt ask for a session whose work holds the approval drops", () => {
-    // As fleet-reconcile files it (fleet-<scope>.yaml): blocking, an `ack` only, keyed by the waiting session.
-    const prompt = (agentId: string, id: string) =>
+  describe("one permission prompt is one hold (fleet-reconcile's prompt ask)", () => {
+    // The real shape: the work names the Paseo agent; fleet-reconcile's key names the Claude session
+    // (`prompt:<session_id>:<tag>`, fleetlib report.py), and its report says which agent that session is.
+    const AGENT = "b76446da-2c1e-4f0b-9a3d-5e8c7a1b2f60";
+    const SESSION = "51ba8cdf-7d24-4e9a-8b16-0c3f2e9d4a71";
+    const prompt = (session: string, id = `fleet-broomva-${session.slice(0, 8)}`) =>
       ask(id, {
-        headline: `Session act-on-your-answer (${agentId.slice(0, 8)}) is waiting at a prompt: listing: status waiting, waitingFor 'permission prompt'. The fleet never approves prompts.`,
+        headline: `Session act-on-your-answer (${session.slice(0, 8)}) is waiting at a prompt: listing: status waiting, waitingFor 'permission prompt'. The fleet never approves prompts.`,
         blocking: true,
         scope: "broomva",
         ledger: "fleet-broomva.yaml",
         home: { kind: "root", path: "/state/broomva/.control/asks", branch: null },
         options: [{ id: "ack", label: "Acknowledge", consequence: null, reversible: true, recommended: true }],
-        promptSession: agentId,
+        promptSession: session,
       });
-    const items = [
+    const paused = (id: string, agentId: string) =>
       fakeWork(
-        "p1",
+        id,
         "review",
-        { agentId: "agent-p1", workspaceId: "ws1" },
+        { agentId, workspaceId: "ws1" },
         {
-          permission: { requestId: "r1", title: "Bash", detail: "git push" },
+          permission: { requestId: `r-${id}`, title: "Bash", detail: "git push" },
         },
-      ),
-      fakeWork(
-        "p2",
-        "review",
-        { agentId: "agent-p2", workspaceId: "ws1" },
-        {
-          permission: { requestId: "r2", title: "Bash", detail: "rm -rf build" },
-        },
-      ),
-    ];
-    // Five sessions at a prompt; Maestro tracks two of them. The other three only the fleet sees: they count.
-    const asks = ["agent-p1", "agent-p2", "agent-x3", "agent-x4", "agent-x5"].map((agentId, at) =>
-      prompt(agentId, `fleet-broomva-${at}`),
-    );
-    const { rows, summary } = needsOf(sources({ items, asks }), NOW);
-    expect(summary.byKind).toEqual({ ask: 3, approval: 2, owner_step: 0 });
-    expect(rows.filter((row) => row.kind === "ask").map((row) => row.title.slice(0, 40))).toEqual([
-      "Session act-on-your-answer (agent-x3) is",
-      "Session act-on-your-answer (agent-x4) is",
-      "Session act-on-your-answer (agent-x5) is",
-    ]);
-    // An ask that is not a prompt, from a session with an approval, still counts.
-    const other = ask("own", { blocking: true, origin: { agentId: "agent-p1", cwd: null } });
-    expect(needsOf(sources({ items, asks: [other] }), NOW).summary.total).toBe(3);
+      );
+
+    test("the work's agent and the ask's Claude session are one prompt: it counts once, as the approval", () => {
+      const needs = needsOf(
+        sources({ items: [paused("p", AGENT)], asks: [prompt(SESSION)], sessionAgents: new Map([[SESSION, AGENT]]) }),
+        NOW,
+      );
+      expect(needs.summary).toMatchObject({ total: 1, byKind: { ask: 0, approval: 1, owner_step: 0 } });
+      expect(needs.rows[0]?.key).toBe("work:p");
+      // Without the fleet's word on who the session is, the two ids never meet: both stand.
+      expect(needsOf(sources({ items: [paused("p", AGENT)], asks: [prompt(SESSION)] }), NOW).summary.total).toBe(2);
+    });
+
+    test("a session Maestro does not track, one the report does not name, and another session's prompt all count", () => {
+      const other = "9d04b252-a1bf-477c-a01f-10c1bb23ad9a";
+      const untracked = "d5f59267-6330-45fb-98c9-e339c098e448";
+      const unnamed = "4ca336e1-f891-444b-bf12-cb0ccc4d2737";
+      const needs = needsOf(
+        sources({
+          items: [paused("p", AGENT)],
+          asks: [prompt(SESSION), prompt(other), prompt(untracked), prompt(unnamed)],
+          sessionAgents: new Map([
+            [SESSION, AGENT],
+            [other, "aaaaaaaa-0000-4000-8000-000000000002"],
+            [untracked, "aaaaaaaa-0000-4000-8000-000000000003"],
+          ]),
+        }),
+        NOW,
+      );
+      expect(needs.summary.byKind).toEqual({ ask: 3, approval: 1, owner_step: 0 });
+      expect(
+        needs.rows
+          .filter((row) => row.kind === "ask")
+          .map((row) => row.title.slice(28, 36))
+          .sort(),
+      ).toEqual([other, untracked, unnamed].map((id) => id.slice(0, 8)).sort());
+    });
+
+    test("work at Maestro's own gate is not the prompt: the session's prompt ask still counts", () => {
+      const gated = fakeWork("g", "review", { agentId: AGENT, workspaceId: "ws1" });
+      const needs = needsOf(
+        sources({ items: [gated], asks: [prompt(SESSION)], sessionAgents: new Map([[SESSION, AGENT]]) }),
+        NOW,
+      );
+      expect(needs.summary.byKind).toEqual({ ask: 1, approval: 1, owner_step: 0 });
+    });
+
+    test("a key that already names the agent meets it directly; an ask that is not a prompt is never dropped", () => {
+      expect(needsOf(sources({ items: [paused("p", AGENT)], asks: [prompt(AGENT)] }), NOW).summary.total).toBe(1);
+      const own = ask("own", { blocking: true, origin: { agentId: AGENT, cwd: null } });
+      const needs = needsOf(
+        sources({ items: [paused("p", AGENT)], asks: [own], sessionAgents: new Map([[SESSION, AGENT]]) }),
+        NOW,
+      );
+      expect(needs.summary.total).toBe(2);
+    });
   });
 
   test("an approval waits from when it reached your gate, not from its last note", () => {

@@ -259,7 +259,10 @@ export function decisionOf(
   };
 }
 
-/** The session a fleet-reconcile prompt ask is about, from its `fleet.key` (`prompt:<session>:<hash>`), else null. */
+/**
+ * The Claude session a fleet-reconcile prompt ask is about, from its `fleet.key` (`prompt:<session_id>:<tag>`,
+ * fleetlib report.py; ledger_ask.py writes it under `fleet`), else null.
+ */
 export function promptSessionOf(row: Row): string | null {
   const fleet = isRow(row.fleet) ? row.fleet : {};
   const key = text(fleet.key);

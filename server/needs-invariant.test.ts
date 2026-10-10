@@ -90,7 +90,8 @@ function everything(): { items: WorkItem[]; asks: DecisionAsk[]; reviews: Initia
       ledger: "fleet-broomva.yaml",
       home: { kind: "root", path: "/state/broomva/.control/asks", branch: null },
       options: [{ id: "ack", label: "Acknowledge", consequence: null, reversible: true, recommended: true }],
-      promptSession: "agent-perm",
+      // The Claude session behind agent-perm: fleet-reconcile keys by it (prompt:<session_id>:…).
+      promptSession: "51ba8cdf-claude-session-of-agent-perm",
     }),
     ask("one-way", {
       options: [{ id: "go", label: "Go", consequence: null, reversible: false, recommended: true }],
@@ -246,7 +247,9 @@ async function pushText(count: () => Promise<number>): Promise<string> {
 
 test("invariant 1: header total == Σ kinds == the Needs you section == the Feed tab == the push count", async () => {
   const { items, asks, reviews, landing } = everything();
-  const needs = needsOf({ items, asks, reviews, landing, workspace: "broomva" }, NOW);
+  // The fleet's report says which Paseo agent that Claude session is.
+  const sessionAgents = new Map([["51ba8cdf-claude-session-of-agent-perm", "agent-perm"]]);
+  const needs = needsOf({ items, asks, reviews, landing, sessionAgents, workspace: "broomva" }, NOW);
   const total = needs.summary.total;
   // What the fixture holds on you: two approvals, three asks (two decisions and the review), three owner steps.
   expect(needs.summary.byKind).toEqual({ ask: 4, approval: 2, owner_step: 3 });
