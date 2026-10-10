@@ -2,6 +2,56 @@
 
 The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders of its frames. The visual language is broomva-design: the foundation plus the agentic-work extension.
 
+## Ready for build (2026-10-10)
+
+**What to build:** the chosen design.
+- **J1–J9 on the desktop:** J1 is the Feed home; J6b is Work with the inspector open.
+- **M1–M11 on the iPhone.**
+- **K0–K2:** cards inside a Paseo session.
+- **P1:** the presence menu.
+- **B2, B3, D4:** settings on the desktop; M11 on the phone.
+
+Everything else on the canvas is reference:
+- S (the first full pass);
+- V (variations, compared in V0);
+- H (interim);
+- G (Liquid Glass);
+- R0 (the measured Paseo frame).
+
+**The owner's decisions** are in `.control/asks/maestro-next-design.yaml` in broomva/workspace:
+- **A1–A11** from 10-09;
+- **B1–B7** from 10-10:
+  - **B1:** broomva ink with the Undertow;
+  - **B2:** a due initiative review is an Ask in the Feed deck;
+  - **B3:** J6 opens the inspector to the right;
+  - **B4:** undo is 8 s everywhere.
+
+**The contracts:**
+- [`view-models.md`](view-models.md): what each screen reads and writes, the two projections (`needs.list`, `handled.list`), the 8 s undo, and the invariants.
+- [`inventory.yaml`](inventory.yaml): every page points at its J frame and its M frame. `scripts/inventory-check.ts` fails a live page that points at a reference export.
+
+**Build order (Linear):**
+1. BRO-2990: the plugin never starts work.
+2. BRO-2995.
+3. BRO-3001: needs.list and the view models.
+4. BRO-2999: retire Approve on work.
+5. BRO-3032: undo 8 s.
+6. BRO-3033: device spike.
+7. BRO-3034: component kit.
+8. BRO-3035: J1 and the header.
+9. BRO-3036: J2–J9.
+10. BRO-3037: M1–M11.
+11. BRO-2996 and BRO-2997.
+
+The cards in sessions are BRO-3008.
+
+**Not verified yet** (BRO-3033):
+- what Paseo's iOS app draws around a plugin screen;
+- whether `openScreen` params can carry a hold key;
+- how gestures and the keyboard behave inside a plugin;
+- gradients on the desktop (Undertow);
+- how a push body renders.
+
 | Frame | PNG | What it is |
 | --- | --- | --- |
 | Start here | `00-start-here.png` | Every frame in reading order, in five groups (model, screens, controls, conductor, history), each tagged current, reference, needs pass or history; where each answer A1–A11 shows; what is not drawn yet |
@@ -28,7 +78,7 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | H1 | `h1-interim-feed-desktop.png` | Interim (BRO-3005): the Feed inside Paseo on the desktop. broomva tokens, Apple behaviors (springs, an Ask that grows from its card, an Undo capsule), frost only on floating chrome. Every element is tagged with the API that builds it |
 | H2 | `h2-interim-phone.png` | Interim on iPhone: the real push ("Agent finished", body ≤220, no buttons), then the gate card in the session, then Paseo's own 65% sheet |
 | H3 | `h3-interim-feasibility.png` | What a Paseo plugin can truly build: 19 elements, YES / PARTIAL / NO on desktop and iPhone, what waits on Paseo, the build order |
-| K0 | `k0-push-to-card-flow.png` | Cards in sessions (BRO-3008): from a notification to the asking session, to the card at its tail (one tap, 10 s undo, receipt), to Open in Maestro |
+| K0 | `k0-push-to-card-flow.png` | Cards in sessions (BRO-3008): from a notification to the asking session, to the card at its tail (one tap, 8 s undo, receipt), to Open in Maestro |
 | K1 | `k1-session-cards.png` | Every Maestro card kind (approval, ask, owner step, finished, health, inbox digest) and state (pending, undo, receipt, resolved elsewhere), plus how a card behaves |
 | K2 | `k2-session-page.png` | The Maestro page for one session: identity, holds (the same card), work, history, controls; opened with openScreen params |
 | R0 | `r0-paseo-real-frame.png` | Paseo's real frame, measured from the running app (1920 × 986): Paseo owns the 440 px sidebar (one Maestro row) and the 35 px header; Maestro owns 1480 × 951, of which today's Feed uses a centred 712 px column |
@@ -38,6 +88,7 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | V2 | `v2-glance-strip.png` | V1 plus four glance tiles; holds stay full cards, watched kinds become two-line rows and grouped lists |
 | V3 | `v3-list-inspector.png` | Mail-style list with safe verbs inline and an inspector for the selected item |
 | J1 | `j1-feed-home.png` | **Chosen** (was V4): V2's home with V3's inspector opened from a card. The J series (BRO-3024) redraws S2–S9 in this language |
+| J6b | `j6b-work-inspector.png` | Work with an item open: the inspector over the Needs you and Done lanes (owner B3) |
 | J2–J4 | `j2-j4-briefings.png` | S2–S4's briefings as J1's inspector, one per kind: approval, ask (options, default countdown, words), notice (log, closes when, no Approve) |
 | J5 | `j5-decisions.png` | Decisions one at a time: sort and ledger filter, four answer tiles (Waiting to land as a warn tile with a verb), the decision at full width, Up next, where your last answers went |
 | J6 | `j6-work.png` | Work as five trays (Queued, Running, Standing, Needs you, Done); Running cards wear the Undertow; Done shows who closed it |
@@ -58,6 +109,8 @@ The source is `../maestro-next.pen` (open it in Pen). The PNGs here are renders 
 | M8 | `m8-initiatives-mobile.png` | Initiatives: a due review joins the Feed deck as a hold; the list is a page from Health's sheet; answering moves the review date |
 | M9 | `m9-new-work-mobile.png` | New work: the composer grows from + over a dimmed Feed, rises with the keyboard, and Dispatch lands the work in Queued (the lane starts it, A8) |
 | M10 | `m10-from-a-push.png` | From a push: Paseo's fixed-title push, the asking session with Maestro's card and Open in Maestro, then M1's deck on the same hold |
+| M11 | `m11-settings-mobile.png` | Settings on the phone, reached from the presence menu: grouped rows, Lanes, Loop and fleet |
+| P1 | `p1-presence.png` | Presence: the menu from the presence pill on desktop and phone, and what Present, Away and Off change (D5, corrected for A5: pushes carry no buttons) |
 | N0 | `n0-model.png` | Three nouns (work, ask, notice), one list, one verb each; six rules; what it retires |
 | N1 | `n1-wiring.png` | Producers, verbs on maestro.sock, one store per kind, needs.list, views, the return path |
 | N3 | `n3-lifecycles.png` | The states each kind passes through; the 10-09 Parser drift card, today vs next |

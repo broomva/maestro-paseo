@@ -27,6 +27,8 @@ export interface Item {
   // pages
   frame?: string;
   png?: string;
+  phone_frame?: string;
+  phone_png?: string;
   components?: string[];
   reads?: string[];
   writes?: string[];
@@ -65,6 +67,12 @@ export type Inventory = { [K in Section]: Record<string, Item> } & {
 
 export const NEED_KINDS = ["ask", "approval", "owner-step"];
 
+// The chosen design language (owner, 2026-10-09/10): J on the desktop, M on the phone, K session cards,
+// P presence, B/D settings. S, V, H, G and the rest stay on the canvas as references, so a live page
+// that still points at one of their exports is building from a superseded design.
+export const CHOSEN_EXPORT = /^(j|m|k|p|b|d)\d/;
+export const PHONE_EXPORT = /^(m|p)\d/;
+
 // Every key an item may carry. An unknown key is how a comma inside a YAML flow mapping shows up:
 // `{ name: Button (primary, secondary), status: keep }` parses as a short name plus a stray key.
 const KEYS = new Set([
@@ -77,6 +85,8 @@ const KEYS = new Set([
   "answers",
   "frame",
   "png",
+  "phone_frame",
+  "phone_png",
   "components",
   "reads",
   "writes",
@@ -151,6 +161,13 @@ export function check(inv: Inventory, root: string): string[] {
     for (const i of [...(p.reads ?? []), ...(p.writes ?? [])])
       if (has("interfaces", i) && !live(inv.interfaces[i])) out.push(`${id}: uses retired interface ${i}`);
     if (p.png && !existsSync(join(root, "docs/design/next", p.png))) out.push(`${id}: export ${p.png} is missing`);
+    if (p.png && !CHOSEN_EXPORT.test(p.png))
+      out.push(`${id}: export ${p.png} is a reference, not the chosen design (J, M, K, P, B or D)`);
+    if (p.phone_png && !existsSync(join(root, "docs/design/next", p.phone_png)))
+      out.push(`${id}: phone export ${p.phone_png} is missing`);
+    if (p.phone_png && !PHONE_EXPORT.test(p.phone_png))
+      out.push(`${id}: phone export ${p.phone_png} is not an M or P frame`);
+    if (Boolean(p.phone_frame) !== Boolean(p.phone_png)) out.push(`${id}: phone_frame and phone_png come together`);
     for (const c of p.components ?? [])
       if (has("components", c) && !live(inv.components[c])) out.push(`${id}: uses retired component ${c}`);
   }

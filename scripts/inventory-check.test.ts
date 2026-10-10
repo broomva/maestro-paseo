@@ -17,7 +17,9 @@ function clean(): Inventory {
         name: "Feed",
         status: "keep",
         frame: "gcul5",
-        png: "s1-feed-home.png",
+        png: "j1-feed-home.png",
+        phone_frame: "FKTsX",
+        phone_png: "m1-feed-home-mobile.png",
         components: ["C-card"],
         reads: ["I-needs"],
         writes: ["I-answer"],
@@ -88,6 +90,26 @@ describe("inventory-check", () => {
       /no feature lives on this page/,
     ],
     ["page without frame", (i) => delete i.pages["P-feed"].frame, /no design frame/],
+    [
+      "page on a reference export",
+      (i) => (i.pages["P-feed"].png = "s1-feed-home.png"),
+      /s1-feed-home.png is a reference, not the chosen design/,
+    ],
+    [
+      "phone export missing",
+      (i) => (i.pages["P-feed"].phone_png = "m99-nope.png"),
+      /phone export m99-nope.png is missing/,
+    ],
+    [
+      "phone export from the desktop series",
+      (i) => (i.pages["P-feed"].phone_png = "j1-feed-home.png"),
+      /phone export j1-feed-home.png is not an M or P frame/,
+    ],
+    [
+      "phone frame without export",
+      (i) => delete i.pages["P-feed"].phone_png,
+      /phone_frame and phone_png come together/,
+    ],
     ["missing export", (i) => (i.pages["P-feed"].png = "nope.png"), /export nope.png is missing/],
     [
       "dead component",

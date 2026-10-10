@@ -4,7 +4,8 @@
 # a status against today's code, and the edges that wire it. scripts/inventory-check.ts checks the
 # structure on every `bun test` (CI):
 #   - each feature reaches a page or a loop and has an interface;
-#   - each page has a frame;
+#   - each page has a frame, and a live page points at the chosen series (J desktop, M phone,
+#     K session cards, P presence, B/D settings), never an S, V, H or G reference export;
 #   - only the owner calls a gate verb;
 #   - only the conductor or a lane launches a session (A8);
 #   - every store is written by its owning layer through one module, unless a ticket says otherwise;
@@ -15,6 +16,7 @@
 #         · lane (a lane orchestrator: Broomva coordinator, SRI) · worker (an arc session)
 #         · bstack (fleet-reconcile, ledgers, CLIs, policy) · paseo (daemon, app, push)
 # frame: a node id in docs/design/maestro-next.pen; `today` keeps a surface undrawn, tracked by a finding.
+# phone_frame / phone_png: the M (iPhone) frame and its export, when the page has one.
 # code: today's files, from the code inventory of maestro-paseo 3f8d9d8 (four read-only passes, 10-09).
 
 version: 1
@@ -96,7 +98,7 @@ features:
     interfaces: [I-work-get, I-work-files]
     code: [client/detail.tsx, client/files.tsx]
   F-undo:
-    name: A 10 s undo on every owner verb that changes state
+    name: An 8 s undo on every owner verb that changes state (B4)
     status: change
     kind: control
     pages: [P-briefing, P-approval-card]
@@ -203,7 +205,7 @@ features:
     status: new
     kind: control
     answers: [A3]
-    pages: []
+    pages: [P-presence, P-header]
     interfaces: [I-presence-set, I-presence-get]
   F-auto-continue:
     name: A reversible next step continues after 10 min when present, at once when off (A3)
@@ -251,89 +253,108 @@ features:
 
 pages:
   P-header:
-    name: Header — counts by kind, tabs, presence, New work
+    name: "Header — Maestro's frosted header: segmented tabs, workspace menu, presence, next wake, search, New work (J1; the phone deck header in M1)"
     status: change
-    frame: R4srT
-    components: [C-header, C-count-chip, C-tabs, C-button]
+    frame: E4dLZ1
+    png: j1-feed-home.png
+    phone_png: m1-feed-home-mobile.png
+    phone_frame: FKTsX
+    components: [C-header, C-count-chip, C-tabs, C-button, C-presence-menu]
     reads: [I-needs-list]
     code: [client/plane.tsx, client/integrations.ts]
   P-feed:
-    name: S1 Feed — Needs you, Finished, Health, Running, Queued; rail with Decide, Handled for you, Proposals, Today
+    name: "J1 Feed — glance tiles; holds as cards, watched as rows; rail; inspector from the right. M1 on the phone: deck, pull-up sheet carrying the tab bar, swipes, undo toast"
     status: change
-    frame: gcul5
-    png: s1-feed-home.png
-    components: [C-hold-card, C-finished-card, C-notice-card, C-work-row, C-rail, C-state-label, C-pill, C-button]
-    reads: [I-needs-list, I-handled-list, I-work-list]
+    frame: E4dLZ1
+    png: j1-feed-home.png
+    note: "reference: S1 gcul5, V1-V4; chosen 2026-10-09"
+    phone_png: m1-feed-home-mobile.png
+    phone_frame: FKTsX
+    components: [C-hold-card, C-finished-card, C-notice-card, C-work-row, C-rail, C-state-label, C-pill, C-button, C-glance-tile, C-inspector, C-undo-toast, C-undertow, C-deck, C-pull-sheet, C-tab-bar, C-swipe-row]
+    reads: [I-needs-list, I-handled-list, I-work-list, I-notices-list]
     writes: [I-ask-answer, I-approval-decide, I-owner-step-done, I-session-prompt, I-notice-snooze, I-work-unblock]
     code: [client/feed.tsx, client/feed-model.ts]
   P-briefing:
-    name: S2–S4 Briefings — Approval, Ask, Notice
+    name: J2–J4 Briefings — the inspector per kind (approval, ask, notice); M2–M4 cards with the detail header
     status: change
-    frame: oWMTo
-    png: s2-s4-briefings.png
-    components: [C-briefing, C-hold-card, C-markdown, C-kbd, C-button]
+    frame: U28wwq
+    png: j2-j4-briefings.png
+    phone_png: m2-m4-briefings-mobile.png
+    phone_frame: kZigB
+    components: [C-briefing, C-hold-card, C-markdown, C-kbd, C-button, C-inspector, C-detail-header]
     reads: [I-work-get, I-work-files, I-needs-list]
     writes: [I-approval-decide, I-ask-answer, I-work-unblock, I-work-cancel, I-undo]
     code: [client/detail.tsx]
   P-approval-card:
-    name: B1 One-tap approval — in the Feed and in the session's timeline
+    name: K1 Maestro cards in a Paseo session — every kind and state; one tap, 8 s undo, receipt
     status: change
-    frame: X1KOi
-    png: b1-one-tap-approvals.png
+    frame: w9zol
+    png: k1-session-cards.png
     components: [C-hold-card, C-kbd, C-button]
     reads: [I-needs-list]
     writes: [I-approval-decide, I-undo]
     code: [client/gate-card.tsx]
   P-decisions:
-    name: S5 Decisions — triage one at a time; the fate of each answer
+    name: J5 Decisions — one at a time; four answer tiles; where each answer went. M5 on the phone
     status: change
-    frame: qzneN
-    png: s5-decisions.png
-    components: [C-decision-card, C-progress, C-segmented, C-kbd, C-button]
-    reads: [I-asks-workspace, I-needs-list]
+    frame: uyQ0Y
+    png: j5-decisions.png
+    phone_png: m5-decisions-mobile.png
+    phone_frame: z4FVF
+    components: [C-decision-card, C-progress, C-segmented, C-kbd, C-button, C-glance-tile, C-inspector, C-deck]
+    reads: [I-asks-workspace, I-needs-list, I-answers-status]
     writes: [I-ask-answer, I-fleet-ask-answer]
     code: [client/decision-triage.tsx, client/decision-card.tsx]
   P-work:
-    name: S6 Work — board, list, history in one destination
+    name: J6 Work — five lanes as trays, Undertow on running cards, who closed Done; J6b the inspector over the right-hand lanes (B3). M6 on the phone
     status: change
-    frame: ukSou
-    png: s6-work.png
-    components: [C-work-row, C-segmented, C-state-label, C-button]
+    frame: kHK2H
+    png: j6-work.png
+    note: J6b fglkO j6b-work-inspector.png (B3)
+    phone_png: m6-work-mobile.png
+    phone_frame: GQqt8
+    components: [C-work-row, C-segmented, C-state-label, C-button, C-undertow, C-inspector, C-swipe-row]
     reads: [I-work-list, I-work-history]
     writes: [I-work-cancel, I-work-stop]
     code: [client/plane-views.tsx, client/history.tsx]
   P-health:
-    name: S7 Health — fleet ticks, schedules, loops, sessions (lanes not drawn yet)
+    name: J7 Health — verdict, tick grid, sessions, schedules, the conductor and lanes, notices with what closes each. M7 on the phone
     status: change
-    frame: f6IibL
-    png: s7-health.png
-    components: [C-tick-strip, C-notice-card, C-roster, C-segmented, C-pill, C-button]
-    reads: [I-fleet-get, I-fleet-tick, I-timeline-get, I-loops-get, I-lanes-get, I-needs-list]
+    frame: n7FYkw
+    png: j7-health.png
+    phone_png: m7-health-mobile.png
+    phone_frame: NCZ4H
+    components: [C-tick-strip, C-notice-card, C-roster, C-segmented, C-pill, C-button, C-glance-tile, C-deck, C-undertow, C-swipe-row]
+    reads: [I-fleet-get, I-fleet-tick, I-timeline-get, I-loops-get, I-lanes-get, I-needs-list, I-notices-list]
     writes: [I-work-adopt, I-session-prompt, I-work-stop, I-notice-snooze, I-fleet-tick-run]
     code: [client/fleet.tsx, client/fleet-health.tsx, client/fleet-roster.tsx, client/timeline.tsx, client/loops.tsx]
   P-initiatives:
-    name: S8 Initiatives
-    status: keep
-    frame: DcOYb
-    png: s8-initiatives.png
-    components: [C-initiative-card, C-decision-card, C-button]
-    reads: [I-initiatives-list]
+    name: J8 Initiatives — lateness loudest; a due review is an Ask on its due date in the Feed deck (B2). M8 on the phone
+    status: change
+    frame: h5eiGd
+    png: j8-initiatives.png
+    phone_png: m8-initiatives-mobile.png
+    phone_frame: VaM84
+    components: [C-initiative-card, C-decision-card, C-button, C-inspector, C-detail-header]
+    reads: [I-initiatives-list, I-needs-list]
     writes: [I-ask-answer, I-initiatives-file]
     code: [client/initiatives.tsx]
   P-new-work:
-    name: S9 New work — the composer sheet; Save to queue, Dispatch hands to the conductor
+    name: J9 New work — grows from New work over a dimmed Feed; who starts it (the lane, A8). M9 grows from +
     status: change
-    frame: zijFm
-    png: s9-new-work.png
+    frame: xtq5c
+    png: j9-new-work.png
+    phone_png: m9-new-work-mobile.png
+    phone_frame: XpUj7
     components: [C-composer, C-pill, C-kbd, C-button]
-    reads: [I-config-get, I-folder-inspect]
+    reads: [I-config-get, I-folder-inspect, I-lanes-get]
     writes: [I-work-create]
     code: [client/new-work.tsx]
   P-phone:
-    name: S10 Phone — the push and the same list (Paseo app)
+    name: M10 From a push — Paseo's push, the asking session's card, Open in Maestro on the same hold
     status: new
-    frame: hRa0W
-    png: s10-phone.png
+    frame: jCoTw
+    png: m10-from-a-push.png
     components: [C-hold-card, C-tabs]
     reads: [I-needs-list]
     writes: [I-approval-decide, I-ask-answer]
@@ -342,6 +363,8 @@ pages:
     status: change
     frame: V4SfuM
     png: b2-settings-loop-fleet.png
+    phone_png: m11-settings-mobile.png
+    phone_frame: m6wUjy
     components: [C-settings-row, C-toggle, C-segmented, C-button]
     reads: [I-sweep-get, I-fleet-get, I-config-get]
     writes: [I-config-set, I-sweep-wake, I-fleet-mode-set, I-fleet-tick-run]
@@ -351,6 +374,8 @@ pages:
     status: new
     frame: uJmBk
     png: b3-settings-loops-notices-approvals.png
+    phone_png: m11-settings-mobile.png
+    phone_frame: m6wUjy
     components: [C-settings-row, C-toggle, C-button]
     reads: [I-loops-get, I-notices-registry-get, I-policy-get]
     writes: [I-loop-control, I-notices-registry-propose]
@@ -359,9 +384,21 @@ pages:
     status: new
     frame: ZTPUm
     png: d4-settings-lanes.png
+    phone_png: m11-settings-mobile.png
+    phone_frame: m6wUjy
     components: [C-lane-card, C-settings-row, C-button]
     reads: [I-lanes-get]
     writes: [I-lanes-propose, I-conductor-wake, I-lane-tick-run]
+  P-presence:
+    name: P1 Presence — the menu from the presence pill (desktop and phone) and what each state changes
+    status: new
+    frame: FUo1Q
+    png: p1-presence.png
+    phone_frame: FUo1Q
+    phone_png: p1-presence.png
+    components: [C-presence-menu, C-segmented, C-toggle]
+    reads: [I-presence-get]
+    writes: [I-presence-set]
   P-agent-panel:
     name: The Work panel beside a Paseo agent
     status: keep
@@ -462,6 +499,17 @@ components:
   C-settings-row: { name: "Settings row", status: new, pen: null, code: [client/settings.tsx] }
   C-toggle: { name: "Toggle", status: new, pen: null }
   C-lane-card: { name: "Lane card", status: new, pen: null }
+  # The J/M kit (BRO-3034).
+  C-inspector: { name: "Inspector (per-kind body, frosted action bar)", status: new, pen: VbnhW }
+  C-glance-tile: { name: "Glance tile", status: new, pen: oatDw }
+  C-deck: { name: "Deck (phone; one hold at a time)", status: new, pen: null }
+  C-pull-sheet: { name: "Pull-up sheet (phone; peeks from the bottom edge)", status: new, pen: null }
+  C-tab-bar: { name: "Tab bar riding on the sheet (phone)", status: new, pen: P1PV0 }
+  C-detail-header: { name: "Detail header (grabber, close, kind and place, more)", status: new, pen: Faf21 }
+  C-swipe-row: { name: "Swipe row (right default, left Snooze or Open; never a hold)", status: new, pen: null }
+  C-undo-toast: { name: "Undo toast (8 s)", status: new, pen: xuqvS }
+  C-undertow: { name: "Undertow halo, tidepool dot and standing pulse (Running only)", status: new, pen: L4xCf4 }
+  C-presence-menu: { name: "Presence menu", status: new, pen: kJOpv }
 
 interfaces:
   # Reads. Pure: no write, no send, no create (BRO-2995).
@@ -490,6 +538,8 @@ interfaces:
   I-presence-get: { name: "presence.get", status: new, handler: plugin, callers: [ui, conductor] }
   I-policy-get: { name: "policy.get (policy.yaml and preauth, read only)", status: new, handler: plugin, callers: [ui] }
   I-notices-registry-get: { name: "notices.registry", status: new, handler: plugin, callers: [ui] }
+  I-notices-list: { name: "notices.list (the Health deck: stuck, quiet, schedule, loop, initiative)", status: new, handler: plugin, callers: [ui, conductor] }
+  I-answers-status: { name: "answers.status (waiting to land, routed, acted, held, recent)", status: new, handler: plugin, callers: [ui] }
 
   # Owner verbs. Each records a receipt and honours the undo window (BRO-2999).
   I-ask-answer:
@@ -663,9 +713,9 @@ loops:
     calls: [I-sweep-wake, I-notice-resolve, I-drift-record]
     code: [server/loop.ts]
   L-undo-window:
-    name: The 10 s undo timers that apply a pending owner verb
+    name: The 8 s undo timers that apply a pending owner verb (B4)
     status: keep
-    scheduler: plugin timer, 10 s after the verb
+    scheduler: plugin timer, 8 s after the verb
     owner: plugin
     calls: [I-undo]
     code: [server/engine.ts]
@@ -714,6 +764,14 @@ findings:
     ticket: BRO-2990
     about: [I-answer-route, F-answer-routing]
     code: [server/answer-routes.ts:563, server/loop.ts:512]
+
+  FND-undo-ten-seconds:
+    name: UNDO_MS is 10 s in the code; the owner set 8 s everywhere (B4)
+    severity: minor
+    state: open
+    ticket: BRO-3032
+    about: [F-undo, L-undo-window, I-undo]
+    code: [server/engine.ts:191]
 
   # Major: wiring that breaks a stated invariant.
   FND-reads-mutate:
