@@ -201,7 +201,7 @@ export const HandledRowSchema = z.object({
 export type HandledRow = z.infer<typeof HandledRowSchema>;
 
 /**
- * What closed, newest first: work closed in the last day, by whoever closed
+ * What closed, newest first: work closed in the last week, by whoever closed
  * it (Done's who-closed chips read `you` too; Handled for you reads the rest).
  * `today` counts the local day: work closed for you (by gates, an orchestrator
  * or Maestro), work you closed, and asks you answered.
@@ -226,9 +226,12 @@ export function needsWords(total: number): string {
   return `${total} ${total === 1 ? "needs" : "need"} you`;
 }
 
-/** "1 approval · 2 asks": the summary by kind, kinds with none left out. */
+/** The order a summary says its kinds in (J1): "1 approval · 1 owner step · 2 asks". */
+const KIND_ORDER: readonly NeedKind[] = ["approval", "owner_step", "ask"];
+
+/** "1 approval · 2 asks": counts by kind, kinds with none left out. */
 export function kindWords(byKind: NeedSummary["byKind"]): string {
-  return NEED_KINDS.filter((kind) => byKind[kind] > 0)
+  return KIND_ORDER.filter((kind) => byKind[kind] > 0)
     .map((kind) => `${byKind[kind]} ${byKind[kind] === 1 ? KIND_WORDS[kind].one : KIND_WORDS[kind].many}`)
     .join(" · ");
 }

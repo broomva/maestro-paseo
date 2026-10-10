@@ -367,8 +367,8 @@ export default function contribute(host: PluginServerContext) {
   });
   // What needs you and what was handled for you (server/needs.ts, BRO-3001): the one projection every count,
   // badge, section and push reads. Pure: the work is read with no client, so no session is reconciled and no
-  // decision applied (BRO-2995), and every other source is a cached read. A source that cannot be read costs
-  // its own rows, never the rest.
+  // decision applied (BRO-2995); the asks with no fetch of origin/main; every other source is a cached read.
+  // A source that cannot be read costs its own rows, never the rest.
   const workspaceName = control.repo ? basename(control.repo) : "workspace";
   // After BRO-2995 lands, engine.list() is pure on its own and this becomes engine.list().
   const workItems = () => engine.list(undefined, { decide: false }).then(({ items }) => items);
@@ -388,6 +388,22 @@ export default function contribute(host: PluginServerContext) {
     ]);
     return [...mine, ...scoped];
   };
+  // When an undated hold was first seen (an undated ask, the answers batch), in memory only: its `since`
+  // holds still across reads, and a hold that went is forgotten, so one that comes back starts again.
+  const seenAt = new Map<string, string>();
+  const firstSeen = {
+    at: (key: string, now: number) => {
+      const known = seenAt.get(key);
+      if (known) return known;
+      const at = new Date(now).toISOString();
+      seenAt.set(key, at);
+      return at;
+    },
+    keep: (keys: readonly string[]) => {
+      const live = new Set(keys);
+      for (const key of seenAt.keys()) if (!live.has(key)) seenAt.delete(key);
+    },
+  };
   const needsNow = async (kind?: NeedKind) => {
     const [items, asks, reviews, landing] = await Promise.all([
       workItems(),
@@ -398,7 +414,10 @@ export default function contribute(host: PluginServerContext) {
       }),
       (lander?.state() ?? Promise.resolve(null)).catch(() => null),
     ]);
-    return needsOf({ items, asks, reviews, landing, workspace: workspaceName }, Date.now(), kind);
+    const now = Date.now();
+    const needs = needsOf({ items, asks, reviews, landing, workspace: workspaceName }, now, kind, firstSeen.at);
+    if (!kind) firstSeen.keep(needs.rows.map((row) => row.key));
+    return needs;
   };
   server.handle(listNeeds, ({ kind }) => needsNow(kind));
   server.handle(listHandled, async () => {

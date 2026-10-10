@@ -739,11 +739,56 @@ async function snapshot(root: string): Promise<Map<string, string>> {
   return out;
 }
 
-test("needs.list and handled.list are wired, and pure: their reads change no file, send nothing, start nothing (BRO-3001)", async () => {
+test("needs.list and handled.list are wired, pure, and the one number every surface says (BRO-3001)", async () => {
   const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
   roots.push(root);
   const repo = join(root, "repo");
   await mkdir(join(repo, ".git"), { recursive: true });
+  // A control repo with an origin, so a fetch would show: it rewrites FETCH_HEAD.
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+      cwd,
+      stdio: "pipe",
+    });
+  const origin = join(root, "origin.git");
+  const control = join(root, "control");
+  await mkdir(origin);
+  git(origin, "init", "-q", "--bare", "-b", "main");
+  git(root, "clone", "-q", origin, control);
+  await mkdir(join(control, ".control", "asks"), { recursive: true });
+  await mkdir(join(control, ".control", "initiatives"), { recursive: true });
+  const option = (id: string, reversible: boolean, recommended: boolean) =>
+    `      - id: ${id}\n        label: "${id}"\n        consequence: "It ${id}s."\n        reversible: ${reversible}\n        recommended: ${recommended}\n`;
+  await writeFile(
+    join(control, ".control", "asks", "needs.yaml"),
+    "arc: needs\nasks:\n" +
+      `  - id: Q1\n    headline: "Blocks?"\n    blocking: true\n    asked_at: 2026-10-10T12:00:00Z\n    options:\n${option("go", true, true)}` +
+      `  - id: Q2\n    headline: "One way?"\n    blocking: false\n    asked_at: 2026-10-10T11:00:00Z\n    options:\n${option("delete", false, true)}` +
+      `  - id: Q3\n    headline: "Calm?"\n    blocking: false\n    asked_at: 2026-10-10T10:00:00Z\n    options:\n${option("name", true, true)}`,
+  );
+  await writeFile(
+    join(control, ".control", "initiatives", "skene.yaml"),
+    'id: skene\ntitle: "Skene"\nintent: "Ship the stage."\nintent_source: "owner, 2026-09-01"\nstated: 2026-09-01\nstatus: active\nnext_action: "Land the PR."\ndriver: owner\nlinks:\n  linear: [BRO-2953]\nreview_by: 2026-01-01\nexit: "It ships."\n',
+  );
+  git(control, "add", ".control");
+  git(control, "commit", "-q", "-m", "ledgers");
+  git(control, "push", "-q", "origin", "main");
+  // The answers batch as the last wake left it: waiting to land through its PR.
+  const state = join(root, "state");
+  await mkdir(state, { recursive: true });
+  await writeFile(
+    join(state, "answers-landing.json"),
+    JSON.stringify({
+      stage: "waiting",
+      pending: 1,
+      asks: [],
+      pr: { number: 915, url: "https://github.com/broomva/workspace/pull/915" },
+      conflict: null,
+      error: null,
+      landed: null,
+      checkedAt: "2026-10-10T14:00:00.000Z",
+    }),
+  );
   const config = join(root, "config.json");
   await writeFile(
     config,
@@ -755,17 +800,17 @@ test("needs.list and handled.list are wired, and pure: their reads change no fil
     }),
   );
   const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
-  const isolated = [
-    "MAESTRO_PASEO_FLEET_CONFIG",
-    "MAESTRO_PASEO_FLEET_STATE",
-    "MAESTRO_PASEO_FLEET_AGENTS",
-    "MAESTRO_PASEO_CONTROL_REPO",
-    "MAESTRO_PASEO_CONTROL_ANSWERS",
-    "MAESTRO_PASEO_ASK_RECEIPTS",
-    "MAESTRO_PASEO_ASK_LOCKS",
-  ] as const;
-  const savedIsolated = isolated.map((key) => [key, process.env[key]] as const);
-  for (const key of isolated) process.env[key] = join(root, "no-fleet", key);
+  const env: Record<string, string> = {
+    MAESTRO_PASEO_FLEET_CONFIG: join(root, "no-fleet", "config"),
+    MAESTRO_PASEO_FLEET_STATE: join(root, "no-fleet", "state"),
+    MAESTRO_PASEO_FLEET_AGENTS: join(root, "no-fleet", "agents"),
+    MAESTRO_PASEO_CONTROL_REPO: control,
+    MAESTRO_PASEO_CONTROL_ANSWERS: join(root, "answers"),
+    MAESTRO_PASEO_ASK_RECEIPTS: join(state, "asks.jsonl"),
+    MAESTRO_PASEO_ASK_LOCKS: join(state, "locks"),
+  };
+  const savedEnv = Object.keys(env).map((key) => [key, process.env[key]] as const);
+  Object.assign(process.env, env);
   process.env.MAESTRO_PASEO_CONFIG = config;
   process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
   const { host, handlers, hooks } = fakeHost();
@@ -777,8 +822,10 @@ test("needs.list and handled.list are wired, and pure: their reads change no fil
     if (!handler) throw new Error(`${name} is not handled`);
     return (await handler(input, context)) as Record<string, unknown> & { item: { id: string; state: string } };
   };
+  type Needs = import("./shared/needs").Needs;
+  const needsNow = async (input: unknown = {}) => (await run("needs.list", input)) as unknown as Needs;
   try {
-    // Work in three states: queued, at your gate, and stuck.
+    // Work: queued, at your gate, stuck, and held for you (only you may start it, once the loop has seen it).
     const base = { brief: "", repo, initiative: "", dispatch: false, check: "", gate: "human" };
     const { item: queued } = await run("work.create", { ...base, title: "Queued" });
     const { item: gated } = await run("work.create", { ...base, title: "At your gate" });
@@ -791,41 +838,129 @@ test("needs.list and handled.list are wired, and pure: their reads change no fil
     const { item: stuck } = await run("work.create", { ...base, title: "Stuck" });
     await run("work.dispatch", { id: stuck.id });
     await run("work.stop", { id: stuck.id, discard: true });
+    // Held for you (`hold` in its _work.md, as an idea you chose to develop is filed), and flagged so by the
+    // loop: its receipt, as a wake writes it.
+    const { item: held } = await run("work.create", { ...base, title: "Held" });
+    const heldDir = join(root, "work", (held as unknown as { path: string }).path);
+    const workFile = join(heldDir, "_work.md");
+    await writeFile(workFile, (await readFile(workFile, "utf8")).replace(/^---\n/, "---\nhold: Only you start it.\n"));
+    const flag = { type: "loop.flagged", actor: "maestro", kind: "yours", reason: "Only you start it." };
+    await writeFile(
+      join(heldDir, "_events.jsonl"),
+      `${await readFile(join(heldDir, "_events.jsonl"), "utf8")}${JSON.stringify({ ts: new Date().toISOString(), ...flag })}\n`,
+    );
     // Its session went back to work: a reconcile would move the work off your gate and write it. No read here may.
     if (agent) agent.status = "running";
 
-    // The one hold is the work at your gate: an approval. Queued and stuck work hold nothing of yours (A1).
-    const needs = (await run("needs.list", {})) as unknown as {
-      rows: { key: string; kind: string }[];
-      summary: { total: number; byKind: Record<string, number> };
-    };
-    expect(needs.rows.map((row) => [row.key, row.kind])).toEqual([[`work:${gated.id}`, "approval"]]);
-    expect(needs.summary).toMatchObject({ total: 1, byKind: { ask: 0, approval: 1, owner_step: 0 } });
-    expect(((await run("needs.list", { kind: "ask" })) as unknown as { rows: unknown[] }).rows).toEqual([]);
+    // Pure, from the first read on: no file under the test's root changes (the work, the control repo and its
+    // .git, which a fetch rewrites, the receipts, the config), and nothing is sent, started or archived.
+    const before = await snapshot(root);
+    const counts = () => [fake.sent.length, fake.created.length, fake.archived.length];
+    const sentBefore = counts();
+
+    // Every kind, from every source: the gate's approval, the held start and the batch as owner steps, the two
+    // asks that wait and the due review. Queued and stuck work, and the calm ask, hold nothing of yours (A1).
+    const needs = await needsNow();
+    expect(needs.rows.map((row) => [row.kind, row.key.split(":")[0], row.title]).sort()).toEqual(
+      [
+        ["approval", "work", "At your gate"],
+        ["ask", "ask", "Blocks?"],
+        ["ask", "ask", "One way?"],
+        ["ask", "review", "Review Skene: keep, park or close?"],
+        ["owner_step", "answers", "1 answer waits to land: PR #915"],
+        ["owner_step", "work", "Start it yourself: Held"],
+      ].sort(),
+    );
+    expect(needs.summary).toMatchObject({ total: 6, byKind: { ask: 3, approval: 1, owner_step: 2 } });
+    expect((await needsNow({ kind: "ask" })).rows).toHaveLength(3);
     expect(queued.state).toBe("proposed");
     const handled = (await run("handled.list", {})) as unknown as { rows: unknown[]; today: Record<string, number> };
     expect(handled).toEqual({ rows: [], today: { closedForYou: 0, byYou: 0, asksAnswered: 0 } });
 
-    // Pure: read both 25 times; no file under the work root or beside the config changes, nothing is sent or started.
-    const before = await snapshot(root);
-    const counts = () => [fake.sent.length, fake.created.length, fake.archived.length];
-    const sentBefore = counts();
+    // And 25 reads of each: still nothing written. A fetch a read had started in the background lands by then.
     for (let read = 0; read < 25; read += 1) {
-      await run("needs.list", {});
+      await needsNow();
       await run("handled.list", {});
     }
+    await new Promise((r) => setTimeout(r, 1_000));
     expect(counts()).toEqual(sentBefore);
     expect(await snapshot(root)).toEqual(before);
-    // Still the one hold it was: what needs you moves when the sweep or an event moves it, never on a read.
-    const again = (await run("needs.list", {})) as unknown as { rows: { key: string }[] };
-    expect(again.rows.map((row) => row.key)).toEqual([`work:${gated.id}`]);
+    expect(await needsNow()).toEqual(needs);
+
+    // Invariant 1, end to end. The header button, as startIntegrations registers it, its reads served by these
+    // handlers; the Feed's section and tab from needs.list; the push from a real landing, through the real Inbox.
+    const { startIntegrations } = await import("./client/integrations");
+    const { needsSection } = await import("./client/feed-model");
+    const { tabBadges } = await import("./client/header-count");
+    const { decodeNotice, noticeText } = await import("./server/inbox");
+    const header: { label?: string }[] = [];
+    const integrations = startIntegrations(
+      {
+        paseo: {
+          workspaces: {
+            list: async () => ({ entries: [{ id: "ws1" }], pageInfo: { hasMore: false, nextCursor: null } }),
+            subscribe: () => () => undefined,
+          },
+          agents: { subscribe: () => () => undefined },
+        },
+        rpc: (contract: { name: string }, input: unknown) => run(contract.name, input),
+        openScreen: () => undefined,
+        addHeaderButton: ({ button }: { button: { label?: string } }) => {
+          header.push(button);
+          return { update: (patch: object) => Object.assign(button, patch), remove: () => undefined };
+        },
+        addComposerPill: () => ({ update: () => undefined, remove: () => undefined }),
+      } as never,
+      { pillIcon: () => "dot" as never, PillContent: () => null },
+      { later: () => () => undefined, log: () => undefined },
+    );
+    // A landing pushes through the inbox session: Paseo's side of it, recorded.
+    const pushed: string[] = [];
+    const agents = fake.paseo.agents as unknown as Record<string, unknown>;
+    const ref = agents.ref as (id: string) => Record<string, unknown>;
+    agents.create = async () => ({ id: "inbox-1" });
+    agents.ref = (id: string) =>
+      id === "inbox-1"
+        ? {
+            refresh: async () => ({ agent: { archivedAt: null, requiresAttention: false } }),
+            send: async (_prompt: string, options?: { attachments?: { text: string }[] }) => {
+              pushed.push(options?.attachments?.[0]?.text ?? "");
+            },
+          }
+        : ref(id);
+    const { item: landing } = await run("work.create", { ...base, title: "Lands now" });
+    await run("work.dispatch", { id: landing.id });
+    const landingAgent = fake.agents.get("agent-3");
+    if (landingAgent) landingAgent.status = "idle";
+    await ended({ agent: { id: "agent-3" }, outcome: { kind: "completed" }, timeline: [], turnId: "t3" }, context);
+    for (let tries = 0; tries < 200 && pushed.length === 0; tries += 1) await new Promise((r) => setTimeout(r, 10));
+    const after = await needsNow();
+    const total = after.summary.total;
+    // The header reads as it does after an event, once its first read (which also lists the pills' sessions) is in.
+    const headerCount = () => Number(/^(\d+) needs? you$/.exec(header[0]?.label ?? "")?.[1]);
+    for (let tries = 0; tries < 300 && headerCount() !== total; tries += 1) {
+      await integrations.refresh();
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    integrations.stop();
+    const items = ((await run("work.list", {})) as unknown as { items: import("./shared/contracts").WorkItem[] }).items;
+    const notice = decodeNotice(pushed[0] ?? "");
+    if (!notice) throw new Error("the landing pushed nothing");
+    expect(total).toBe(7);
+    expect({
+      sumOfKinds: after.summary.byKind.ask + after.summary.byKind.approval + after.summary.byKind.owner_step,
+      header: headerCount(),
+      section: needsSection(after.rows, items, []).length,
+      feedTab: tabBadges(after).feed?.count,
+      push: Number(/^\*\*(\d+) needs? you\*\*/.exec(noticeText(notice))?.[1]),
+    }).toEqual({ sumOfKinds: total, header: total, section: total, feedTab: total, push: total });
   } finally {
     await cleanup();
     process.env.MAESTRO_PASEO_CONFIG = saved.config;
     process.env.MAESTRO_PASEO_SOCKET = saved.socket;
     if (saved.config === undefined) delete process.env.MAESTRO_PASEO_CONFIG;
     if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
-    for (const [key, value] of savedIsolated) {
+    for (const [key, value] of savedEnv) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }

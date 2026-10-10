@@ -261,7 +261,7 @@ export function FleetView({
       id: "needs",
       label: "Health",
       value: needs.total,
-      sub: needs.total > 0 ? `${plural(needs.total, "scope")} whose tick needs you` : "no scope's tick needs you",
+      sub: needs.total > 0 ? `${plural(needs.total, "scope")} whose tick wants a look` : "no scope's tick wants a look",
       tone: "warn",
     },
     {

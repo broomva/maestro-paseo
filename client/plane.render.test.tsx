@@ -516,6 +516,8 @@ let answerHeld: Promise<void> | null = null;
 let answerFail: string | null = null;
 /** The answers batch as the last wake left it: none unless a test says. */
 let landingNow: AnswersLanding | null = null;
+/** While set, needs.list fails with it. */
+let needsFail: string | null = null;
 /** Loop drift work.attention says needs you: none unless a test says. */
 let loopNoticesNow: LoopNotice[] = [];
 /** The Loops tab's read (loops.get): two standing rows, one drifting, and a p9 watcher. */
@@ -1037,7 +1039,10 @@ const invoke = async (method: string, input: unknown) => {
     };
   }
   // What needs you and what was handled, as the server builds them (server/needs.ts) from the same fixtures.
-  if (method === "needs.list") return needsNow((input as { kind?: NeedKind }).kind);
+  if (method === "needs.list") {
+    if (needsFail) throw new Error(needsFail);
+    return needsNow((input as { kind?: NeedKind }).kind);
+  }
   if (method === "handled.list") {
     const day = new Date();
     day.setHours(0, 0, 0, 0);
@@ -1377,6 +1382,7 @@ afterEach(async () => {
   answerFail = null;
   loopNoticesNow = [];
   landingNow = null;
+  needsFail = null;
   askSessionNow = null;
   opened = [];
   initiativesNow = initiativesFixture();
@@ -1426,6 +1432,16 @@ describe("the changed line", () => {
     expect(view.text()).toContain("Approve the branch");
     expect(view.text()).not.toContain("Changed");
     expect(probeLogs()).toBe(1);
+  });
+
+  test("while needs.list cannot be read, the subtitle never says nothing needs you, and says why (BRO-3001)", async () => {
+    needsFail = "socket closed";
+    const view = await mount(surface(false));
+    for (let tries = 0; tries < 100 && !view.text().includes("could not be read"); tries += 1) await settle(20);
+    expect(view.text()).toContain("What needs you could not be read");
+    // What the work alone says, in words that say so: never a bare number, never "Nothing needs you".
+    expect(view.text()).toContain("2 work items need you · 1 running");
+    expect(view.text()).not.toContain("Nothing needs you");
   });
 
   test("with client state, the card and the detail show +a −d", async () => {
@@ -2486,18 +2502,20 @@ describe("the Fleet view", () => {
     expect(sent("fleet.get")).toEqual([{ ticks: 24 }, { scope: "sri", ticks: 24 }]);
     const text = view.text();
     // Every scope that is not well is named, the worst first, and the session that wants a look too.
-    expect(text).toContain("broomva missed its tick · 1 needs you · 1 session wants a look · sri not scheduled");
+    expect(text).toContain(
+      "broomva missed its tick · 1 tick wants a look · 1 session wants a look · sri not scheduled",
+    );
     expect(text).toContain("No tick for 3h: the last was tick 35. It runs every hour.");
     expect(text).toContain("Dry run · report only");
     // A cell per tick with its words, and the scope's missed cell last.
     expect(starting(view, "Tick 35, passed")).toBeDefined();
     expect(starting(view, "No tick: missed for 3h")).toBeDefined();
     // The tile is health: the missed tick. The ask is counted where it lives, at your gate (BRO-2908).
-    expect(starting(view, "Health: 1, 1 scope whose tick needs you")).toBeDefined();
+    expect(starting(view, "Health: 1, 1 scope whose tick wants a look")).toBeDefined();
     expect(starting(view, "Health: 1")?.getAttribute("aria-label")).toContain("Go to Health");
     expect(text).toContain("Counted where they live");
     // The band says what it counts: the tick, not the ask counted at your gate.
-    expect(text).toContain("Needs you: 1 tick.");
+    expect(text).toContain("Wants a look: 1 tick.");
     expect(starting(view, "Attention: 1, 1 failed")).toBeDefined();
     expect(starting(view, "Running: 1")).toBeDefined();
     expect(starting(view, "Failed: 1")).toBeDefined();
@@ -2743,9 +2761,9 @@ describe("the Fleet view", () => {
       const target = view.byLabel(label) as unknown as { firstElementChild: { style: { backgroundColor: string } } };
       return target.firstElementChild.style.backgroundColor.includes("84, 128, 199");
     };
-    expect(view.text()).toContain("No scope's tick needs you");
+    expect(view.text()).toContain("No scope's tick wants a look");
     expect(view.text()).toContain("A late or failing scope whose alert is at your gate is counted there.");
-    expect(starting(view, "Health: 0, no scope's tick needs you")).toBeDefined();
+    expect(starting(view, "Health: 0, no scope's tick wants a look")).toBeDefined();
     expect(filled("Agree: report only, 4 sessions")).toBe(false);
     // Teach the fleet sits below the sessions.
     expect(view.text().indexOf("Teach the fleet")).toBeGreaterThan(view.text().indexOf("Sessions in scope"));
@@ -2790,7 +2808,7 @@ describe("the Fleet view", () => {
     // The subtitle under Maestro's title says the same Maestro-wide number as the header and the band.
     expect(view.text().startsWith(`MaestroNew work${header} need you · `)).toBe(true);
     expect(view.byLabel(`${work} in Work: open Work`)).not.toBeNull();
-    expect(starting(view, "Health: 1, 1 scope whose tick needs you")).toBeDefined();
+    expect(starting(view, "Health: 1, 1 scope whose tick wants a look")).toBeDefined();
     const section = view.byLabel("Health: 1 card") as unknown as { children: { length: number } };
     expect(section.children.length).toBe(1);
     // The raised work and the waiting decision are shown, uncounted here.
@@ -2799,7 +2817,8 @@ describe("the Fleet view", () => {
     expect(view.text()).toContain("Also open");
     // One scope shown: the band still says Maestro's whole number, not a share of it.
     await view.press(view.byLabel("sri, Not scheduled, 1 proposal to review"));
-    for (let tries = 0; tries < 100 && !view.text().includes("No scope's tick needs you"); tries += 1) await settle(20);
+    for (let tries = 0; tries < 100 && !view.text().includes("No scope's tick wants a look"); tries += 1)
+      await settle(20);
     expect(view.text()).toContain(`${header} need you in Maestro (${work} in Work, ${decisions} in Decisions)`);
   });
 
@@ -2824,7 +2843,7 @@ describe("the Fleet view", () => {
     const view = await mount(surface(false));
     await view.goto("Fleet");
     for (let tries = 0; tries < 100 && !view.text().includes("Would list 4 unmanaged"); tries += 1) await settle(20);
-    expect(view.text()).toContain("No scope's tick needs you");
+    expect(view.text()).toContain("No scope's tick wants a look");
     expect(view.text()).toContain("Counted where they live");
     const verb = view.all('[aria-label^="Open the fleet\'s work for ask"]')[0] as unknown as
       | { firstElementChild: { style: { backgroundColor: string } } }

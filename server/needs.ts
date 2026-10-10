@@ -10,7 +10,8 @@
 //     gate`, until BRO-2999 makes it Allow / Deny on a held action).
 //   - ask: a decision ask that waits on you (shared/fleet.ts isWaiting), the
 //     workspace's and each fleet root's; and a due initiative review (B2), with
-//     a review body.
+//     a review body. An idea filed for an initiative is a proposal, watched
+//     (A1): Initiatives triages it, and it holds no session.
 //   - owner_step: queued work only you may start (shared/needs-you.ts
 //     onlyYouStart: "Start it yourself"), and the answers batch while it waits
 //     to land or has stopped (Maestro never merges its PR).
@@ -49,6 +50,13 @@ import { UNDO_MS } from "../shared/undo";
 
 /** How far back handled.list reaches: a week, as the Feed's Handled for you always showed. */
 export const HANDLED_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * When a hold whose source gives no date was first seen: an undated ask, the
+ * answers batch (its last check moves on every wake). The handler keeps them in
+ * memory, so `since` holds still across reads; a pure default answers `now`.
+ */
+export type FirstSeen = (key: string, now: number) => string;
 
 /** What needs.list is computed from, each read as it stands: no read here may reconcile or write (BRO-2995). */
 export interface NeedSources {
@@ -156,20 +164,26 @@ function goesTo(ask: DecisionAsk): string {
   return "origin/main, through Maestro's answers batch";
 }
 
-/** A decision ask's hold, when it waits on you (isWaiting); null for one that does not. */
-export function askNeed(ask: DecisionAsk, workspace: string, now: number): NeedRow | null {
-  if (!isWaiting(ask)) return null;
+/** A decision ask's hold, when it waits on you (isWaiting); null for one that does not, and for an idea. */
+export function askNeed(
+  ask: DecisionAsk,
+  workspace: string,
+  now: number,
+  seen: FirstSeen = (_key, at) => new Date(at).toISOString(),
+): NeedRow | null {
+  if (!isWaiting(ask) || ask.idea) return null;
+  const key = askHoldKey(ask);
   const recommended = ask.options.find((option) => option.recommended)?.id;
   return {
     kind: "ask",
-    key: askHoldKey(ask),
+    key,
     title: ask.headline ?? ask.question ?? ask.id,
     scope: ask.scope ?? workspace,
     ...(ask.origin
       ? { session: { agentId: ask.origin.agentId, name: shortId(ask.origin.agentId), waiting: ask.blocking } }
       : {}),
-    // An ask its ledger left undated waits from now on: never placed ahead of a dated one by a guess.
-    since: ask.askedAt ?? new Date(now).toISOString(),
+    // An ask its ledger left undated waits from when it was first seen: never ahead of a dated one by a guess.
+    since: ask.askedAt ?? seen(key, now),
     blocksWork: ask.blocking,
     verbs: [...KIND_VERBS.ask],
     body: {
@@ -240,7 +254,12 @@ export function reviewNeed(
 }
 
 /** The answers batch as an owner step, while answers wait to land or it has stopped (shared/answers.ts answersNotice). */
-export function answersNeed(landing: AnswersLanding | null, workspace: string): NeedRow | null {
+export function answersNeed(
+  landing: AnswersLanding | null,
+  workspace: string,
+  now: number = Date.now(),
+  seen: FirstSeen = () => landing?.checkedAt ?? new Date(now).toISOString(),
+): NeedRow | null {
   const notice = answersNotice(landing);
   if (!notice || !landing) return null;
   return {
@@ -248,7 +267,8 @@ export function answersNeed(landing: AnswersLanding | null, workspace: string): 
     key: ANSWERS_KEY,
     title: notice.words,
     scope: workspace,
-    since: landing.checkedAt,
+    // Waiting since first seen waiting: its last check moves on with every wake.
+    since: seen(ANSWERS_KEY, now),
     // Your answers are not acted on until they land.
     blocksWork: true,
     verbs: [...KIND_VERBS.owner_step],
@@ -261,6 +281,11 @@ export function answersNeed(landing: AnswersLanding | null, workspace: string): 
       waitingSessions: 0,
     },
   };
+}
+
+/** A ledger's time: a bare day (YYYY-MM-DD) is that day's local midnight, never UTC's. */
+function localTime(value: string): number {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00`).getTime() : Date.parse(value);
 }
 
 const time = (iso: string | undefined): number => {
@@ -295,23 +320,23 @@ export function summaryOf(rows: readonly NeedRow[]): NeedSummary {
 }
 
 /** needs.list: every hold, in deck order, each key once; `kind` narrows it to one kind. */
-export function needsOf(sources: NeedSources, now: number, kind?: NeedKind): Needs {
+export function needsOf(sources: NeedSources, now: number, kind?: NeedKind, seen?: FirstSeen): Needs {
   const all = [
     ...sources.items.map(workNeed),
-    ...sources.asks.map((ask) => askNeed(ask, sources.workspace, now)),
+    ...sources.asks.map((ask) => askNeed(ask, sources.workspace, now, seen)),
     ...sources.reviews.map((initiative) => reviewNeed(initiative, sources.items, sources.asks, sources.workspace)),
-    answersNeed(sources.landing, sources.workspace),
+    answersNeed(sources.landing, sources.workspace, now, seen),
   ].filter((row): row is NeedRow => row !== null);
   // One hold per key: two reads of one ask (a checkout's copy listed twice, say) count once.
-  const seen = new Set<string>();
-  const unique = all.filter((row) => !seen.has(row.key) && Boolean(seen.add(row.key)));
+  const keys = new Set<string>();
+  const unique = all.filter((row) => !keys.has(row.key) && Boolean(keys.add(row.key)));
   const rows = sortNeeds(kind ? unique.filter((row) => row.kind === kind) : unique);
   return { rows, summary: summaryOf(rows) };
 }
 
 /**
  * Who closed finished work (HandledRow.closedBy): you; the merge gates (its
- * branch merged, or the auto gate closed it on passing checks); its
+ * branch merged, or the auto gate closed it on checks that passed); its
  * orchestrator (an adopted arc that finished or was taken back); else Maestro
  * on its own evidence (a run whose arc reported itself finished).
  */
@@ -319,7 +344,9 @@ export function closerOf(item: WorkItem): Closer | null {
   if (!item.closed) return null;
   if (item.closed.by === "you") return "you";
   if (/\bmerged as\b/.test(item.verdict ?? "")) return "gates";
-  if (item.gate === "auto" && item.state === "done" && !item.adoptedBy) return "gates";
+  // Its receipt says the checks passed and says nothing else: a close on other evidence is not the gate's.
+  const passed = /^(check|all \d+ checks) passed$/i.test(item.verdict ?? "");
+  if (item.gate === "auto" && item.state === "done" && !item.adoptedBy && passed) return "gates";
   if (item.adoptedBy) return "orchestrator";
   return "maestro";
 }
@@ -360,7 +387,7 @@ export function handledOf(
   const today = rows.filter((row) => Date.parse(row.at) >= dayStart);
   const answered = new Set(
     asks
-      .filter((ask) => ask.state === "answered" && ask.answeredAt && Date.parse(ask.answeredAt) >= dayStart)
+      .filter((ask) => ask.state === "answered" && ask.answeredAt && localTime(ask.answeredAt) >= dayStart)
       .map(askHoldKey),
   );
   return {

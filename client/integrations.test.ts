@@ -8,9 +8,11 @@ import type { OrchState } from "../shared/states";
 import { fakeWork } from "./fake-work";
 import { type IntegrationClient, REFRESH, sessionSignal, startIntegrations, workspaceIds } from "./integrations";
 import { takeIntent } from "./intent";
+import { onNeeds, publishNeeds, resetNeedsBus } from "./needs-bus";
 
 afterEach(() => {
   takeIntent();
+  resetNeedsBus();
 });
 
 interface Registered {
@@ -240,6 +242,30 @@ describe("the header count", () => {
     await clock.advance(REFRESH.everyMs);
     expect(live(fake.headers).map((entry) => entry.workspaceId)).toEqual(["ws2", "ws3"]);
     expect(fake.headers.find((entry) => entry.workspaceId === "ws1")?.removed).toBe(true);
+  });
+
+  test("one snapshot with the screen: its read moves the header at once, and the header's read reaches it", async () => {
+    const fake = fakeClient();
+    fake.state.needs = holds("r");
+    const toScreen: number[] = [];
+    onNeeds((next, from) => {
+      if (from === "header") toScreen.push(next.summary.total);
+    });
+    const { clock } = start(fake);
+    await settle();
+    expect(toScreen).toEqual([1]);
+    expect(face(fake.headers[0] as Registered)).toMatchObject({ label: "1 needs you" });
+    // You answered in Decisions: the screen refetched; the header says its number now, with no read of its own.
+    const reads = fake.reads.length;
+    publishNeeds(holds("r", "s", "t"), "screen");
+    expect(face(fake.headers[0] as Registered)).toMatchObject({ label: "3 need you" });
+    expect(fake.reads).toHaveLength(reads);
+    // And the press opens where those are.
+    const behavior = face(fake.headers[0] as Registered).behavior;
+    if (behavior.kind !== "action") throw new Error("the header count is an action");
+    void behavior.onPress();
+    expect(takeIntent()).toEqual({ kind: "filter", group: "review" });
+    await clock.advance(0);
   });
 
   test("pressing it opens Maestro where the holds are, as needs.list stands when pressed", async () => {

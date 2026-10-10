@@ -365,7 +365,7 @@ describe("Needs you", () => {
       ["p3"],
     ]);
     expect(reviewedGroups(reads, NOW).map((entry) => entry.group.proposals[0]?.session?.short)).toEqual(["p4"]);
-    expect(needsText({ ticks: 0, asks: 0, alerts: 0, decisions: 0 })).toBe("nothing waits on you");
+    expect(needsText({ ticks: 0, asks: 0, alerts: 0, decisions: 0 })).toBe("nothing wants a look");
   });
 });
 
@@ -460,8 +460,8 @@ describe("the health band", () => {
     // Anything that needs you (fleetNeedsYou's total) is never "healthy", and it leads.
     expect(verdictOf(one(), cells, false, { needs: 2, needsText: "1 alert · 1 decision", sessions: 3 })).toMatchObject({
       tone: "warn",
-      title: "2 need you · 3 sessions want a look · ticks on time",
-      sentence: expect.stringContaining("Needs you: 1 alert · 1 decision."),
+      title: "2 ticks want a look · 3 sessions want a look · ticks on time",
+      sentence: expect.stringContaining("Wants a look: 1 alert · 1 decision."),
     });
     // A paused or unscheduled scope never hides hurt sessions, and warn outranks muted.
     expect(verdictOf(one(off), cells, false, { needs: 0, sessions: 3 })).toMatchObject({
@@ -874,7 +874,8 @@ describe("one number for what needs you", () => {
       needsText: needsText(needs),
       sessions: needs.sessions,
     });
-    expect(band.title).toContain(`${needs.total} needs you`);
+    // The fleet's health is watched (A1): it wants a look, and never says "need you".
+    expect(band.title).toContain(`${needs.total} tick wants a look`);
     // Uncounted, still shown: the quiet alert, the ask not raised yet, the decisions that do not wait.
     expect(needs.also.map((card) => card.kind)).toEqual(["alert", "ask", "decisions"]);
   });

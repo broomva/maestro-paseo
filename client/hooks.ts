@@ -4,7 +4,6 @@
 // handled (handled.list) are one query each, refetched when a session changes
 // (useNeedsEvents) or a verb settles, and otherwise on a slow fallback.
 
-import type { PaseoAgentUpdate } from "@getpaseo/client";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect } from "react";
@@ -27,9 +26,9 @@ import {
   wakeLoop,
   workForAgent,
 } from "../shared/contracts";
-import { listHandled, listNeeds } from "../shared/needs";
-import { sessionSignal } from "./integrations";
+import { listHandled, listNeeds, type Needs } from "../shared/needs";
 import { type LoopState, loopPollMs } from "./loop-model";
+import { onNeeds, publishNeeds, watchSessions } from "./needs-bus";
 
 const KEY = ["maestro"] as const;
 const POLL_MS = 4000;
@@ -141,44 +140,41 @@ export function invalidateNeeds(client: QueryClient): void {
 }
 
 /**
- * Refetch what needs you when a session changes (Paseo's agent events, which
- * this client already receives): a turn ending, a permission asked, an
- * archive. A burst is one read, NEEDS_NUDGE_MS after its first event. Mounted
- * once by the screen; a host that sends no events leaves the fallback poll.
+ * Keeps what needs you current on this screen: a session that changes
+ * (Paseo's agent events: a turn ending, a permission asked, an archive)
+ * refetches it, one read per burst NEEDS_NUDGE_MS after its first event
+ * (client/needs-bus.ts watchSessions); every read this screen makes moves the
+ * header button, and every read the header makes fills this screen, so the
+ * two never show different numbers (publishNeeds). Mounted once by the screen.
  */
 export function useNeedsEvents(): void {
   const paseo = usePaseo();
   const client = useQueryClient();
   useEffect(() => {
-    const seen = new Map<string, string>();
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const nudge = () => {
-      if (timer) return;
-      timer = setTimeout(() => {
-        timer = null;
-        invalidateNeeds(client);
-      }, NEEDS_NUDGE_MS);
-    };
-    let stop: () => void = () => {};
-    try {
-      stop = paseo.agents.subscribe((update: PaseoAgentUpdate) => {
-        if (update.kind === "remove") {
-          if (seen.delete(update.agentId)) nudge();
-          return;
-        }
-        const signal = sessionSignal(update.agent);
-        const before = seen.get(update.agent.id);
-        if (before === signal) return;
-        seen.set(update.agent.id, signal);
-        // The first sight of a session is the subscription's snapshot, not a change.
-        if (before !== undefined) nudge();
-      });
-    } catch {
-      // No agent events on this host: the fallback poll keeps the counts honest.
-    }
+    const stopWatching = watchSessions({
+      subscribe: (handler) => paseo.agents.subscribe(handler),
+      nudge: () => invalidateNeeds(client),
+      later: (run, ms) => {
+        const timer = setTimeout(run, ms);
+        return () => clearTimeout(timer);
+      },
+      ms: NEEDS_NUDGE_MS,
+      log: (message) => console.warn(`[maestro] ${message}`),
+    });
+    const stopHearing = onNeeds((needs, from) => {
+      if (from === "header") client.setQueryData(NEEDS_KEY, needs);
+    });
+    const key = JSON.stringify(NEEDS_KEY);
+    const stopTelling = client.getQueryCache().subscribe((event) => {
+      if (event.type !== "updated" || event.action.type !== "success") return;
+      if (JSON.stringify(event.query.queryKey) !== key) return;
+      const data = event.query.state.data as Needs | undefined;
+      if (data) publishNeeds(data, "screen");
+    });
     return () => {
-      stop();
-      if (timer) clearTimeout(timer);
+      stopWatching();
+      stopHearing();
+      stopTelling();
     };
   }, [paseo, client]);
 }

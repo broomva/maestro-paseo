@@ -339,7 +339,7 @@ export function needsText(needs: Pick<FleetNeeds, "ticks" | "asks" | "alerts" | 
     needs.alerts > 0 ? plural(needs.alerts, "alert") : null,
     needs.decisions > 0 ? plural(needs.decisions, "decision") : null,
   ].filter(Boolean);
-  return parts.length > 0 ? parts.join(" · ") : "nothing waits on you";
+  return parts.length > 0 ? parts.join(" · ") : "nothing wants a look";
 }
 
 /**
@@ -483,7 +483,7 @@ const RANK: Record<Verdict["tone"], number> = { danger: 3, warn: 2, muted: 1, su
 /**
  * The health band's verdict. It leads with the problem and never overclaims:
  * it is "healthy" (success) only when every scope was read, ticks on time,
- * no scope's tick needs you (fleetNeedsYou) and no session wants a look. Each
+ * no scope's tick wants a look (fleetNeedsYou) and no session does. Each
  * scope that cannot be read, is failing, missed its tick, is paused or is not
  * scheduled is named; sessions that want a look are named whatever the
  * scope's state (a paused scope never hides them); a scope still loading says
@@ -521,8 +521,9 @@ export function verdictOf(
     parts.push({
       tone: "warn",
       icon: "Inbox",
-      title: `${load.needs} ${load.needs === 1 ? "needs" : "need"} you`,
-      sentence: `Needs you: ${load.needsText ?? plural(load.needs, "thing")}.`,
+      // Health is watched (A1): what needs you is needs.list's, which the band's last line says.
+      title: `${plural(load.needs, "tick")} ${load.needs === 1 ? "wants" : "want"} a look`,
+      sentence: `Wants a look: ${load.needsText ?? plural(load.needs, "thing")}.`,
     });
   }
   if (load.sessions > 0) {

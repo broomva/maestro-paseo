@@ -25,7 +25,7 @@ import { AnswersNotices, AskNotices, useWorkspaceAsks } from "./decisions";
 import { decisionAsks, ledgerOf } from "./decisions-model";
 import { WorkDetail } from "./detail";
 import { DecideSection, FeedControls, FeedSectionsView, NeedsSection } from "./feed";
-import { handledForYou, headerLine, matchesQuery, needsSection, sectionsOf } from "./feed-model";
+import { handledForYou, handledShown, headerLine, matchesQuery, needsSection, sectionsOf } from "./feed-model";
 import { FleetNotices, FleetView } from "./fleet";
 import { duration, errorText, plural } from "./format";
 import { holdTarget, tabBadges } from "./header-count";
@@ -131,12 +131,18 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const sections = sectionsOf(scoped.filter((item) => matchesQuery(item, query)));
   // Needs you: needs.list's rows in their order, joined to the work and asks this client has (scope and search apply).
   const needsEntries = needsSection(needs.data?.rows ?? [], items, asks, scope, query);
-  const handledRows = handled.data?.rows ?? [];
+  // Handled for you, scoped and searched as the other sections are; the subtitle counts all of it.
+  const allHandled = handled.data?.rows ?? [];
+  const handledRows = handledShown(
+    allHandled,
+    scoped.filter((item) => matchesQuery(item, query)),
+    scope,
+    query,
+  );
   const needsYou = (
     <NeedsSection
       {...pick}
       entries={needsEntries}
-      summary={needs.data?.summary ?? null}
       onOpenAsk={(ask) => openDecisions(ledgerOf(ask), { ledger: ledgerOf(ask), uid: ask.uid, id: ask.id })}
       onOpenHold={(row) => requestIntent(holdTarget(row))}
     />
@@ -217,8 +223,9 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
         </View>
         {/* Its own row under the title, as the design has it: beside the buttons it wraps. */}
         <Text style={[text.body, { fontWeight: "500" }]}>
-          {view === "feed" && loaded
-            ? headerLine(needsYouTotal, sectionsOf(scoped).running.length, handledForYou(handledRows).length)
+          {/* Maestro-wide, as the header button: once needs.list is read; before that, what the work alone says. */}
+          {view === "feed" && loaded && needsYouTotal !== null
+            ? headerLine(needsYouTotal, sectionsOf(items).running.length, handledForYou(allHandled).length)
             : summaryText(items, needsYouTotal)}
         </Text>
         {/* Its own row, the pane's full width: beside the buttons a phone wraps "Next wake in 15 min". */}
@@ -234,6 +241,13 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
       </View>
 
       {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
+
+      {/* What needs you could not be read: said, never shown as nothing. */}
+      {needs.isError && !needs.data ? (
+        <Notice theme={theme} tone="danger">
+          {`What needs you could not be read (${errorText(needs.error)}); the count and Needs you come back when it reads.`}
+        </Notice>
+      ) : null}
 
       {view === "fleet" ? null : <FleetNotices theme={theme} compact={compact} onOpen={openFleet} />}
       <AnswersNotices theme={theme} compact={compact} />

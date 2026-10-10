@@ -162,10 +162,10 @@ describe("Handled for you (handled.list)", () => {
 });
 
 describe("Decide", () => {
-  test("open asks that do not wait on you, those that block work first, a few inline and how many more", () => {
+  test("open asks that do not wait on you, oldest first, a few inline and how many more", () => {
     const asks = [
       ask("A1", { askedAt: "2026-10-01T00:00Z" }),
-      ask("A2", { blocking: true, askedAt: "2026-10-03T00:00Z" }),
+      ask("A2", { askedAt: "2026-10-03T00:00Z" }),
       ask("A3", { askedAt: "2026-10-02T00:00Z" }),
       ask("A4", { askedAt: "2026-10-04T00:00Z" }),
       ask("A5", { state: "answered" }),
@@ -174,8 +174,8 @@ describe("Decide", () => {
       ask("A7", { blocking: true, waiting: true, askedAt: "2026-09-01T00:00Z" }),
     ];
     const decide = decideOf(asks);
-    expect(decide.rows.map((row) => row.ask.id)).toEqual(["A2", "A1", "A3"]);
-    expect([decide.rows.length, decide.more, decide.blocking]).toEqual([DECIDE_INLINE, 1, 1]);
+    expect(decide.rows.map((row) => row.ask.id)).toEqual(["A1", "A3", "A2"]);
+    expect([decide.rows.length, decide.more]).toEqual([DECIDE_INLINE, 1]);
     expect(decide.rows[0]?.where).toBe("bro-2909-r2");
   });
 

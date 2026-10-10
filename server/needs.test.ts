@@ -230,6 +230,32 @@ describe("needs.list's kinds (owner answer A1)", () => {
     expect(needsOf(sources({ asks: [waiting] }), NOW).rows).toEqual([]);
   });
 
+  test("an idea filed for an initiative is a proposal, watched (A1), even when it would wait", () => {
+    const idea = ask("I1", {
+      blocking: true,
+      idea: { initiative: "skene", idea: "A stage", source: null, evidence: null, wake: null },
+    });
+    expect(needsOf(sources({ asks: [idea] }), NOW).rows).toEqual([]);
+  });
+
+  test("an undated ask and the answers batch wait from when they were first seen, which holds still", () => {
+    const seenAt = new Map<string, string>();
+    const seen = (key: string, now: number) => {
+      if (!seenAt.has(key)) seenAt.set(key, new Date(now).toISOString());
+      return seenAt.get(key) as string;
+    };
+    const input = sources({ asks: [ask("U1", { blocking: true, askedAt: null })], landing: landing() });
+    const first = needsOf(input, NOW, undefined, seen);
+    const later = needsOf(
+      { ...input, landing: landing({ checkedAt: "2026-10-10T14:59:00.000Z" }) },
+      NOW + 60_000,
+      undefined,
+      seen,
+    );
+    expect(later).toEqual(first);
+    expect(first.rows.map((row) => row.since)).toEqual([new Date(NOW).toISOString(), new Date(NOW).toISOString()]);
+  });
+
   test("a due initiative review is an ask with a review body (B2)", () => {
     const items = [
       fakeWork("w1", "running", live, { initiative: "skene" }),
@@ -383,7 +409,19 @@ describe("handled.list", () => {
         }),
       ),
     ).toBe("gates");
-    expect(closerOf(closed("c", "maestro", "2026-10-10T10:00:00.000Z", { gate: "auto" }))).toBe("gates");
+    expect(
+      closerOf(closed("c", "maestro", "2026-10-10T10:00:00.000Z", { gate: "auto", verdict: "All 2 checks passed" })),
+    ).toBe("gates");
+    // Auto gate, but closed on other evidence (its checks failed, its arc finished): Maestro's, not the gates'.
+    expect(
+      closerOf(
+        closed("c2", "maestro", "2026-10-10T10:00:00.000Z", {
+          gate: "auto",
+          verdict: "1 of 2 checks failed · its arc reported itself finished",
+        }),
+      ),
+    ).toBe("maestro");
+    expect(closerOf(closed("c3", "maestro", "2026-10-10T10:00:00.000Z", { gate: "auto" }))).toBe("maestro");
     expect(closerOf(closed("d", "maestro", "2026-10-10T10:00:00.000Z", { adoptedBy: { by: "SRI" } }))).toBe(
       "orchestrator",
     );
@@ -399,6 +437,20 @@ describe("handled.list", () => {
       closed("gated", "maestro", "2026-10-10T11:00:00.000Z", { gate: "auto", verdict: "All 2 checks passed" }),
       fakeWork("open", "running", live),
     ];
+    // A ledger that writes only the day: today's local day, not UTC's (in UTC-5, UTC midnight is yesterday).
+    // In the owner's zone (bun test runs in UTC, where a bare day's two midnights coincide).
+    const zone = process.env.TZ;
+    process.env.TZ = "America/Bogota";
+    try {
+      const local = new Date(NOW);
+      local.setHours(0, 0, 0, 0);
+      const bogotaDay = `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`;
+      const dayOnly = [ask("day-only", { state: "answered", answeredAt: bogotaDay })];
+      expect(handledOf([], dayOnly, NOW, local.getTime()).today.asksAnswered).toBe(1);
+    } finally {
+      // bun test runs in UTC with TZ unset; deleting it would fall back to the machine's zone for every later test.
+      process.env.TZ = zone ?? "Etc/UTC";
+    }
     const asks = [
       ask("today", { state: "answered", answeredAt: "2026-10-10T08:00:00.000Z" }),
       ask("before", { state: "answered", answeredAt: "2026-10-09T08:00:00.000Z" }),

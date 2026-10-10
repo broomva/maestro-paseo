@@ -276,6 +276,18 @@ export const BURST_MS = 10 * 60_000;
  */
 export const NOTICE_MS = 30_000;
 
+/** How long a push waits for needs.list's total before it goes without it. */
+export const COUNT_MS = 3_000;
+
+/** `work`'s answer, or null once `ms` passes first. */
+function within<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
 export class Inbox {
   /** One notice at a time, so two landings at once open one session, not two. */
   private chain: Promise<unknown> = Promise.resolve();
@@ -350,7 +362,8 @@ export class Inbox {
     if (!paseo) throw new Error("Maestro has no connection to Paseo yet");
     const id = await this.session(paseo);
     // Counted as it goes out, after the landing it tells of: the push says the number the header says now.
-    const needs = await this.count().catch(() => null);
+    // A count slower than COUNT_MS is left out ("Needs you"), never waited on.
+    const needs = await within(this.count(), COUNT_MS).catch(() => null);
     const told = needs === null ? notice : { ...notice, needs };
     // Paseo records the prompt's text as your message; an attachment it keeps out of it (and the provider reads).
     await paseo.agents.ref(id).send(notice.title, {

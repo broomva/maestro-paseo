@@ -76,8 +76,9 @@ disagree, and a test holds them equal (server/needs-invariant.test.ts).
 | Owner step | Queued work only you may start ("Start it yourself"); the answers batch while it waits to land or has stopped | The work; Decisions |
 
 What you watch is shown, never counted: stuck work (under Stuck), a quiet run (under Running), a missed or
-failing fleet tick, a failed or missed scheduled run, loop drift, an open ask that does not wait on you,
-and an answer that waits for the conductor. The push from a landing says the same number as the header
+failing fleet tick, a failed or missed scheduled run, loop drift, an open ask that does not wait on you, an
+idea filed for an initiative, and an answer that waits for the conductor. The header button and an open
+Maestro screen share one snapshot, so a verb in one moves the other at once. The push from a landing says the same number as the header
 (*3 need you · the work's title*). `handled.list` is its counterpart: what closed in the last week and
 who closed it (the gates, an orchestrator, Maestro, or you), with today's counts. The Feed's *Handled for
 you* reads it. Both are pure reads: they reconcile no session and write nothing.
@@ -537,8 +538,8 @@ Top to bottom:
   LaunchAgent's interval and the last tick's start; *By hand only* when nothing schedules it).
   There is no *Run tick now* and no *Pause*: the view stays read-only toward the fleet.
 - **The fleet's health, and what needs you.** One selector (`fleetNeedsYou`,
-  client/fleet-cockpit-model.ts) says the fleet's health: a scope whose missed or failing tick wants
-  you, which the health band, the *Health* tile and section read. Health is watched (owner answer
+  client/fleet-cockpit-model.ts) says the fleet's health: a scope whose missed or failing tick wants a
+  look (*1 tick wants a look*), which the health band, the *Health* tile and section read. Health is watched (owner answer
   A1): the header never counts it. What the fleet holds on you is counted where it lives, once, by
   needs.list: an ask batch raised as work at your gate (an approval, Work's), and a decision ask in
   the fleet's own root that waits on you (an ask, Decisions'); the Fleet view shows them under

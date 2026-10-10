@@ -10,7 +10,7 @@ import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { WorkItem } from "../shared/contracts";
 import type { DecisionAsk } from "../shared/fleet";
-import { type HandledRow, KIND_WORDS, type NeedRow, type NeedSummary } from "../shared/needs";
+import { type HandledRow, KIND_WORDS, kindWords, type NeedRow } from "../shared/needs";
 import { ChangeText, WithChange } from "./changed";
 import { askKey } from "./decisions-model";
 import {
@@ -26,6 +26,7 @@ import {
   handledForYou,
   handledGroups,
   handledTitle,
+  kindsOf,
   type NeedEntry,
   type Tone,
 } from "./feed-model";
@@ -454,26 +455,17 @@ function HoldCard({ theme, row, onOpen }: { theme: PluginTheme; row: NeedRow; on
  */
 export function NeedsSection({
   entries,
-  summary,
   onOpenAsk,
   onOpenHold,
   ...pick
 }: Pick & {
   entries: readonly NeedEntry[];
-  summary: NeedSummary | null;
   onOpenAsk: (ask: DecisionAsk) => void;
   onOpenHold: (row: NeedRow) => void;
 }) {
   if (entries.length === 0) return null;
-  const kinds = summary
-    ? (["approval", "owner_step", "ask"] as const)
-        .filter((kind) => summary.byKind[kind] > 0)
-        .map(
-          (kind) =>
-            `${summary.byKind[kind]} ${summary.byKind[kind] === 1 ? KIND_WORDS[kind].one : KIND_WORDS[kind].many}`,
-        )
-        .join(" · ")
-    : null;
+  // Its line says the rows it lists, so a scope or a search never puts a wider number beside them.
+  const kinds = kindWords(kindsOf(entries.map((entry) => entry.row)));
   return (
     <View style={{ gap: space[3] }}>
       <Header theme={pick.theme} title="Needs you" count={entries.length} hint={kinds} />

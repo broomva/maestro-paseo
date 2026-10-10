@@ -23,6 +23,7 @@ import { listNeeds, type Needs } from "../shared/needs";
 import type { OrchState } from "../shared/states";
 import { type HeaderSpec, headerFace, headerSpecs, needsTarget } from "./header-count";
 import { type MaestroIntent, requestIntent } from "./intent";
+import { onNeeds, publishNeeds, sessionSignal } from "./needs-bus";
 import { type PillSpec, pillFace, pillSpecs } from "./pills";
 import { createRegistrations } from "./registrations";
 
@@ -81,14 +82,7 @@ export async function workspaceIds(paseo: Pick<PaseoApi, "workspaces">): Promise
   return ids;
 }
 
-/** What about a session can move the count or a pill: its status, whether it is asking, whether it is archived. */
-export function sessionSignal(agent: {
-  status: string;
-  pendingPermissions?: readonly unknown[];
-  archivedAt?: string | null;
-}): string {
-  return `${agent.status}:${agent.pendingPermissions?.length ?? 0}:${agent.archivedAt ? "archived" : "live"}`;
-}
+export { sessionSignal };
 
 const timeout = (run: () => void, ms: number) => {
   const timer = setTimeout(run, ms);
@@ -184,7 +178,11 @@ export function startIntegrations(
       if (stopped) return;
       // A failed read keeps what was last known rather than hiding everything until the next one.
       if (spaces.status === "fulfilled") workspaces = spaces.value;
-      if (needed.status === "fulfilled") needs = needed.value;
+      if (needed.status === "fulfilled") {
+        needs = needed.value;
+        // An open screen takes the same snapshot (client/needs-bus.ts).
+        publishNeeds(needs, "header");
+      }
       if (live.status === "fulfilled") pills.sync(pillSpecs(live.value.sessions));
       if (needed.status === "fulfilled" || live.status === "fulfilled") {
         const next = JSON.stringify([
@@ -220,6 +218,14 @@ export function startIntegrations(
       log(`Could not listen for session changes; polling only: ${(error as Error).message}`);
     }
   };
+  // A read an open screen made (a verb it settled, its own poll): the header says that number at once.
+  listeners.push(
+    onNeeds((next, from) => {
+      if (from !== "screen" || stopped) return;
+      needs = next;
+      headers.sync(headerSpecs(workspaces, needs.summary.total));
+    }),
+  );
   listen(() =>
     client.paseo.agents.subscribe((update: PaseoAgentUpdate) => {
       if (update.kind === "remove") {

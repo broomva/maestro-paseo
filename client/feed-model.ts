@@ -8,7 +8,16 @@
 
 import type { WorkItem } from "../shared/contracts";
 import type { DecisionAsk } from "../shared/fleet";
-import { askHoldKey, type Closer, type HandledRow, holdOf, type NeedRow } from "../shared/needs";
+import {
+  askHoldKey,
+  type Closer,
+  type HandledRow,
+  holdOf,
+  NEED_KINDS,
+  type NeedRow,
+  type NeedSummary,
+  needsWords,
+} from "../shared/needs";
 import { sectionOf } from "../shared/needs-you";
 import { ticketOf } from "../shared/text";
 import { headlineOf, isTriaged, ledgerName, ledgerOf, silenceOf } from "./decisions-model";
@@ -69,15 +78,14 @@ export function decideRowOf(ask: DecisionAsk): DecideRow {
 
 /**
  * Decide: the open asks that do not wait on you (the ones that do are holds,
- * under Needs you), oldest first; a few inline and how many more. Pure.
+ * under Needs you, and none of these blocks), oldest first; a few inline and
+ * how many more. Pure.
  */
-export function decideOf(asks: readonly DecisionAsk[]): { rows: DecideRow[]; more: number; blocking: number } {
+export function decideOf(asks: readonly DecisionAsk[]): { rows: DecideRow[]; more: number } {
   const open = asks.filter((ask) => isTriaged(ask) && !ask.waiting);
-  const ordered = [...open].sort(
-    (a, b) => Number(b.blocking) - Number(a.blocking) || (a.askedAt ?? "￿").localeCompare(b.askedAt ?? "￿"),
-  );
+  const ordered = [...open].sort((a, b) => (a.askedAt ?? "￿").localeCompare(b.askedAt ?? "￿"));
   const rows = ordered.slice(0, DECIDE_INLINE).map(decideRowOf);
-  return { rows, more: open.length - rows.length, blocking: open.filter((ask) => ask.blocking).length };
+  return { rows, more: open.length - rows.length };
 }
 
 /** A hold as the Feed lists it: the row, and the work item or the ask it holds when this client has it. */
@@ -312,6 +320,32 @@ export interface HandledGroup {
   rows: HandledRow[];
 }
 
+/**
+ * The handled rows a scope or a search keeps: with neither, every row; with
+ * either, the rows whose work the Feed's filtered list holds, as its other
+ * sections do. Pure.
+ */
+export function handledShown(
+  rows: readonly HandledRow[],
+  shown: readonly WorkItem[],
+  scope: string | null,
+  query: string,
+): HandledRow[] {
+  if (scope === null && !query.trim()) return [...rows];
+  const ids = new Set(shown.map((item) => item.id));
+  return rows.filter((row) => {
+    const hold = holdOf(row.key);
+    return hold?.kind === "work" && ids.has(hold.id);
+  });
+}
+
+/** How many of each kind a list of holds holds: the Needs you section's own rows, as its line says them. Pure. */
+export function kindsOf(rows: readonly Pick<NeedRow, "kind">[]): NeedSummary["byKind"] {
+  const byKind = Object.fromEntries(NEED_KINDS.map((kind) => [kind, 0])) as NeedSummary["byKind"];
+  for (const row of rows) byKind[row.kind] += 1;
+  return byKind;
+}
+
 /** What handled.list holds for you: its rows that closed without you. Pure. */
 export function handledForYou(rows: readonly HandledRow[]): HandledRow[] {
   return rows.filter((row) => row.closedBy !== "you");
@@ -324,10 +358,15 @@ export function handledGroups(rows: readonly HandledRow[]): HandledGroup[] {
   );
 }
 
-/** The header's line: what needs you (needs.list's total), what runs, and what was handled for you this week. Pure. */
-export function headerLine(needsYou: number | null, running: number, handled: number): string {
+/**
+ * The header's line, Maestro-wide: what needs you (needs.list's total), what
+ * runs, and what was handled for you this week. Only once needs.list is read:
+ * before that (or while it fails) the subtitle says what it can count itself
+ * (plane-model.ts summaryText), never "Nothing needs you". Pure.
+ */
+export function headerLine(needsYou: number, running: number, handled: number): string {
   const parts = [
-    needsYou ? `${needsYou} ${needsYou === 1 ? "needs" : "need"} you` : "Nothing needs you",
+    needsWords(needsYou),
     running ? `${running} running` : null,
     handled ? `${handled} handled for you` : null,
   ];

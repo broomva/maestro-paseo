@@ -228,18 +228,6 @@ export function WorkspaceDecisions({
   );
 }
 
-/**
- * The decision asks that wait on you, where Maestro shows what needs you, from
- * work.attention: exactly what the header count counts for them. Open
- * Decisions goes to the Decisions tab at the first one, the workspace's and a
- * fleet scope's alike.
- */
-/**
- * The answers batch in Needs you (shared/answers.ts): answers that wait to
- * land on origin/main through Maestro's PR, which Maestro never merges, or a
- * batch that cannot take main. Shown above every view, Decisions included:
- * no card there stands for the batch itself.
- */
 /** The answers batch's PR, read from where its hold says the step is done (server/needs.ts answersNeed). */
 function batchPr(row: NeedRow): { number: number; url: string } | null {
   if (row.kind !== "owner_step") return null;
@@ -247,7 +235,12 @@ function batchPr(row: NeedRow): { number: number; url: string } | null {
   return number ? { number: Number(number), url: row.body.where } : null;
 }
 
-/** The answers batch while it waits on you: needs.list's own row for it, with a way to its PR. */
+/**
+ * The answers batch while it waits on you: needs.list's own row for it (an
+ * owner step: answers that wait to land through Maestro's PR, which Maestro
+ * never merges, or a batch that cannot take main), with a way to its PR.
+ * Shown above every view, Decisions included: no card there stands for it.
+ */
 export function AnswersNotices({ theme, compact }: { theme: PluginTheme; compact: boolean }) {
   const needs = useNeeds();
   const openUrl = useOpenUrl();
@@ -276,6 +269,12 @@ export function AnswersNotices({ theme, compact }: { theme: PluginTheme; compact
   );
 }
 
+/**
+ * The decision asks that wait on you, where Maestro shows what needs you:
+ * needs.list's ask rows, exactly what the header counts for them. Open
+ * Decisions goes to the Decisions tab at the one the line names, the
+ * workspace's and a fleet scope's alike.
+ */
 export function AskNotices({
   theme,
   compact,

@@ -67,16 +67,17 @@ Where each hold comes from today:
 
 | Kind | Source | Key | `blocksWork` | `since` |
 |---|---|---|---|---|
-| approval | Work at your gate, paused on a permission prompt. `heldBy: permission`; the action is the prompt | `work:<id>` | yes | when it reached your gate |
-| approval | Work Maestro's human gate holds. `heldBy: gate`, action "Close it as done", until BRO-2999 makes it Allow / Deny on a held action | `work:<id>` | yes | when it reached your gate |
-| ask | A decision ask that waits on you (`isWaiting`: blocking, or recommending what cannot be undone), the workspace's and each fleet root's | `ask:<askKey>` | its `blocking` | `askedAt` |
+| approval | Work at your gate, paused on a permission prompt. `heldBy: permission`; the action is the prompt | `work:<id>` | yes | the work's last change (`updatedAt`; the wire has no landing time) |
+| approval | Work Maestro's human gate holds. `heldBy: gate`, action "Close it as done", until BRO-2999 makes it Allow / Deny on a held action | `work:<id>` | yes | the work's last change |
+| ask | A decision ask that waits on you (`isWaiting`: blocking, or recommending what cannot be undone), the workspace's and each fleet root's | `ask:<askKey>` | its `blocking` | `askedAt`, else when first seen |
 | ask, review body | An initiative whose review date passed, or a parked one whose wake date came (B2) | `review:<initiative>` | no | the due date |
 | owner_step | Queued work only you may start ("Start it yourself": the loop's `yours` flag, or a `failed` start from before A8) | `work:<id>` | yes | the flag's time |
-| owner_step | The answers batch while it waits to land or has stopped. Maestro never merges its PR | `answers:batch` | yes | the last wake's check |
+| owner_step | The answers batch while it waits to land or has stopped. Maestro never merges its PR | `answers:batch` | yes | when first seen waiting |
 
 - **Watched, never a need (A1).** Stuck work (`stuck`), a quiet run (`quiet`), a missed or failing fleet tick
   and any other failed or missed scheduled run (`schedule`), and loop drift (`loop`). So is an open ask that
-  does not wait on you; Decisions lists it. Work's own lists put stuck work under Stuck and a quiet run under
+  does not wait on you; Decisions lists it. So is an idea filed for an initiative: a proposal, which
+  Initiatives triages and which holds no session. Work's own lists put stuck work under Stuck and a quiet run under
   Running (`shared/needs-you.ts`), so no surface counts them.
 - **An answer that waits for the conductor is not a need.** Its asker is gone, and the conductor gives it to
   a lane (BRO-2990). File as work and Dismiss stay your verbs in Decisions (`conductor.decide`, with the 8 s
@@ -90,23 +91,34 @@ Where each hold comes from today:
   `{ label, value, note?, tone }`. `session.name` is the session's short id: its title is Paseo's, and the screen
   may read it. A review's options are keep, park and close (J8); BRO-3036 wires them to a verb.
 - **`default` is absent** until an ask has a timed default (A4, `I-ask-default`, the conductor's).
+- **First seen.** An undated ask and the answers batch (whose last check moves on with every wake) wait from
+  when the daemon first saw them. That time is kept in memory and forgotten once the hold goes, so `since`
+  holds still across reads and the deck order with it.
 - **`needs.list({ kind })`** narrows the rows to one kind, and the summary then describes exactly those rows.
-- **Pure.** The work is read with no client, so no session is reconciled and no decision is applied, and
-  every other source through its cached read. `index.server.test.ts` reads both projections 25 times beside
-  a session that went back to work, and checks that no file changes and nothing is sent or started. Until
-  BRO-2995 lands, `WorkspaceAsks.read()` can still start its background `git fetch origin main` (at most
-  every 5 min); BRO-2995 moves that fetch to the sweep.
+- **Pure.** The work is read with no client, so no session is reconciled and no decision is applied. The
+  asks are read without the background fetch of origin/main (`WorkspaceAsks.read(false, false)`; BRO-2995
+  takes the fetch out of every read). Every other source is a cached read. `index.server.test.ts` sets up a
+  control repo with an origin, asks, a due review and the answers batch beside a session that went back to
+  work. From the first read on, no file under the test's root changes, the control repo's `.git` included,
+  and nothing is sent or started.
 - **`handled.list`.** `closedBy` is:
   - `you`: a verdict or a cancel;
-  - `gates`: its branch merged, or the auto gate closed it on passing checks;
+  - `gates`: its branch merged, or the auto gate closed it on checks that passed (its receipt says so and
+    nothing else);
   - `orchestrator`: an adopted arc that finished or was taken back;
   - `maestro`: a run whose arc reported itself finished.
 
-  Rows reach back a week; `today` is the daemon's local day.
+  Rows reach back a week; `today` is the daemon's local day, and a ledger's bare date is that day's local
+  midnight.
 - **The client.** There is one hook for each projection (`useNeeds`, `useHandled`). It refetches when a
-  session changes (`useNeedsEvents`, Paseo's agent events), when a verb settles, and otherwise every 30 s.
+  session changes (`useNeedsEvents`, Paseo's agent events, one read per burst), when a verb settles, and
+  otherwise every 30 s. The header button in every workspace runs outside React, so it shares one snapshot
+  with the screen (`client/needs-bus.ts`): every read either makes moves the other at once, and an answer
+  given in Decisions moves the header with it.
   These all read `needs.list`: the header button, the subtitle, the Feed's Needs you section, the tab
-  badges, the Fleet band's "in Maestro", the ask, answers and review bands, and the push ("N need you · …").
+  badges, the Fleet band's "in Maestro", the ask, answers and review bands, and the push ("N need you · …",
+  counted as it goes out; a count slower than 3 s is left out, never waited on). The Fleet band's own health
+  is watched: its ticks "want a look", and never say "need you".
   The badges are: Feed, the total; Decisions, the holds it lists; Initiatives, the due reviews. Handled for
   you reads `handled.list`. `work.attention` survives only as the read of what you watch (the fleet's,
   Timeline and loop notices) and as the pills' session list; nothing counts from it. `notices.list`
@@ -172,9 +184,12 @@ updates live by `key` (K1, M10).
 ## Invariants (each one a test)
 
 1. `summary.total == rows.length ==` the header badge `==` the Feed tab badge `==` the Needs you
-   section's length `==` the push count. `server/needs-invariant.test.ts` reads each surface as it reads it
-   in production (the header button through `startIntegrations`, the push through a real `Inbox`), for every
-   state and kind and every subset of them.
+   section's length `==` the push count. `index.server.test.ts` checks it end to end, through the plugin's
+   own handlers. The header button is `startIntegrations`, reading through them; the push is a real landing
+   sent by the real `Inbox` with the plugin's own count. Its sources cover every kind. Two more tests check
+   it on their own fixtures. `server/needs-invariant.test.ts` uses work in every state and every subset of
+   the four sources. `client/integrations.test.ts` checks that the header takes the screen's snapshot at
+   once.
 2. Each glance tile number equals the length or field of the projection it names. No client sums. The
    tiles land with J1 (BRO-3035); today's tabs and the Fleet band read `needs.list` alone
    (`client/header-count.test.ts`).

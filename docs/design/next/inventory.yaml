@@ -766,7 +766,7 @@ loops:
     scheduler: React Query, invalidated by plugin events
     owner: ui
     calls: [I-needs-list, I-handled-list]
-    code: [client/hooks.ts, client/integrations.ts]
+    code: [client/hooks.ts, client/integrations.ts, client/needs-bus.ts]
   L-loop-start-queued:
     name: Today's plugin loop step that starts queued work
     status: retire
