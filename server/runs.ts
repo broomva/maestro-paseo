@@ -94,12 +94,20 @@ export interface LaneProfile {
  * `modeId: null` never means Paseo's default, which is Always ask: a run that
  * asks with nobody to answer stops at its first command, as the six in
  * 13b97ad9 did. So there must be a profile, it must name a mode, the mode must
- * be the run's own provider's, and it must not ask. Pure.
+ * be the run's own provider's, and it must not ask. `unreadable`: why the
+ * lane's session could not be read (a timeout, an error), said apart. Pure.
  */
-export function unattendedRefusal(lane: LaneProfile | null, selection: string): string | null {
+export function unattendedRefusal(
+  lane: LaneProfile | null,
+  selection: string,
+  unreadable: string | null = null,
+): string | null {
   const start = "A run nobody watches never starts in Always ask, so this one was not started";
   const yours =
     "start it yourself in Maestro, or dispatch it from a lane whose session runs in a mode that does not ask.";
+  if (!lane && unreadable) {
+    return `${start}: Maestro could not read the lane's session (${unreadable}), so it has no lane profile. ${capital(yours)}`;
+  }
   if (!lane)
     return `${start}: Maestro could not tell which lane asked for it, so it has no lane profile. ${capital(yours)}`;
   if (!lane.modeId) return `${start}: the lane (${lane.name}) names no mode for it. ${capital(yours)}`;
@@ -185,17 +193,17 @@ export const PROMPT_FREE = "runs without permission prompts; start it yourself";
 export const HELD_FOR_YOU = "This work waits for you to start it.";
 
 /**
- * Why the loop must leave this work for you to start, read from how its next
- * run would start (nextRun, Settings included), or null. A run that skips
- * permission prompts, by a mode (the work's or Settings') or an
- * auto-approving feature, is never the loop's to start; nor is work you gave
- * a mode of its own, which is yours to use, nor work held for you (`hold`).
+ * Why only you may start this queued work, or null (BRO-2990): it is held for
+ * you, or carries a mode (or an auto-approving feature) you chose for it,
+ * which a session's dispatch refuses (engine.ts startRefusal), so no lane and
+ * no conductor can start it either. The loop flags it in Needs you as yours.
+ * Settings' own mode is not a reason: a lane's run takes its lane's mode.
  */
-export function leftToYou(next: NextRun): string | null {
+export function yoursToStart(next: NextRun): string | null {
   if (next.held) return HELD_FOR_YOU;
-  if (skipsPrompts(next)) return PROMPT_FREE;
-  if (next.modeId && !next.fromSettings.includes("modeId")) return MODED_BY_YOU;
-  return null;
+  const own = next.fromSettings.includes("modeId") ? null : next.modeId;
+  if (skipsPrompts({ provider: next.provider, modeId: own, featureValues: next.featureValues })) return PROMPT_FREE;
+  return own ? MODED_BY_YOU : null;
 }
 
 /** Start the item's run; `lane` for a run nobody watches, which takes the lane profile's mode (runSettings). */

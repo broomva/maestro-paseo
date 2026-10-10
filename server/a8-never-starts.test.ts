@@ -28,14 +28,14 @@ afterAll(async () => {
 const LEDGER = "bro-9001-burst.yaml";
 const IDS = ["Q1", "Q2", "Q3", "Q4", "Q5", "Q6"] as const;
 
-/** Six asks, each answered with an option that changes something (no status_quo), none owner-only, no driver. */
-const SOURCE = `arc: bro-9001
+/** Six asks, each answered with an option that changes something (no status_quo), no driver; `kind` their class. */
+const source = (kind: "decision" | "authority") => `arc: bro-9001
 asks:
 ${IDS.map(
   (id, at) => `  - id: ${id}
     headline: "Change ${id}?"
     question: "Should ${id} change?"
-    class: decision
+    class: ${kind}
     options:
       - { id: change, label: Change, consequence: It changes., reversible: true, recommended: true }
       - { id: keep, label: Keep, consequence: Nothing changes., reversible: true, status_quo: true }
@@ -47,7 +47,7 @@ ${IDS.map(
 ).join("\n")}
 `;
 
-async function burst() {
+async function burst(kind: "decision" | "authority" = "decision") {
   const root = await realpath(await mkdtemp(join(tmpdir(), "maestro-a8-")));
   roots.push(root);
   const repo = join(root, "repo");
@@ -72,7 +72,7 @@ async function burst() {
     const asker = fake.agents.get(`asker-${at + 1}`);
     if (asker) asker.archivedAt = "2026-10-09T14:00:00.000Z";
   }
-  const asks: DecisionAsk[] = decisionsOf(SOURCE, LEDGER).map((ask) => ({
+  const asks: DecisionAsk[] = decisionsOf(source(kind), LEDGER).map((ask) => ({
     ...ask,
     home: { kind: "checkout", path: "/w", branch: "w" },
     batched: false,
@@ -100,7 +100,8 @@ async function burst() {
     asks: { read: async () => ({ controlRepo: root, main: { sha: "f00", fetchedAt: null }, all: asks, warnings: [] }) },
     engine,
     client: () => fake.paseo,
-    controlRepo: root,
+    // A git repository: held work runs in the control repo, each run in a worktree of it.
+    controlRepo: repo,
     now: () => clock,
   });
   const loop = new Loop({
@@ -173,4 +174,22 @@ test("13b97ad9 replayed: six answers whose askers are gone start nothing and que
   // Your own Dispatch still starts work.
   expect((await engine.dispatch(fake.paseo, yours.id)).state).toBe("running");
   expect(fake.created).toHaveLength(1);
+});
+
+test("the same burst, owner-only: six held items in Needs you as yours to start, none started, none for the conductor", async () => {
+  const { engine, fake, router, loop } = await burst("authority");
+  const entry = await loop.wake("timer");
+  expect(fake.created).toEqual([]);
+  expect(entry.dispatched).toEqual([]);
+  expect(await router.candidates()).toEqual([]);
+  // Held for you (BRO-2910): no lane or conductor may start an owner-only act, so Needs you shows each as yours.
+  const held = (await engine.list()).items.filter((item) => item.nextRun?.held);
+  expect(held).toHaveLength(6);
+  const next = await loop.wake("timer");
+  for (const item of (await engine.list()).items.filter((listed) => listed.nextRun?.held)) {
+    expect(item.state).toBe("proposed");
+    expect(item.flag).toMatchObject({ kind: "yours", reason: "Start it yourself: it was filed to wait for you." });
+  }
+  expect(next.flagged.map((flag) => flag.kind)).toEqual(IDS.map(() => "yours"));
+  expect(fake.created).toEqual([]);
 });

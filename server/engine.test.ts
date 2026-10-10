@@ -2945,6 +2945,32 @@ describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
     expect((await engine.get(fourth.id)).item.state).toBe("proposed");
   });
 
+  test("stuck work holds its slot only while its session is there: your Stop or a session gone frees it", async () => {
+    const { create, engine, fake } = await setup({ concurrencyCap: 1 });
+    const next = await create({ dispatch: false });
+    const full = "At capacity: 1 of 1 slot taken (1 stuck). It stays queued.";
+    // A failed turn: the session is still there, waiting for a nudge, so the run keeps its slot.
+    const failed = await create();
+    await fail(engine, "agent-1");
+    expect((await engine.get(failed.id)).item.state).toBe("blocked");
+    await expect(engine.dispatch(fake.paseo, next.id)).rejects.toThrow(full);
+    // Canceling the stuck work frees it; now a run you stop: Stop archives its session, and the slot frees.
+    await engine.cancel(failed.id);
+    const stopped = await create();
+    await engine.stopRun(fake.paseo, stopped.id, { discard: true });
+    expect((await engine.get(stopped.id)).item).toMatchObject({ state: "blocked" });
+    expect(fake.archived).toContain("agent-2");
+    const started = await engine.dispatch(fake.paseo, next.id);
+    expect(started.state).toBe("running");
+    // A run whose session ended under it: stuck, and its slot is free too.
+    const gone = fake.agents.get("agent-3");
+    if (gone) gone.status = "closed";
+    await engine.list(fake.paseo);
+    expect((await engine.get(next.id)).item.state).toBe("blocked");
+    const after = await create();
+    expect(after.state).toBe("running");
+  });
+
   test("a run waiting on a permission holds its slot; one landed at your gate frees it", async () => {
     const { create, engine, fake } = await setup({ concurrencyCap: 1 });
     await create();
@@ -2993,6 +3019,22 @@ describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
       modeId: "bypassPermissions",
     });
     expect(running.worker?.modeId).toBe("bypassPermissions");
+  });
+
+  test("a lane profile that cannot be read refuses the start, saying it could not be read", async () => {
+    const { create, engine, fake } = await setup(
+      {},
+      {
+        lane: async () => {
+          throw new Error("Paseo did not answer within 0.2s");
+        },
+      },
+    );
+    const item = await create({ dispatch: false });
+    await expect(engine.dispatch(fake.paseo, item.id, lane)).rejects.toThrow(
+      "Maestro could not read the lane's session (Paseo did not answer within 0.2s)",
+    );
+    expect(fake.created).toEqual([]);
   });
 
   test("modeId null never means Always ask for a run nobody watches: refused before any session starts", async () => {

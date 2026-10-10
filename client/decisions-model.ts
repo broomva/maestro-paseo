@@ -493,7 +493,6 @@ export function handedAsks(asks: readonly DecisionAsk[], cwd: string | null | un
   return folder === null ? [] : asks.filter((ask) => isTriaged(ask) && ask.arc === folder);
 }
 
-/** The answered asks the tab lists, newest first. */
 /**
  * Answers that wait for the conductor (fate stage `conductor`, BRO-2990): their
  * asker is gone and no session on their arc could take them, so nothing was
@@ -506,6 +505,7 @@ export function forTheConductor(asks: readonly DecisionAsk[]): DecisionAsk[] {
     .sort((a, b) => (a.answeredAt ?? "").localeCompare(b.answeredAt ?? ""));
 }
 
+/** The answered asks the tab lists, newest first. */
 export function recentlyAnswered(asks: readonly DecisionAsk[]): DecisionAsk[] {
   return asks
     .filter((ask) => ask.state !== "open" && !ask.idea)

@@ -227,6 +227,29 @@ export { UNDO_MS };
 /** The reason work you stopped is stuck. */
 export const STOPPED = "You stopped the run";
 
+/** Why work is Stuck when its session is gone: archived or ended mid-run or mid-question, or never recorded. */
+export const ARCHIVED_MID_RUN = "The session was archived before it finished";
+export const ARCHIVED_ASKING = "The session was archived while it was asking";
+export const ENDED_MID_RUN = "The session ended before the run finished";
+export const ENDED_ASKING = "The session ended while it was asking";
+export const NO_SESSION = "No session is recorded for this run";
+
+/**
+ * The Stuck reasons that say the run's session is gone, your Stop included
+ * (it archives the session): such a run holds no slot of the cap (BRO-2990).
+ * Any other Stuck run (a failed or canceled turn, an error, a send that did
+ * not land) still has its session, and holds one until you unblock or cancel
+ * it. A reason not listed here counts, so a renamed one errs toward the cap.
+ */
+export const SESSION_GONE: ReadonlySet<string> = new Set([
+  STOPPED,
+  ARCHIVED_MID_RUN,
+  ARCHIVED_ASKING,
+  ENDED_MID_RUN,
+  ENDED_ASKING,
+  NO_SESSION,
+]);
+
 /** Why work Stop flipped to stuck went back to running: its worktree changed between Stop's two reads. */
 export const STOP_RACED = "The worktree changed while Stop checked it";
 
@@ -320,8 +343,8 @@ function runKeys(input: RunChoices): RunKeys {
   return keys;
 }
 
-// Who must start a run lives beside how it starts (server/runs.ts); the loop and its tests read it here.
-export { leftToYou, MODED_BY_YOU, PROMPT_FREE } from "./runs";
+// Who must start a run lives beside how it starts (server/runs.ts); tests read it here.
+export { MODED_BY_YOU, PROMPT_FREE } from "./runs";
 
 /** See EngineOptions.claimWaitMs. */
 export const CLAIM_WAIT_MS = 30_000;
@@ -892,9 +915,10 @@ export class Engine {
       if (refusal) throw new UserError(refusal);
       this.checkCapacity(item, ahead, await this.occupied(store), config.concurrencyCap);
       // A session's run is one nobody watches: it takes its lane profile's mode, and never Always ask (A8).
-      const lane = origin.actor === "agent" ? await this.laneOf(origin.by, paseo) : null;
-      if (origin.actor === "agent") {
-        const unattended = unattendedRefusal(lane, runSettings(config, item).selection);
+      const read = origin.actor === "agent" ? await this.laneOf(origin.by, paseo) : null;
+      const lane = read?.lane ?? null;
+      if (read) {
+        const unattended = unattendedRefusal(lane, runSettings(config, item).selection, read.error);
         if (unattended) throw new Unwatched(unattended);
       }
       let worker: Awaited<ReturnType<typeof startRun>>;
@@ -964,19 +988,27 @@ export class Engine {
     }
   }
 
-  /** The lane profile of the session that asked for a run, bounded; one that cannot be read is none. */
-  private async laneOf(agentId: string | null, paseo: Paseo): Promise<LaneProfile | null> {
-    return within(() => this.lane(agentId, paseo), this.claimWaitMs).catch((error) => {
-      this.log(`reading the lane profile of ${agentId ?? "an unnamed session"}: ${(error as Error).message}`);
-      return null;
-    });
+  /** The lane profile of the session that asked for a run, bounded; one that cannot be read is none, and says why. */
+  private async laneOf(
+    agentId: string | null,
+    paseo: Paseo,
+  ): Promise<{ lane: LaneProfile | null; error: string | null }> {
+    try {
+      return { lane: await within(() => this.lane(agentId, paseo), this.claimWaitMs), error: null };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.log(`reading the lane profile of ${agentId ?? "an unnamed session"}: ${message}`);
+      return { lane: null, error: message };
+    }
   }
 
   /**
    * The work whose run holds a slot now, as the files say, by why (BRO-2990):
    * running, waiting on a permission (at the gate with a question pending), or
-   * stuck. A run that stopped to ask, or stopped, still has its session; only
-   * one that landed at your gate with nothing pending, or ended, frees its slot.
+   * stuck while its session is still there (SESSION_GONE). A run that stopped
+   * to ask, or stopped on a failed turn, still has its session; one that landed
+   * at your gate with nothing pending, ended, lost its session, or that you
+   * stopped frees its slot.
    */
   private async occupied(store: WorkStore): Promise<Map<string, Slot>> {
     const { items } = await store.scan();
@@ -984,8 +1016,9 @@ export class Engine {
     for (const other of items) {
       const state = other.contract.state;
       if (state === "running") held.set(other.contract.id, "running");
-      else if (state === "blocked") held.set(other.contract.id, "stuck");
-      else if (phaseOf(state, other.events) === "asking") held.set(other.contract.id, "asking");
+      else if (state === "blocked") {
+        if (!SESSION_GONE.has(reasonOf(state, other.events) ?? "")) held.set(other.contract.id, "stuck");
+      } else if (phaseOf(state, other.events) === "asking") held.set(other.contract.id, "asking");
     }
     return held;
   }
@@ -1491,9 +1524,7 @@ export class Engine {
       await store.mutate(
         id,
         (fresh) =>
-          fresh.contract.state === "running" && !workerOf(fresh.events)
-            ? { to: "blocked", reason: "No session is recorded for this run" }
-            : null,
+          fresh.contract.state === "running" && !workerOf(fresh.events) ? { to: "blocked", reason: NO_SESSION } : null,
         current.dir,
       );
     }
@@ -1887,9 +1918,9 @@ export class Engine {
         (fresh) => {
           if (workerOf(fresh.events)?.agentId !== agent.id) return null;
           const state = fresh.contract.state;
-          if (state === "running") return { to: "blocked", reason: "The session was archived before it finished" };
+          if (state === "running") return { to: "blocked", reason: ARCHIVED_MID_RUN };
           if (state === "review" && pendingPermission(fresh.events)) {
-            return { to: "blocked", reason: "The session was archived while it was asking" };
+            return { to: "blocked", reason: ARCHIVED_ASKING };
           }
           if (isTerminal(state)) return null;
           // A finished arc at your gate closes in the reconcile below (finishedArc), which can follow through.
@@ -2199,7 +2230,7 @@ export class Engine {
     }
     const worker = workerOf(item.events);
     if (!worker) {
-      return state === "running" ? guarded({ to: "blocked", reason: "No session is recorded for this run" }) : false;
+      return state === "running" ? guarded({ to: "blocked", reason: NO_SESSION }) : false;
     }
     const phase = phaseOf(state, item.events);
     const token = pendingChecks(item.events);
@@ -2225,8 +2256,8 @@ export class Engine {
     }
     const permission = pendingPermission(item.events);
     if (!agent || agent.archivedAt || agent.status === "closed") {
-      if (state === "running") return guarded({ to: "blocked", reason: "The session ended before the run finished" });
-      if (permission) return guarded({ to: "blocked", reason: "The session ended while it was asking" });
+      if (state === "running") return guarded({ to: "blocked", reason: ENDED_MID_RUN });
+      if (permission) return guarded({ to: "blocked", reason: ENDED_ASKING });
       // A finished arc at your gate closes itself here, and only here (finishedArc): archived, by its hook's
       // note or as the daemon now says (a missed hook, whose note is written with it).
       if (state === "review") {

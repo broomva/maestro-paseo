@@ -16,7 +16,7 @@
 import type { Flag, FlagKind, MaestroConfig, NextRun } from "../shared/contracts";
 import { isDispatchable, type OrchState } from "../shared/states";
 import { type FlaggedEvent, flagOf, lastActivityOf, type WorkEvent } from "./events";
-import { HELD_FOR_YOU, leftToYou, MODED_BY_YOU, nextRun, PROMPT_FREE } from "./runs";
+import { HELD_FOR_YOU, MODED_BY_YOU, nextRun, PROMPT_FREE, yoursToStart } from "./runs";
 import type { StoredWork } from "./store";
 
 /** Running work with nothing new for this long is flagged as worth a look. */
@@ -34,7 +34,7 @@ const WHY_YOURS: Record<string, string> = {
   [HELD_FOR_YOU]: "it was filed to wait for you",
 };
 
-/** The `yours` reason, from what leftToYou said. */
+/** The `yours` reason, from what yoursToStart said. */
 export function yoursReason(left: string): string {
   return `Start it yourself: ${sentence(WHY_YOURS[left] ?? left)}`;
 }
@@ -99,7 +99,7 @@ export function quietCleared(
 
 /**
  * Whether the reason for a flag of this kind stands on the work as its files
- * are now: queued work for `yours` (still left to you) and `failed`, running
+ * are now: queued work for `yours` (still yours alone to start) and `failed`, running
  * work quiet for QUIET_MS for `quiet`. The loop checks it under the work's
  * lock before it writes, so a flag never lands on work that moved meanwhile.
  */
@@ -107,7 +107,7 @@ export function flagStands(kind: FlagKind, item: StoredWork, now: number, config
   const state = item.contract.state;
   switch (kind) {
     case "yours":
-      return isDispatchable(state) && leftToYou(nextRun(config, item)) !== null;
+      return isDispatchable(state) && yoursToStart(nextRun(config, item)) !== null;
     case "failed":
       return isDispatchable(state);
     case "quiet":
@@ -118,8 +118,8 @@ export function flagStands(kind: FlagKind, item: StoredWork, now: number, config
 /**
  * The flag as the surfaces show it, or null. The current flag (flagOf), as
  * long as the work is still in the state it was raised for. Two reasons are
- * read live: `yours` from how the next run would start now, so a Settings
- * change that hands the work back to the loop takes the flag down, and
+ * read live: `yours` from whether only you may start it now (yoursToStart), so
+ * a flag an older Maestro raised for Settings' own mode comes down, and
  * `quiet` from the clock, counted from the flag's `since` (Maestro's events
  * or the session's activity, whichever was later when the loop looked).
  */
@@ -135,7 +135,7 @@ export function flagNow(
   const at = flag.ts;
   switch (flag.kind) {
     case "yours": {
-      const left = isDispatchable(state) ? leftToYou(next) : null;
+      const left = isDispatchable(state) ? yoursToStart(next) : null;
       return left ? { kind: flag.kind, reason: yoursReason(left), at } : null;
     }
     case "failed":

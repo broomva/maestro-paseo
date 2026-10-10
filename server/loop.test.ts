@@ -239,23 +239,25 @@ describe("a wake", () => {
       tried.push(id);
       return dispatch(paseo, id, origin);
     }) as typeof engine.dispatch;
-    for (const cause of ["manual", "timer"] as const) {
-      const entry = await loop.wake(cause);
-      expect([entry.dispatched, entry.deferred, entry.flagged]).toEqual([[], [], []]);
-      expect(entry.narrative.at(-1)).toBe("Did nothing new this tick.");
+    const entries = [await loop.wake("manual"), await loop.wake("timer")];
+    for (const entry of entries) {
+      expect([entry.dispatched, entry.deferred]).toEqual([[], []]);
+      expect(entry.narrative).not.toContain("Started");
     }
+    // Only the work you gave a mode of its own is flagged, once: no lane may start it either.
+    expect(entries.map((entry) => entry.flagged.map((flag) => flag.id))).toEqual([[bypass.id], []]);
     expect(tried).toEqual([]);
     expect(fake.created).toEqual([]);
     for (const [item, state] of [
       [plain, "proposed"],
       [triggered, "triggered"],
       [auto, "proposed"],
-      [bypass, "proposed"],
     ] as const) {
       const { item: wire } = await engine.get(item.id);
       // Queued, unflagged: it waits for you, a lane or the conductor, not in Needs you.
       expect([wire.state, wire.flag]).toEqual([state, null]);
     }
+    expect((await engine.get(bypass.id)).item).toMatchObject({ state: "proposed", flag: { kind: "yours" } });
     // Your Dispatch still starts it.
     expect((await engine.dispatch(fake.paseo, plain.id)).state).toBe("running");
     expect(fake.created).toHaveLength(1);
@@ -434,23 +436,44 @@ describe("flags in Needs you", () => {
   const flags = async (store: WorkStore, id: string) =>
     (await raw(store, id)).filter((event) => event.type === "loop.flagged");
 
-  test("quiet is the only kind a wake raises, as one loop.flagged event that reads as a receipt", async () => {
+  test("a wake raises quiet, and yours on queued work only you may start, each one loop.flagged receipt", async () => {
     const { loop, queue, engine, fake, store } = await setup({ concurrencyCap: null });
     const running = await queue("Long one");
     await engine.dispatch(fake.paseo, running.id);
     const dispatchedAt = new Date(clock).toISOString();
     tickMinutes(1);
-    // Queued work the loop once left to you, or tried and failed to start: now it is simply queued, unflagged.
+    // Only you may start these: a session's dispatch refuses a mode you chose, and work held for you.
     const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
     const planned = await queue("Planned", { modeId: "plan" });
+    const held = await queue("Held", { hold: "You chose to develop ideas-maestro.yaml I1." });
+    // Anyone may start these: you as Settings say, a lane in its lane's mode. They wait unflagged.
     const plain = await queue("Plain");
     tickMinutes(33);
     const entry = await loop.wake("manual");
     expect(entry.dispatched).toEqual([]);
     expect(entry.flagged).toEqual([
+      {
+        id: bypass.id,
+        title: bypass.title,
+        kind: "yours",
+        reason: "Start it yourself: it runs without permission prompts.",
+      },
+      {
+        id: planned.id,
+        title: planned.title,
+        kind: "yours",
+        reason: "Start it yourself: it runs in a mode you chose.",
+      },
+      { id: held.id, title: held.title, kind: "yours", reason: "Start it yourself: it was filed to wait for you." },
       { id: running.id, title: running.title, kind: "quiet", reason: "Quiet for 34 minutes, worth a look." },
     ]);
-    expect(entry.narrative.slice(-2)).toEqual(["Flagged for you:", "  Long one."]);
+    expect(entry.narrative.slice(-5)).toEqual([
+      "Flagged for you:",
+      "  Bypass.",
+      "  Planned.",
+      "  Held.",
+      "  Long one.",
+    ]);
     const { item: wire, events } = await engine.get(running.id);
     expect(wire.flag).toEqual({ kind: "quiet", reason: "Quiet for 34 minutes, worth a look.", at: entry.wokeAt });
     expect(events.at(-1)).toEqual({
@@ -473,7 +496,19 @@ describe("flags in Needs you", () => {
     ]);
     // A flag is not a change of state.
     expect(wire.state).toBe("running");
-    for (const item of [bypass, planned, plain]) expect((await engine.get(item.id)).item.flag).toBeNull();
+    expect((await engine.get(plain.id)).item.flag).toBeNull();
+    expect((await engine.get(held.id)).item.flag?.kind).toBe("yours");
+    expect(fake.created).toHaveLength(1);
+  });
+
+  test("Settings' own mode makes nothing yours: a lane's run takes its lane's mode instead", async () => {
+    const { loop, queue, engine, fake } = await setup({ modeId: "bypassPermissions" });
+    const plain = await queue("Plain");
+    expect((await loop.wake("manual")).flagged).toEqual([]);
+    expect((await engine.get(plain.id)).item.flag).toBeNull();
+    // A flag an older Maestro raised for Settings' mode comes down as it is read.
+    expect(await engine.flag(plain, "yours", "Start it yourself: it runs without permission prompts.")).toBe(false);
+    expect(fake.created).toEqual([]);
   });
 
   test("three wakes in a row write one flag per work, not three", async () => {
@@ -488,7 +523,7 @@ describe("flags in Needs you", () => {
       tickMinutes(1);
     }
     expect(await flags(store, running.id)).toHaveLength(1);
-    expect(entries.map((entry) => entry.flagged.map((flag) => flag.kind))).toEqual([["quiet"], [], []]);
+    expect(entries.map((entry) => entry.flagged.map((flag) => flag.kind))).toEqual([["yours", "quiet"], [], []]);
     expect(fake.created).toHaveLength(1);
   });
 
@@ -496,11 +531,9 @@ describe("flags in Needs you", () => {
     const { loop, queue, engine, fake, store } = await setup({ concurrencyCap: null });
     const running = await queue("Long one");
     await engine.dispatch(fake.paseo, running.id);
-    // Flags an older Maestro's loop left on queued work: they still read, and still come down.
     const dispatchMe = await queue("Dispatch me", { modeId: "bypassPermissions" });
     const cancelMe = await queue("Cancel me", { modeId: "bypassPermissions" });
     const noteMe = await queue("Note me", { modeId: "bypassPermissions" });
-    for (const item of [dispatchMe, cancelMe, noteMe]) expect(await engine.flag(item, "yours", PROMPTS)).toBe(true);
     tickMinutes(30);
     await loop.wake("manual");
     for (const item of [running, dispatchMe, cancelMe, noteMe]) {
@@ -516,9 +549,9 @@ describe("flags in Needs you", () => {
       events: [{ ts: new Date(clock).toISOString(), type: "note", actor: "human", text: "Later" }],
     }));
     expect((await engine.get(noteMe.id)).item.flag).toBeNull();
-    // Cleared, a wake never raises it again: the loop leaves queued work to you, a lane or the conductor, unflagged.
+    // Cleared, the next wake may raise it again: the note did not make the work anyone else's to start.
     const again = await loop.wake("manual");
-    expect(again.flagged).toEqual([]);
+    expect(again.flagged).toEqual([{ id: noteMe.id, title: noteMe.title, kind: "yours", reason: PROMPTS }]);
   });
 
   test("the quiet clock ignores the loop's own flags, so a flag never resets it", async () => {

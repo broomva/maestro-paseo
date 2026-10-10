@@ -25,12 +25,14 @@
 //      else queued for the conductor as a lane.assign candidate, never as
 //      work (server/answer-routes.ts). A batch that cannot take main is kept
 //      whole and named in Needs you. It decides no ask: the answers are yours;
-//   4. flags, in Maestro's Needs you, what has gone quiet (server/flags.ts):
-//      one event per work, and none while the same flag already stands;
+//   4. flags, in Maestro's Needs you, what has gone quiet, and queued work only
+//      you may start (held for you, as an owner-only answer's act is, or in a
+//      mode you chose: a session's dispatch refuses both), "Start it yourself"
+//      (server/flags.ts): one event per work, none while the same flag stands;
 //   5. writes one wake-log entry (server/wake-log.ts) that says all of it.
 // While the loop is off, a quiet flag stands until the next event on the work.
 // It never starts, stops, sends back or decides anything: those stay yours, a
-// lane's or the conductor's. Queued work waits for one of them.
+// lane's or the conductor's. Other queued work waits for one of them, unflagged.
 //
 // Off unless Settings give it a period (loopMinutes). The next wake is due a
 // period after the last one the log records, so a restart keeps the cadence.
@@ -43,10 +45,11 @@
 import { randomUUID } from "node:crypto";
 import { type AnswersLanding, answersNotice } from "../shared/answers";
 import type { FlagKind, WakeEntry, WorkItem } from "../shared/contracts";
+import { isDispatchable } from "../shared/states";
 import type { RouteOutcome } from "./answer-routes";
 import { type Engine, realTimer, type Timer, within } from "./engine";
-import { minutesWords, QUIET_MS, quietReason, sentence, sessionActiveAt } from "./flags";
-import type { Paseo } from "./runs";
+import { minutesWords, QUIET_MS, quietReason, sentence, sessionActiveAt, yoursReason } from "./flags";
+import { type Paseo, yoursToStart } from "./runs";
 import { WakeLog } from "./wake-log";
 
 export { QUIET_MS };
@@ -322,6 +325,9 @@ export class Loop {
     const clear: Clear[] = [];
     const silent: Silent[] = [];
     for (const item of items) {
+      // Queued work only you may start (held for you, or in a mode you chose) is yours in Needs you: no lane can.
+      const yours = isDispatchable(item.state) && item.nextRun ? yoursToStart(item.nextRun) : null;
+      if (yours) raise.push({ item, kind: "yours", reason: yoursReason(yours) });
       if (item.state === "review") {
         if (item.phase === "asking") entry.needsYou.asking += 1;
         else entry.needsYou.gate += 1;
