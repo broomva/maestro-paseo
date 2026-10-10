@@ -101,7 +101,7 @@ features:
     name: An 8 s undo on every owner verb that changes state (B4)
     status: change
     kind: control
-    pages: [P-briefing, P-approval-card]
+    pages: [P-briefing, P-approval-card, P-feed, P-decisions, P-work, P-health, P-initiatives, P-phone]
     interfaces: [I-undo]
     code: [server/engine.ts]
 
@@ -253,7 +253,7 @@ features:
 
 pages:
   P-header:
-    name: "Header — Maestro's frosted header: segmented tabs, workspace menu, presence, next wake, search, New work (J1; the phone deck header in M1)"
+    name: "Header — Maestro's header (frosted on desktop, solid on iOS): segmented tabs, workspace menu, presence, next wake, search, New work (J1; the phone deck header in M1)"
     status: change
     frame: E4dLZ1
     png: j1-feed-home.png
@@ -271,8 +271,8 @@ pages:
     phone_png: m1-feed-home-mobile.png
     phone_frame: FKTsX
     components: [C-hold-card, C-finished-card, C-notice-card, C-work-row, C-rail, C-state-label, C-pill, C-button, C-glance-tile, C-inspector, C-undo-toast, C-undertow, C-deck, C-pull-sheet, C-tab-bar, C-swipe-row]
-    reads: [I-needs-list, I-handled-list, I-work-list, I-notices-list]
-    writes: [I-ask-answer, I-approval-decide, I-owner-step-done, I-session-prompt, I-notice-snooze, I-work-unblock]
+    reads: [I-needs-list, I-handled-list, I-work-list, I-notices-list, I-sweep-get]
+    writes: [I-ask-answer, I-approval-decide, I-owner-step-done, I-session-prompt, I-notice-snooze, I-work-unblock, I-undo]
     code: [client/feed.tsx, client/feed-model.ts]
   P-briefing:
     name: J2–J4 Briefings — the inspector per kind (approval, ask, notice); M2–M4 cards with the detail header
@@ -303,7 +303,7 @@ pages:
     phone_frame: z4FVF
     components: [C-decision-card, C-progress, C-segmented, C-kbd, C-button, C-glance-tile, C-inspector, C-deck]
     reads: [I-asks-workspace, I-needs-list, I-answers-status]
-    writes: [I-ask-answer, I-fleet-ask-answer]
+    writes: [I-ask-answer, I-fleet-ask-answer, I-undo]
     code: [client/decision-triage.tsx, client/decision-card.tsx]
   P-work:
     name: J6 Work — five lanes as trays, Undertow on running cards, who closed Done; J6b the inspector over the right-hand lanes (B3). M6 on the phone
@@ -315,7 +315,7 @@ pages:
     phone_frame: GQqt8
     components: [C-work-row, C-segmented, C-state-label, C-button, C-undertow, C-inspector, C-swipe-row]
     reads: [I-work-list, I-work-history]
-    writes: [I-work-cancel, I-work-stop]
+    writes: [I-work-cancel, I-work-stop, I-session-prompt, I-approval-decide, I-undo]
     code: [client/plane-views.tsx, client/history.tsx]
   P-health:
     name: J7 Health — verdict, tick grid, sessions, schedules, the conductor and lanes, notices with what closes each. M7 on the phone
@@ -326,7 +326,7 @@ pages:
     phone_frame: NCZ4H
     components: [C-tick-strip, C-notice-card, C-roster, C-segmented, C-pill, C-button, C-glance-tile, C-deck, C-undertow, C-swipe-row]
     reads: [I-fleet-get, I-fleet-tick, I-timeline-get, I-loops-get, I-lanes-get, I-needs-list, I-notices-list]
-    writes: [I-work-adopt, I-session-prompt, I-work-stop, I-notice-snooze, I-fleet-tick-run]
+    writes: [I-work-adopt, I-session-prompt, I-work-stop, I-notice-snooze, I-fleet-tick-run, I-fleet-mode-set, I-loop-control, I-undo]
     code: [client/fleet.tsx, client/fleet-health.tsx, client/fleet-roster.tsx, client/timeline.tsx, client/loops.tsx]
   P-initiatives:
     name: J8 Initiatives — lateness loudest; a due review is an Ask on its due date in the Feed deck (B2). M8 on the phone
@@ -337,7 +337,7 @@ pages:
     phone_frame: VaM84
     components: [C-initiative-card, C-decision-card, C-button, C-inspector, C-detail-header]
     reads: [I-initiatives-list, I-needs-list]
-    writes: [I-ask-answer, I-initiatives-file]
+    writes: [I-ask-answer, I-initiatives-file, I-undo]
     code: [client/initiatives.tsx]
   P-new-work:
     name: J9 New work — grows from New work over a dimmed Feed; who starts it (the lane, A8). M9 grows from +
@@ -357,7 +357,7 @@ pages:
     png: m10-from-a-push.png
     components: [C-hold-card, C-tabs]
     reads: [I-needs-list]
-    writes: [I-approval-decide, I-ask-answer]
+    writes: [I-approval-decide, I-ask-answer, I-undo]
   P-settings-sweep-fleet:
     name: B2 Settings › Sweep and fleet
     status: change
@@ -500,7 +500,7 @@ components:
   C-toggle: { name: "Toggle", status: new, pen: null }
   C-lane-card: { name: "Lane card", status: new, pen: null }
   # The J/M kit (BRO-3034).
-  C-inspector: { name: "Inspector (per-kind body, frosted action bar)", status: new, pen: VbnhW }
+  C-inspector: { name: "Inspector (per-kind body; action bar frosted on desktop, solid on iOS)", status: new, pen: VbnhW }
   C-glance-tile: { name: "Glance tile", status: new, pen: oatDw }
   C-deck: { name: "Deck (phone; one hold at a time)", status: new, pen: null }
   C-pull-sheet: { name: "Pull-up sheet (phone; peeks from the bottom edge)", status: new, pen: null }
@@ -559,6 +559,7 @@ interfaces:
     stores: [S-ask-receipts]
   I-owner-step-done: { name: "owner_step.done", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-ask-receipts] }
   I-undo: { name: "work.undo (and every verb's undo)", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
+  I-verb-apply: { name: "apply a pending owner verb once its 8 s undo window passes (the owner already chose)", status: change, handler: plugin, callers: [plugin], stores: [S-work], code: [server/engine.ts] }
   I-work-unblock: { name: "work.unblock", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
   I-work-cancel: { name: "work.cancel", status: keep, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
   I-work-stop: { name: "work.stop", status: keep, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
@@ -572,6 +573,7 @@ interfaces:
     handler: plugin
     callers: [ui, conductor]
     code: [server/engine.ts]
+    note: "Prompts an existing session; never creates one. A8 forbids creating work by rule; Continue is the owner's verb, auto-continue is A3."
   I-initiatives-file: { name: "initiatives.file", status: keep, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/initiatives.ts] }
 
   # Work records. Queue only: launching is a lane's (A8).
@@ -717,7 +719,7 @@ loops:
     status: keep
     scheduler: plugin timer, 8 s after the verb
     owner: plugin
-    calls: [I-undo]
+    calls: [I-verb-apply]
     code: [server/engine.ts]
   L-paseo-events:
     name: Paseo lifecycle hooks

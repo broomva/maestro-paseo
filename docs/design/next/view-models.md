@@ -2,7 +2,7 @@
 
 This is the contract between the server and the J (desktop) and M (phone) screens in
 `maestro-next.pen`. It says what each screen shows, which interface supplies it, and what is
-new. Interface ids are the ones in `inventory.yaml`. The owner's decisions it applies:
+new. The per-screen table uses `inventory.yaml`'s ids, and a test keeps the two in step. The owner's decisions it applies:
 
 | Decision | Effect on the data |
 |---|---|
@@ -83,19 +83,29 @@ be swiped (B1 and M1).
 
 ## Per screen
 
-| Screen | Reads | New fields or interfaces | Writes (owner verbs: 8 s undo) |
-|---|---|---|---|
-| J1 / M1 Feed | `needs.list`, `handled.list`, `work.list`, `notices.list`, `sweep.get` | `NeedSummary`; `handled.list.today`; `sweep.get.unsupervisedToday`, `nextWakeAt` | `approval.decide`, `ask.answer`, `owner_step.done`, `session.prompt` (Continue), `notice.snooze`, `work.undo` |
-| Glance tiles | the same | none; every tile reads one projection field | none |
-| J2–J4 / M2–M4 briefings | `needs.list` (body), `work.get`, `work.files` | `ApprovalBody.evidence`, `after` | as Feed, plus `work.unblock`, `work.cancel` |
-| J5 / M5 Decisions | `needs.list` (asks), `asks.workspace` | **new read `answers.status`** → `{ waitingToLand, landingPr?, routed, acted, held, recent[] }` | `ask.answer`, `fleet ask answer` |
-| J6 / J6b / M6 Work | `work.list`, `work.history` | `WorkRow.liveTurn`, `lifecycle`, `closedBy` | `work.cancel`, `work.stop`, `session.prompt` |
-| J7 / M7 Health | `notices.list`, `fleet.get`, `fleet.tick`, `loops.get`, `lanes.get` | **new read `notices.list`** → `{ key, kind: "stuck" \| "quiet" \| "schedule" \| "loop" \| "initiative", title, scope, since, evidence[], closesWhen, verb }` (the Health deck, in severity order); `fleet.tick.grid` (24 per scope); `loops.get[].recent` (last 16 runs); `lanes.get` conductor and lane liveness (standing) | `notice.snooze`, `fleet tick run`, `fleet mode set`, `loop control` |
-| J8 / M8 Initiatives | `initiatives.list`, `needs.list` (the review as an ask) | `initiatives.list[].reviewDue`, `late`, `driver.live`; the review is raised by `ask.raise` on its due date (B2) | `ask.answer` |
-| J9 / M9 New work | `config.get`, `folder.inspect`, `lanes.get` | "who starts it" comes from `lanes.get` (A8) | `work.create` (queues only) |
-| P1 presence | `presence.get` → `{ state: "present" \| "away" \| "off", from: "signals" \| "manual", until? }` | the whole interface (new) | `presence.set({ state, until })` |
-| M10 from a push | the inbox session's push body (≤220 characters); `needs.list` by `key` | `openScreen({ screenId: "maestro", params: { hold: key } })` is assumed, and checked in BRO-3033 | as Feed |
-| M11 / B2 / B3 / D4 settings | `config.get`, `fleet.get`, `loops.get`, `lanes.get`, `policy.get`, `notices.registry` | none beyond the above | `config.set`, `fleet mode set`, `loop control`, `lanes propose`, `notices propose` |
+Ids are the inventory's. `scripts/inventory-check.test.ts` parses this table and fails when a row's
+reads or writes differ from `inventory.yaml`, or when a live page has no row. Every owner verb
+here has the 8 s undo, so `I-undo` appears wherever a verb does.
+
+| Page | Screens | Reads | Writes | New fields |
+|---|---|---|---|---|
+| P-header | J1 header, M1 deck header | I-needs-list | | `NeedSummary` for the tab counts |
+| P-feed | J1, M1 | I-needs-list, I-handled-list, I-work-list, I-notices-list, I-sweep-get | I-ask-answer, I-approval-decide, I-owner-step-done, I-session-prompt, I-notice-snooze, I-work-unblock, I-undo | `NeedSummary`; `handled.list.today`; `sweep.get.unsupervisedToday`, `nextWakeAt`. Glance tiles read only these fields |
+| P-briefing | J2–J4, M2–M4 | I-work-get, I-work-files, I-needs-list | I-approval-decide, I-ask-answer, I-work-unblock, I-work-cancel, I-undo | `ApprovalBody.evidence`, `after` |
+| P-approval-card | K0–K2 (session cards) | I-needs-list | I-approval-decide, I-undo | the card reads its hold live by `key` |
+| P-decisions | J5, M5 | I-asks-workspace, I-needs-list, I-answers-status | I-ask-answer, I-fleet-ask-answer, I-undo | **new read** `answers.status` → `{ waitingToLand, landingPr?, routed, acted, held, recent[] }` |
+| P-work | J6, J6b, M6 | I-work-list, I-work-history | I-work-cancel, I-work-stop, I-session-prompt, I-approval-decide, I-undo | `WorkRow.liveTurn`, `lifecycle`, `closedBy`; J6b decides an approval in place |
+| P-health | J7, M7 | I-fleet-get, I-fleet-tick, I-timeline-get, I-loops-get, I-lanes-get, I-needs-list, I-notices-list | I-work-adopt, I-session-prompt, I-work-stop, I-notice-snooze, I-fleet-tick-run, I-fleet-mode-set, I-loop-control, I-undo | **new read** `notices.list` → `{ key, kind: stuck \| quiet \| schedule \| loop \| initiative, title, scope, since, evidence[], closesWhen, verb }`; `fleet.tick.grid` (24 per scope); `loops.get[].recent` (last 16 runs); `lanes.get` liveness |
+| P-initiatives | J8, M8 | I-initiatives-list, I-needs-list | I-ask-answer, I-initiatives-file, I-undo | `reviewDue`, `late`, `driver.live`; the review is an `ask` row raised by `ask.raise` on its due date (B2) |
+| P-new-work | J9, M9 | I-config-get, I-folder-inspect, I-lanes-get | I-work-create | "who starts it" from `lanes.get` (A8); `work.create` only queues |
+| P-phone | M10 | I-needs-list | I-approval-decide, I-ask-answer, I-undo | the push body (≤220 characters); `openScreen` with `{ hold: key }`, checked in BRO-3033 |
+| P-presence | P1 | I-presence-get | I-presence-set | `presence.get` → `{ state: present \| away \| off, from: signals \| manual, until? }` |
+| P-settings-sweep-fleet | B2, M11 | I-sweep-get, I-fleet-get, I-config-get | I-config-set, I-sweep-wake, I-fleet-mode-set, I-fleet-tick-run | none |
+| P-settings-loops-notices-approvals | B3, M11 | I-loops-get, I-notices-registry-get, I-policy-get | I-loop-control, I-notices-registry-propose | none |
+| P-settings-lanes | D4, M11 | I-lanes-get | I-lanes-propose, I-conductor-wake, I-lane-tick-run | none |
+
+`I-session-prompt` prompts an existing session and never creates one. A8 forbids creating work by
+rule; Continue is the owner's verb, and auto-continue is A3.
 
 ## Verbs and undo
 

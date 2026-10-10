@@ -67,11 +67,49 @@ export type Inventory = { [K in Section]: Record<string, Item> } & {
 
 export const NEED_KINDS = ["ask", "approval", "owner-step"];
 
-// The chosen design language (owner, 2026-10-09/10): J on the desktop, M on the phone, K session cards,
-// P presence, B/D settings. S, V, H, G and the rest stay on the canvas as references, so a live page
-// that still points at one of their exports is building from a superseded design.
-export const CHOSEN_EXPORT = /^(j|m|k|p|b|d)\d/;
-export const PHONE_EXPORT = /^(m|p)\d/;
+// The chosen design (owner, 2026-10-09/10): J on the desktop (J6b included), M on the phone, K session
+// cards, P presence, B2/B3/D4 settings. The families are exact, so a rejected variant (M1a–M1d), a
+// diagram (B1, D0–D3, D5) or a reference (S, V, H, G, R, I) never passes as the design to build.
+export const CHOSEN_EXPORT = /^(j\d+b?|j2-j4|m\d+|m2-m4|k[0-2]|p\d+|b[23]|d4)-[a-z0-9-]+\.png$/;
+export const PHONE_EXPORT = /^(m\d+|m2-m4|p\d+)-[a-z0-9-]+\.png$/;
+// Canvas frames that stay as references. A live page whose frame is one of them builds a superseded screen.
+export const REFERENCE_FRAMES = new Set([
+  // S series and its shell header
+  "PMWAB",
+  "gcul5",
+  "R4srT",
+  "oWMTo",
+  "qzneN",
+  "ukSou",
+  "f6IibL",
+  "DcOYb",
+  "zijFm",
+  "hRa0W",
+  // V variations, R0 and S1r, B1
+  "cDMyJ",
+  "Au6C9",
+  "aIqPF",
+  "Qmp6D",
+  "ovY0F",
+  "W42jZ",
+  "X1KOi",
+  // H interim, G glass
+  "OwTs3",
+  "rXNta",
+  "A4aiNd",
+  "brdkh",
+  "NoeRO",
+  "I3mpR",
+  "M4rJk",
+  // M1 variations
+  "WHeH4",
+  "Y1W5SM",
+  "FcV4R",
+  "yKacZ",
+  "NnyoV",
+]);
+export const GATES = ["owner", "agent", "any"] as const;
+const FINDING_KEYS = new Set(["name", "severity", "state", "about", "ticket", "code", "note"]);
 
 // Every key an item may carry. An unknown key is how a comma inside a YAML flow mapping shows up:
 // `{ name: Button (primary, secondary), status: keep }` parses as a short name plus a stray key.
@@ -117,6 +155,11 @@ export function check(inv: Inventory, root: string): string[] {
       if (!STATUSES.includes(it.status)) out.push(`${id}: status "${it.status}" is not one of ${STATUSES.join(", ")}`);
       for (const k of Object.keys(it))
         if (!KEYS.has(k)) out.push(`${id}: unknown key "${k}" (a comma in a flow mapping?)`);
+      for (const k of ["frame", "png", "phone_frame", "phone_png"] as const)
+        if (k in it && (typeof it[k] !== "string" || it[k] === "")) out.push(`${id}: ${k} must be a non-empty string`);
+      if ("gate" in it && !GATES.includes(it.gate as (typeof GATES)[number]))
+        out.push(`${id}: gate "${it.gate}" is not one of ${GATES.join(", ")}`);
+      if ("launches" in it && typeof it.launches !== "boolean") out.push(`${id}: launches must be true or false`);
       for (const c of it.code ?? []) {
         if (!existsSync(join(root, c.split(":")[0]))) out.push(`${id}: cites ${c}, which does not exist`);
       }
@@ -160,12 +203,22 @@ export function check(inv: Inventory, root: string): string[] {
     if (p.frame === "today" && !tracked.has(id)) out.push(`${id}: frame "today" with no finding tracking it`);
     for (const i of [...(p.reads ?? []), ...(p.writes ?? [])])
       if (has("interfaces", i) && !live(inv.interfaces[i])) out.push(`${id}: uses retired interface ${i}`);
-    if (p.png && !existsSync(join(root, "docs/design/next", p.png))) out.push(`${id}: export ${p.png} is missing`);
-    if (p.png && !CHOSEN_EXPORT.test(p.png))
-      out.push(`${id}: export ${p.png} is a reference, not the chosen design (J, M, K, P, B or D)`);
-    if (p.phone_png && !existsSync(join(root, "docs/design/next", p.phone_png)))
+    const exp = (f: unknown) => typeof f === "string" && f !== "" && existsSync(join(root, "docs/design/next", f));
+    if (p.frame === "today") {
+      if (p.png || p.phone_png) out.push(`${id}: a "today" page has no design, so it carries no export`);
+    } else {
+      if (!p.png) out.push(`${id}: no export (png) for its frame`);
+      if (typeof p.frame === "string" && REFERENCE_FRAMES.has(p.frame))
+        out.push(`${id}: frame ${p.frame} is a reference, not the chosen design`);
+    }
+    if (typeof p.phone_frame === "string" && REFERENCE_FRAMES.has(p.phone_frame))
+      out.push(`${id}: phone frame ${p.phone_frame} is a reference, not the chosen design`);
+    if (typeof p.png === "string" && p.png && !exp(p.png)) out.push(`${id}: export ${p.png} is missing`);
+    if (typeof p.png === "string" && p.png && !CHOSEN_EXPORT.test(p.png))
+      out.push(`${id}: export ${p.png} is a reference, not the chosen design (J, M, K, P, B2, B3 or D4)`);
+    if (typeof p.phone_png === "string" && p.phone_png && !exp(p.phone_png))
       out.push(`${id}: phone export ${p.phone_png} is missing`);
-    if (p.phone_png && !PHONE_EXPORT.test(p.phone_png))
+    if (typeof p.phone_png === "string" && p.phone_png && !PHONE_EXPORT.test(p.phone_png))
       out.push(`${id}: phone export ${p.phone_png} is not an M or P frame`);
     if (Boolean(p.phone_frame) !== Boolean(p.phone_png)) out.push(`${id}: phone_frame and phone_png come together`);
     for (const c of p.components ?? [])
@@ -227,6 +280,7 @@ export function check(inv: Inventory, root: string): string[] {
   const anyId = (x: string) => (Object.keys(PREFIX) as Section[]).some((s) => has(s, x));
   for (const [id, f] of Object.entries(inv.findings ?? {})) {
     if (!id.startsWith("FND-")) out.push(`${id}: id in findings must start with FND-`);
+    for (const k of Object.keys(f)) if (!FINDING_KEYS.has(k)) out.push(`${id}: unknown key "${k}"`);
     if (!["blocker", "major", "minor"].includes(f.severity)) out.push(`${id}: severity "${f.severity}" is unknown`);
     if (!["open", "fixed"].includes(f.state)) out.push(`${id}: state "${f.state}" is unknown`);
     if (!f.about?.length) out.push(`${id}: about nothing`);
@@ -246,7 +300,43 @@ export function check(inv: Inventory, root: string): string[] {
     for (const c of l.calls ?? [])
       if (has("interfaces", c) && inv.interfaces[c].launches && l.owner !== "conductor" && l.owner !== "lane")
         out.push(`${id}: a ${l.owner} loop calls ${c}, which launches a session (A8)`);
+    for (const c of l.calls ?? [])
+      if (has("interfaces", c) && inv.interfaces[c].gate === "owner" && l.owner !== "owner")
+        out.push(`${id}: a ${l.owner} loop calls ${c}, an owner gate verb only the owner may use`);
   }
+  return out;
+}
+
+// docs/design/next/view-models.md carries a per-screen table: | Page | Screens | Reads | Writes | New fields |.
+// The contract and the inventory must agree on what each live page reads and writes.
+export function contractDrift(inv: Inventory, markdown: string): string[] {
+  const out: string[] = [];
+  const rows = new Map<string, { reads: string[]; writes: string[] }>();
+  for (const line of markdown.split("\n")) {
+    const cells = line.split("|").map((c) => c.trim());
+    if (!cells[1]?.startsWith("P-")) continue;
+    const ids = (c: string | undefined) => (c ?? "").match(/I-[a-z0-9-]+/g) ?? [];
+    rows.set(cells[1], { reads: ids(cells[3]), writes: ids(cells[4]) });
+  }
+  const same = (a: string[], b: string[]) => a.length === b.length && [...a].sort().join() === [...b].sort().join();
+  for (const [id, p] of Object.entries(inv.pages)) {
+    if (p.status === "retire" || p.frame === "today") continue;
+    const row = rows.get(id);
+    if (!row) {
+      out.push(`${id}: no row in view-models.md`);
+      continue;
+    }
+    if (!same(row.reads, p.reads ?? []))
+      out.push(
+        `${id}: view-models.md reads ${row.reads.join(", ")}; the inventory reads ${(p.reads ?? []).join(", ")}`,
+      );
+    if (!same(row.writes, p.writes ?? []))
+      out.push(
+        `${id}: view-models.md writes ${row.writes.join(", ")}; the inventory writes ${(p.writes ?? []).join(", ")}`,
+      );
+  }
+  for (const id of rows.keys())
+    if (!Object.hasOwn(inv.pages, id)) out.push(`${id}: in view-models.md but not in the inventory`);
   return out;
 }
 
@@ -270,7 +360,10 @@ if (import.meta.main) {
       `findings    ${String(Object.keys(inv.findings ?? {}).length).padStart(3)}  open ${JSON.stringify(open)}`,
     );
   }
-  const findings = check(inv, root);
+  const findings = [
+    ...check(inv, root),
+    ...contractDrift(inv, readFileSync(join(root, "docs/design/next/view-models.md"), "utf8")),
+  ];
   for (const f of findings) console.log(`✗ ${f}`);
   console.log(findings.length ? `${findings.length} findings` : "inventory: clean");
   process.exit(findings.length ? 1 : 0);

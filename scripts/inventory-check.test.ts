@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { check, type Inventory, load } from "./inventory-check";
+import { check, contractDrift, type Inventory, load } from "./inventory-check";
 
 const root = join(import.meta.dir, "..");
 
@@ -16,7 +17,7 @@ function clean(): Inventory {
       "P-feed": {
         name: "Feed",
         status: "keep",
-        frame: "gcul5",
+        frame: "E4dLZ1",
         png: "j1-feed-home.png",
         phone_frame: "FKTsX",
         phone_png: "m1-feed-home-mobile.png",
@@ -70,7 +71,24 @@ describe("inventory-check", () => {
     expect(check(load(root), root)).toEqual([]);
   });
 
-  // One mutant per rule: each must produce the finding that names it.
+  const contract = () => readFileSync(join(root, "docs/design/next/view-models.md"), "utf8");
+  test("view-models.md and the inventory agree on every live page", () => {
+    expect(contractDrift(load(root), contract())).toEqual([]);
+  });
+  test("contract drift is caught: an extra write, a missing row, an unknown page", () => {
+    const inv = load(root);
+    inv.pages["P-work"].writes?.push("I-work-unblock");
+    expect(contractDrift(inv, contract()).join("\n")).toMatch(/P-work: view-models.md writes/);
+    expect(contractDrift(load(root), contract().replace(/^\| P-presence .*$/m, "")).join("\n")).toMatch(
+      /P-presence: no row in view-models.md/,
+    );
+    expect(contractDrift(load(root), `${contract()}\n| P-ghost | x | I-needs-list | | |`).join("\n")).toMatch(
+      /P-ghost: in view-models.md but not in the inventory/,
+    );
+  });
+
+  // One mutant per rule: each must produce the finding that names it. A rule added without a mutant is
+  // a rule nobody has seen fire.
   const mutants: [string, (i: Inventory) => void, RegExp][] = [
     ["wrong prefix", (i) => (i.pages["X-feed"] = { ...i.pages["P-feed"] }), /must start with P-/],
     ["bad status", (i) => (i.components["C-card"].status = "maybe" as never), /is not one of/],
@@ -109,6 +127,105 @@ describe("inventory-check", () => {
       "phone frame without export",
       (i) => delete i.pages["P-feed"].phone_png,
       /phone_frame and phone_png come together/,
+    ],
+    [
+      "phone export without frame",
+      (i) => delete i.pages["P-feed"].phone_frame,
+      /phone_frame and phone_png come together/,
+    ],
+    ["page without export", (i) => delete i.pages["P-feed"].png, /P-feed: no export \(png\) for its frame/],
+    ["frame is a reference", (i) => (i.pages["P-feed"].frame = "gcul5"), /frame gcul5 is a reference/],
+    [
+      "phone frame is a reference",
+      (i) => (i.pages["P-feed"].phone_frame = "FcV4R"),
+      /phone frame FcV4R is a reference/,
+    ],
+    ["rejected phone variant", (i) => (i.pages["P-feed"].png = "m1a-top-tabs.png"), /m1a-top-tabs.png is a reference/],
+    [
+      "diagram as a page export",
+      (i) => (i.pages["P-feed"].png = "b1-one-tap-approvals.png"),
+      /b1-one-tap-approvals.png is a reference/,
+    ],
+    [
+      "today page with an export",
+      (i) => {
+        i.pages["P-feed"].frame = "today";
+        i.findings?.["FND-x"].about.push("P-feed");
+      },
+      /a "today" page has no design, so it carries no export/,
+    ],
+    ["empty export string", (i) => (i.pages["P-feed"].png = ""), /png must be a non-empty string/],
+    ["gate typo", (i) => (i.interfaces["I-answer"].gate = "Owner" as never), /gate "Owner" is not one of/],
+    [
+      "launches as a string",
+      (i) => (i.interfaces["I-sweep"].launches = "false" as never),
+      /launches must be true or false/,
+    ],
+    [
+      "plugin loop calls a gate verb",
+      (i) => i.loops["L-sweep"].calls?.push("I-answer"),
+      /a plugin loop calls I-answer, an owner gate verb/,
+    ],
+    [
+      "feature uses retired interface",
+      (i) => {
+        i.features["F-sweep"].interfaces = ["I-sweep", "I-needs"];
+        i.interfaces["I-needs"].status = "retire";
+        i.pages["P-feed"].reads = [];
+      },
+      /F-sweep: live feature uses retired interface I-needs/,
+    ],
+    [
+      "page uses retired component",
+      (i) => {
+        i.components["C-old"] = { name: "Old", status: "retire" };
+        i.pages["P-feed"].components?.push("C-old");
+      },
+      /P-feed: uses retired component C-old/,
+    ],
+    ["caller not a layer", (i) => i.interfaces["I-needs"].callers?.push("robot"), /caller "robot" is not a layer/],
+    ["store owner not a layer", (i) => (i.stores["S-asks"].owner = "robot"), /S-asks: owner "robot" is not a layer/],
+    ["loop owner not a layer", (i) => (i.loops["L-sweep"].owner = "robot"), /L-sweep: owner "robot" is not a layer/],
+    [
+      "interface points at a ghost store",
+      (i) => i.interfaces["I-answer"].stores?.push("S-ghost"),
+      /S-ghost, which is not in stores/,
+    ],
+    ["loop calls a ghost interface", (i) => i.loops["L-sweep"].calls?.push("I-ghost"), /L-sweep: points at I-ghost/],
+    [
+      "finding without the FND- prefix",
+      (i) => {
+        if (i.findings) i.findings["BAD-x"] = { ...i.findings["FND-x"] };
+      },
+      /BAD-x: id in findings must start with FND-/,
+    ],
+    [
+      "finding severity unknown",
+      (i) => {
+        if (i.findings) i.findings["FND-x"].severity = "huge" as never;
+      },
+      /severity "huge" is unknown/,
+    ],
+    [
+      "finding state unknown",
+      (i) => {
+        if (i.findings) i.findings["FND-x"].state = "maybe" as never;
+      },
+      /state "maybe" is unknown/,
+    ],
+    [
+      "finding about nothing",
+      (i) => {
+        if (i.findings) i.findings["FND-x"].about = [];
+      },
+      /FND-x: about nothing/,
+    ],
+    [
+      "finding with an unknown key",
+      (i) => {
+        if (i.findings) Object.assign(i.findings["FND-x"], { tciket: "BRO-1" });
+      },
+      /FND-x: unknown key "tciket"/,
     ],
     ["missing export", (i) => (i.pages["P-feed"].png = "nope.png"), /export nope.png is missing/],
     [

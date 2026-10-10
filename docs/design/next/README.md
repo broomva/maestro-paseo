@@ -49,7 +49,7 @@ The cards in sessions are BRO-3008.
 - what Paseo's iOS app draws around a plugin screen;
 - whether `openScreen` params can carry a hold key;
 - how gestures and the keyboard behave inside a plugin;
-- gradients on the desktop (Undertow);
+- gradients on iOS for the Undertow (`experimental_backgroundImage`; on the desktop they pass through as `backgroundImage`);
 - how a push body renders.
 
 | Frame | PNG | What it is |
@@ -68,9 +68,9 @@ The cards in sessions are BRO-3008.
 | D3 | `d3-prompt-stack-and-lanes.png` | The five-layer prompt stack (harness, workspace rules, role base, lane overlay, tick context or brief), where the SRI tick prompt goes, lane profiles |
 | D4 | `d4-settings-lanes.png` | Settings › Lanes: the conductor, each lane's session, heartbeat, profile and prompt version, and the composed prompt |
 | D5 | `d5-conductor-tick-and-presence.png` | The conductor's tick as a governed autonomy loop (reconcile, sweep, allocate, govern, log, resume on events), code vs judgement, its invariants, and the owner-presence model for when waiting is needed (A3, A8) |
-| I0 | `i0-inventory.png` | The inventory: 31 features, 25 pages, 24 components, 66 interfaces, 23 stores, 10 loops, each keep, change, new or retire against today's code (BRO-2994) |
+| I0 | `i0-inventory.png` | The inventory as drawn on 10-09 (31 features, 25 pages, 24 components, 66 interfaces, 23 stores, 10 loops; `bun scripts/inventory-check.ts --summary` gives today's counts), each keep, change, new or retire against today's code (BRO-2994) |
 | I1 | `i1-articulation.png` | How it articulates: the layers, who calls whom (callers × handling layer), three traces (allow a merge, answer an ask, start new work), the rules the checker enforces |
-| I2 | `i2-findings.png` | 27 findings against the inventory by severity, each with its ticket (BRO-2990, 2995–3002), and the build order they suggest |
+| I2 | `i2-findings.png` | The 27 findings as drawn on 10-09 (28 today, with the undo constant, BRO-3032) by severity, each with its ticket (BRO-2990, 2995–3002), and the build order they suggest |
 | G0 | `g0-two-languages.png` | Liquid Glass alternative (BRO-3003): S1 and G1 side by side; what changes (material, color, type, shape, navigation, push); how it moves (springs from /apple-design); what it buys and costs; a middle path |
 | G1 | `g1-glass-feed-mac.png` | Liquid Glass: the Feed on the Mac, with a glass sidebar (lanes, presence), toolbar and inspector over solid cards |
 | G2 | `g2-glass-iphone.png` | Liquid Glass on iPhone: a lock-screen push with Allow, Deny and Open; the Feed with a floating tab bar; an Ask as a sheet |
@@ -141,7 +141,7 @@ Notifications (owner answer A5): `notifications-integration.md` maps every chann
 - every feature reaches a page or a loop and has an interface;
 - every page has a frame and its export;
 - only the owner calls a gate verb;
-- only a lane launches a session (A8);
+- only the conductor or a lane launches a session (A8);
 - every store is written by its owning layer through one module, unless a ticket says otherwise;
 - findings above minor carry a ticket.
 
