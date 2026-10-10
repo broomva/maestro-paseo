@@ -344,7 +344,7 @@ and routes your answers.
   "Waking…". It opens the loop's panel: how often it wakes (with a press to Settings), **Wake
   now**, and the recent wakes, newest first, each with its time, its cause ("on schedule" or "you
   asked") and what it did in words. While the loop is on, the Queued section reads "Started by
-  you, a lane or the conductor; the loop never starts them". Settings, Plugins, Maestro, **The loop**:
+  you, a lane or the conductor, never the loop". Settings, Plugins, Maestro, **The loop**:
   off, or every 5, 15, 30 or 60 minutes.
 - `loop.get` and `loop.wake` (wake now) are plugin RPCs for Maestro's own surfaces, never on the
   agent socket.

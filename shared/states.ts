@@ -111,7 +111,7 @@ export const GROUP_COPY: Record<Group, { title: PlainVoice; hint: string }> = {
 };
 
 /** The Queued hint while the loop is on (Settings, loopMinutes): it is on, and still starts none of it (A8). */
-export const QUEUED_LOOP_HINT = "Started by you, a lane or the conductor; the loop never starts them";
+export const QUEUED_LOOP_HINT = "Started by you, a lane or the conductor, never the loop";
 
 const LEGAL: Record<OrchState, readonly OrchState[]> = {
   proposed: ["reviewing", "triggered", "running", "canceled"],

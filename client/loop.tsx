@@ -135,7 +135,7 @@ export function LoopPanel({ theme, onClose }: { theme: PluginTheme; onClose: () 
             </Text>
             {wakes.length === 0 ? (
               <Text style={text.muted}>
-                No wakes yet. Each one is listed here: what it started, what it left to you and why.
+                No wakes yet. Each one is listed here: what needs you, what went quiet, and what became of your answers.
               </Text>
             ) : (
               wakes.map((entry) => <WakeRow key={entry.tickId} theme={theme} entry={entry} />)

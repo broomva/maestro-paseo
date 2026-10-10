@@ -298,7 +298,7 @@ describe("feed and board", () => {
   test("the Queued hint says the loop never starts that work while the loop is on; no other hint changes", () => {
     expect(groupHint("queued", false)).toBe("Ready when you dispatch it");
     expect(groupHint("queued", true)).toBe(QUEUED_LOOP_HINT);
-    expect(QUEUED_LOOP_HINT).toBe("Started by you, a lane or the conductor; the loop never starts them");
+    expect(QUEUED_LOOP_HINT).toBe("Started by you, a lane or the conductor, never the loop");
     for (const group of GROUP_ORDER.filter((group) => group !== "queued")) {
       expect(groupHint(group, true)).toBe(groupHint(group, false));
     }

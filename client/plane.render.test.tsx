@@ -2368,7 +2368,7 @@ describe("the loop", () => {
 });
 
 describe("the Queued hint", () => {
-  const LOOP_HINT = "Started by you, a lane or the conductor; the loop never starts them";
+  const LOOP_HINT = "Started by you, a lane or the conductor, never the loop";
   const YOURS_HINT = "Ready when you dispatch it";
 
   for (const [on, shown, hidden] of [

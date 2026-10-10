@@ -445,9 +445,11 @@ export type Attention = z.infer<typeof attentionWork.output>;
 const Named = z.object({ id: z.string(), title: z.string() });
 
 /**
- * One wake of the loop, as its log keeps it: why it woke, what it started,
- * what it left alone and why, what needs you, which runs have gone quiet, and
- * the flags it raised in Needs you. `narrative` is the same in plain words,
+ * One wake of the loop, as its log keeps it: why it woke, what needs you,
+ * which runs have gone quiet, the flags it raised in Needs you, and what
+ * became of your answers. `dispatched` and `deferred` (what it started, what
+ * it left alone and why) stay empty since the loop stopped starting work (A8,
+ * BRO-2990), kept so older entries still read. `narrative` is the same in plain words,
  * one line each. A wake asked for while another ran is `skipped` (the
  * reason), with empty lists and zero counts: read `skipped` first.
  */
