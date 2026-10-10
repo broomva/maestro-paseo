@@ -103,7 +103,7 @@ features:
     kind: control
     pages: [P-briefing, P-approval-card, P-feed, P-decisions, P-work, P-health, P-initiatives, P-phone, P-settings-sweep-fleet, P-settings-loops-notices-approvals, P-settings-lanes, P-presence]
     interfaces: [I-undo]
-    code: [server/engine.ts]
+    code: [shared/undo.ts, server/engine.ts]
 
   # Doing.
   F-new-work:
@@ -720,7 +720,7 @@ loops:
     scheduler: plugin timer, 8 s after the verb
     owner: plugin
     calls: [I-verb-apply]
-    code: [server/engine.ts]
+    code: [shared/undo.ts, server/engine.ts]
   L-paseo-events:
     name: Paseo lifecycle hooks
     status: keep
@@ -770,10 +770,10 @@ findings:
   FND-undo-ten-seconds:
     name: UNDO_MS is 10 s in the code; the owner set 8 s everywhere (B4)
     severity: minor
-    state: open
+    state: fixed
     ticket: BRO-3032
     about: [F-undo, L-undo-window, I-undo]
-    code: [server/engine.ts:191]
+    code: [shared/undo.ts]
 
   # Major: wiring that breaks a stated invariant.
   FND-reads-mutate:
