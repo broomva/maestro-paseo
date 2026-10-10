@@ -231,6 +231,15 @@ features:
     interfaces: [I-needs-list, I-inbox-push]
     code: [server/inbox.ts]
 
+  # Development (BRO-3034): the J/M kit, shown part by part before the screens adopt it.
+  F-kit-gallery:
+    name: "The component gallery: every J/M kit part in every state, light and dark, behind MAESTRO_KIT_GALLERY=1; each screen ticket removes the parts it adopts"
+    status: new
+    kind: watch
+    pages: [P-kit-gallery]
+    interfaces: [I-kit-gallery]
+    code: [client/kit/gallery.tsx, shared/kit.ts]
+
   # Retired by the owner's answers.
   F-approve-work:
     name: Approve on work (gate card, detail pane)
@@ -470,6 +479,19 @@ pages:
     replaced_by: [P-settings-sweep-fleet]
     code: [client/loop.tsx]
 
+  # Development (BRO-3034). Reached by its route only, and off unless the daemon runs with MAESTRO_KIT_GALLERY=1.
+  P-kit-gallery:
+    name: "Component gallery — the kit's parts (M components, Undertow, J1's inspector) in every state, light and dark; until BRO-3035–3037 adopt them"
+    status: new
+    frame: eTSe9
+    png: j1-feed-home.png
+    phone_frame: FKTsX
+    phone_png: m1-feed-home-mobile.png
+    note: "frame eTSe9 is 'M components'; the Undertow is MTdih and J1's inspector VbnhW. Each screen ticket deletes its parts here as it adopts them"
+    components: [C-inspector, C-glance-tile, C-deck, C-pull-sheet, C-tab-bar, C-detail-header, C-swipe-row, C-undo-toast, C-undertow]
+    reads: [I-kit-gallery]
+    code: [client/kit/gallery.tsx, client/kit/gallery-data.ts]
+
 components:
   C-header: { name: "Shell/Header", status: change, pen: R4srT, code: [client/plane.tsx] }
   C-tabs: { name: "Tabs", status: change, pen: null, code: [client/plane-controls.tsx] }
@@ -499,16 +521,16 @@ components:
   C-settings-row: { name: "Settings row", status: new, pen: null, code: [client/settings.tsx] }
   C-toggle: { name: "Toggle", status: new, pen: null }
   C-lane-card: { name: "Lane card", status: new, pen: null }
-  # The J/M kit (BRO-3034).
-  C-inspector: { name: "Inspector (per-kind body; action bar frosted on desktop, solid on iOS)", status: new, pen: VbnhW }
-  C-glance-tile: { name: "Glance tile", status: new, pen: oatDw }
-  C-deck: { name: "Deck (phone; one hold at a time)", status: new, pen: null }
-  C-pull-sheet: { name: "Pull-up sheet (phone; peeks from the bottom edge)", status: new, pen: null }
-  C-tab-bar: { name: "Tab bar riding on the sheet (phone)", status: new, pen: P1PV0 }
-  C-detail-header: { name: "Detail header (grabber, close, kind and place, more)", status: new, pen: Faf21 }
-  C-swipe-row: { name: "Swipe row (right default, left Snooze or Open; never a hold)", status: new, pen: null }
-  C-undo-toast: { name: "Undo toast (8 s)", status: new, pen: xuqvS }
-  C-undertow: { name: "Undertow halo, tidepool dot and standing pulse (Running only)", status: new, pen: L4xCf4 }
+  # The J/M kit (BRO-3034): built in client/kit/, shown in P-kit-gallery until each screen adopts it.
+  C-inspector: { name: "Inspector (per-kind body; action bar frosted on desktop, solid on iOS)", status: new, pen: VbnhW, code: [client/kit/inspector.tsx, client/kit/inspector-model.ts] }
+  C-glance-tile: { name: "Glance tile", status: new, pen: oatDw, code: [client/kit/glance-tile.tsx, client/kit/tile-model.ts] }
+  C-deck: { name: "Deck (phone; one hold at a time)", status: new, pen: null, code: [client/kit/deck.tsx, client/kit/deck-model.ts] }
+  C-pull-sheet: { name: "Pull-up sheet (phone; peeks from the bottom edge)", status: new, pen: null, code: [client/kit/pull-sheet.tsx, client/kit/sheet-model.ts] }
+  C-tab-bar: { name: "Tab bar riding on the sheet (phone)", status: new, pen: P1PV0, code: [client/kit/tab-bar.tsx] }
+  C-detail-header: { name: "Detail header (grabber, close, kind and place, more)", status: new, pen: Faf21, code: [client/kit/detail-header.tsx, client/kit/deck-model.ts] }
+  C-swipe-row: { name: "Swipe row (right default, left Snooze or Open; never a hold)", status: new, pen: null, code: [client/kit/swipe-row.tsx, client/kit/swipe-model.ts] }
+  C-undo-toast: { name: "Undo toast (8 s)", status: new, pen: xuqvS, code: [client/kit/undo-toast.tsx, client/kit/undo-model.ts, shared/undo.ts] }
+  C-undertow: { name: "Undertow halo, tidepool dot and standing pulse (Running only)", status: new, pen: L4xCf4, code: [client/kit/undertow.tsx, client/kit/undertow-model.ts, client/kit/assumptions.ts] }
   C-presence-menu: { name: "Presence menu", status: new, pen: kJOpv }
 
 interfaces:
@@ -528,6 +550,7 @@ interfaces:
   I-asks-workspace: { name: "asks.workspace", status: keep, handler: plugin, callers: [ui], code: [server/control-home.ts] }
   I-fleet-get: { name: "fleet.get", status: keep, handler: plugin, callers: [ui], code: [server/fleet.ts] }
   I-fleet-tick: { name: "fleet.tick", status: keep, handler: plugin, callers: [ui], code: [server/fleet.ts] }
+  I-kit-gallery: { name: "kit.gallery — whether the daemon turned the component gallery on (BRO-3034)", status: new, handler: plugin, callers: [ui], code: [shared/kit.ts, index.server.ts] }
   I-timeline-get: { name: "timeline.get and timeline.log", status: keep, handler: plugin, callers: [ui], code: [server/timeline.ts] }
   I-loops-get: { name: "loops.get", status: change, handler: plugin, callers: [ui], code: [server/loops.ts] }
   I-initiatives-list: { name: "initiatives.list", status: keep, handler: plugin, callers: [ui], code: [server/initiatives.ts] }

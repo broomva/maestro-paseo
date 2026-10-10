@@ -63,6 +63,7 @@ import {
   reviewProposal,
 } from "./shared/fleet";
 import { fileIdeaWork, getInitiatives, ideaRef, type WorkRef } from "./shared/initiatives";
+import { galleryEnabled, kitGallery } from "./shared/kit";
 import { getLoops } from "./shared/loops";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
 import { getTimeline, getTimelineLog } from "./shared/timeline";
@@ -347,6 +348,8 @@ export default function contribute(host: PluginServerContext) {
     };
   });
   server.handle(getLoops, () => loops.get());
+  // The component gallery's flag (shared/kit.ts): read-only, from the daemon's environment.
+  server.handle(kitGallery, async () => ({ enabled: galleryEnabled(process.env) }));
   server.handle(getTimeline, () => timeline.get());
   // A launchd job's log end, only when you open its row: never in the polled view.
   server.handle(getTimelineLog, ({ id }) => timeline.logOf(id));

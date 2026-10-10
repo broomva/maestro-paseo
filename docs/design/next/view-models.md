@@ -104,6 +104,7 @@ writes an owner verb. The checker enforces it.
 | P-settings-sweep-fleet | B2, M11 | I-sweep-get, I-fleet-get, I-config-get | I-config-set, I-sweep-wake, I-fleet-mode-set, I-fleet-tick-run, I-undo | none |
 | P-settings-loops-notices-approvals | B3, M11 | I-loops-get, I-notices-registry-get, I-policy-get | I-loop-control, I-notices-registry-propose, I-undo | none |
 | P-settings-lanes | D4, M11 | I-lanes-get | I-lanes-propose, I-conductor-wake, I-lane-tick-run, I-undo | none |
+| P-kit-gallery | development only (BRO-3034): M components, Undertow, J1's inspector | I-kit-gallery | | none; its samples are static, it calls no verb |
 
 `I-session-prompt` prompts an existing session and never creates one. A8 forbids creating work by
 rule; Continue is the owner's verb, and auto-continue is A3.
