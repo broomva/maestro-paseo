@@ -24,8 +24,8 @@ variables, light or dark by the surface's luminance.
 
 ## Platform facts (applied from BRO-3033)
 
-The device spike ([`docs/design/next/device-checks.md`](../../docs/design/next/device-checks.md), on the
-`spike/bro-3033-device-checks` branch until it merges) checked what the phone parts rest on. Each fact is one function in
+The device spike ([`docs/design/next/device-checks.md`](../../docs/design/next/device-checks.md)) checked what
+the phone parts rest on. Each fact is one function in
 `assumptions.ts`; what it could not check is marked as an assumption. Each component that depends on one
 takes a prop that overrides it.
 
@@ -40,7 +40,8 @@ takes a prop that overrides it.
 | F5 | `keysHint` | key caps only in the web build; the phone card never shows them | none |
 
 `openScreen` params are strings in the route (fact 2): a screen passes `params.hold` to the deck's `openOn`, and
-moves between holds by state once it is open, since every `openScreen` mounts a new instance. The kit has no text
+moves between holds by state once it is open, since every `openScreen` mounts a new instance. Hidden instances stay
+mounted, so a screen that polls should pause while hidden; the kit's parts do not poll. The kit has no text
 input; the M9 composer (BRO-3037) lifts itself from `keyboardWillShow`/`keyboardWillHide` or `KeyboardAvoidingView`
 (fact 4).
 
