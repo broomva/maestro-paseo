@@ -96,12 +96,15 @@ Where each hold comes from today:
   again. It is forgotten once a complete read no longer holds it; a read that missed a source forgets
   nothing. So `since`, and the deck order with it, holds still across reads.
 - **`needs.list({ kind })`** narrows the rows to one kind, and the summary then describes exactly those rows.
-- **Pure.** The work is read with no client, so no session is reconciled and no decision is applied. The
-  asks are read without the background fetch of origin/main (`WorkspaceAsks.read(false, false)`; BRO-2995
-  takes the fetch out of every read). Every other source is a cached read. `index.server.test.ts` sets up a
-  control repo with an origin, asks, a due review and the answers batch beside a session that went back to
-  work. From the first read on, no file under the test's root changes, the control repo's `.git` included,
-  and nothing is sent or started.
+- **Pure.** Every read is a query since BRO-2995. The plugin sweep (`server/sweep.ts`, every `SWEEP_MS`,
+  30 s) keeps the work true to Paseo, applies due decisions and fetches origin/main. `needs.list` reads the
+  store as the sweep left it: the work through `engine.list()`, the asks through `WorkspaceAsks.read()`, and
+  every other source through its cached read. So it can be up to one sweep stale, but every surface reads
+  this one projection of one store, so they are stale together and never disagree. `index.server.test.ts`
+  sets up a control repo with an origin, asks, a due review and the answers batch beside a session that went
+  back to work. It waits for the start-up sweep to settle. From then on no file under the test's root
+  changes, the control repo's `.git` and the drift ledger included, and nothing is sent or started.
+  Mutation-proven: a reconcile (`engine.upkeep`) or a fetch (`fetchDue`) in the read fails it.
 - **`handled.list`.** `closedBy` is:
   - `you`: a verdict or a cancel;
   - `gates`: its branch merged, or the auto gate closed it on checks that passed (its receipt says so and

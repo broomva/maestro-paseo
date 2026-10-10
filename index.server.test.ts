@@ -739,6 +739,19 @@ async function snapshot(root: string): Promise<Map<string, string>> {
   return out;
 }
 
+/** Waits until nothing under `root` changes for a second: the plugin's start-up work settled. */
+async function quiet(root: string): Promise<void> {
+  let last = await snapshot(root);
+  let still = 0;
+  for (let tries = 0; tries < 120 && still < 4; tries += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const now = await snapshot(root);
+    still = JSON.stringify([...now]) === JSON.stringify([...last]) ? still + 1 : 0;
+    last = now;
+  }
+  if (still < 4) throw new Error("the plugin never went quiet");
+}
+
 test("needs.list and handled.list are wired, pure, and the one number every surface says (BRO-3001)", async () => {
   const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
   roots.push(root);
@@ -801,6 +814,15 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
   );
   const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
   const env: Record<string, string> = {
+    // The sweep's own timer never fires inside the test: only its start-up run and the first hook's (BRO-2995).
+    MAESTRO_PASEO_SWEEP_SECONDS: "3600",
+    // Every sweep may fetch, so no throttle armed at start-up would hide a fetch a read makes.
+    MAESTRO_PASEO_FETCH_SECONDS: "0",
+    // What the sweep records (loop drift) lands under the test's root, where the snapshot sees it.
+    BROOMVA_HOME: join(root, "home"),
+    MAESTRO_PASEO_LAUNCHD: "off",
+    MAESTRO_PASEO_SCHEDULES: join(root, "schedules"),
+    MAESTRO_PASEO_LOOP_REPOS: "off",
     MAESTRO_PASEO_FLEET_CONFIG: join(root, "no-fleet", "config"),
     MAESTRO_PASEO_FLEET_STATE: join(root, "no-fleet", "state"),
     MAESTRO_PASEO_FLEET_AGENTS: join(root, "no-fleet", "agents"),
@@ -849,11 +871,16 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
       join(heldDir, "_events.jsonl"),
       `${await readFile(join(heldDir, "_events.jsonl"), "utf8")}${JSON.stringify({ ts: new Date().toISOString(), ...flag })}\n`,
     );
-    // Its session went back to work: a reconcile would move the work off your gate and write it. No read here may.
+    // The sweeps the start-up and the first hook ran (the work kept true, origin/main fetched, the loops' drift
+    // recorded) settle first: what follows is the reads' alone.
+    await quiet(root);
+    // Its session went back to work: a reconcile would move the work off your gate and write it. The sweep's
+    // next run would (at most SWEEP_MS later); no read here may.
     if (agent) agent.status = "running";
 
     // Pure, from the first read on: no file under the test's root changes (the work, the control repo and its
-    // .git, which a fetch rewrites, the receipts, the config), and nothing is sent, started or archived.
+    // .git, which a fetch rewrites, the receipts, the config, the drift ledger), and nothing is sent, started
+    // or archived.
     const before = await snapshot(root);
     const counts = () => [fake.sent.length, fake.created.length, fake.archived.length];
     const sentBefore = counts();

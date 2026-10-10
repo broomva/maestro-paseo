@@ -367,11 +367,12 @@ export default function contribute(host: PluginServerContext) {
   });
   // What needs you and what was handled for you (server/needs.ts, BRO-3001): the one projection every count,
   // badge, section and push reads. Pure: the work is read with no client, so no session is reconciled and no
-  // decision applied (BRO-2995); the asks with no fetch of origin/main; every other source is a cached read.
+  // decision applied (BRO-2995); the asks, as every read, with no fetch of origin/main (the sweep fetches);
+  // every other source is a cached read.
   // A source that cannot be read costs its own rows, never the rest.
   const workspaceName = control.repo ? basename(control.repo) : "workspace";
-  // After BRO-2995 lands, engine.list() is pure on its own and this becomes engine.list().
-  const workItems = () => engine.list(undefined, { decide: false }).then(({ items }) => items);
+  // A pure read (BRO-2995): no client, so no reconcile; the plugin sweep keeps the work true, at most SWEEP_MS stale.
+  const workItems = () => engine.list().then(({ items }) => items);
   /** Every ask read, the workspace's and each fleet root's, and whether both were read. */
   const allAsks = async (): Promise<[DecisionAsk[], boolean]> => {
     let read = true;
