@@ -71,6 +71,21 @@ browser is on the daemon's own origin: no host to add, and no Local Network Acce
 More than one checkout can run a sandbox at once: each records its own under a pointer keyed by its path. Pass
 `--state <dir>` or set `MAESTRO_DOGFOOD_STATE` to act on a specific one.
 
+## Reads are pure (BRO-2995)
+
+```sh
+bun scripts/dogfood/up.ts --plugin . --sweep-seconds 90
+bun scripts/dogfood/reads-pure.ts --polls 50 --plant --wait-sweep 150
+```
+
+`reads-pure.ts` polls the reads every client polls (`work.list`, `work.attention`, `loops.get`, `fleet.get`,
+`timeline.get`) N times through the sandbox daemon. It compares every file in the sandbox but Paseo's own home and the
+daemon log (the work store's event logs with their mtimes, the wake log, the inbox, any ledger) and Paseo's sessions
+(how many, archived, labels) before and after, and exits 1 if anything moved. `--plant` first plants work only a write
+changes: a run whose session was archived while the plugin heard nothing, and an approval whose undo window closed.
+`--wait-sweep` then waits for the plugin sweep to change them on its own cadence (`--sweep-seconds` on `up.ts`), and
+prints when and how. It acts only on a sandbox `up.ts` made.
+
 ## The Loops read on this machine
 
 `bun scripts/dogfood/loops-live.ts` runs the Loops read end to end without a daemon: the ledger (from

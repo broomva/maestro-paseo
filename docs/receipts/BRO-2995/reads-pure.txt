@@ -1,0 +1,41 @@
+# bun scripts/dogfood/reads-pure.ts --polls 50 --plant --wait-sweep 150  (sandbox, --sweep-seconds 90), 2026-10-10
+Planted 4ba5282b-e16c-48a9-8c01-ad0b2fa55b46 (its session 294131a4-b1c0-401d-811e-ba622133208a archived) and 181e6aa0-d1c3-4e3f-9cb5-c81be9568e0f (due approval).
+
+50 polls of work.list, work.attention, loops.get, fleet.get, timeline.get in 24938 ms
+  files compared: 114 (the sandbox but Paseo's home and the daemon log)
+  files changed:  0
+  sessions:       3 before, 3 after; archived 1 → 1; labels unchanged
+  the store's event logs (mtime size sha1), before = after:
+    = 2026-10-10T15:33:12.698Z 964B 43cf13df2ba2  platform/ci/publish-build-cache-to-shared-bucket/_events.jsonl
+    = 2026-10-10T15:33:07.232Z 1429B ace1f1a9f000  platform/ci/pin-the-node-version-in-ci/_events.jsonl
+    = 2026-10-10T15:33:07.233Z 67B a1b4d8eb1a09  platform/ci/cache-the-rust-build/_events.jsonl
+    = 2026-10-10T15:33:12.117Z 67B 363b41f49e95  platform/write-the-q4-reliability-review/_events.jsonl
+    = 2026-10-10T15:33:16.672Z 1073B 229efd447712  platform/planted/approved-while-nobody-looked/_events.jsonl
+    = 2026-10-10T15:33:16.672Z 550B 5cca77b58303  platform/planted/its-session-was-archived-unseen/_events.jsonl
+    = 2026-10-10T15:33:07.232Z 1633B dd6812a351a7  platform/observability/alert-on-p95-latency-regressions/_events.jsonl
+    = 2026-10-10T15:33:12.426Z 618B cbf65da3ae44  platform/observability/add-request-tracing-to-gateway/_events.jsonl
+    = 2026-10-10T15:33:07.228Z 1852B e3a8c11dcc6d  checkout-v2/payments/retry-failed-card-charges/_events.jsonl
+    = 2026-10-10T15:33:07.229Z 997B 27bb3ebf58e6  checkout-v2/payments/migrate-webhooks-to-v3-signing/_events.jsonl
+    = 2026-10-10T15:33:07.230Z 67B a4f15f9c25a7  checkout-v2/cart/persist-the-cart-across-devices/_events.jsonl
+    = 2026-10-10T15:33:07.229Z 1749B 6738f43888ef  checkout-v2/cart/show-tax-lines-in-order-summary/_events.jsonl
+    = 2026-10-10T15:33:07.230Z 180B 435dda736c79  checkout-v2/cart/one-page-checkout-experiment/_events.jsonl
+  planted "Planted: its session was archived unseen": running → running after the polls
+  planted "Planted: approved while nobody looked": review → review after the polls
+PURE: the reads changed nothing.
+
+Waiting up to 150 s for the plugin sweep...
+  "Planted: its session was archived unseen": blocked (The session ended before the run finished); last event 2026-10-10T15:34:41.988Z Stuck
+  "Planted: approved while nobody looked": done; last event 2026-10-10T15:34:41.993Z Took effect
+  sessions now: 3
+
+# then, steady state: bun scripts/dogfood/reads-pure.ts --polls 50
+
+50 polls of work.list, work.attention, loops.get, fleet.get, timeline.get in 783 ms
+  files compared: 114 (the sandbox but Paseo's home and the daemon log)
+  files changed:  0
+  sessions:       3 before, 3 after; archived 1 → 1; labels unchanged
+  the store's event logs (mtime size sha1), before = after:
+PURE: the reads changed nothing.
+
+# daemon.log, the sweep's only line:
+2026-10-10T15:34:41.994Z [maestro] sweep: the work moved to match its sessions, or a decision came due

@@ -8,12 +8,15 @@
 // from `launchctl list` + `print-disabled`, and the two new substrates from
 // server/gha.ts and server/p9.ts. Session crons are P3's (BRO-2932).
 //
-// Read-only, with one write: each drift transition appends one envelope line
-// to ~/.broomva/ledger/loops/drift.jsonl through the workspace's own writer,
-// scripts/broomva_home.py as origin/main has it (the hash chain and its lock
-// stay that script's), and only transitions, never a line per read. Nothing
-// here schedules, starts, stops or retargets a loop; a BOUND_SESSION_GONE
-// carries the rollover seam for BRO-2933 and runs nothing.
+// The read (get, notices) is a query (BRO-2995): it fetches nothing and
+// writes nothing, however often it is polled. The plugin sweep's own read
+// (sweep, server/sweep.ts) is the one that writes: it fetches the ledger's
+// ref first, and each drift transition since the last sweep appends one
+// envelope line to ~/.broomva/ledger/loops/drift.jsonl through the
+// workspace's own writer, scripts/broomva_home.py as origin/main has it (the
+// hash chain and its lock stay that script's), and only transitions, never a
+// line per sweep. Nothing here schedules, starts, stops or retargets a loop;
+// a BOUND_SESSION_GONE carries the rollover seam for BRO-2933 and runs nothing.
 
 import { execFile, spawn } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
@@ -344,7 +347,8 @@ export class Loops {
   private readonly log: (message: string) => void;
   private computed: { at: number; view: LoopsView } | null = null;
   private computing: Promise<LoopsView> | null = null;
-  /** What drift.jsonl leaves open; read once, then kept as each read writes. */
+  private sweeping: Promise<LoopsView> | null = null;
+  /** What drift.jsonl leaves open; read once, then kept as each sweep writes. */
   private open: OpenDrift | null = null;
   private baselines = new Map<string, Binding>();
   /** Transition lines whose write failed, and when: retried after WRITE_BACKOFF_MS. */
@@ -356,14 +360,36 @@ export class Loops {
     this.log = options.log ?? ((message) => console.log(`[maestro] ${message}`));
   }
 
-  /** The view, computed at most every LOOPS_VIEW_MS; reads asked for while one runs get that one. */
+  /**
+   * The view, computed at most every LOOPS_VIEW_MS; reads asked for while one
+   * runs get that one, and so do reads while a sweep runs (it reads all a read
+   * does). Pure: it never fetches, and records no transition (BRO-2995).
+   */
   get(): Promise<LoopsView> {
     const last = this.computed;
     if (last && this.now() - last.at < LOOPS_VIEW_MS) return Promise.resolve(last.view);
-    this.computing ??= this.compute().finally(() => {
+    if (this.sweeping) return this.sweeping;
+    this.computing ??= this.compute(false).finally(() => {
       this.computing = null;
     });
     return this.computing;
+  }
+
+  /**
+   * The plugin sweep's read (server/sweep.ts): the ledger's ref fetched first
+   * (at most every LEDGER_FETCH_MS), then the view, the baselines moved on,
+   * and each drift transition since the last sweep recorded. Never a read's.
+   */
+  sweep(): Promise<LoopsView> {
+    // A read computing now finishes first: two computes never run at once, and a read's view never lands after
+    // the sweep's and replaces it in the cache.
+    this.sweeping ??= (this.computing ?? Promise.resolve(null))
+      .catch(() => null)
+      .then(() => this.compute(true))
+      .finally(() => {
+        this.sweeping = null;
+      });
+    return this.sweeping;
   }
 
   /** What needs you (loopNeeds()), waiting LOOPS_NOTICE_WAIT_MS at most, else the last view's. */
@@ -376,14 +402,15 @@ export class Loops {
     return view ? loopNeeds(view.rows) : [];
   }
 
-  private async compute(): Promise<LoopsView> {
+  /** The view; `sweep` (sweep()) also fetches, moves the baselines on and records the transitions. */
+  private async compute(sweep: boolean): Promise<LoopsView> {
     const warnings: string[] = [];
     const now = this.now();
     const unread = new Set<string>();
     let ledger: LedgerRead | null = null;
     if (this.options.ledger) {
       try {
-        ledger = await this.options.ledger.read();
+        ledger = await this.options.ledger.read({ fetch: sweep });
       } catch (error) {
         warnings.push(`The loop ledger could not be read: ${(error as Error).message}`);
       }
@@ -456,12 +483,13 @@ export class Loops {
       ...(p9 ?? []),
     ];
     const evidence = await this.evidence(intents, observations, warnings);
-    // Read back what is open first: a restart judges against the baselines it had.
+    // Read back what is open first: a restart judges against the baselines it had. A read of the file, never a write.
     const canWrite = ledger ? await this.loadOpen(warnings) : false;
     const rows = reconcile(intents, observations, now, { ...evidence, unread, baselines: this.baselines });
-    this.baselines = nextBaselines(rows, this.baselines, now, evidence.rollovers);
+    // Only the sweep moves the baselines on: a read judges against them and leaves them as they were.
+    if (sweep) this.baselines = nextBaselines(rows, this.baselines, now, evidence.rollovers);
     const judged = judgedRows(ledger, rows);
-    if (canWrite) await this.record(judged, unread, warnings);
+    if (sweep && canWrite) await this.record(judged, unread, warnings);
     const said = warnings.join("\n");
     if (said && said !== this.logged) this.log(`loops: ${warnings.join("; ")}`);
     this.logged = said;

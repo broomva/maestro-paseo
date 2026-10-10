@@ -112,7 +112,7 @@ describe("work.attention", () => {
   });
 });
 
-test("a list reconciles sessions at most once every 10 s, however often it is called", async () => {
+test("a list reconciles no session, however often it is called; the sweep's upkeep does each time it runs (BRO-2995)", async () => {
   const root = await mkdtemp(join(tmpdir(), "maestro-attention-"));
   roots.push(root);
   const repo = join(root, "repo");
@@ -140,13 +140,12 @@ test("a list reconciles sessions at most once every 10 s, however often it is ca
     initiative: "",
     dispatch: true,
   });
-  await engine.list(fake.paseo);
-  expect(fake.refreshed).toEqual(["agent-1"]);
   for (let call = 0; call < 5; call += 1) await engine.list(fake.paseo);
-  clock += 9_000;
+  clock += 60_000;
   await engine.list(fake.paseo);
+  expect(fake.refreshed).toEqual([]);
+  await engine.upkeep(fake.paseo);
   expect(fake.refreshed).toEqual(["agent-1"]);
-  clock += 2_000;
-  await engine.list(fake.paseo);
+  await engine.upkeep(fake.paseo);
   expect(fake.refreshed).toEqual(["agent-1", "agent-1"]);
 });

@@ -137,7 +137,7 @@ test("the plugin cards a landing through the client its hooks were handed", asyn
   });
 });
 
-test("work.attention reads the files and reconciles no session; work.list does", async () => {
+test("work.attention and work.list reconcile no session, however often they are polled; the sweep does (BRO-2995)", async () => {
   await withPlugin(async ({ call, hook, repo, fake }) => {
     const { item } = (await call("work.create", {
       title: "Counted",
@@ -169,11 +169,15 @@ test("work.attention reads the files and reconciles no session; work.list does",
       initiatives: [],
       turnId: "t1",
     });
-    for (let read = 0; read < 5; read += 1) await call("work.attention", {});
+    for (let read = 0; read < 5; read += 1) {
+      await call("work.attention", {});
+      await call("work.list", {});
+    }
     expect(await call("work.attention", {})).toMatchObject({ waiting: [{ id: item.id, group: "review" }] });
     expect(fake.refreshed).toEqual([]);
-    await call("work.list", {});
-    expect(fake.refreshed).toEqual(["agent-1"]);
+    // The loop's wake (Settings' Wake now) sweeps first, and the sweep asks Paseo about the bound session.
+    await call("loop.wake", {});
+    expect(fake.refreshed).toContain("agent-1");
   });
 });
 

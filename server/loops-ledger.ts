@@ -251,13 +251,23 @@ export function parseLedger(
   return { intents, errors };
 }
 
+/** How a ledger is read: `fetch` (the plugin sweep's only, server/sweep.ts) brings its ref up to date first. */
+export interface LedgerReadOptions {
+  fetch?: boolean;
+}
+
 export interface LedgerSource {
-  read(): Promise<LedgerRead>;
+  /** The ledger as its ref is now. A read never fetches unless `fetch` asks: a fetch writes the repo (BRO-2995). */
+  read(options?: LedgerReadOptions): Promise<LedgerRead>;
   /** Where it reads, in words: the repo and ref, or the folder. */
   readonly where: { repo: string; path: string };
 }
 
-/** The ledger on a repo's ref (origin/main unless named), fetched at most every LEDGER_FETCH_MS (off for a test without a remote). */
+/**
+ * The ledger on a repo's ref (origin/main unless named). A read asked to fetch
+ * fetches the ref first, at most every LEDGER_FETCH_MS (`fetch: false` turns
+ * that off, for a test without a remote); any other read only reads.
+ */
 export function gitLedger(
   repo: string,
   options: {
@@ -268,6 +278,8 @@ export function gitLedger(
     ref?: string;
     /** The scope this repo records intent for. */
     owns?: LoopScope | null;
+    /** How often a read asked to fetch fetches at most; LEDGER_FETCH_MS unless the plugin says. */
+    fetchEveryMs?: number;
   } = {},
 ): LedgerSource {
   const now = options.now ?? Date.now;
@@ -276,7 +288,7 @@ export function gitLedger(
   let fetchedAt = Number.NEGATIVE_INFINITY;
   let fetching: Promise<void> | null = null;
   const fetchMain = async () => {
-    if (!options.fetch || now() - fetchedAt < LEDGER_FETCH_MS) return;
+    if (!options.fetch || now() - fetchedAt < (options.fetchEveryMs ?? LEDGER_FETCH_MS)) return;
     fetchedAt = now();
     if (!branch) return;
     fetching ??= git(repo, ["fetch", "-q", "origin", branch], 60_000)
@@ -289,8 +301,8 @@ export function gitLedger(
   };
   return {
     where: { repo, path: `${ref}:${LEDGER_DIR}` },
-    async read() {
-      await fetchMain();
+    async read(read: LedgerReadOptions = {}) {
+      if (read.fetch) await fetchMain();
       const sha = (await git(repo, ["rev-parse", "--verify", "-q", `${ref}^{commit}`])).trim();
       const listed = await git(repo, ["ls-tree", "-r", "--full-tree", "--name-only", sha, "--", `${LEDGER_DIR}/`]);
       const paths = listed.split("\n").filter((line) => line.startsWith(`${LEDGER_DIR}/`));
@@ -421,7 +433,7 @@ export function multiLedger(
   let inForce: LoopRepo[] = [];
   return {
     where: primary.where,
-    async read() {
+    async read(read: LedgerReadOptions = {}) {
       // The repos in force. A file that will not read, or names a repo in a shape this reader does not take,
       // never drops a repo it named before (a torn save would read as "gone", and every loop that repo claims
       // would read as unregistered): those stay in force, on their last read, until a clean edit removes them.
@@ -448,7 +460,7 @@ export function multiLedger(
         }
       }
       const [main, ...extra] = await Promise.all([
-        primary.read(),
+        primary.read(read),
         ...named.repos.map(async (one) => {
           const key = JSON.stringify(one);
           let source = sources.get(key);
@@ -457,9 +469,9 @@ export function multiLedger(
             sources.set(key, source);
           }
           try {
-            const read = await source.read();
-            lastGood.set(key, read);
-            return { one, read, error: null };
+            const got = await source.read(read);
+            lastGood.set(key, got);
+            return { one, read: got, error: null };
           } catch (error) {
             return { one, read: lastGood.get(key) ?? null, error: (error as Error).message };
           }

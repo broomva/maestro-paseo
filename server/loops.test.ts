@@ -4,7 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LoopRow } from "../shared/loops";
 import type { TimelineSource, TimelineView } from "../shared/timeline";
-import { type DriftWriter, envelopes, judgedRows, Loops, type LoopsOptions, stateOf, WRITE_BACKOFF_MS } from "./loops";
+import {
+  type DriftWriter,
+  envelopes,
+  judgedRows,
+  LOOPS_VIEW_MS,
+  Loops,
+  type LoopsOptions,
+  stateOf,
+  WRITE_BACKOFF_MS,
+} from "./loops";
 import { dirLedger } from "./loops-ledger";
 import heartbeat from "./testdata/heartbeat-103a1850.json";
 
@@ -163,7 +172,10 @@ describe("the Loops read", () => {
     const loops = new Loops({ ...options, now: () => NOW });
     let clock = NOW;
     const at = new Loops({ ...options, now: () => clock });
-    const first = await at.get();
+    // A read judges the drift and writes nothing (BRO-2995): the sweep writes it.
+    expect((await at.get()).rows.find((row) => row.ref === "com.broomva.canary")?.drift.length).toBe(1);
+    expect(written).toEqual([]);
+    const first = await at.sweep();
     expect(first.rows.find((row) => row.ref === "com.broomva.canary")?.drift.map((one) => one.kind)).toEqual([
       "unregistered",
     ]);
@@ -176,7 +188,7 @@ describe("the Loops read", () => {
       "id: canary\ntitle: Canary\npurpose: A test job.\nowner: owner\nscope: broomva\nsubstrate: {kind: launchd, ref: com.broomva.canary}\ncadence: every hour\ndesired: paused\ndesired_since: '2026-10-08'\nreason: canary\nreview_by: '2026-10-21'\n",
     );
     clock += 60_000;
-    const second = await at.get();
+    const second = await at.sweep();
     expect(second.rows.find((row) => row.id === "canary")?.drift.map((one) => one.kind)).toEqual([
       "paused_but_running",
     ]);
@@ -189,9 +201,13 @@ describe("the Loops read", () => {
       "loop.drift.cleared loop:launchd/com.broomva.canary unregistered",
       "loop.drift.detected loop:canary paused_but_running",
     ]);
-    // Read again with nothing changed: no line.
+    // Swept again with nothing changed: no line; read as often as you like: no line either.
     clock += 60_000;
-    await at.get();
+    await at.sweep();
+    for (let read = 0; read < 5; read += 1) {
+      clock += 60_000;
+      await at.get();
+    }
     expect(written).toHaveLength(3);
     expect(loops).toBeDefined();
   });
@@ -204,7 +220,7 @@ describe("the Loops read", () => {
       join(home, "drift.jsonl"),
       `${JSON.stringify({ v: 1, id: "01", ts: "2026-10-08T15:00:00.000Z", stream: "loops/drift", type: "loop.drift.detected", actor: "daemon:maestro", subject: "loop:launchd/com.broomva.canary", refs: {}, cause: null, data: { kind: "unregistered", detail: "x" }, prev: null })}\n`,
     );
-    await new Loops(options).get();
+    await new Loops(options).sweep();
     expect(written).toEqual([]);
   });
 
@@ -213,7 +229,7 @@ describe("the Loops read", () => {
     const view = await new Loops({
       ...options,
       ledger: { where: { repo: "/x", path: "x" }, read: async () => Promise.reject(new Error("no origin/main")) },
-    }).get();
+    }).sweep();
     expect(view.rows.every((row) => row.drift.length === 0)).toBe(true);
     expect(view.warnings[0]).toContain("no origin/main");
     expect(written).toEqual([]);
@@ -232,15 +248,15 @@ describe("the Loops read", () => {
         lines.push(line.subject);
       },
     });
-    expect((await loops.get()).warnings.join(" ")).toContain("locked");
+    expect((await loops.sweep()).warnings.join(" ")).toContain("locked");
     // The other unregistered loop (a gha workflow no row names) is written though the canary's line failed.
     expect(lines).toEqual(["loop:gha/broomva/x/w.yml"]);
     fail = false;
     clock += 60_000;
-    await loops.get();
+    await loops.sweep();
     expect(lines).toHaveLength(1);
     clock += WRITE_BACKOFF_MS;
-    await loops.get();
+    await loops.sweep();
     expect(lines).toEqual(["loop:gha/broomva/x/w.yml", "loop:launchd/com.broomva.canary"]);
   });
 
@@ -249,16 +265,16 @@ describe("the Loops read", () => {
     const { options, written } = await world([], fails);
     let clock = NOW;
     const loops = new Loops({ ...options, now: () => clock });
-    await loops.get();
+    await loops.sweep();
     expect(written.map((one) => `${one.type} ${one.subject}`)).toEqual([
       "loop.drift.detected loop:gha/broomva/x/w.yml",
     ]);
     fails.now = true;
     clock += 60_000;
-    await loops.get();
+    await loops.sweep();
     fails.now = false;
     clock += 60_000;
-    await loops.get();
+    await loops.sweep();
     expect(written).toHaveLength(1);
   });
 
@@ -270,11 +286,96 @@ describe("the Loops read", () => {
       join(options.streams, "drift.jsonl"),
       `${JSON.stringify({ v: 1, id: "01", ts: "2026-10-08T15:00:00.000Z", stream: "loops/drift", type: "loop.drift.detected", actor: "daemon:maestro", subject: "loop:coordinator-tick", refs: {}, cause: null, data: { kind: "target_changed", detail: "x", baseline: { agentId: other, prompt: "follow .broomva/loops/prompts/coordinator-tick.md" } }, prev: null })}\n`,
     );
-    const view = await new Loops(options).get();
+    const view = await new Loops(options).sweep();
     expect(view.rows.find((row) => row.id === "coordinator-tick")?.drift.map((one) => one.kind)).toContain(
       "target_changed",
     );
     expect(written.filter((one) => one.subject === "loop:coordinator-tick")).toEqual([]);
+  });
+});
+
+describe("reads are pure (BRO-2995)", () => {
+  test("a read never fetches the ledger and records no drift, however often; the sweep fetches first and records", async () => {
+    const { options, ledger, written } = await world(["com.broomva.canary"]);
+    const asked: Array<boolean | undefined> = [];
+    const source = dirLedger(ledger);
+    let clock = NOW;
+    const loops = new Loops({
+      ...options,
+      now: () => clock,
+      ledger: {
+        where: source.where,
+        read: (read) => {
+          asked.push(read?.fetch);
+          return source.read();
+        },
+      },
+    });
+    for (let read = 0; read < 50; read += 1) {
+      // Past the view's cache each time, so every read computes.
+      clock += LOOPS_VIEW_MS;
+      await loops.get();
+      await loops.notices();
+    }
+    expect(asked.length).toBeGreaterThanOrEqual(50);
+    expect(asked.every((fetch) => !fetch)).toBe(true);
+    expect(written).toEqual([]);
+    clock += LOOPS_VIEW_MS;
+    await loops.sweep();
+    expect(asked.at(-1)).toBe(true);
+    expect(written.map((one) => `${one.type} ${one.subject}`)).toEqual([
+      "loop.drift.detected loop:launchd/com.broomva.canary",
+    ]);
+  });
+
+  test("a sweep waits for a read already computing: two computes never run at once", async () => {
+    const { options, ledger, written } = await world(["com.broomva.canary"]);
+    const source = dirLedger(ledger);
+    let running = 0;
+    let most = 0;
+    const loops = new Loops({
+      ...options,
+      ledger: {
+        where: source.where,
+        read: async () => {
+          running += 1;
+          most = Math.max(most, running);
+          try {
+            await Bun.sleep(30);
+            return await source.read();
+          } finally {
+            running -= 1;
+          }
+        },
+      },
+    });
+    const read = loops.get();
+    const swept = loops.sweep();
+    await Promise.all([read, swept]);
+    expect(most).toBe(1);
+    expect(written.map((one) => one.subject)).toEqual(["loop:launchd/com.broomva.canary"]);
+    // The cache holds the sweep's view, the later one.
+    expect(await loops.get()).toBe(await swept);
+  });
+
+  test("a read while a sweep runs gets the sweep's view; it starts no compute of its own", async () => {
+    const { options, ledger } = await world(["com.broomva.canary"]);
+    const source = dirLedger(ledger);
+    let reads = 0;
+    const loops = new Loops({
+      ...options,
+      ledger: {
+        where: source.where,
+        read: () => {
+          reads += 1;
+          return source.read();
+        },
+      },
+    });
+    const sweeping = loops.sweep();
+    const read = loops.get();
+    expect(await read).toBe(await sweeping);
+    expect(reads).toBe(1);
   });
 });
 

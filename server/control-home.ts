@@ -513,8 +513,10 @@ export interface WorkspaceAsksOptions {
   answersPath: string;
   lockRoot: string;
   receipts: string;
-  /** Fetch origin/main (at most every FETCH_EVERY_MS); off for a test that has no remote. */
+  /** Fetch origin/main (the sweep at most every FETCH_EVERY_MS, an answer first); off for a test that has no remote. */
   fetch?: boolean;
+  /** How often the sweep fetches at most; FETCH_EVERY_MS unless the plugin says (MAESTRO_PASEO_FETCH_SECONDS). */
+  fetchEveryMs?: number;
   now?: () => number;
   log?: (message: string) => void;
   ttlMs?: number;
@@ -564,10 +566,9 @@ export class WorkspaceAsks {
     this.now = options.now ?? Date.now;
   }
 
-  /** The workspace's asks, at most READ_TTL_MS old unless `fresh`. */
+  /** The workspace's asks, at most READ_TTL_MS old unless `fresh`. A read never fetches (BRO-2995): the sweep does. */
   read(fresh = false): Promise<WorkspaceRead> {
     const now = this.now();
-    this.maybeFetch(now);
     if (!fresh && this.cached && now - this.cached.at < (this.options.ttlMs ?? READ_TTL_MS)) return this.cached.read;
     const read = this.scan();
     this.cached = { at: now, read };
@@ -594,10 +595,15 @@ export class WorkspaceAsks {
     return read.all.filter((ask) => ask.waiting).map((ask) => askNotice(ask, null));
   }
 
-  /** origin/main, fetched in the background at most every FETCH_EVERY_MS; a read never waits on it. */
-  private maybeFetch(now: number): void {
-    if (this.options.fetch === false || this.fetching || now - this.lastFetch < FETCH_EVERY_MS) return;
-    void this.fetchNow();
+  /**
+   * origin/main, fetched at most every FETCH_EVERY_MS: the plugin sweep's
+   * (server/sweep.ts), never a read's, since a fetch writes the repo. Resolves
+   * once it settles; one in flight is waited on, never doubled.
+   */
+  async fetchDue(): Promise<void> {
+    if (this.options.fetch === false) return;
+    const every = this.options.fetchEveryMs ?? FETCH_EVERY_MS;
+    if (this.fetching || this.now() - this.lastFetch >= every) await this.fetchNow();
   }
 
   /** Fetches origin/main (one fetch at a time); resolves to why it failed, or null. */

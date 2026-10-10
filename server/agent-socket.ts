@@ -102,8 +102,8 @@ export function agentMethods(engine: Engine, paseo: () => Paseo | null): Readonl
     return id;
   };
   return new Map<string, AgentMethod>([
-    // Read-only for your decisions: a session listing work never makes one take effect.
-    ["work.list", method(z.object({}), () => engine.list(paseo() ?? undefined, { decide: false }))],
+    // A read, as every read is (BRO-2995): a session listing work reconciles nothing and applies no decision of yours.
+    ["work.list", method(z.object({}), () => engine.list(paseo() ?? undefined))],
     ["work.get", method(ById, ({ id }) => engine.get(id))],
     [
       "work.create",
