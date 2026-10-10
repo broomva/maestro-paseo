@@ -7,15 +7,17 @@
 //
 // A decision at the gate (approve, send back, cancel) is recorded when you make
 // it and applies UNDO_MS later, so a slip can be undone. The pending decision is
-// an event with the time it takes effect: a timer applies it, and a sweep on
-// load and on every list applies anything overdue, so a restart inside the
-// window still applies it. Every guard is checked again when it applies.
+// an event with the time it takes effect: a timer applies it, and the plugin
+// sweep (upkeep, server/sweep.ts), from load on, applies anything overdue, so
+// a restart inside the window still applies it. Every guard is checked again
+// when it applies.
 //
-// Paseo delivers hook events live and best effort, with no replay. So every
-// list also reconciles bound work against the agent's real status. Reconcile
-// acts only on what it saw: each correction is guarded by the event count it
-// read, so a real hook that lands first always wins, and an outcome it did
-// not observe never closes work on its own.
+// Paseo delivers hook events live and best effort, with no replay. So the
+// plugin sweep also reconciles bound work against the agent's real status, on
+// its own cadence: no read does (BRO-2995). Reconcile acts only on what it
+// saw: each correction is guarded by the event count it read, so a real hook
+// that lands first always wins, and an outcome it did not observe never
+// closes work on its own.
 
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
@@ -117,14 +119,19 @@ export class AtCapacity extends UserError {}
 /** A run nobody would watch, refused for its lane profile (runs.ts unattendedRefusal). The work stays queued. */
 export class Unwatched extends UserError {}
 
-/** Why a run holds one of the cap's slots (BRO-2990): the cap counts every run that still has its session. */
-export type Slot = "running" | "asking" | "stuck" | "starting";
+/**
+ * Why a run holds one of the cap's slots (BRO-2990): the cap counts every run
+ * that still has its session, and a run being stopped until its archive
+ * settles (BRO-2995 mi-1).
+ */
+export type Slot = "running" | "asking" | "stuck" | "starting" | "stopping";
 
 const SLOT_WORDS: Record<Slot, string> = {
   running: "running",
   asking: "waiting on a permission",
   stuck: "stuck",
   starting: "starting",
+  stopping: "being stopped",
 };
 
 /** "3 of 3 slots taken (1 running, 2 stuck)": what holds the cap's slots, in the order a person reads them. */
@@ -136,6 +143,25 @@ export function capacityWords(busy: ReadonlyMap<string, Slot>, cap: number): str
     .map((slot) => `${counts.get(slot)} ${SLOT_WORDS[slot]}`);
   return `${busy.size} of ${cap} ${cap === 1 ? "slot" : "slots"} taken (${parts.join(", ")})`;
 }
+
+/**
+ * Why a run holds one of the cap's slots as its files say, or null when it
+ * holds none: running, waiting on a permission (at the gate with a question
+ * pending), or stuck while its session is still there (not SESSION_GONE, and
+ * not gone since).
+ */
+function slotOf(item: StoredWork): Slot | null {
+  const state = item.contract.state;
+  if (state === "running") return "running";
+  if (state === "blocked") {
+    const gone = SESSION_GONE.has(reasonOf(state, item.events) ?? "") || sessionGoneSince(item.events);
+    return gone ? null : "stuck";
+  }
+  return phaseOf(state, item.events) === "asking" ? "asking" : null;
+}
+
+/** Said on work whose session resumed it while the cap was full: a turn under way is the session's to take (mi-1). */
+export const RESUMED_OVER_CAP = "Resumed in the session over the cap";
 
 /** Why work adopted from an idle session is at your gate: its last turn handed you something (adoptOnce). */
 export const IDLE_WHEN_TRACKED = "The session was idle when tracked";
@@ -220,7 +246,6 @@ export function isDuplicateEnd(events: readonly WorkEvent[], turnId: string | nu
 
 const QUEUE_MS = 120_000;
 const INDEX_MS = 15_000;
-const RECONCILE_MS = 10_000;
 const MISSED_END_MS = 90_000;
 /** Why adopted work left your gate: its session went on with its arc, handing you nothing (engine.ts endTurn). */
 const KEPT_WORKING = "The session kept working on its arc; it handed you nothing to decide";
@@ -456,7 +481,6 @@ export class Engine {
   private readonly draining = new Set<string>();
   private readonly chains = new Map<string, Promise<void>>();
   private readonly abort = new AbortController();
-  private lastReconcile = 0;
   /** Per agent, the daemon's `updatedAt` when reconcile last read its timeline for a missed end. */
   private readonly readAt = new Map<string, string>();
   /** An adopter's session title by its agent id, read in the background (BRO-2938). */
@@ -477,6 +501,18 @@ export class Engine {
   private readonly applying = new Set<string>();
   /** Dispatches that passed the capacity check and have not finished: each holds a slot. */
   private readonly admitted = new Set<string>();
+  /**
+   * Runs being stopped, until the archive settles (mi-1): Stop records the run
+   * stuck before it archives, which frees its slot by the files, and a failed
+   * archive puts it back to running. Each keeps its slot meanwhile.
+   */
+  private readonly stopping = new Set<string>();
+  /**
+   * One per capacity check in flight: every run being stopped at any time
+   * since that check began reading. A stop that starts after the check read
+   * its list, or ends before the check reads the files, is still counted.
+   */
+  private readonly stopWatch = new Set<Set<string>>();
   private readonly lane: NonNullable<EngineOptions["lane"]>;
   private closed = false;
 
@@ -662,35 +698,22 @@ export class Engine {
   }
 
   // ── Reads ──────────────────────────────────────────────────────────────────
+  //
+  // Reads are queries (BRO-2995): no read writes a file, sends, creates or
+  // archives a session, or arms a timer that will. A poll's rate is therefore
+  // irrelevant to what happens; keeping the work true to Paseo and applying
+  // decisions that came due is the plugin sweep's (upkeep, server/sweep.ts).
 
-  /**
-   * All work. A read of yours (`decide`, the default) also applies decisions
-   * whose undo window has closed; a session's read never does, so no session
-   * can make one of your decisions land.
-   */
-  async list(
-    paseo?: Paseo,
-    options: { decide?: boolean } = {},
-  ): Promise<{
+  /** All work, as the files say now. The client, when given, only names adopters (a read, in the background). */
+  async list(paseo?: Paseo): Promise<{
     root: string;
     items: WorkItem[];
     scoreboard: ReturnType<typeof scoreboard>;
     warnings: string[];
   }> {
     const { store, config } = await this.store();
-    let { items, warnings } = await store.scan();
+    const { items, warnings } = await store.scan();
     this.index(store, items);
-    if (paseo && this.now().getTime() - this.lastReconcile > RECONCILE_MS) {
-      this.lastReconcile = this.now().getTime();
-      if (await this.reconcile(paseo, items)) {
-        ({ items, warnings } = await store.scan());
-        this.index(store, items);
-      }
-    }
-    if (options.decide !== false && (await this.sweep(paseo, items))) {
-      ({ items, warnings } = await store.scan());
-      this.index(store, items);
-    }
     const now = this.now();
     const dayStart = new Date(now);
     dayStart.setHours(0, 0, 0, 0);
@@ -712,6 +735,26 @@ export class Engine {
       ),
       warnings,
     };
+  }
+
+  /**
+   * The plugin sweep's work on the store (server/sweep.ts), the one place
+   * outside a hook or a verb that writes it: reconcile every bound run with
+   * Paseo when there is a client, then apply the decisions whose undo window
+   * has closed (arming a timer for the rest). True when any work changed.
+   */
+  async upkeep(paseo: Paseo | null): Promise<boolean> {
+    const { store } = await this.store();
+    let { items } = await store.scan();
+    this.index(store, items);
+    let changed = false;
+    if (paseo && (await this.reconcile(paseo, items))) {
+      changed = true;
+      ({ items } = await store.scan());
+      this.index(store, items);
+    }
+    if (await this.sweep(paseo, items)) changed = true;
+    return changed;
   }
 
   /** The work filed for each idea (Contract.idea, `<ledger>#<id>`): the first found, by id, wins. */
@@ -914,6 +957,7 @@ export class Engine {
     if (this.dispatching.has(id)) throw new UserError("This work is already being dispatched.");
     this.dispatching.add(id);
     let ahead: string[] = [];
+    let stops: Set<string> | null = null;
     try {
       // A session's run is one nobody watches: it takes its profile's mode, and never Always ask (A8). Read
       // and judged before it takes a slot, so a start that is refused never holds one while the profile is read.
@@ -922,11 +966,12 @@ export class Engine {
       // counted from here, whether or not the files say it holds a slot by the time they are read.
       ahead = [...this.admitted];
       this.admitted.add(id);
+      stops = this.watchStops();
       const { store, config } = await this.store();
       const item = await store.findById(id);
       const refusal = startRefusal(item, origin);
       if (refusal) throw new UserError(refusal);
-      this.checkCapacity(item, ahead, await this.occupied(store), config.concurrencyCap);
+      this.checkCapacity(item, ahead, await this.occupied(store), config.concurrencyCap, stops);
       let worker: Awaited<ReturnType<typeof startRun>>;
       try {
         worker = await startRun(paseo, config, item, lane);
@@ -987,6 +1032,7 @@ export class Engine {
     } finally {
       this.dispatching.delete(id);
       this.admitted.delete(id);
+      if (stops) this.stopWatch.delete(stops);
       // With no dispatch left in flight nothing else can bind a queued agent: settle every queue now.
       if (this.dispatching.size === 0) {
         for (const agentId of [...this.queues.keys()]) await this.flush(agentId);
@@ -1037,14 +1083,37 @@ export class Engine {
     const { items } = await store.scan();
     const held = new Map<string, Slot>();
     for (const other of items) {
-      const state = other.contract.state;
-      if (state === "running") held.set(other.contract.id, "running");
-      else if (state === "blocked") {
-        const gone = SESSION_GONE.has(reasonOf(state, other.events) ?? "") || sessionGoneSince(other.events);
-        if (!gone) held.set(other.contract.id, "stuck");
-      } else if (phaseOf(state, other.events) === "asking") held.set(other.contract.id, "asking");
+      const slot = slotOf(other);
+      if (slot) held.set(other.contract.id, slot);
     }
     return held;
+  }
+
+  /** Watch the stops from now on, for one capacity check: the runs being stopped now, and every one that starts. */
+  private watchStops(): Set<string> {
+    const stops = new Set(this.stopping);
+    this.stopWatch.add(stops);
+    return stops;
+  }
+
+  /** A run being stopped keeps its slot until `release` (mi-1). */
+  private holdStop(id: string): () => void {
+    this.stopping.add(id);
+    for (const watch of this.stopWatch) watch.add(id);
+    return () => this.stopping.delete(id);
+  }
+
+  /**
+   * What holds the cap's slots now, besides `item`: the files (occupied), every
+   * dispatch admitted, and every run being stopped. For a resume that cannot be
+   * refused (startTurn), so it is only said.
+   */
+  private async busyNow(store: WorkStore, item: StoredWork): Promise<Map<string, Slot>> {
+    const busy = new Map<string, Slot>([...this.admitted].map((id) => [id, "starting"]));
+    for (const id of this.stopping) busy.set(id, "stopping");
+    for (const [id, slot] of await this.occupied(store)) busy.set(id, slot);
+    busy.delete(item.contract.id);
+    return busy;
   }
 
   /**
@@ -1053,15 +1122,19 @@ export class Engine {
    * before the files). A dispatch holds its slot until it ends, so past the
    * point its run is recorded running, or until it fails: each one ahead is
    * counted by the files or by its slot, since the files are read after the
-   * slot list, and a run counted by both is one id, counted once.
+   * slot list, and a run counted by both is one id, counted once. A run being
+   * stopped (`stopping`, watched from before the files are read) holds its
+   * slot until its archive settles, whatever the files say meanwhile.
    */
   private checkCapacity(
     item: StoredWork,
     ahead: readonly string[],
     occupied: ReadonlyMap<string, Slot>,
     cap: number | null,
+    stopping: ReadonlySet<string> = new Set(),
   ): void {
     const busy = new Map<string, Slot>(ahead.map((id) => [id, "starting"]));
+    for (const id of stopping) busy.set(id, "stopping");
     for (const [id, slot] of occupied) busy.set(id, slot);
     busy.delete(item.contract.id);
     if (cap !== null && busy.size >= cap) {
@@ -1156,8 +1229,8 @@ export class Engine {
 
   /**
    * Apply every decision whose window has closed, and arm a timer for the rest.
-   * Runs on load, on every list, and when the plugin first gets a client, so a
-   * restart inside the window still applies the decision. True when any changed.
+   * Runs in every sweep (upkeep), the first one at load, so a restart inside the
+   * window still applies the decision. Never from a read. True when any changed.
    */
   async sweep(paseo?: Paseo | null, items?: readonly StoredWork[]): Promise<boolean> {
     const all = items ?? (await (await this.store()).store.scan()).items;
@@ -1512,25 +1585,36 @@ export class Engine {
       : null;
     if (!alive || alive.agent.archivedAt || alive.agent.status === "closed") return this.dispatch(paseo, id);
     const trimmed = note.trim();
-    const updated = await store.mutate(
-      id,
-      (fresh) => {
-        if (fresh.contract.state !== "blocked") throw new UserError("Only stuck work can be unblocked.");
-        return {
-          to: "running",
-          actor: "human",
-          reason: "Unblocked",
-          events: [{ ts: this.stamp(), type: "unblocked", actor: "human", note: trimmed }],
-        };
-      },
-      item.dir,
-    );
-    return this.wake(
-      paseo,
-      { store, config },
-      updated,
-      trimmed || "Continue where you stopped. End with the Decided and Ask sections.",
-    );
+    // A run whose session had gone held no slot, and unblocking it takes one: it passes the cap as a start does (mi-1).
+    const takes = slotOf(item) === null;
+    const ahead = takes ? [...this.admitted] : [];
+    if (takes) this.admitted.add(id);
+    const stops = takes ? this.watchStops() : null;
+    try {
+      if (stops) this.checkCapacity(item, ahead, await this.occupied(store), config.concurrencyCap, stops);
+      const updated = await store.mutate(
+        id,
+        (fresh) => {
+          if (fresh.contract.state !== "blocked") throw new UserError("Only stuck work can be unblocked.");
+          return {
+            to: "running",
+            actor: "human",
+            reason: "Unblocked",
+            events: [{ ts: this.stamp(), type: "unblocked", actor: "human", note: trimmed }],
+          };
+        },
+        item.dir,
+      );
+      return await this.wake(
+        paseo,
+        { store, config },
+        updated,
+        trimmed || "Continue where you stopped. End with the Decided and Ask sections.",
+      );
+    } finally {
+      if (takes) this.admitted.delete(id);
+      if (stops) this.stopWatch.delete(stops);
+    }
   }
 
   /**
@@ -1624,6 +1708,26 @@ export class Engine {
     const worker = workerOf(current.events);
     const checked = worker && !discard ? await this.stopLoss(paseo, current, worker) : null;
     if (checked && "refusal" in checked) throw new UserError(checked.refusal);
+    // Held from before the run is recorded stuck until its archive settles: a failed archive puts it back (mi-1).
+    const release = this.holdStop(id);
+    try {
+      return await this.stopHeld(paseo, store, config, current, worker, checked, refusal);
+    } finally {
+      release();
+    }
+  }
+
+  /** Stop, from recording the run stuck to its archive, while the run holds its slot (stopRun). */
+  private async stopHeld(
+    paseo: Paseo,
+    store: WorkStore,
+    config: MaestroConfig,
+    current: StoredWork,
+    worker: ReturnType<typeof workerOf>,
+    checked: { digest: string } | { refusal: string } | null,
+    refusal: (item: StoredWork) => string | null,
+  ): Promise<WorkItem> {
+    const id = current.contract.id;
     const stopped = await store.mutate(
       id,
       (item) => {
@@ -1957,6 +2061,9 @@ export class Engine {
   }
 
   private async startTurn(store: WorkStore, item: StoredWork, agentId: string): Promise<void> {
+    // Stuck work whose session had gone held no slot, and resuming takes one. The turn is under way, so it is not
+    // Maestro's to refuse: the cap is checked, and a resume that takes it over is said on the work (mi-1).
+    const over = item.contract.state === "blocked" && slotOf(item) === null ? await this.overCap(store, item) : null;
     await store.mutate(
       item.contract.id,
       (fresh) => {
@@ -1968,12 +2075,25 @@ export class Engine {
           return { to: "running", actor: "human", reason: "You continued the session", events: [event] };
         }
         if (state === "blocked") {
-          return { to: "running", actor: "human", reason: "Resumed in the session", events: [event] };
+          const said = over && slotOf(fresh) === null ? [this.note(over)] : [];
+          return { to: "running", actor: "human", reason: "Resumed in the session", events: [event, ...said] };
         }
         return null;
       },
       item.dir,
     );
+  }
+
+  /** RESUMED_OVER_CAP with what holds the slots once `item` runs again, when that is over the cap; else null. */
+  private async overCap(store: WorkStore, item: StoredWork): Promise<string | null> {
+    const cap = (await this.readConfig()).concurrencyCap;
+    if (cap === null) return null;
+    const busy = await this.busyNow(store, item);
+    if (busy.size < cap) return null;
+    busy.set(item.contract.id, "running");
+    const words = `${RESUMED_OVER_CAP}: ${capacityWords(busy, cap)}. No run starts until one ends.`;
+    this.log(`${item.contract.id}: ${words}`);
+    return words;
   }
 
   /**

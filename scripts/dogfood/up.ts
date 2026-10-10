@@ -30,10 +30,11 @@ import {
 import { ASK_MARKER, buildSeeds, RPC_SEED, type Seed, type SeedExpect, writeSeeds } from "./seed";
 import { teardown } from "./teardown";
 
-const USAGE = `bun scripts/dogfood/up.ts --plugin <dir> [--port N] [--no-live] [--keep-on-failure]
+const USAGE = `bun scripts/dogfood/up.ts --plugin <dir> [--port N] [--sweep-seconds N] [--no-live] [--keep-on-failure]
 
   --plugin <dir>        The Maestro checkout to install (any worktree with node_modules)
   --port N              Daemon port (default: a free one; never 6767 or 6799)
+  --sweep-seconds N     The plugin sweep's period in the sandbox (default 30), for reads-pure.ts
   --no-live             Skip the two live dispatches to the stand-in agent
   --keep-on-failure     Leave the sandbox up when a step fails, to inspect it
 `;
@@ -248,10 +249,12 @@ async function main(): Promise<void> {
     const seeds = buildSeeds(now, repos);
     await writeSeeds(state.workRoot, seeds, now);
 
+    const sweepSeconds = flag(args, "sweep-seconds");
     const daemonEnv = sandboxEnv({
       HOME: state.home,
       MAESTRO_PASEO_CONFIG: state.maestroConfig,
       MAESTRO_PASEO_SOCKET: state.socket,
+      ...(sweepSeconds ? { MAESTRO_PASEO_SWEEP_SECONDS: sweepSeconds } : {}),
     });
     const logFd = openSync(state.log, "a");
     daemon = spawn(paseo, ["daemon", "run", "--home", state.paseoHome], {

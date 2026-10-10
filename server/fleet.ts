@@ -726,9 +726,8 @@ export class Fleet {
     return out;
   }
 
-  /** Every scope's summary, and one scope in full: `scope`, else the first. */
+  /** Every scope's summary, and one scope in full: `scope`, else the first. A read: it writes nothing (BRO-2995). */
   async get(scope?: string, ticks: number = FLEET_TICKS.default): Promise<FleetView> {
-    this.sweepLocks();
     const [{ scopes, error }, items] = await Promise.all([this.scopes(), this.options.items()]);
     const awake = await this.clock.read();
     const now = this.now();
@@ -864,13 +863,16 @@ export class Fleet {
   // ── Your answer to a decision ask ──────────────────────────────────────────
 
   /**
-   * Clears ledger locks this process left behind (§5.5: at each scan), so no
-   * other writer waits on one. Queued on the answers' own chain, so it never
-   * runs while an answer here holds or is taking a lock; not waited on.
+   * Clears ledger locks this process left behind (§5.5), so no other writer
+   * waits on one: the plugin sweep's, at each sweep (server/sweep.ts), never
+   * a read's. Queued on the answers' own chain, so it never runs while an
+   * answer here holds or is taking a lock.
    */
-  private sweepLocks(): void {
+  sweepLocks(): Promise<void> {
     const locks = this.options.askLocks ?? controlAskPaths().locks;
-    this.writes = this.writes.catch(() => undefined).then(() => dropLeftovers(locks).catch(() => undefined));
+    const swept = this.writes.catch(() => undefined).then(() => dropLeftovers(locks).catch(() => undefined));
+    this.writes = swept;
+    return swept;
   }
 
   /**

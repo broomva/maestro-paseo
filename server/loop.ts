@@ -5,8 +5,10 @@
 // Paseo session 13b97ad9 its start step turned six answers into six sessions
 // nobody watched, so that step is gone, and the loop is typed against an
 // engine with no dispatch (LoopEngine): it cannot start a run. Each wake:
-//   1. reads the work through the engine's list, which reconciles bound work
-//      with Paseo and applies decisions whose undo window has closed;
+//   1. runs the plugin sweep first (server/sweep.ts, under its lease), which
+//      keeps bound work true to Paseo and applies decisions whose undo window
+//      has closed, then reads the work through the engine's list, a pure read
+//      (BRO-2995);
 //   2. counts what needs you, and names running work quiet for 30 minutes:
 //      Maestro sees only turn boundaries, so work quiet by its events is
 //      quiet only if its session, asked (bounded, ASK_MS), has done nothing
@@ -109,6 +111,8 @@ export interface LoopOptions {
   askMs?: number;
   /** Step 5, when Maestro reads a control repo. */
   answers?: AnswersStep;
+  /** Step 1's sweep (server/sweep.ts): run before the work is read, so the wake reads it current. */
+  sweep?: { run(): Promise<unknown> };
 }
 
 /**
@@ -164,6 +168,7 @@ export class Loop {
   private readonly log: (message: string) => void;
   private readonly askMs: number;
   private readonly answers: AnswersStep | null;
+  private readonly sweep: LoopOptions["sweep"] | null;
   private cancel: (() => void) | null = null;
   private nextAt: Date | null = null;
   /** The lease: true while a wake runs. Set before the wake's first await, so two can never both run. */
@@ -191,6 +196,7 @@ export class Loop {
     this.wakeLog = options.wakeLog ?? new WakeLog(undefined, this.log);
     this.askMs = options.askMs ?? ASK_MS;
     this.answers = options.answers ?? null;
+    this.sweep = options.sweep ?? null;
   }
 
   /** The loop now: its period (null: off), the next wake, whether one is running, the newest wakes first. */
@@ -311,6 +317,8 @@ export class Loop {
   private async tick(cause: Cause): Promise<WakeEntry> {
     const entry = this.blank(cause);
     const notes: string[] = [];
+    // The sweep first, under its lease (it never throws): the reads below only read.
+    await this.sweep?.run();
     const paseo = this.client();
     let items: WorkItem[] = [];
     try {

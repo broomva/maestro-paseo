@@ -389,6 +389,31 @@ describe("several repos (BRO-2942)", () => {
     await expect(gitLedger(repo).read()).rejects.toThrow();
   });
 
+  test("gitLedger fetches only when a read asks (the plugin sweep's); a plain read never does (BRO-2995)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "loops-ledger-fetch-"));
+    roots.push(root);
+    const up = join(root, "up");
+    const repo = join(root, "repo");
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync("git", ["-C", cwd, ...args], { env, encoding: "utf8" }).trim();
+    execFileSync("git", ["init", "-q", "-b", "main", up], { env });
+    await cp(FIXTURE, join(up, LEDGER_DIR), { recursive: true });
+    git(up, "add", ".");
+    git(up, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "ledger", "--no-verify");
+    execFileSync("git", ["clone", "-q", up, repo], { env });
+    const ledger = multiLedger(gitLedger(repo, { fetch: true }), { reposPath: null });
+    const before = (await ledger.read()).intents.length;
+    // Upstream drops a row: only a fetch brings it here.
+    git(up, "rm", "-q", `${LEDGER_DIR}/kg-lint.yaml`);
+    git(up, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "drop", "--no-verify");
+    const sha = git(repo, "rev-parse", "origin/main");
+    for (let read = 0; read < 5; read += 1) expect((await ledger.read()).intents.length).toBe(before);
+    expect(git(repo, "rev-parse", "origin/main")).toBe(sha);
+    expect((await ledger.read({ fetch: true })).intents.length).toBe(before - 1);
+    expect(git(repo, "rev-parse", "origin/main")).toBe(git(up, "rev-parse", "HEAD"));
+  });
+
   test("a repo that fails stands on its last good read; one never read is reported unread", async () => {
     let fail = false;
     const ledger = multiLedger(fixed([row("a")]), {

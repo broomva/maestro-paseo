@@ -307,7 +307,9 @@ describe("what a session is offered", () => {
     await earlier.verdict(fake.paseo, item.id, "approve", "");
     const listed = (await ok("work.list")) as unknown as { items: WorkItem[] };
     expect(listed.items[0]).toMatchObject({ state: "review", pending: { verdict: "approve", remainingMs: 0 } });
-    // Your own read applies it.
+    // Nor does your own read (BRO-2995): the plugin sweep applies it.
+    expect((await engine.list(fake.paseo)).items[0]).toMatchObject({ state: "review" });
+    await engine.upkeep(fake.paseo);
     const mine = await engine.list(fake.paseo);
     expect(mine.items[0]).toMatchObject({ state: "done", pending: null });
   });

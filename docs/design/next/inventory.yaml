@@ -732,12 +732,13 @@ loops:
     owner: bstack
     calls: [I-fleet-tick-run, I-ask-raise, I-proposal-file]
   L-plugin-sweep:
-    name: The plugin sweep — closes cards whose source resolved, records drift; never dispatches (A8)
+    name: The plugin sweep — keeps cards true to their source (reconcile), applies due decisions, records drift; never dispatches (A8)
     status: change
-    scheduler: plugin timer (sweep minutes, off by default)
+    scheduler: plugin timer, every 30 s while the plugin runs (MAESTRO_PASEO_SWEEP_SECONDS), apart from the loop's period; one at a time under a lease; the loop's wake (I-sweep-wake) runs one first
     owner: plugin
-    calls: [I-sweep-wake, I-notice-resolve, I-drift-record]
-    code: [server/loop.ts]
+    calls: [I-verb-apply, I-notice-resolve, I-drift-record]
+    code: [server/sweep.ts, server/engine.ts, server/loops.ts, index.server.ts]
+    note: "BRO-2995: the one place outside a hook or a verb where the plugin writes on its own. Reads (work.list, work.attention, loops.get and the views they reach) write nothing; what they did on the side (reconcile, due decisions, drift, the asks' and ledger's fetch, leftover locks) runs here. Its period is not the loop's: with the loop off (the default) the cards still stay true."
   L-undo-window:
     name: The 8 s undo timers that apply a pending owner verb (B4)
     status: keep
@@ -805,10 +806,11 @@ findings:
   FND-reads-mutate:
     name: Polled reads write — work.list reconciles and sweeps, work.attention sweeps, loops.get records drift, a poll can open a session
     severity: major
-    state: open
+    state: fixed
     ticket: BRO-2995
-    about: [I-work-list, I-loops-get, I-work-attention]
-    code: [server/engine.ts:605, server/loops.ts:588, server/inbox.ts:398]
+    about: [I-work-list, I-loops-get, I-work-attention, L-plugin-sweep]
+    code: [server/engine.ts, server/loops.ts, server/sweep.ts, index.reads.test.ts]
+    note: "Reads are queries: Engine.list, Loops.get, WorkspaceAsks.read and Fleet.get write nothing and fetch nothing, and a handler only keeps the client. Reconcile, due decisions, drift, the fetches and the lock sweep moved into the plugin sweep (L-plugin-sweep). index.reads.test.ts polls the three reads 50 times through the plugin's handlers with a spy on Paseo's client and a fingerprint of every file, and is mutation-proven (a write put back into any read fails it)."
   FND-self-close:
     name: A session can close its own gated work by printing ARC-STATUS and calling maestro ls
     severity: major
@@ -816,6 +818,7 @@ findings:
     ticket: BRO-2996
     about: [I-work-list, F-agent-cli]
     code: [server/engine.ts:2149, server/events.ts:491]
+    note: "Since BRO-2995, maestro ls is a pure read and triggers nothing; the plugin sweep still closes a finished arc whose session was archived (finishedArc), within one sweep, so the rule itself stands until BRO-2996."
   FND-socket-caller:
     name: The socket trusts a self-reported caller; adopt any session, dispatch any queued item
     severity: major

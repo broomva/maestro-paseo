@@ -237,15 +237,40 @@ running (send back, answered question), and queued or stuck work can be canceled
 are documented in `shared/states.ts`, and the invariant that matters is kept exactly: nothing
 under a human gate reaches Done without an approve verdict.
 
+## Reads, and the plugin sweep
+
+**A read never writes** (BRO-2995). `work.list`, `work.attention`, `loops.get` and every view they
+reach (the Fleet, the Timeline, the workspace's asks) write no file, fetch nothing, and create,
+prompt, archive or label no session, however often they are polled. A read that brings Maestro its
+first daemon client only keeps it. So the rate at which a client polls cannot change what happens.
+
+What a read used to do on the side, the **plugin sweep** does on its own cadence (`server/sweep.ts`):
+every 30 seconds while the plugin runs, whether or not anyone looks (`MAESTRO_PASEO_SWEEP_SECONDS`
+overrides the period). It runs apart from the loop's period in Settings, so it keeps the cards true
+even with the loop off. Each sweep:
+
+- keeps the work true to Paseo (`Engine.upkeep`): a turn end missed while the plugin was down is
+  recovered, a session gone moves its run to stuck, a permission answered elsewhere is cleared, an
+  adopted child whose branch merged closes; then the decisions at your gate whose 8-second undo
+  window closed are applied (a send back prompts the session);
+- in the background, without holding up the work: fetches the control repo's origin/main for the
+  asks (at most every 5 minutes), records the loops' drift (its ledger fetched first, at most every
+  5 minutes), and clears the ledger locks this process left behind.
+
+One sweep runs at a time (its lease): a sweep asked for while one runs is the next one, shared by
+everyone who asked meanwhile. A step that fails is logged and keeps no other from running. The first
+sweep runs as the plugin starts; the first client a hook brings runs another at once. The sweep
+starts no work (A8).
+
 ## The loop
 
 Off by default. Give it a period in Settings (`loopMinutes`) and Maestro wakes on that schedule to
 look after the work. **It never starts work** (owner answer A8, BRO-2990): the plugin queues, and
 you (Dispatch), a lane or the conductor start it. In Paseo session 13b97ad9 the loop's old start
 step turned six answers into six sessions nobody watched, so that step is gone, and the loop is
-typed against an engine with no dispatch. Each wake reads the work (reconciling sessions and
-applying decisions whose undo window closed), counts what needs you, flags quiet runs, and lands
-and routes your answers.
+typed against an engine with no dispatch. Each wake runs the plugin sweep first (above: reconciling
+sessions and applying decisions whose undo window closed), then reads the work, counts what needs
+you, flags quiet runs, and lands and routes your answers.
 
 - **Only you, a lane or the conductor start a run.** Your Dispatch (and Unblock) starts work as
   Settings say. A session starts it through the agent socket (`maestro dispatch`), in its lane's
@@ -258,6 +283,14 @@ and routes your answers.
   archives the session), or its session was archived or ended, or none was recorded. At the cap a
   dispatch, yours or a lane's, is refused and says what holds the slots: "At capacity: 3 of 3 slots
   taken (1 running, 2 stuck). It stays queued."
+  - A run you stop keeps its slot until its session's archive settles ("1 being stopped"): Stop
+    records the run stuck before it archives, and an archive that fails puts the run back to running,
+    so no dispatch meanwhile takes the cap one over.
+  - Stuck work whose session had gone holds no slot, so resuming it takes one. Unblock is then
+    refused at the cap, as a start is. A turn the session itself starts (you prompt it in Paseo) is
+    already under way, so Maestro records it running and says on the work when that is over the cap:
+    "Resumed in the session over the cap: 2 of 1 slot taken (2 running). No run starts until one
+    ends."
 - **What needs you lands in Needs you.** A wake flags two things on the work itself, so they show in
   Maestro's Needs you (the feed's and the list's section, the chip, the board's column, the header
   count, `maestro ls`; one definition, `shared/needs-you.ts`) with the reason on the card and in the
@@ -670,7 +703,7 @@ An answer is the one thing Maestro writes into an ask ledger, under the control 
 contract (workspace#861, `docs/specs/2026-10-01-maestro-control-interface.html`):
 
 - **Which copy (§5.2's home rule).** For the workspace's asks Maestro reads origin/main's blobs
-  (`git cat-file`, fetched at most every 5 minutes, in the background) and the working tree of every
+  (`git cat-file`, fetched by the plugin sweep at most every 5 minutes; a read never fetches) and the working tree of every
   checkout `git worktree list` names, the main checkout among them, as one checkout like any other:
   never a fallback. In checkout W, with B its merge-base with origin/main, each ask takes the first
   step that applies:
@@ -712,8 +745,8 @@ contract (workspace#861, `docs/specs/2026-10-01-maestro-control-interface.html`)
     nothing is written.
   - A dead holder's lock is reclaimed once it is 120 seconds old, under a `<k>.reclaim.d` mutex,
     and judged again once the mutex is held, so a fresh lock another writer took meanwhile stays.
-  - A lock left by Maestro's own process that it no longer holds is dropped by a sweep each Fleet
-    read queues behind any answer in flight, and before Maestro's next take, so a release that
+  - A lock left by Maestro's own process that it no longer holds is dropped by the plugin sweep,
+    queued behind any answer in flight, and before Maestro's next take, so a release that
     failed never keeps another writer waiting. Its start time is read from `ps`, as other writers
     read it, and kept once `ps` answers.
 - **The answer.** The edit touches only the ask's own entry. It writes these keys, each on one line:
@@ -873,10 +906,10 @@ schedule, a p9 watcher.
   the header. A scope `sri` row gets badges and never Needs you. A failed or missed launchd or Paseo
   loop is the Timeline's notice, so it is not counted twice. A one-off (a session's `/loop`, a p9
   watcher, a `maxRuns: 1` schedule) is listed under *Session & watchers* and is never UNREGISTERED.
-- **Transitions only.** Each drift detected or cleared appends one line to
+- **Transitions only, from the sweep.** Each drift detected or cleared appends one line to
   `~/.broomva/ledger/loops/drift.jsonl` through the workspace's own writer, `scripts/broomva_home.py`
-  as origin/main has it (actor `daemon:maestro`), and never a line per read. A substrate that could
-  not be read clears nothing.
+  as origin/main has it (actor `daemon:maestro`). Only the plugin sweep writes it, never a read of the
+  tab or the header count, and only transitions. A substrate that could not be read clears nothing.
 - **What it does not do.** It schedules nothing and runs no substrate verb. Rolling over a bound
   session is BRO-2933's; a BOUND_SESSION_GONE carries that seam's key and steps.
 
@@ -952,7 +985,7 @@ it answers, and the other keeps retrying every ten seconds, which its plugin log
 | `provider` | `claude` | Provider, optionally with a model: `claude/claude-sonnet-5` |
 | `modeId` | none | Provider mode for runs; empty means the provider default. It applies only while a run uses the Settings provider: work that chose another provider starts in that provider's default mode |
 | `isolation` | `worktree` | `worktree` for a fresh branch per run, `directory` to run in the repo |
-| `loopMinutes` | none | How often the loop wakes to start queued work, in whole minutes from 1 to 1440 (a day); empty means off |
+| `loopMinutes` | none | How often the loop wakes to look after the work (it starts none), in whole minutes from 1 to 1440 (a day); empty means off. The plugin sweep runs regardless |
 
 ## Development
 
@@ -970,8 +1003,9 @@ undo toast, Undertow) lives in `client/kit/`, with a gallery screen behind `MAES
 
 ## Limits
 
-- Hook events are live and best effort. Every list reconciles bound work against the agent's real
-  status, so a turn end missed while the plugin was stopped is recovered on the next look. A
+- Hook events are live and best effort. The plugin sweep reconciles bound work against the agent's
+  real status every 30 seconds, so a turn end missed while the plugin was stopped is recovered within
+  a sweep of the plugin's return, whether or not anyone looks. A
   recovered end reads the session's timeline for its real outcome, is stamped when the agent
   actually stopped, and lands at your gate under the same rule as a live one (an adopted arc only
   with something to decide): work never closes itself on an end Maestro did not see. A correction is dropped if anything was recorded after reconcile looked.

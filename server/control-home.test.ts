@@ -676,7 +676,7 @@ describe("the workspace's asks, in a scratch control repo", () => {
     ]);
   });
 
-  test("a fetch of origin/main runs in the background, at most every five minutes", async () => {
+  test("a read never fetches origin/main; the sweep's fetchDue does, at most every five minutes (BRO-2995)", async () => {
     const { repo, root, origin, state } = await workspace();
     let now = 1_000_000;
     const asks = new WorkspaceAsks({
@@ -693,8 +693,13 @@ describe("the workspace's asks, in a scratch control repo", () => {
     run(other, "add", ".");
     run(other, "commit", "--quiet", "-m", "fetched");
     run(other, "push", "--quiet", "origin", "main");
-    await asks.read();
+    const unfetched = run(repo, "rev-parse", "origin/main");
+    for (let read = 0; read < 5; read += 1) await asks.read();
     await asks.settled();
+    expect(run(repo, "rev-parse", "origin/main")).toBe(unfetched);
+    expect((await asks.read()).all.some((entry) => entry.id === "fetched-ask")).toBe(false);
+    expect((await asks.read()).main?.fetchedAt).toBeNull();
+    await asks.fetchDue();
     expect((await asks.read()).all.some((entry) => entry.id === "fetched-ask")).toBe(true);
     expect((await asks.read()).main?.fetchedAt).not.toBeNull();
     // Within five minutes, no second fetch.
@@ -702,9 +707,12 @@ describe("the workspace's asks, in a scratch control repo", () => {
     run(other, "commit", "--quiet", "--allow-empty", "-m", "again");
     run(other, "push", "--quiet", "origin", "main");
     now += 60_000;
-    await asks.read();
-    await asks.settled();
+    await asks.fetchDue();
     expect(run(repo, "rev-parse", "origin/main")).toBe(sha);
+    // Five minutes on, the next sweep fetches again.
+    now += 5 * 60_000;
+    await asks.fetchDue();
+    expect(run(repo, "rev-parse", "origin/main")).not.toBe(sha);
   });
 
   test("an answer fetches origin/main first: an ask answered upstream since the last fetch is not answered again", async () => {
@@ -754,7 +762,9 @@ describe("the workspace's asks, in a scratch control repo", () => {
       ttlMs: 0,
     });
     run(repo, "remote", "set-url", "origin", join(state, "nowhere.git"));
-    // The read starts a fetch; the answer, at once, waits for it rather than judging on what was there.
+    // The sweep starts a fetch (a read fetches nothing, BRO-2995); the answer, at once, waits for it rather
+    // than judging on what was there.
+    const sweeping = asks.fetchDue();
     const merge = find((await asks.read()).all, "A1");
     const { warning } = await asks.answer({
       ledger: merge.ledger,
@@ -767,6 +777,7 @@ describe("the workspace's asks, in a scratch control repo", () => {
     });
     expect(warning).toContain("origin/main could not be fetched first");
     expect(warning).toContain("nowhere.git");
+    await sweeping;
     // Within the window after a failure, the failure is still said.
     now += 5_000;
     await writeFile(join(repo, ".control", "asks", "third.yaml"), MERGE.replace("A1", "C1"));

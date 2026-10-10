@@ -1101,3 +1101,43 @@ describe("step 5: your answers, landed and routed", () => {
     expect(entry.narrative).toEqual(["Woke because you asked.", "Did nothing new this tick."]);
   });
 });
+
+describe("the wake and the plugin sweep (BRO-2995)", () => {
+  test("a wake runs the sweep first, then reads the work as the sweep left it; without the sweep its read changes nothing", async () => {
+    const { engine, fake, client, queue, timers, wakeLog } = await setup();
+    // A run whose session closed: only the sweep's reconcile moves it to stuck.
+    await queue("Closed under it", { dispatch: true });
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "closed";
+    const order: string[] = [];
+    const reading = {
+      list: (paseo?: Paseo) => {
+        order.push("list");
+        return engine.list(paseo);
+      },
+      settings: () => engine.settings(),
+      flag: engine.flag.bind(engine),
+      clearQuiet: engine.clearQuiet.bind(engine),
+    };
+    const unswept = new Loop({ engine: reading, client: () => client.paseo, timer: timers.timer, wakeLog, askMs: 100 });
+    expect((await unswept.wake("manual")).needsYou.stuck).toBe(0);
+    expect((await engine.list()).items[0]?.state).toBe("running");
+    order.length = 0;
+    const loop = new Loop({
+      engine: reading,
+      client: () => client.paseo,
+      timer: timers.timer,
+      wakeLog,
+      askMs: 100,
+      sweep: {
+        run: async () => {
+          order.push("sweep");
+          await engine.upkeep(client.paseo);
+        },
+      },
+    });
+    const entry = await loop.wake("manual");
+    expect(order).toEqual(["sweep", "list"]);
+    expect(entry.needsYou.stuck).toBe(1);
+  });
+});

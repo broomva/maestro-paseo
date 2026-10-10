@@ -30,6 +30,7 @@ import {
 } from "./server/paths";
 import { Records } from "./server/records";
 import type { Paseo } from "./server/runs";
+import { Sweep, sweepEvery } from "./server/sweep";
 import { Timeline } from "./server/timeline";
 import { WAKE_LOG_MAX, WakeLog } from "./server/wake-log";
 import { answersNotice, decideConductor, undoConductor } from "./shared/answers";
@@ -152,28 +153,34 @@ export default function contribute(host: PluginServerContext) {
   // Your decisions on answers for the conductor survive a restart: the due are applied, the rest armed again.
   void router?.resume().catch((error) => log(`answers: resuming your decisions: ${(error as Error).message}`));
   // The loop wakes on its own timer, outside any handler, so it reads the same client (server/loop.ts).
-  const loop = new Loop({
+  const loop: Loop = new Loop({
     engine,
     client: () => latest,
     log,
     answers: lander && router ? { land: () => lander.land(), route: () => router.route() } : undefined,
+    // Its wake sweeps first, under the sweep's lease (below), so what it reads is current.
+    sweep: { run: () => sweep.run() },
   });
-  const keep = (paseo: Paseo) => {
-    const first = !latest && Boolean(paseo);
+  // A handler only keeps the client: a read, however often it comes, starts nothing (BRO-2995). The first client
+  // a hook brings sweeps now and runs the wake that had none; one a read brings waits for the next sweep.
+  const keep = (paseo: Paseo | undefined, hook: boolean) => {
+    // A call without one (a test's) leaves the client kept.
+    if (!paseo) return;
+    const first = !latest;
     latest = paseo;
-    if (!first) return;
-    void engine.sweep(paseo).catch((error) => log(`applying due decisions: ${(error as Error).message}`));
+    if (!first || !hook) return;
+    void sweep.run();
     void loop.connected();
   };
   const server: Pick<PluginServerContext, "handle" | "on"> = {
     handle: (contract, handler) =>
       host.handle(contract, (input, context) => {
-        keep(context.paseo);
+        keep(context.paseo, false);
         return handler(input, context);
       }),
     on: (name, handler) =>
       host.on(name, (event, context) => {
-        keep(context.paseo);
+        keep(context.paseo, true);
         return handler(event, context);
       }),
   };
@@ -303,7 +310,7 @@ export default function contribute(host: PluginServerContext) {
     writer: control.repo ? homeWriter(control.repo) : null,
     log,
   });
-  // No client handed to list: the header count and pills poll this, and must not reconcile sessions.
+  // The header count and pills poll this. A pure read, as every read here is (BRO-2995): the sweep writes.
   // A fleet or a timeline that cannot be read costs the count its notices, never the work's.
   server.handle(attentionWork, async () => {
     const { items } = await engine.list();
@@ -486,12 +493,36 @@ export default function contribute(host: PluginServerContext) {
   // If it cannot open, Maestro's own screens still work, and it keeps trying.
   const stopSocket = keepServing({ path: socketPath(), methods: agentMethods(engine, () => latest), log });
 
-  // Decisions made before a restart: arm the ones still inside their window, apply the overdue ones.
-  void engine.sweep().catch((error) => log(`applying due decisions: ${(error as Error).message}`));
+  // The plugin sweep (server/sweep.ts): what the reads above no longer do, on its own cadence, whoever looks.
+  // Its first sweep runs now: decisions made before a restart are armed, or applied when overdue.
+  const sweep: Sweep = new Sweep({
+    client: () => latest,
+    everyMs: sweepEvery(),
+    log,
+    steps: [
+      {
+        name: "the work",
+        run: async (paseo) => {
+          if (await engine.upkeep(paseo)) log("sweep: the work moved to match its sessions, or a decision came due");
+        },
+      },
+      // In the background (never waited for, one at a time): a fetch or the loops' whole view may take a while.
+      ...(workspace ? [{ name: "the asks' origin/main", background: true, run: () => workspace.fetchDue() }] : []),
+      // The loops' drift is recorded against the control repo's ledger; with none there is nothing to record.
+      ...(control.repo ? [{ name: "the loops' drift", background: true, run: () => loops.sweep() }] : []),
+      { name: "the fleet's leftover locks", background: true, run: () => fleet.sweepLocks() },
+    ],
+    // A wake that found no client runs again once a sweep has one (Loop.connected).
+    after: (run) => {
+      if (run.connected) void loop.connected();
+    },
+  });
+  sweep.start();
   // The loop's next wake, from Settings and its log: a restart keeps its cadence.
   void loop.reschedule();
 
   return async () => {
+    sweep.stop();
     loop.stop();
     // Before a reload's new router resumes your decisions: this one applies none of them any more.
     router?.stop();

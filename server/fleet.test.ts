@@ -1173,7 +1173,7 @@ describe("drilling in", () => {
 });
 
 describe("ledger locks Maestro left behind", () => {
-  test("are cleared by a sweep a Fleet read queues, with no scope at all", async () => {
+  test("are cleared by the plugin sweep, with no scope at all; a Fleet read leaves them (BRO-2995)", async () => {
     const { root, fleet } = await setup();
     const ledger = join(root, "asks", "l.yaml");
     await mkdir(join(root, "asks"), { recursive: true });
@@ -1185,7 +1185,9 @@ describe("ledger locks Maestro left behind", () => {
     await releaseLock(lock);
     expect(await readdir(locks)).toHaveLength(1);
     expect((await fleet.get()).scopes).toEqual([]);
-    for (let tries = 0; tries < 50 && (await readdir(locks)).length > 0; tries++) await Bun.sleep(20);
+    await Bun.sleep(50);
+    expect(await readdir(locks)).toHaveLength(1);
+    await fleet.sweepLocks();
     expect(await readdir(locks)).toEqual([]);
   });
 });
