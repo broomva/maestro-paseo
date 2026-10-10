@@ -139,7 +139,7 @@ export function SwipeRow({
         settle(0, 0, () => setShown(null));
       },
     });
-  }, [x, settle]);
+  }, [x, settle, markOpen]);
 
   const close = () => {
     markOpen(false);
