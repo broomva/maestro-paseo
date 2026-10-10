@@ -279,12 +279,24 @@ async function main(): Promise<void> {
       180_000,
     );
 
-    const install = spawnSync(paseo, ["plugin", "install", pluginDir, "--host", `127.0.0.1:${port}`, "--json"], {
-      env: sandboxEnv({ HOME: state.home }),
-      encoding: "utf8",
-      timeout: 180_000,
-    });
-    if (install.status !== 0) throw new Error(`plugin install failed:\n${install.stdout}\n${install.stderr}`);
+    // The web client is served before the daemon's socket takes connections: while its other plugins
+    // load, the upgrade answers 503 and `plugin install` reports DAEMON_UNREACHABLE. Retry that one
+    // failure until the socket is up; any other failure is real.
+    await waitFor(
+      "the daemon to accept the plugin install",
+      async () => {
+        const install = spawnSync(paseo, ["plugin", "install", pluginDir, "--host", `127.0.0.1:${port}`, "--json"], {
+          env: sandboxEnv({ HOME: state.home }),
+          encoding: "utf8",
+          timeout: 180_000,
+        });
+        if (install.status === 0) return true;
+        if (`${install.stdout}${install.stderr}`.includes("DAEMON_UNREACHABLE")) return false;
+        throw new Fatal(`plugin install failed:\n${install.stdout}\n${install.stderr}`);
+      },
+      120_000,
+      2_000,
+    );
     console.log(`Installed the plugin from ${pluginDir}`);
 
     const { DaemonClient } = await import("@getpaseo/client/internal/daemon-client");
