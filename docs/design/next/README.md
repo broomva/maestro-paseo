@@ -151,4 +151,4 @@ bun scripts/inventory-check.ts --summary
 
 Code facts come from four read-only passes over maestro-paseo 3f8d9d8: interfaces, stores and loops, the client, and smells. Each cites file:line.
 
-`paseo-feature-request.md` was filed upstream as getpaseo/paseo#6472 on 2026-10-09. `paseo-plugin-capabilities.md` is the audit behind H3: what the Paseo 0.11.1 host lets a plugin render, with file and bundle-offset evidence. Read it before designing anything that floats, blurs, pushes or animates.
+`paseo-feature-request.md` was filed upstream as getpaseo/paseo#6472 on 2026-10-09 and posted as discussion getpaseo/paseo#6478 on 2026-10-10 (owner B6). `paseo-plugin-capabilities.md` is the audit behind H3: what the Paseo 0.11.1 host lets a plugin render, with file and bundle-offset evidence. Read it before designing anything that floats, blurs, pushes or animates.
