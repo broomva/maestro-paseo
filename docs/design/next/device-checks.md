@@ -10,7 +10,7 @@ Every row names its surface. In order of strength:
 | Label | What it is | Strength |
 |---|---|---|
 | **desktop (same bundle)** | Same bundle, browser runtime: the sandbox daemon's web client in headless Chromium, driven by Playwright (`scripts/dogfood/up.ts` sandbox, probe plugin installed). It serves `index-abadf3b49254b04e0d7c8630abdf7fbe.js`, **the same file the owner's Paseo.app renderer runs** (read over CDP from the real app's window, and from the sandbox's `/`: [`desktop-bundle.txt`](../../receipts/BRO-3033/desktop-bundle.txt)). | Observed; same JS as the desktop app, though Electron-only branches (window chrome, traffic-light offset) are not exercised |
-| **simulator** | Paseo's iOS app built from `getpaseo/paseo@v0.11.1` (`ab10a66`, RN 0.81.5, Expo 54, New Architecture, Release, Hermes) on an iPhone 16 Pro simulator (iOS 26.3.1), connected to the sandbox daemon, touches by AXe. Gesture timing on a simulator is **not** an iPhone's: frame numbers are marked "simulator". | Observed, same source as the App Store build; perf not representative |
+| **simulator** | Paseo's iOS app built from `getpaseo/paseo@v0.11.1` (`ab10a66`; RN 0.81.5 and Expo 54 per `packages/app/package.json:114,78`; New Architecture per `app.config.js:107`; built in the Release configuration) on an iPhone 16 Pro simulator (iOS 26.3.1), connected to the sandbox daemon, touches by AXe. Gesture timing on a simulator is **not** an iPhone's: frame numbers are marked "simulator". | Observed, same source as the App Store build; perf not representative |
 | **source** | `getpaseo/paseo@v0.11.1` read at `ab10a66`, cited `path:line`. | Read, not run |
 | **real iPhone** | The owner's iPhone over iPhone Mirroring. **Not reached**: the Mac is paired, but Mirroring showed "iPhone in Use. Lock your iPhone to connect" ([`iphone-mirroring-0.jpg`](../../receipts/BRO-3033/iphone-mirroring-0.jpg)), and no phone is set up for interceptor-ios. What only a real phone can show is in [Owner checks](#owner-checks-on-the-real-iphone). | — |
 
@@ -29,11 +29,11 @@ Re-run it before reading new numbers off it.
 | # | Question | Answer | One-line consequence for the build |
 |---|---|---|---|
 | 1 | What does Paseo draw around a plugin screen on iOS? | **Yes, known: a header only.** An icon (legacy sidebar items only), the title (string or `title(params)`), a host picker (only with >1 host) and an X close. No menu, no "more", no back chevron, nothing at the bottom, no bottom inset. | M1's tab bar owns the bottom edge and must clear the home indicator itself (RN `SafeAreaView` on iOS; nothing on Android yet, BRO-3065). The ☰ and ⋯ drawn in M1's header are not Paseo's: drop them, or draw them inside Maestro's content. |
-| 2 | Can `openScreen({ screenId, params })` carry a hold key? | **Yes.** `params` arrive as the `params` prop, strings only, in the URL as `?param.<key>=…`; through `openScreen`, any characters round-trip (a hand-written `paseo://` link can corrupt `&`, `=`, `#`, `+` and `%`); a cold load reads them back. Each call pushes a **new instance** (remount); earlier ones stay mounted, hidden. | The deck and inspector open on `params.hold` at mount. Inside an open Maestro, move by state, not by another `openScreen`. Hidden instances should pause their polling, because M10's loop stacks them. |
+| 2 | Can `openScreen({ screenId, params })` carry a hold key? | **Yes.** `params` arrive as the `params` prop, strings only, in the URL as `?param.<key>=…`; through `openScreen`, any characters round-trip (a hand-written `paseo://` link can corrupt `&`, `=`, `#`, `+` and `%`); a cold load reads them back (desktop only). Each call pushes a **new instance** (remount); earlier ones stay mounted, hidden. | The deck and inspector open on `params.hold` at mount. Inside an open Maestro, move by state, not by another `openScreen`. Hidden instances should pause their polling, because M10's loop stacks them. |
 | 3 | `PanResponder` on the iPhone, JS thread | **Partial.** Leftward and vertical drags are the plugin's. **Rightward drags over ~15 px on compact native are taken by Paseo's sidebar-open gesture, which cancels the plugin's responder.** Frame drops: 0 frames over 20 ms on any leftward or vertical drag, counted from touch-down until the JS-driven spring back settled (simulator, max 18 ms over 136–137 frames, even with 8 ms of synthetic work per move). | M1's rightward deck swipe and right-swipe-to-Continue on sheet rows cannot ship as drawn. Follow-up filed. |
-| 4 | Does the composer (M9) get the keyboard inset from RN `Keyboard` events? | **Partial.** Observed: RN `Keyboard` events reach a plugin screen on iOS (`keyboardWillHide`/`keyboardDidHide`, read through the probe's text; no `WillShow`, no software keyboard). From source only: the host applies no inset, so the composer has to lift itself. Not seen: a software keyboard over the composer and the `WillShow` event; that is an owner check. | Build M9's composer to lift itself, either from `keyboardWillShow`/`WillHide` (overlap = composer bottom − `endCoordinates.screenY`) or with RN `KeyboardAvoidingView`. Confirm on the phone. Inside the host `Modal` sheet, Paseo handles it. |
+| 4 | Does the composer (M9) get the keyboard inset from RN `Keyboard` events? | **Partial.** Observed: RN `Keyboard` events reach a plugin screen on iOS (`keyboardWillHide`/`keyboardDidHide`, read through the probe's text; no `WillShow`, no software keyboard). From source only: the host applies no inset, so the composer has to lift itself. Not seen: a software keyboard over the composer and the `WillShow` event; that is an owner check. | Build M9's composer to lift itself, either from `keyboardWillShow`/`WillHide` (overlap = composer bottom − `endCoordinates.screenY`) or with RN `KeyboardAvoidingView`. Confirm on the phone. Whether the host `Modal` sheet moves for the keyboard is inferred, not observed. |
 | 5 | Gradients for the Undertow | **Desktop: yes** (`backgroundImage` linear and radial render; `experimental_backgroundImage` is dropped by react-native-web). **iOS:** **yes**: `experimental_backgroundImage` linear and radial render; the unprefixed `backgroundImage` does not. | The kit sets **both** keys on every gradient: `backgroundImage` for the desktop, `experimental_backgroundImage` for iOS. A static gradient and a `boxShadow` ring render on iOS. Animating them is untested, and Android is unchecked, so keep the still tinted ring as the fallback. |
-| 6 | How Paseo renders the push body Maestro writes | **Partial.** Title "Agent finished"; body = Maestro's notice with markdown stripped and **newlines collapsed to one space**, cut to 220 characters ending `...`; no actions; tap opens the inbox session; nothing when the app is open; no push at all if any Paseo client was active in the last 180 s. The simulator rendered Maestro's exact payloads. | Put a separator into the notice's first line (title and ask now run together). M10 is push → session → card → Open in Maestro; a push never lands in Maestro directly. |
+| 6 | How Paseo renders the push body Maestro writes | **Partial.** The title is "Agent finished" for a finished turn, which is Maestro's case ("Agent needs permission" and "Agent needs attention" for the other reasons). Body = Maestro's notice with markdown stripped and **newlines collapsed to one space**, cut to 220 characters ending `...`; no actions; tap opens the inbox session; nothing when the app is open; no push at all if any Paseo client was active in the last 180 s. The simulator rendered Maestro's exact payloads. | Put a separator into the notice's first line (title and ask now run together). M10 is push → session → card → Open in Maestro; a push never lands in Maestro directly. |
 
 Follow-ups:
 - [BRO-3062](https://linear.app/broomva/issue/BRO-3062): Paseo upstream, let a plugin keep rightward pans.
@@ -66,7 +66,7 @@ Follow-ups:
   - The ⋯ menu, if kept, must be a control in Maestro's own deck header.
   - M1c's title-menu fallback is not needed for the tab bar, because the bottom edge is free.
 - **Title.** Use `addScreen({ title: (params) => … })` to say where you are ("Maestro", or "Maestro · Decisions") in Paseo's own header for free.
-- **Vertical budget.** On an iPhone 16 Pro the host header costs 62 + 64 = 126 pt before Maestro's first pixel, so M1's deck has `874 − 126 − tab bar − 34 (home indicator)` pt to work with.
+- **Vertical budget.** On an iPhone 16 Pro the host header costs 62 + 64 = 126 pt before Maestro's first pixel, so M1's deck has `874 − 126 − tab bar − bottom inset` pt to work with.
 
 ## 2. `openScreen` params: can they carry a hold key?
 
@@ -78,7 +78,7 @@ Follow-ups:
   - From the sidebar row, `openScreen({ screenId, params: { hold: "from-sidebar" } })` gave `params {"hold":"from-sidebar"}` at `…/plugin/maestro-device-probe/surface/device-probe?…&param.hold=from-sidebar`.
   - Then `{ hold: "ask:7f3e", tab: "decisions" }` gave `?param.hold=ask%3A7f3e&param.tab=decisions` and `params {"hold":"ask:7f3e","tab":"decisions"}` at `mount #2`.
   - Then `{ hold: "café & co/?#=1 ✓", long: <600 × "x"> }` round-tripped exactly at `mount #3`.
-  - Reloading the URL cold rebuilt `params {"hold":"ask:7f3e","tab":"decisions"}` (`mount #1`).
+  - Reloading the URL cold (desktop only; not tried on iOS) rebuilt `params {"hold":"ask:7f3e","tab":"decisions"}` (`mount #1`).
   - The DOM then held **three** probe instances, with only the newest visible: `[#1 hidden, #2 hidden, #3 visible]`.
 - **source**:
   - `plugins/routes.ts:11-27` builds `encodeURIComponent("param." + key) = encodeURIComponent(value)`.
@@ -98,7 +98,7 @@ Follow-ups:
 - **Instances stack, and each stays live.** Every `openScreen` adds an instance and keeps the old ones mounted, each with its own queries and subscriptions. The desktop DOM held #1, #2 and #3 at once.
   - Inside an open Maestro, move between holds and tabs with state (today's `requestIntent` bus, `client/intent.ts`), not with `openScreen`.
   - M10's loop (Maestro → session → "Open in Maestro" → `openScreen`) still pushes Maestro #2 over a hidden #1, and each triage round trip adds one.
-  - The kit needs a guard. A hidden instance measures 0x0 (`measureInWindow`; seen on the desktop), so it can pause its polling until it is shown again. Module-level state is shared, and `intent.ts` already lets the newest listener take an intent first.
+  - The kit needs a guard. The desktop DOM kept hidden instances mounted. In the first desktop run (log not kept), their `measureInWindow` returned 0x0; that is a candidate signal for pausing polling until the instance shows again, to confirm in the kit. Module-level state is shared, and `intent.ts` already lets the newest listener take an intent first.
   - Paseo has no "navigate to the existing screen" call. The ask belongs with BRO-3062 in `paseo-feature-request.md`.
 - **The intent bus can shrink.** For a cold open, params replace the 30 s pending-intent dance: the target travels in the route and survives a reload. The bus stays for in-screen moves.
 - **M10** is push → the asking session → the gate card's "Open in Maestro" → `openScreen({ screenId: "maestro", params: { hold } })` → M1's deck on that hold. Each link in that chain is verified here, except the push tap on a real phone (fact 6).
@@ -150,9 +150,9 @@ Follow-ups:
 
 - **source**:
   - The plugin screen container has no `KeyboardAvoidingView` or keyboard-controller wrapper (`surface-screen.tsx:217-243`).
-  - The app mounts `react-native-keyboard-controller`'s `<KeyboardProvider>` (`app/_layout.tsx:956`), which stops the window from resizing for the keyboard.
+  - The app mounts `react-native-keyboard-controller`'s `<KeyboardProvider>` (`app/_layout.tsx:956`), which, on Android, stops the window from resizing for the keyboard. On iOS nothing resizes for it either way.
   - The provider's iOS observers are additive (`KeyboardMovementObserver+Lifecycle.swift:25`). They do not remove RN's own `RCTKeyboardObserver`, so RN `Keyboard` events should still fire.
-  - The plugin `TextInput` is a plain RN `TextInput` outside the host `Modal` (`components/ui/text-input/sheet-aware.tsx:18-22`).
+  - The plugin `TextInput` is the host's `SheetAwareTextInput`. Outside a host `Modal` it renders RN's `TextInput` with no keyboard handling of its own (`components/ui/text-input/sheet-aware.tsx:18-22`).
   - Tapping Paseo's header dismisses the keyboard (`background.native.tsx:4-5`).
 - **simulator**: ([`sim-10-keyboard-composer.jpg`](../../receipts/BRO-3033/sim-10-keyboard-composer.jpg) shows the focused composer; the event lines are in [`sim-ax-readings.txt`](../../receipts/BRO-3033/sim-ax-readings.txt) §4, because the keyboard section is scrolled off that shot) Tapping the bottom composer focused it (cursor shown). Twice, the probe received `keyboardWillHide h=311 screenY=874 dur=0` and `keyboardDidHide h=311`. Later, after the app went to the background and came back, it received the same pair with `h=0`. RN `Keyboard` events do reach a plugin screen. No height read here is a keyboard to lift for: these are hide events on the hardware-keyboard path. The simulator treated AXe as a hardware keyboard, so the software keyboard stayed hidden and no `WillShow` arrived. A reboot did not clear it, and I did not change Simulator.app's global preferences to force it. With no software keyboard on screen, the unchanged `h=748` proves nothing about an inset; that part rests on the source above.
 - **desktop**: no soft keyboard, and react-native-web's `Keyboard` emits nothing ("no keyboard events yet" after typing). Nothing to do on desktop.
@@ -160,7 +160,7 @@ Follow-ups:
 **Consequences**
 
 - **BRO-3037 M9 (and every bottom input).** The composer lifts itself: listen to `keyboardWillShow`/`keyboardWillHide` (iOS) and `keyboardDidShow`/`keyboardDidHide` (Android). Lift it by the overlap between its bottom edge and `endCoordinates.screenY`, measured with `measureInWindow`, not by the raw height. Animate over `e.duration`. The probe now logs this overlap. Or wrap it in RN `KeyboardAvoidingView` (`behavior="padding"`); that is part of `react-native` and needs no host support.
-- Inside the host `Modal` sheet, Paseo moves the sheet for the keyboard itself (seen on the simulator's Direct connection sheet), so New work in a `Modal` needs nothing.
+- The host `Modal` handed to plugins maps to `AdaptiveModalSheet`, which was not read. The simulator's Direct connection form (a host sheet, not a plugin `Modal`) did move up for the keyboard, but there is no receipt. That a plugin `Modal` sheet handles the keyboard (New work) is an inference; BRO-3037 should check it.
 - Paseo's header dismisses the keyboard on tap. Do not put a "done" affordance only in the header area.
 - Desktop: nothing to do.
 
@@ -201,7 +201,7 @@ Follow-ups:
 
 ## 6. The push
 
-**Answer: partial.** What Paseo sends is exactly known. On iOS (simulator) the home-screen banner shows the fixed title and the first ~80 characters of the body.
+**Answer: partial.** What Paseo sends is exactly known. On iOS (simulator, iPhone 16 Pro width, 402 pt) the home-screen banner shows the title and the first ~80 characters of the body. Other widths show more or fewer.
 
 **Evidence**
 
@@ -217,12 +217,12 @@ Follow-ups:
   - When the app is open, the iOS handler shows nothing (`app/_layout.tsx:227-236`).
   - A tap goes to `navigateToAgent` (`_layout.tsx:160-174`), which opens Maestro's inbox session, not Maestro.
   - No push is sent if any client was active within 180 s (`agent-attention-policy.ts:3,61-75`).
-- **simulator**: ([`sim-13-push-banner-typical.jpg`](../../receipts/BRO-3033/sim-13-push-banner-typical.jpg), [`sim-12-push-banner-long.jpg`](../../receipts/BRO-3033/sim-12-push-banner-long.jpg)) `xcrun simctl push` delivered the exact `{title, body}` above to the backgrounded app. The banner reads **"Agent finished"** over two lines of body: `Needs you · Retry failed card charges with backoff Approve the retry policy: 3 attemp…` and `Needs you · Migrate webhooks to the v3 signing scheme The v3 signer is ready beh…`. That is about 80 characters before iOS's own `…`; the full 220 shows only when expanded. The same push with Paseo in the foreground showed **nothing** (`setNotificationHandler` returns no alert). This is a local simulator push, not APNs through Expo; the tap path (open the agent) is from source.
+- **simulator**: ([`sim-13-push-banner-typical.jpg`](../../receipts/BRO-3033/sim-13-push-banner-typical.jpg), [`sim-12-push-banner-long.jpg`](../../receipts/BRO-3033/sim-12-push-banner-long.jpg)) `xcrun simctl push` delivered the exact `{title, body}` above to the backgrounded app. The banner reads **"Agent finished"** over two lines of body: `Needs you · Retry failed card charges with backoff Approve the retry policy: 3 attemp…` and `Needs you · Migrate webhooks to the v3 signing scheme The v3 signer is ready beh…`. That is about 80 characters before iOS's own `…` at this device width. The sent body is up to 220 characters; how much an expanded notification or the lock screen shows was not checked (owner check). The same push with Paseo in the foreground showed **nothing** (`setNotificationHandler` returns no alert). This is a local simulator push, not APNs through Expo; the tap path (open the agent) is from source.
 
 **Consequences**
 
 - **Maestro, small (follow-up):** the notice's two parts run together on the lock screen ("…with backoff Approve the retry policy…"). Put the ask on the first line with a visible separator, e.g. `Needs you · <title> — <ask>` or `Needs you · <title>: <ask>`. Order the words so the 217 characters before `...` carry the decision: the title first, then the shortest form of the ask.
-- **M10:** draw the push as fixed title, body as above, no buttons (the banner is simulator-verified). The tap landing in the inbox session, and the 220-character expanded view, come from source and are owner checks.
+- **M10:** draw the push as "Agent finished" (Maestro's inbox turns end as finished), the body as above, no buttons (the banner is simulator-verified). The tap landing in the inbox session, and what an expanded notification shows, come from source and are owner checks.
 - **Presence:** the owner sitting at the Mac suppresses the phone push (180 s rule). M10's push arrives only when the owner is away from every client. While a client is "present", the alert goes in-app to the most recent one (`computeNotificationPlan`). If that client is a phone used within 180 s and now in the background, nothing shows anywhere (`os-notifications.ts:166-170` returns early on native). M10 should not promise a push for every landing.
 
 ## Owner checks on the real iPhone
