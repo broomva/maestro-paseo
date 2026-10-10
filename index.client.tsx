@@ -4,11 +4,13 @@ import { createPillContent, PILL_ICONS } from "./client/composer-pill";
 import { createGateCard } from "./client/gate-card";
 import { MAESTRO_SCREEN, opener, startIntegrations } from "./client/integrations";
 import { requestIntent } from "./client/intent";
+import { KitGalleryScreen } from "./client/kit/gallery";
 import { MaestroSurface } from "./client/plane";
 import { MaestroSettings } from "./client/settings";
 import { linkSettingsOf } from "./client/settings-link";
 import { adoptAgent } from "./shared/contracts";
 import { GATE_CARD_KIND, GATE_CARD_VERSION, GateCardSchema } from "./shared/gate-card";
+import { KIT_SCREEN } from "./shared/kit";
 import { BROOMVA_DARK, BROOMVA_LIGHT } from "./shared/theme";
 
 export default function contribute(client: PluginClientContext) {
@@ -16,6 +18,9 @@ export default function contribute(client: PluginClientContext) {
   client.addTheme(BROOMVA_DARK);
 
   client.addScreen({ id: MAESTRO_SCREEN, title: "Maestro", Component: MaestroSurface });
+  // The J/M component gallery (BRO-3034): no sidebar row or command, reached by its route, and off unless
+  // the daemon runs with MAESTRO_KIT_GALLERY=1 (shared/kit.ts).
+  client.addScreen({ id: KIT_SCREEN, title: "Maestro kit", Component: KitGalleryScreen });
   // Kept on the 0.8 call on purpose: the host routes a legacy sidebar item to /sidebar/<id> and heads the
   // screen with this item's title and icon. addSidebarHeaderItem routes to /surface/<id> and drops the icon.
   client.addSidebarItem({ id: "maestro", title: "Maestro", icon: "LayoutDashboard", surface: MAESTRO_SCREEN });

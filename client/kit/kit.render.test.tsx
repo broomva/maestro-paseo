@@ -1,0 +1,503 @@
+// Render tests for the J/M kit: the real components, mounted with react-dom
+// through react-native-web in a happy-dom window, the way Paseo's web and
+// desktop builds run them. The setup mirrors client/new-work.render.test.tsx
+// (see its header for the traps): globals first, react-native mocked as
+// react-native-web, the host's kit as plain parts, everything else imported
+// dynamically, and both mocked modules put back in afterAll. The window's
+// matchMedia answers "reduce" for reduced motion, so springs land at once and
+// a position can be read straight after a press. Gesture thresholds are the
+// models' tests (sheet.test.ts, swipe.test.ts, deck.test.ts); these prove the
+// components wire them: one Animated.View carries the tab bar and the sheet,
+// the toast's Undo and expiry, no actions behind a hold, the Undertow on
+// running only, the inspector's verbs and Esc, and the gallery behind its flag.
+
+import { afterAll, afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { Window } from "happy-dom";
+import type { ReactNode } from "react";
+
+const SLOW = 30_000;
+const it = (name: string, run: () => Promise<void>) => test(name, run, SLOW);
+
+const win = new Window({ url: "http://localhost/" });
+type Listener = (event: { matches: boolean }) => void;
+type MediaList = {
+  matches: boolean;
+  addEventListener(type: string, fn: Listener): void;
+  removeEventListener(type: string, fn: Listener): void;
+};
+const current = (query: string) => {
+  const live = (globalThis as { window?: { matchMedia?: (query: string) => MediaList } }).window;
+  return live && live !== (win as unknown) ? live.matchMedia?.(query) : undefined;
+};
+Object.assign(win, {
+  matchMedia: (query: string) => ({
+    media: query,
+    get matches() {
+      return current(query)?.matches ?? query.includes("reduce");
+    },
+    addEventListener: (type: string, fn: Listener) => current(query)?.addEventListener(type, fn),
+    removeEventListener: (type: string, fn: Listener) => current(query)?.removeEventListener(type, fn),
+  }),
+});
+const added: string[] = [];
+for (const key of [...Object.getOwnPropertyNames(win), "window", "document", "navigator"]) {
+  if (key in globalThis && key !== "window" && key !== "document" && key !== "navigator") continue;
+  (globalThis as Record<string, unknown>)[key] =
+    key === "window" ? win : (win as unknown as Record<string, unknown>)[key];
+  added.push(key);
+}
+Object.assign(globalThis, {
+  IS_REACT_ACT_ENVIRONMENT: true,
+  requestAnimationFrame: (frame: (now: number) => void) => setTimeout(() => frame(performance.now()), 16),
+  cancelAnimationFrame: (handle: ReturnType<typeof setTimeout>) => clearTimeout(handle),
+});
+const web = (() => {
+  const env = process.env.NODE_ENV;
+  process.env.NODE_ENV = "development";
+  const module = require("react-native-web");
+  void module.Animated;
+  process.env.NODE_ENV = env;
+  return module;
+})();
+mock.module("react-native", () => web);
+mock.module("@getpaseo/plugin/client/react-native", () => ({
+  ScrollView: web.ScrollView,
+  FlatList: web.FlatList,
+  TextInput: web.TextInput,
+  Icon: () => null,
+  Modal: Object.assign(({ open, children }: { open: boolean; children: ReactNode }) => (open ? children : null), {
+    Content: ({ children }: { children: ReactNode }) => children,
+  }),
+  useToast: () => ({ show() {}, error() {} }),
+  useRevealedText: (text: string) => text,
+}));
+
+const { act, useState } = await import("react");
+const { createRoot } = require("react-dom/client") as {
+  createRoot(container: unknown): { render(node: ReactNode): void; unmount(): void };
+};
+const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
+const { PluginRpcProvider } = await import("@getpaseo/plugin/client/host");
+const { UNDO_MS } = await import("../../shared/undo");
+const { GALLERY_LIGHT, APPROVAL, ASK, NOTICE, WORK, REVIEW } = await import("./gallery-data");
+const { PullSheet, PEEK, TAB_BAND } = await import("./pull-sheet");
+const { TabBar } = await import("./tab-bar");
+const { UndoToast, useUndoToast } = await import("./undo-toast");
+const { undoEntry } = await import("./undo-model");
+const { SwipeRow } = await import("./swipe-row");
+const { Undertow, TidepoolDot, StandingPulse } = await import("./undertow");
+const { InspectorPanel, InspectorCard } = await import("./inspector");
+const { DetailHeader } = await import("./detail-header");
+const { GlanceTile } = await import("./glance-tile");
+const { Deck, DeckHold } = await import("./deck");
+const { KitGalleryScreen } = await import("./gallery");
+type UndoClock = import("./undo-model").UndoClock;
+
+const theme = GALLERY_LIGHT;
+let galleryOn = true;
+const invoke = async (method: string) => {
+  if (method === "kit.gallery") return { enabled: galleryOn };
+  throw new Error(`unexpected RPC ${method}`);
+};
+
+const settle = (ms = 30) => act(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+const mounted: (() => void)[] = [];
+
+interface El {
+  tagName: string;
+  textContent: string | null;
+  parentElement: El | null;
+  getAttribute(name: string): string | null;
+  querySelector(selector: string): El | null;
+  querySelectorAll(selector: string): ArrayLike<El>;
+  contains(other: El): boolean;
+  click(): void;
+}
+
+async function mount(node: ReactNode) {
+  const container = win.document.createElement("div");
+  win.document.body.appendChild(container);
+  const root = createRoot(container);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await act(async () =>
+    root.render(
+      <QueryClientProvider client={client}>
+        <PluginRpcProvider invoke={invoke}>{node}</PluginRpcProvider>
+      </QueryClientProvider>,
+    ),
+  );
+  await settle();
+  await settle();
+  mounted.push(() => {
+    act(() => root.unmount());
+    client.clear();
+    container.remove();
+  });
+  const box = container as unknown as El;
+  const one = (selector: string) => box.querySelector(selector);
+  return {
+    text: () => box.textContent ?? "",
+    one,
+    all: (selector: string) => [...(box.querySelectorAll(selector) as unknown as El[])],
+    id: (testID: string) => one(`[data-testid="${testID}"]`),
+    label: (name: string) => one(`[aria-label="${name}"]`),
+    press: async (target: El | null | undefined) => {
+      if (!target) throw new Error("nothing to press");
+      await act(async () => target.click());
+      await settle();
+    },
+    key: async (key: string) => {
+      await act(async () => {
+        win.document.dispatchEvent(new win.KeyboardEvent("keydown", { key, bubbles: true }));
+      });
+      await settle();
+    },
+  };
+}
+
+/** The translateY a react-native-web view carries, in px. */
+const translateY = (el: El | null) => {
+  const match = /translateY\((-?[\d.]+)px\)/.exec(el?.getAttribute("style") ?? "");
+  return match ? Number(match[1]) : null;
+};
+
+const ignore = () => undefined;
+const consoleError = spyOn(console, "error").mockImplementation(() => {});
+
+afterEach(() => {
+  for (const unmount of mounted.splice(0)) unmount();
+  galleryOn = true;
+  const logged = consoleError.mock.calls.map((args) => String(args[0]));
+  consoleError.mockClear();
+  expect(logged).toEqual([]);
+});
+
+afterAll(async () => {
+  consoleError.mockRestore();
+  mock.module("@getpaseo/plugin/client/react-native", () => ({}));
+  mock.module("react-native", () => ({}));
+  for (const key of added) delete (globalThis as Record<string, unknown>)[key];
+  await win.happyDOM.close();
+});
+
+const TABS = [
+  { id: "feed", label: "Feed", icon: "Inbox", badge: 4, badgeTone: "needs" as const },
+  { id: "work", label: "Work", icon: "LayoutList" },
+];
+
+describe("the pull-up sheet carries the tab bar on one Animated value", () => {
+  const H = 760;
+  const TOP = 64;
+  const sheet = (onPosition: (position: 0 | 1) => void = ignore) => (
+    <PullSheet
+      theme={theme}
+      height={H}
+      top={TOP}
+      inset={0}
+      tabBar={<TabBar theme={theme} tabs={TABS} active="feed" onSelect={ignore} onNew={ignore} />}
+      title="Everything else"
+      onPosition={onPosition}
+    >
+      {null}
+    </PullSheet>
+  );
+
+  it("the tab bar and the sheet are the two children of the one moving view", async () => {
+    const view = await mount(sheet());
+    const rider = view.id("pull-sheet-rider");
+    const band = view.id("pull-sheet-tab-band");
+    const panel = view.id("pull-sheet");
+    expect(rider && band && panel).toBeTruthy();
+    expect(band?.parentElement).toBe(rider);
+    expect(panel?.parentElement).toBe(rider);
+    expect(band?.contains(view.id("tab-bar") as El)).toBe(true);
+  });
+
+  it("down, the tab bar sits on the peek; raised, it rides up to the top with the sheet", async () => {
+    const seen: number[] = [];
+    const view = await mount(sheet((position) => seen.push(position)));
+    const rider = view.id("pull-sheet-rider");
+    expect(translateY(rider)).toBe(H - PEEK - TAB_BAND);
+    await view.press(view.label("Raise the sheet"));
+    expect(translateY(view.id("pull-sheet-rider"))).toBe(TOP);
+    expect(seen).toEqual([1]);
+    await view.press(view.label("Lower the sheet"));
+    expect(translateY(view.id("pull-sheet-rider"))).toBe(H - PEEK - TAB_BAND);
+  });
+});
+
+/** The toast wired the way a screen wires it, on a clock the test moves. */
+function fakeClock() {
+  let now = 5_000_000;
+  const timers = new Set<{ at: number; run: () => void }>();
+  const clock: UndoClock = {
+    now: () => now,
+    setTimeout: (run, ms) => {
+      const timer = { at: now + ms, run };
+      timers.add(timer);
+      return timer;
+    },
+    clearTimeout: (handle) => {
+      timers.delete(handle as { at: number; run: () => void });
+    },
+  };
+  const tick = (ms: number) => {
+    now += ms;
+    for (const timer of [...timers])
+      if (timer.at <= now) {
+        timers.delete(timer);
+        timer.run();
+      }
+  };
+  return { clock, tick };
+}
+
+function ToastHost({ clock, onUndo }: { clock: UndoClock; onUndo: (receipt: string) => void }) {
+  const toast = useUndoToast(onUndo, clock);
+  return (
+    <>
+      <web.Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Allow"
+        onPress={() => toast.show(undoEntry("receipt-933", "Allowed #933", clock.now(), undefined, "merges in"))}
+      />
+      <UndoToast theme={theme} entry={toast.entry} onUndo={toast.undo} now={clock.now} />
+    </>
+  );
+}
+
+describe("the undo toast: 8 s, then gone; Undo inside the window", () => {
+  it("shows the countdown from 8 s and Undo hands the receipt back", async () => {
+    const fake = fakeClock();
+    const undone: string[] = [];
+    const view = await mount(<ToastHost clock={fake.clock} onUndo={(receipt) => undone.push(receipt)} />);
+    await view.press(view.label("Allow"));
+    expect(view.id("undo-toast")).toBeTruthy();
+    expect(view.text()).toContain("Allowed #933 · merges in 8 s");
+    await view.press(view.label("Undo: Allowed #933"));
+    expect(undone).toEqual(["receipt-933"]);
+    expect(view.id("undo-toast")).toBeNull();
+  });
+
+  it("goes by itself at 8 s, and an Undo after that does nothing", async () => {
+    const fake = fakeClock();
+    const undone: string[] = [];
+    const view = await mount(<ToastHost clock={fake.clock} onUndo={(receipt) => undone.push(receipt)} />);
+    await view.press(view.label("Allow"));
+    await act(async () => fake.tick(UNDO_MS - 1));
+    await settle();
+    expect(view.id("undo-toast")).toBeTruthy();
+    await act(async () => fake.tick(1));
+    await settle();
+    expect(view.id("undo-toast")).toBeNull();
+    expect(undone).toEqual([]);
+  });
+});
+
+describe("the swipe row", () => {
+  const actions = {
+    snooze: { label: "Snooze 4h", icon: "AlarmClock", onPress: ignore },
+    open: { label: "Open", icon: "ArrowUpRight", onPress: ignore },
+  };
+  it("a hold draws no actions behind it, even asked to show them", async () => {
+    const view = await mount(
+      <SwipeRow theme={theme} kind="approval" title="Allow merging workspace#933?" {...actions} preview="open" />,
+    );
+    expect(view.label("Open")).toBeNull();
+    expect(view.label("Snooze 4h")).toBeNull();
+  });
+  it("a sheet row shows Snooze and Open on its left swipe, and Open acts", async () => {
+    const opened: string[] = [];
+    const view = await mount(
+      <SwipeRow
+        theme={theme}
+        kind="notice"
+        title="Quiet for 808 minutes"
+        snooze={actions.snooze}
+        open={{ ...actions.open, onPress: () => opened.push("open") }}
+        preview="open"
+      />,
+    );
+    expect(view.label("Snooze 4h")).toBeTruthy();
+    await view.press(view.label("Open"));
+    expect(opened).toEqual(["open"]);
+  });
+});
+
+describe("the Undertow marks Running only", () => {
+  it("a running card wears the halo, the ring look on request; other states wear nothing", async () => {
+    const card = <web.Text>card</web.Text>;
+    const view = await mount(
+      <>
+        <Undertow theme={theme} state="running" look="gradient">
+          {card}
+        </Undertow>
+        <Undertow theme={theme} state="running" look="ring">
+          {card}
+        </Undertow>
+        <Undertow theme={theme} state="standing">
+          {card}
+        </Undertow>
+        <Undertow theme={theme} state="review">
+          {card}
+        </Undertow>
+      </>,
+    );
+    expect(view.all('[data-testid="undertow-halo"]')).toHaveLength(1);
+    expect(view.all('[data-testid="undertow-ring"]')).toHaveLength(1);
+    expect(view.text()).toBe("cardcardcardcard");
+  });
+  it("the dot is for running rows, the pulse for standing", async () => {
+    const view = await mount(
+      ["running", "standing", "queued", "review"].map((state) => (
+        <web.View key={state}>
+          <TidepoolDot theme={theme} state={state} />
+          <StandingPulse theme={theme} state={state} />
+        </web.View>
+      )),
+    );
+    expect(view.all('[data-testid="tidepool-dot"]')).toHaveLength(1);
+    expect(view.all('[data-testid="standing-pulse"]')).toHaveLength(1);
+  });
+});
+
+describe("the inspector", () => {
+  it("draws each kind's verbs, never Approve, and reports the verb pressed", async () => {
+    for (const item of [APPROVAL, ASK, NOTICE, WORK, REVIEW]) {
+      const verbs: string[] = [];
+      const view = await mount(
+        <InspectorPanel theme={theme} item={item} open onClose={ignore} onVerb={(id) => verbs.push(id)} />,
+      );
+      expect(view.text()).toContain(item.title);
+      expect(view.text().toLowerCase()).not.toContain("approve ");
+      const bar = view.id("inspector-bar");
+      if (!bar) throw new Error("no action bar");
+      const buttons = [...(bar.querySelectorAll('[role="button"]') as unknown as El[])];
+      await view.press(buttons.at(-1));
+      expect(verbs).toHaveLength(1);
+      for (const unmount of mounted.splice(0)) unmount();
+    }
+  });
+  it("Esc sends it back", async () => {
+    let closed = 0;
+    const view = await mount(
+      <InspectorPanel theme={theme} item={APPROVAL} open onClose={() => (closed += 1)} onVerb={ignore} />,
+    );
+    expect(view.text()).toContain("Allow merge");
+    await view.key("Escape");
+    expect(closed).toBe(1);
+  });
+  it("the phone card says where you are and pins the kind's verbs", async () => {
+    const view = await mount(
+      <InspectorCard
+        theme={theme}
+        item={ASK}
+        index={2}
+        total={4}
+        open
+        height={760}
+        onClose={ignore}
+        onMore={ignore}
+        onVerb={ignore}
+        onIndexChange={ignore}
+      />,
+    );
+    expect(view.text()).toContain("Ask · 3 of 4");
+    const bar = view.id("inspector-card-bar");
+    expect(bar?.textContent).toBe("SkipAnswer");
+  });
+});
+
+describe("the detail header", () => {
+  it("'Kind · n of N' over one segment per hold, and a round close", async () => {
+    let closed = 0;
+    const view = await mount(
+      <DetailHeader theme={theme} kind="Ask" index={2} total={4} onClose={() => (closed += 1)} onMore={ignore} />,
+    );
+    expect(view.text()).toContain("Ask · 3 of 4");
+    expect(view.all('[data-testid="segment-done"]')).toHaveLength(2);
+    expect(view.all('[data-testid="segment-current"]')).toHaveLength(1);
+    expect(view.all('[data-testid="segment-todo"]')).toHaveLength(1);
+    await view.press(view.label("Close"));
+    expect(closed).toBe(1);
+  });
+});
+
+describe("the glance tile and the deck", () => {
+  it("a tile is a tap target that names its number", async () => {
+    let pressed = 0;
+    const view = await mount(
+      <GlanceTile
+        theme={theme}
+        icon="Hand"
+        label="Needs you"
+        value="4"
+        unit="holds"
+        tone="needs"
+        onPress={() => (pressed += 1)}
+      />,
+    );
+    await view.press(view.label("Needs you, 4, holds"));
+    expect(pressed).toBe(1);
+  });
+  it("the deck shows where you are and one hold's verbs at 52 pt", async () => {
+    function Host() {
+      const [index, setIndex] = useState(1);
+      return (
+        <Deck
+          theme={theme}
+          title="Needs you"
+          items={[APPROVAL, ASK, NOTICE]}
+          index={index}
+          onIndexChange={setIndex}
+          keyOf={(item) => item.key}
+          renderItem={(item) => (
+            <DeckHold
+              theme={theme}
+              icon="Hand"
+              kicker={[item.kind]}
+              title={item.title}
+              verbs={[{ label: `Act ${item.kind}`, primary: true, onPress: ignore }]}
+            />
+          )}
+        />
+      );
+    }
+    const view = await mount(<Host />);
+    expect(view.text()).toContain("2 of 3");
+    expect(view.label("Act ask")?.getAttribute("style")).toContain("height: 52px");
+  });
+});
+
+describe("the gallery is behind its flag", () => {
+  const props = (compact: boolean) => ({
+    theme,
+    host: { id: "h", label: "h" },
+    layout: { compact, platform: "web" as const },
+    params: {},
+  });
+  it("off: it says how to turn it on and shows no part", async () => {
+    galleryOn = false;
+    const view = await mount(<KitGalleryScreen {...props(false)} />);
+    expect(view.text()).toContain("MAESTRO_KIT_GALLERY=1");
+    expect(view.id("gallery-pane-light")).toBeNull();
+  });
+  it("on: every section renders light and dark", async () => {
+    const view = await mount(<KitGalleryScreen {...props(false)} />);
+    expect(view.id("gallery-pane-light")).toBeTruthy();
+    expect(view.id("gallery-pane-dark")).toBeTruthy();
+    expect(view.text()).toContain("Allow merging workspace#933?");
+    for (const section of ["Phone", "Undertow", "M1 shell", "Desktop"]) {
+      const radio = view.all('[role="radio"]').find((el) => el.textContent === section);
+      await view.press(radio);
+    }
+    expect(view.all('[data-testid="glance-tile-needs"]').length).toBe(2);
+  });
+  it("on the phone it opens on the live M1 shell, in the active appearance only", async () => {
+    // The sheet and the card wait for the shell's measured height, which happy-dom never lays out.
+    const view = await mount(<KitGalleryScreen {...props(true)} />);
+    expect(view.all('[data-testid="phone-shell"]')).toHaveLength(1);
+    expect(view.id("deck")).toBeTruthy();
+    expect(view.text()).toContain("1 of 4");
+  });
+});
