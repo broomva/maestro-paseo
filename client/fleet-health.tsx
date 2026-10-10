@@ -16,6 +16,7 @@ import {
   type Verdict,
 } from "./fleet-cockpit-model";
 import { infoInk, Kpi, ramp, type Tone, tint, toneInk } from "./fleet-ui";
+import { needsYouLabel } from "./header-count";
 import { radius, space } from "./ui";
 
 export function cellColor(theme: PluginTheme, kind: CellKind): string {
@@ -387,7 +388,5 @@ export function KpiRow({
   return <View style={{ flexDirection: "row", gap: space[3], flexWrap: "wrap" }}>{tiles.map(tile)}</View>;
 }
 
-/** `1 needs you`, `2 need you`. Pure. */
-function needYou(n: number): string {
-  return `${n} ${n === 1 ? "needs" : "need"} you`;
-}
+/** `1 needs you`, `2 need you`: the header's own words (header-count.ts). */
+const needYou = needsYouLabel;

@@ -412,11 +412,13 @@ describe("card words", () => {
     expect(summaryText([...plane, work("z", "running", { flag: quietFlag })])).toBe(
       "1 work item needs you · 2 running",
     );
-    // Stuck work is watched too: it needs no one by itself.
-    expect(summaryText([work("b", "blocked")])).toBe("Nothing needs you");
+    // Stuck work is watched too: it needs no one by itself. But only needs.list may say nothing needs you:
+    // an ask can wait while no work does, so without its count the subtitle says it has not read it yet.
+    expect(summaryText([work("b", "blocked")])).toBe("What needs you is not read yet");
     expect(summaryText([work("y", "proposed", { flag: yoursFlag })])).toBe("1 work item needs you");
     expect(summaryText([work("x", "review"), work("y", "review")])).toBe("2 work items need you");
-    expect(summaryText([work("x", "done")])).toBe("Nothing needs you");
+    expect(summaryText([work("x", "done")])).toBe("What needs you is not read yet");
+    expect(summaryText([work("x", "done")], 0)).toBe("Nothing needs you");
     expect(summaryText([])).toBe("No work yet");
     // With needs.list's total, the subtitle says that number: the badge's, Maestro-wide.
     expect(summaryText(plane, 5)).toBe("5 need you · 1 running");

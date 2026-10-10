@@ -137,6 +137,9 @@ export function narrate(entry: Omit<WakeEntry, "narrative" | "tickId" | "wokeAt"
   const needs = [
     ...(gate > 0 ? [`${gate} waiting at your gate.`] : []),
     ...(asking > 0 ? [`${asking} asking you a question.`] : []),
+  ];
+  // Stuck work and quiet runs are watched, not held on you (owner answer A1): said apart.
+  const watch = [
     ...(stuck > 0 ? [`${stuck} stuck.`] : []),
     ...entry.quiet.map((run) => `${run.title} has been quiet ${minutesWords(run.minutes)}, worth a look.`),
   ];
@@ -147,6 +150,7 @@ export function narrate(entry: Omit<WakeEntry, "narrative" | "tickId" | "wokeAt"
   else if (batch?.stage === "failed")
     lines.push(`Could not check the answers batch: ${batch.error ?? "no reason given"}`);
   if (needs.length > 0) lines.push("Needs you:", ...needs.map((line) => `  ${line}`));
+  if (watch.length > 0) lines.push("To watch:", ...watch.map((line) => `  ${line}`));
   if (entry.unasked.length > 0) {
     lines.push(
       "Could not ask the session, so quiet was neither flagged nor cleared:",

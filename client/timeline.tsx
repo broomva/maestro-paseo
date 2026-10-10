@@ -282,7 +282,7 @@ function SourceRow({
           <Text style={[text.small, { color: ink(theme, tone) }]}>
             {source.reason}
             {since ? ` ${since[0]?.toUpperCase()}${since.slice(1)}.` : ""}
-            {source.kind === "fleet" ? " It is in Needs you through the Fleet." : ""}
+            {source.kind === "fleet" ? " The Fleet view watches it." : ""}
           </Text>
         ) : null}
         <Text style={[text.small, text.tabular]}>{[lastWords(source, now), next].filter(Boolean).join(" · ")}</Text>

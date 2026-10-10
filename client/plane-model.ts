@@ -264,5 +264,8 @@ export function summaryText(items: readonly WorkItem[], needsYou: number | null 
         ? `${plural(work, "work item")} ${work === 1 ? "needs" : "need"} you`
         : null;
   const parts = [needs, running ? `${running} running` : null].filter(Boolean);
-  return parts.join(" · ") || (items.length || needsYou !== null ? "Nothing needs you" : "No work yet");
+  if (parts.length > 0) return parts.join(" · ");
+  // Only needs.list may say nothing needs you: an ask can wait while no work does.
+  if (needsYou !== null) return "Nothing needs you";
+  return items.length ? "What needs you is not read yet" : "No work yet";
 }

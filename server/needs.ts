@@ -58,6 +58,31 @@ export const HANDLED_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export type FirstSeen = (key: string, now: number) => string;
 
+/**
+ * The first-seen times the handler keeps, in memory only: `at` answers a
+ * key's first sight and holds it; `keep` forgets the keys no longer held, so
+ * a hold that comes back starts again. A read that could not read every
+ * source (`complete` false) forgets nothing: its missing rows are a failed
+ * read, not holds that went.
+ */
+export function firstSeenMemory(): { at: FirstSeen; keep: (keys: readonly string[], complete: boolean) => void } {
+  const seenAt = new Map<string, string>();
+  return {
+    at: (key, now) => {
+      const known = seenAt.get(key);
+      if (known) return known;
+      const at = new Date(now).toISOString();
+      seenAt.set(key, at);
+      return at;
+    },
+    keep: (keys, complete) => {
+      if (!complete) return;
+      const live = new Set(keys);
+      for (const key of seenAt.keys()) if (!live.has(key)) seenAt.delete(key);
+    },
+  };
+}
+
 /** What needs.list is computed from, each read as it stands: no read here may reconcile or write (BRO-2995). */
 export interface NeedSources {
   /** The work list, read without a session reconcile or a decision sweep. */
@@ -289,7 +314,7 @@ function localTime(value: string): number {
 }
 
 const time = (iso: string | undefined): number => {
-  const at = iso === undefined ? Number.NaN : Date.parse(iso);
+  const at = iso === undefined ? Number.NaN : localTime(iso);
   return Number.isFinite(at) ? at : Number.POSITIVE_INFINITY;
 };
 

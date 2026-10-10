@@ -388,9 +388,10 @@ describe("a wake", () => {
     const entry = await loop.wake("manual");
     expect(QUIET_MS).toBe(30 * 60_000);
     expect(entry.quiet).toEqual([{ id: item.id, title: item.title, minutes: 30 }]);
+    // A quiet run is watched, not held on you (A1): said under "To watch".
     expect(entry.narrative).toEqual([
       "Woke because you asked.",
-      "Needs you:",
+      "To watch:",
       "  Long one has been quiet 30 minutes, worth a look.",
       "Did nothing new this tick.",
       "Flagged for you:",
@@ -398,7 +399,7 @@ describe("a wake", () => {
     ]);
   });
 
-  test("counts what needs you: at your gate, asking, stuck", async () => {
+  test("counts what needs you (at your gate, asking) apart from what you watch (stuck)", async () => {
     const { loop, queue, engine, fake } = await setup({ concurrencyCap: null });
     for (const title of ["Gate", "Asking", "Stuck"]) await engine.dispatch(fake.paseo, (await queue(title)).id);
     const gate = fake.agents.get("agent-1");
@@ -410,11 +411,12 @@ describe("a wake", () => {
     await engine.onTurnEnded({ id: "agent-3" }, { kind: "failed", error: { message: "boom" } }, []);
     const entry = await loop.wake("manual");
     expect(entry.needsYou).toEqual({ gate: 1, asking: 1, stuck: 1 });
-    expect(entry.narrative.slice(0, 5)).toEqual([
+    expect(entry.narrative.slice(0, 6)).toEqual([
       "Woke because you asked.",
       "Needs you:",
       "  1 waiting at your gate.",
       "  1 asking you a question.",
+      "To watch:",
       "  1 stuck.",
     ]);
   });

@@ -92,8 +92,9 @@ Where each hold comes from today:
   may read it. A review's options are keep, park and close (J8); BRO-3036 wires them to a verb.
 - **`default` is absent** until an ask has a timed default (A4, `I-ask-default`, the conductor's).
 - **First seen.** An undated ask and the answers batch (whose last check moves on with every wake) wait from
-  when the daemon first saw them. That time is kept in memory and forgotten once the hold goes, so `since`
-  holds still across reads and the deck order with it.
+  when the daemon first saw them (`firstSeenMemory`). That time is kept in memory, so a restart starts it
+  again. It is forgotten once a complete read no longer holds it; a read that missed a source forgets
+  nothing. So `since`, and the deck order with it, holds still across reads.
 - **`needs.list({ kind })`** narrows the rows to one kind, and the summary then describes exactly those rows.
 - **Pure.** The work is read with no client, so no session is reconciled and no decision is applied. The
   asks are read without the background fetch of origin/main (`WorkspaceAsks.read(false, false)`; BRO-2995

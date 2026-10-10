@@ -188,6 +188,7 @@ const { MaestroSettings } = await import("./settings");
 const { handledOf, needsOf } = await import("../server/needs");
 const { needsYouOf } = await import("../shared/needs-you");
 const { headerFace } = await import("./header-count");
+const { onNeeds, publishNeeds, resetNeedsBus } = await import("./needs-bus");
 const { linkSettings } = await import("./settings-link");
 const { LOOP_HINT: LOOP_SETTINGS_HINT } = await import("./loop-model");
 const { focusRing } = await import("./ui");
@@ -1442,6 +1443,45 @@ describe("the changed line", () => {
     // What the work alone says, in words that say so: never a bare number, never "Nothing needs you".
     expect(view.text()).toContain("2 work items need you · 1 running");
     expect(view.text()).not.toContain("Nothing needs you");
+  });
+
+  test("with no work waiting and needs.list unread, it still never says nothing needs you: an ask may wait", async () => {
+    needsFail = "socket closed";
+    items = fixture().filter((item) => item.state !== "review");
+    const view = await mount(surface(false));
+    for (let tries = 0; tries < 100 && !view.text().includes("could not be read"); tries += 1) await settle(20);
+    expect(view.text()).toContain("What needs you could not be read");
+    expect(view.text()).not.toContain("Nothing needs you");
+  });
+
+  test("one snapshot with the header button: the screen's reads reach it, and its reads fill the screen (BRO-3001)", async () => {
+    resetNeedsBus();
+    const toHeader: number[] = [];
+    const stop = onNeeds((next, from) => {
+      if (from === "screen") toHeader.push(next.summary.total);
+    });
+    try {
+      const view = await mount(surface(false));
+      for (let tries = 0; tries < 100 && !view.byLabel("Feed, 2 need you"); tries += 1) await settle(20);
+      expect(toHeader).toEqual([2]);
+      // You act on the screen (a verb settles, every query refetches): the header hears the new number.
+      items = [...fixture(), work("n", "review")];
+      await view.refetch();
+      for (let tries = 0; tries < 100 && toHeader.at(-1) !== 3; tries += 1) await settle(20);
+      expect(toHeader).toEqual([2, 3]);
+      // The header read a newer snapshot first: the open screen says it at once, with no read of its own.
+      const reads = calls.filter((call) => call.method === "needs.list").length;
+      const header = needsNow();
+      const newer = { ...header, rows: header.rows.slice(0, 1), summary: { ...header.summary, total: 1 } };
+      await step(generation, () => publishNeeds(newer, "header"));
+      for (let tries = 0; tries < 100 && !view.byLabel("Feed, 1 needs you"); tries += 1) await settle(20);
+      expect(view.byLabel("Feed, 1 needs you")).not.toBeNull();
+      expect(view.text()).toContain("1 needs you · 1 running");
+      expect(calls.filter((call) => call.method === "needs.list").length).toBe(reads);
+    } finally {
+      stop();
+      resetNeedsBus();
+    }
   });
 
   test("with client state, the card and the detail show +a −d", async () => {

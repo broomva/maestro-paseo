@@ -9,6 +9,7 @@ import { askHoldKey, holdOf, NEED_KINDS, type NeedRow, NeedRowSchema } from "../
 import {
   answersNeed,
   closerOf,
+  firstSeenMemory,
   HANDLED_MS,
   handledOf,
   type NeedSources,
@@ -254,6 +255,18 @@ describe("needs.list's kinds (owner answer A1)", () => {
     );
     expect(later).toEqual(first);
     expect(first.rows.map((row) => row.since)).toEqual([new Date(NOW).toISOString(), new Date(NOW).toISOString()]);
+  });
+
+  test("first-seen times hold across reads, survive a read that missed a source, and go once their hold goes", () => {
+    const seen = firstSeenMemory();
+    const first = seen.at("ask:u1", NOW);
+    expect(seen.at("ask:u1", NOW + 60_000)).toBe(first);
+    // A read that could not read every source forgets nothing: the ask is still waiting, only unread.
+    seen.keep([], false);
+    expect(seen.at("ask:u1", NOW + 120_000)).toBe(first);
+    // A complete read without it: it went; when it comes back, it waits from then.
+    seen.keep([], true);
+    expect(seen.at("ask:u1", NOW + 180_000)).toBe(new Date(NOW + 180_000).toISOString());
   });
 
   test("a due initiative review is an ask with a review body (B2)", () => {

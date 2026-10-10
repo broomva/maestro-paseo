@@ -19,7 +19,7 @@ import { Launchd, launchdPresence } from "./server/launchd";
 import { Loop } from "./server/loop";
 import { homeWriter, Loops } from "./server/loops";
 import { gitLedger, loopPaths, loopReposPath, multiLedger } from "./server/loops-ledger";
-import { handledOf, needsOf } from "./server/needs";
+import { firstSeenMemory, handledOf, needsOf } from "./server/needs";
 import {
   controlAskPaths,
   controlRepoPaths,
@@ -372,56 +372,57 @@ export default function contribute(host: PluginServerContext) {
   const workspaceName = control.repo ? basename(control.repo) : "workspace";
   // After BRO-2995 lands, engine.list() is pure on its own and this becomes engine.list().
   const workItems = () => engine.list(undefined, { decide: false }).then(({ items }) => items);
-  const allAsks = async () => {
+  /** Every ask read, the workspace's and each fleet root's, and whether both were read. */
+  const allAsks = async (): Promise<[DecisionAsk[], boolean]> => {
+    let read = true;
     const [mine, scoped] = await Promise.all([
-      (workspace?.read().then((read) => read.all) ?? Promise.resolve([])).catch((error) => {
+      (workspace?.read().then((view) => view.all) ?? Promise.resolve([])).catch((error) => {
+        read = false;
         log(`needs: reading the workspace's asks: ${(error as Error).message}`);
         return [];
       }),
       fleet
         .scopeDecisions()
-        .then((read) => read.asks)
+        .then((view) => view.asks)
         .catch((error) => {
+          read = false;
           log(`needs: reading the fleet's asks: ${(error as Error).message}`);
           return [];
         }),
     ]);
-    return [...mine, ...scoped];
+    return [[...mine, ...scoped], read];
   };
   // When an undated hold was first seen (an undated ask, the answers batch), in memory only: its `since`
   // holds still across reads, and a hold that went is forgotten, so one that comes back starts again.
-  const seenAt = new Map<string, string>();
-  const firstSeen = {
-    at: (key: string, now: number) => {
-      const known = seenAt.get(key);
-      if (known) return known;
-      const at = new Date(now).toISOString();
-      seenAt.set(key, at);
-      return at;
-    },
-    keep: (keys: readonly string[]) => {
-      const live = new Set(keys);
-      for (const key of seenAt.keys()) if (!live.has(key)) seenAt.delete(key);
-    },
-  };
+  const firstSeen = firstSeenMemory();
   const needsNow = async (kind?: NeedKind) => {
-    const [items, asks, reviews, landing] = await Promise.all([
+    // A source that cannot be read this time costs its rows, never their first-seen times.
+    let partial = false;
+    const [items, [asks, asksRead], reviews, landing] = await Promise.all([
       workItems(),
       allAsks(),
       (initiatives?.reviews() ?? Promise.resolve([])).catch((error) => {
+        partial = true;
         log(`needs: reading the initiatives: ${(error as Error).message}`);
         return [];
       }),
-      (lander?.state() ?? Promise.resolve(null)).catch(() => null),
+      (lander?.state() ?? Promise.resolve(null)).catch(() => {
+        partial = true;
+        return null;
+      }),
     ]);
     const now = Date.now();
     const needs = needsOf({ items, asks, reviews, landing, workspace: workspaceName }, now, kind, firstSeen.at);
-    if (!kind) firstSeen.keep(needs.rows.map((row) => row.key));
+    if (!kind)
+      firstSeen.keep(
+        needs.rows.map((row) => row.key),
+        !partial && asksRead,
+      );
     return needs;
   };
   server.handle(listNeeds, ({ kind }) => needsNow(kind));
   server.handle(listHandled, async () => {
-    const [items, asks] = await Promise.all([workItems(), allAsks()]);
+    const [items, [asks]] = await Promise.all([workItems(), allAsks()]);
     const now = new Date();
     const dayStart = new Date(now);
     dayStart.setHours(0, 0, 0, 0);
