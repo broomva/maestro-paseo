@@ -864,12 +864,13 @@ findings:
     name: Only Shell/Header is a Pen instance; hold, finished, notice cards, rows and settings rows are drawn by hand
     severity: major
     state: open
-    ticket: BRO-3000
+    ticket: BRO-3034
     about: [C-hold-card, C-finished-card, C-notice-card, C-work-row, C-settings-row, C-toggle, C-lane-card, C-segmented]
+    note: "Partly: M components, M/Detail header and the Undertow are reusable in the .pen; the desktop inspector is still drawn per frame. BRO-3000 closed; the build kit is BRO-3034."
   FND-presence-undrawn:
     name: No screen has the presence switch; it exists only in D5's table
     severity: major
-    state: open
+    state: fixed
     ticket: BRO-3000
     about: [F-presence, P-header]
 
@@ -926,13 +927,13 @@ findings:
   FND-lanes-in-health:
     name: S7 Health has no Lanes section
     severity: minor
-    state: open
+    state: fixed
     ticket: BRO-3000
     about: [P-health, F-lanes]
   FND-ask-countdown:
     name: The Ask card does not show the 30-minute default and Snooze together
     severity: minor
-    state: open
+    state: fixed
     ticket: BRO-3000
     about: [F-need-ask, C-hold-card]
   FND-phone-buttons:
@@ -944,5 +945,5 @@ findings:
     name: The agent panel, composer pill, Command Center and CLI are kept as they are, with no frame
     severity: minor
     state: open
-    ticket: BRO-3000
     about: [P-agent-panel, P-composer-pill, P-command-center, P-cli]
+    note: "Kept as they are by design; they get frames only if a later pass changes them (BRO-3000 closed)."
