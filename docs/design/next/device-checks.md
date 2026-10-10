@@ -10,7 +10,7 @@ Every row names its surface. In order of strength:
 | Label | What it is | Strength |
 |---|---|---|
 | **desktop (same bundle)** | Same bundle, browser runtime: the sandbox daemon's web client in headless Chromium, driven by Playwright (`scripts/dogfood/up.ts` sandbox, probe plugin installed). It serves `index-abadf3b49254b04e0d7c8630abdf7fbe.js`, **the same file the owner's Paseo.app renderer runs** (read over CDP from the real app's window, and from the sandbox's `/`: [`desktop-bundle.txt`](../../receipts/BRO-3033/desktop-bundle.txt)). | Observed; same JS as the desktop app, though Electron-only branches (window chrome, traffic-light offset) are not exercised |
-| **simulator** | Paseo's iOS app built from `getpaseo/paseo@v0.11.1` (`ab10a66`, RN 0.81.5, Expo 54, New Architecture, Release, Hermes) on an iPhone 16 Pro simulator (iOS 26.3.1), connected to the sandbox daemon, touches by AXe. Gesture timing on a simulator is **not** an iPhone's: frame numbers are marked "simulator". | Observed, same source as the App Store build; perf not representative |
+| **simulator** | Paseo's iOS app built from `getpaseo/paseo@v0.11.1` (`ab10a66`; RN 0.81.5 and Expo 54 per `packages/app/package.json:114,78`; New Architecture per `app.config.js:107`; built in the Release configuration) on an iPhone 16 Pro simulator (iOS 26.3.1), connected to the sandbox daemon, touches by AXe. Gesture timing on a simulator is **not** an iPhone's: frame numbers are marked "simulator". | Observed, same source as the App Store build; perf not representative |
 | **source** | `getpaseo/paseo@v0.11.1` read at `ab10a66`, cited `path:line`. | Read, not run |
 | **real iPhone** | The owner's iPhone over iPhone Mirroring. **Not reached**: the Mac is paired, but Mirroring showed "iPhone in Use. Lock your iPhone to connect" ([`iphone-mirroring-0.jpg`](../../receipts/BRO-3033/iphone-mirroring-0.jpg)), and no phone is set up for interceptor-ios. What only a real phone can show is in [Owner checks](#owner-checks-on-the-real-iphone). | — |
 
@@ -66,7 +66,7 @@ Follow-ups:
   - The ⋯ menu, if kept, must be a control in Maestro's own deck header.
   - M1c's title-menu fallback is not needed for the tab bar, because the bottom edge is free.
 - **Title.** Use `addScreen({ title: (params) => … })` to say where you are ("Maestro", or "Maestro · Decisions") in Paseo's own header for free.
-- **Vertical budget.** On an iPhone 16 Pro the host header costs 62 + 64 = 126 pt before Maestro's first pixel, so M1's deck has `874 − 126 − tab bar − 34 (home indicator)` pt to work with.
+- **Vertical budget.** On an iPhone 16 Pro the host header costs 62 + 64 = 126 pt before Maestro's first pixel, so M1's deck has `874 − 126 − tab bar − bottom inset` pt to work with.
 
 ## 2. `openScreen` params: can they carry a hold key?
 
@@ -98,7 +98,7 @@ Follow-ups:
 - **Instances stack, and each stays live.** Every `openScreen` adds an instance and keeps the old ones mounted, each with its own queries and subscriptions. The desktop DOM held #1, #2 and #3 at once.
   - Inside an open Maestro, move between holds and tabs with state (today's `requestIntent` bus, `client/intent.ts`), not with `openScreen`.
   - M10's loop (Maestro → session → "Open in Maestro" → `openScreen`) still pushes Maestro #2 over a hidden #1, and each triage round trip adds one.
-  - The kit needs a guard. A hidden instance measures 0x0 (`measureInWindow`; seen on the desktop), so it can pause its polling until it is shown again. Module-level state is shared, and `intent.ts` already lets the newest listener take an intent first.
+  - The kit needs a guard. The desktop DOM kept hidden instances mounted. In the first desktop run (log not kept), their `measureInWindow` returned 0x0; that is a candidate signal for pausing polling until the instance shows again, to confirm in the kit. Module-level state is shared, and `intent.ts` already lets the newest listener take an intent first.
   - Paseo has no "navigate to the existing screen" call. The ask belongs with BRO-3062 in `paseo-feature-request.md`.
 - **The intent bus can shrink.** For a cold open, params replace the 30 s pending-intent dance: the target travels in the route and survives a reload. The bus stays for in-screen moves.
 - **M10** is push → the asking session → the gate card's "Open in Maestro" → `openScreen({ screenId: "maestro", params: { hold } })` → M1's deck on that hold. Each link in that chain is verified here, except the push tap on a real phone (fact 6).
@@ -217,12 +217,12 @@ Follow-ups:
   - When the app is open, the iOS handler shows nothing (`app/_layout.tsx:227-236`).
   - A tap goes to `navigateToAgent` (`_layout.tsx:160-174`), which opens Maestro's inbox session, not Maestro.
   - No push is sent if any client was active within 180 s (`agent-attention-policy.ts:3,61-75`).
-- **simulator**: ([`sim-13-push-banner-typical.jpg`](../../receipts/BRO-3033/sim-13-push-banner-typical.jpg), [`sim-12-push-banner-long.jpg`](../../receipts/BRO-3033/sim-12-push-banner-long.jpg)) `xcrun simctl push` delivered the exact `{title, body}` above to the backgrounded app. The banner reads **"Agent finished"** over two lines of body: `Needs you · Retry failed card charges with backoff Approve the retry policy: 3 attemp…` and `Needs you · Migrate webhooks to the v3 signing scheme The v3 signer is ready beh…`. That is about 80 characters before iOS's own `…` at this device width; the full 220 shows only when expanded. The same push with Paseo in the foreground showed **nothing** (`setNotificationHandler` returns no alert). This is a local simulator push, not APNs through Expo; the tap path (open the agent) is from source.
+- **simulator**: ([`sim-13-push-banner-typical.jpg`](../../receipts/BRO-3033/sim-13-push-banner-typical.jpg), [`sim-12-push-banner-long.jpg`](../../receipts/BRO-3033/sim-12-push-banner-long.jpg)) `xcrun simctl push` delivered the exact `{title, body}` above to the backgrounded app. The banner reads **"Agent finished"** over two lines of body: `Needs you · Retry failed card charges with backoff Approve the retry policy: 3 attemp…` and `Needs you · Migrate webhooks to the v3 signing scheme The v3 signer is ready beh…`. That is about 80 characters before iOS's own `…` at this device width. The sent body is up to 220 characters; how much an expanded notification or the lock screen shows was not checked (owner check). The same push with Paseo in the foreground showed **nothing** (`setNotificationHandler` returns no alert). This is a local simulator push, not APNs through Expo; the tap path (open the agent) is from source.
 
 **Consequences**
 
 - **Maestro, small (follow-up):** the notice's two parts run together on the lock screen ("…with backoff Approve the retry policy…"). Put the ask on the first line with a visible separator, e.g. `Needs you · <title> — <ask>` or `Needs you · <title>: <ask>`. Order the words so the 217 characters before `...` carry the decision: the title first, then the shortest form of the ask.
-- **M10:** draw the push as "Agent finished" (Maestro's inbox turns end as finished), the body as above, no buttons (the banner is simulator-verified). The tap landing in the inbox session, and the 220-character expanded view, come from source and are owner checks.
+- **M10:** draw the push as "Agent finished" (Maestro's inbox turns end as finished), the body as above, no buttons (the banner is simulator-verified). The tap landing in the inbox session, and what an expanded notification shows, come from source and are owner checks.
 - **Presence:** the owner sitting at the Mac suppresses the phone push (180 s rule). M10's push arrives only when the owner is away from every client. While a client is "present", the alert goes in-app to the most recent one (`computeNotificationPlan`). If that client is a phone used within 180 s and now in the background, nothing shows anywhere (`os-notifications.ts:166-170` returns early on native). M10 should not promise a push for every landing.
 
 ## Owner checks on the real iPhone

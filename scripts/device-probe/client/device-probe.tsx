@@ -67,7 +67,8 @@ function useFrameMeter(name: string) {
       start() {
         // A grab during the previous spring-back ends that measurement first, so two loops never share one.
         if (state.current) cancelAnimationFrame(state.current.raf);
-        const cur = { raf: 0, last: 0, gaps: [] as number[] };
+        // Start from touch-down, so a stall before the first frame counts as a gap.
+        const cur = { raf: 0, last: performance.now(), gaps: [] as number[] };
         const tick = (t: number) => {
           if (state.current !== cur) return;
           if (cur.last) cur.gaps.push(t - cur.last);
