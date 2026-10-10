@@ -1,0 +1,949 @@
+# Maestro next: the inventory. BRO-2994.
+#
+# Every feature, page, component, interface, store and loop of Maestro next. Each one has an id,
+# a status against today's code, and the edges that wire it. scripts/inventory-check.ts checks the
+# structure on every `bun test` (CI):
+#   - each feature reaches a page or a loop and has an interface;
+#   - each page has a frame, and a live page points at the chosen series (J desktop, M phone,
+#     K session cards, P presence, B/D settings), never an S, V, H or G reference export;
+#   - only the owner calls a gate verb;
+#   - only the conductor or a lane launches a session (A8);
+#   - every store is written by its owning layer through one module, unless a ticket says otherwise;
+#   - every finding above minor has a ticket.
+#
+# status: keep (exists, stays) · change (exists, the design changes it) · new · retire
+# layers: owner · ui (Maestro surface) · plugin (Maestro server) · conductor (Maestro as a Paseo session)
+#         · lane (a lane orchestrator: Broomva coordinator, SRI) · worker (an arc session)
+#         · bstack (fleet-reconcile, ledgers, CLIs, policy) · paseo (daemon, app, push)
+# frame: a node id in docs/design/maestro-next.pen; `today` keeps a surface undrawn, tracked by a finding.
+# phone_frame / phone_png: the M (iPhone) frame and its export, when the page has one.
+# code: today's files, from the code inventory of maestro-paseo 3f8d9d8 (four read-only passes, 10-09).
+
+version: 1
+
+features:
+  # The three holds: the only things that put a session in Needs you (A1, A0).
+  F-need-ask:
+    name: Ask — a question the session cannot settle; Answer, Skip, or the timed default
+    status: change
+    kind: need
+    answers: [A1, A4, A6]
+    pages: [P-feed, P-briefing, P-decisions, P-phone]
+    interfaces: [I-ask-raise, I-needs-list, I-ask-answer, I-ledger-answer, I-ask-default, I-answer-route]
+    code: [client/decision-card.tsx, server/control-asks.ts]
+  F-need-approval:
+    name: Approval — one exact action a policy layer held; Allow, Deny or Chat in place
+    status: new
+    kind: need
+    answers: [A1, A2]
+    pages: [P-feed, P-approval-card, P-briefing, P-phone]
+    interfaces: [I-approval-request, I-needs-list, I-approval-decide, I-undo, I-approval-apply]
+    code: [client/gate-card.tsx]
+  F-need-owner-step:
+    name: Owner step — something only the owner can do (a login, a key, a sudo); Done or Not now
+    status: new
+    kind: need
+    answers: [A1]
+    pages: [P-feed]
+    interfaces: [I-owner-step-raise, I-needs-list, I-owner-step-done]
+
+  # Watched: shown, never blocking.
+  F-finished:
+    name: Finished — what an arc landed; Continue or Change course
+    status: new
+    kind: watch
+    pages: [P-feed]
+    interfaces: [I-finished, I-handled-list, I-session-prompt]
+    code: [client/arc-report.tsx]
+  F-health-notices:
+    name: Health — a fact with evidence that closes itself; Unblock, Snooze, Open log
+    status: change
+    kind: watch
+    answers: [A6]
+    pages: [P-feed, P-health, P-briefing]
+    interfaces: [I-notice-raise, I-notice-resolve, I-notice-snooze, I-work-unblock]
+    code: [client/fleet-queue.tsx, client/plane.tsx]
+  F-proposals-digest:
+    name: Proposals — what agents suggest the fleet learn, reviewed weekly
+    status: change
+    kind: watch
+    pages: [P-feed]
+    interfaces: [I-proposal-file, I-proposal-review]
+    code: [client/fleet-queue.tsx]
+  F-handled-for-you:
+    name: Handled for you — what closed without the owner, and why
+    status: new
+    kind: watch
+    pages: [P-feed]
+    interfaces: [I-handled-list]
+  F-work-board:
+    name: Work — running, queued, done, and history, in one place
+    status: change
+    kind: watch
+    pages: [P-work, P-feed]
+    interfaces: [I-work-list, I-work-get, I-work-history, I-work-cancel, I-work-stop]
+    code: [client/plane-views.tsx, client/history.tsx]
+  F-header-counts:
+    name: One count by kind in the header, the tabs, the pill and the push
+    status: change
+    kind: watch
+    pages: [P-header]
+    interfaces: [I-needs-list]
+    code: [client/header-count.ts, client/integrations.ts]
+  F-briefing:
+    name: Briefing — an item opened beside the Feed, with its evidence and its verbs
+    status: change
+    kind: watch
+    pages: [P-briefing]
+    interfaces: [I-work-get, I-work-files]
+    code: [client/detail.tsx, client/files.tsx]
+  F-undo:
+    name: An 8 s undo on every owner verb that changes state (B4)
+    status: change
+    kind: control
+    pages: [P-briefing, P-approval-card, P-feed, P-decisions, P-work, P-health, P-initiatives, P-phone, P-settings-sweep-fleet, P-settings-loops-notices-approvals, P-settings-lanes, P-presence]
+    interfaces: [I-undo]
+    code: [server/engine.ts]
+
+  # Doing.
+  F-new-work:
+    name: New work — the composer queues it; the conductor gives it to a lane (A8)
+    status: change
+    kind: create
+    answers: [A8]
+    pages: [P-new-work]
+    interfaces: [I-work-create, I-folder-inspect, I-config-get]
+    code: [client/new-work.tsx]
+  F-decisions-triage:
+    name: Decisions — one at a time, and where each answer went
+    status: keep
+    kind: triage
+    pages: [P-decisions]
+    interfaces: [I-asks-workspace, I-ask-answer, I-fleet-ask-answer]
+    code: [client/decision-triage.tsx]
+  F-initiatives:
+    name: Initiatives — intent, driver, review date, linked work and ideas
+    status: keep
+    kind: watch
+    pages: [P-initiatives]
+    interfaces: [I-initiatives-list, I-initiatives-file, I-ask-answer]
+    code: [client/initiatives.tsx, server/initiatives.ts]
+  F-health-view:
+    name: Health — fleet ticks, schedules, loops, lanes and sessions; adopt, prompt, stop
+    status: change
+    kind: watch
+    pages: [P-health]
+    interfaces: [I-fleet-get, I-fleet-tick, I-timeline-get, I-loops-get, I-lanes-get, I-work-adopt, I-session-prompt, I-work-stop]
+    code: [client/fleet.tsx, client/timeline.tsx, client/loops.tsx]
+  F-track-session:
+    name: Track a Paseo session as work (agent panel, composer pill, Command Center, /maestro)
+    status: keep
+    kind: create
+    pages: [P-agent-panel, P-composer-pill, P-command-center]
+    interfaces: [I-work-adopt, I-work-for-agent]
+    code: [client/agent-panel.tsx, client/composer-pill.tsx, index.client.tsx]
+  F-agent-cli:
+    name: bin/maestro — what a session may do through maestro.sock
+    status: change
+    kind: create
+    pages: [P-cli]
+    interfaces: [I-work-list, I-work-get, I-work-create, I-work-adopt, I-work-for-agent, I-config-get]
+    code: [bin/maestro.ts, server/agent-socket.ts]
+
+  # Controls (B2, B3, D4).
+  F-sweep:
+    name: Plugin sweep — closes cards whose source resolved; never starts work (A8)
+    status: change
+    kind: control
+    answers: [A8]
+    pages: [P-settings-sweep-fleet]
+    interfaces: [I-sweep-get, I-sweep-wake, I-config-set]
+    code: [server/loop.ts, client/settings.tsx]
+  F-fleet-control:
+    name: Fleet on/off, mode per scope (off, dry run, act), run tick now
+    status: new
+    kind: control
+    pages: [P-settings-sweep-fleet, P-health]
+    interfaces: [I-fleet-mode-set, I-fleet-tick-run]
+  F-loop-control:
+    name: Loops — pause, resume, run now, per the loops ledger
+    status: new
+    kind: control
+    pages: [P-settings-loops-notices-approvals]
+    interfaces: [I-loops-get, I-loop-control]
+  F-notice-registry:
+    name: The notice registry — which sources may raise Health notices (.broomva/notices.yaml)
+    status: new
+    kind: control
+    pages: [P-settings-loops-notices-approvals]
+    interfaces: [I-notices-registry-get, I-notices-registry-propose]
+  F-approval-rules:
+    name: Approval rules — what each layer holds, and the preauth grants (A2)
+    status: new
+    kind: control
+    answers: [A2]
+    pages: [P-settings-loops-notices-approvals]
+    interfaces: [I-policy-get]
+  F-lanes:
+    name: Lanes — the conductor and each lane, its session, heartbeat, profile and prompt
+    status: new
+    kind: control
+    answers: [A11]
+    pages: [P-settings-lanes]
+    interfaces: [I-lanes-get, I-lanes-propose, I-conductor-wake, I-lane-tick-run]
+
+  # Orchestration (D1, D5).
+  F-conductor:
+    name: The conductor — a Paseo session that reconciles, sweeps, allocates and governs the lanes
+    status: new
+    kind: orchestrate
+    answers: [A7, A8]
+    pages: [P-settings-lanes]
+    interfaces: [I-lane-report, I-lane-assign, I-arc-launch, I-conductor-log, I-approval-apply]
+  F-presence:
+    name: Presence — present, away or off decides when waiting is needed (D5)
+    status: new
+    kind: control
+    answers: [A3]
+    pages: [P-presence, P-header]
+    interfaces: [I-presence-set, I-presence-get]
+  F-auto-continue:
+    name: A reversible next step continues after 10 min when present, at once when off (A3)
+    status: new
+    kind: orchestrate
+    answers: [A3]
+    pages: []
+    interfaces: [I-session-prompt]
+  F-answer-routing:
+    name: An answer goes home to the session that asked; owner-only answers wait for the owner
+    status: change
+    kind: orchestrate
+    answers: [A9]
+    pages: [P-decisions]
+    interfaces: [I-answer-route, I-answers-land]
+    code: [server/answer-routes.ts, server/answers-landing.ts]
+  F-phone-push:
+    name: The push and the same list on the phone
+    status: change
+    kind: watch
+    answers: [A5]
+    pages: [P-phone]
+    interfaces: [I-needs-list, I-inbox-push]
+    code: [server/inbox.ts]
+
+  # Retired by the owner's answers.
+  F-approve-work:
+    name: Approve on work (gate card, detail pane)
+    status: retire
+    replaced_by: []
+    pages: [P-approval-card]
+    interfaces: [I-work-verdict]
+    code: [client/gate-card.tsx, client/detail.tsx]
+  F-plugin-dispatch:
+    name: The plugin loop starts queued work
+    status: retire
+    interfaces: [I-work-dispatch]
+    code: [server/loop.ts]
+  F-notices-band:
+    name: A band of notices above every view
+    status: retire
+    pages: [P-notices-band]
+    interfaces: [I-work-attention]
+    code: [client/plane.tsx]
+
+pages:
+  P-header:
+    name: "Header — Maestro's header (frosted on desktop, solid on iOS): segmented tabs, workspace menu, presence, next wake, search, New work (J1; the phone deck header in M1)"
+    status: change
+    frame: E4dLZ1
+    png: j1-feed-home.png
+    phone_png: m1-feed-home-mobile.png
+    phone_frame: FKTsX
+    components: [C-header, C-count-chip, C-tabs, C-button, C-presence-menu]
+    reads: [I-needs-list]
+    code: [client/plane.tsx, client/integrations.ts]
+  P-feed:
+    name: "J1 Feed — glance tiles; holds as cards, watched as rows; rail; inspector from the right. M1 on the phone: deck, pull-up sheet carrying the tab bar, swipes, undo toast"
+    status: change
+    frame: E4dLZ1
+    png: j1-feed-home.png
+    note: "reference: S1 gcul5, V1-V4; chosen 2026-10-09"
+    phone_png: m1-feed-home-mobile.png
+    phone_frame: FKTsX
+    components: [C-hold-card, C-finished-card, C-notice-card, C-work-row, C-rail, C-state-label, C-pill, C-button, C-glance-tile, C-inspector, C-undo-toast, C-undertow, C-deck, C-pull-sheet, C-tab-bar, C-swipe-row]
+    reads: [I-needs-list, I-handled-list, I-work-list, I-notices-list, I-sweep-get]
+    writes: [I-ask-answer, I-approval-decide, I-owner-step-done, I-session-prompt, I-notice-snooze, I-work-unblock, I-undo]
+    code: [client/feed.tsx, client/feed-model.ts]
+  P-briefing:
+    name: J2–J4 Briefings — the inspector per kind (approval, ask, notice); M2–M4 cards with the detail header
+    status: change
+    frame: U28wwq
+    png: j2-j4-briefings.png
+    phone_png: m2-m4-briefings-mobile.png
+    phone_frame: kZigB
+    components: [C-briefing, C-hold-card, C-markdown, C-kbd, C-button, C-inspector, C-detail-header]
+    reads: [I-work-get, I-work-files, I-needs-list]
+    writes: [I-approval-decide, I-ask-answer, I-work-unblock, I-work-cancel, I-undo]
+    code: [client/detail.tsx]
+  P-approval-card:
+    name: K1 Maestro cards in a Paseo session — every kind and state; one tap, 8 s undo, receipt
+    status: change
+    frame: w9zol
+    png: k1-session-cards.png
+    components: [C-hold-card, C-kbd, C-button]
+    reads: [I-needs-list]
+    writes: [I-approval-decide, I-undo]
+    code: [client/gate-card.tsx]
+  P-decisions:
+    name: J5 Decisions — one at a time; four answer tiles; where each answer went. M5 on the phone
+    status: change
+    frame: uyQ0Y
+    png: j5-decisions.png
+    phone_png: m5-decisions-mobile.png
+    phone_frame: z4FVF
+    components: [C-decision-card, C-progress, C-segmented, C-kbd, C-button, C-glance-tile, C-inspector, C-deck]
+    reads: [I-asks-workspace, I-needs-list, I-answers-status]
+    writes: [I-ask-answer, I-fleet-ask-answer, I-undo]
+    code: [client/decision-triage.tsx, client/decision-card.tsx]
+  P-work:
+    name: J6 Work — five lanes as trays, Undertow on running cards, who closed Done; J6b the inspector over the right-hand lanes (B3). M6 on the phone
+    status: change
+    frame: kHK2H
+    png: j6-work.png
+    note: J6b fglkO j6b-work-inspector.png (B3)
+    phone_png: m6-work-mobile.png
+    phone_frame: GQqt8
+    components: [C-work-row, C-segmented, C-state-label, C-button, C-undertow, C-inspector, C-swipe-row]
+    reads: [I-work-list, I-work-history]
+    writes: [I-work-cancel, I-work-stop, I-session-prompt, I-approval-decide, I-undo]
+    code: [client/plane-views.tsx, client/history.tsx]
+  P-health:
+    name: J7 Health — verdict, tick grid, sessions, schedules, the conductor and lanes, notices with what closes each. M7 on the phone
+    status: change
+    frame: n7FYkw
+    png: j7-health.png
+    phone_png: m7-health-mobile.png
+    phone_frame: NCZ4H
+    components: [C-tick-strip, C-notice-card, C-roster, C-segmented, C-pill, C-button, C-glance-tile, C-deck, C-undertow, C-swipe-row]
+    reads: [I-fleet-get, I-fleet-tick, I-timeline-get, I-loops-get, I-lanes-get, I-needs-list, I-notices-list]
+    writes: [I-work-adopt, I-session-prompt, I-work-stop, I-notice-snooze, I-fleet-tick-run, I-fleet-mode-set, I-loop-control, I-undo]
+    code: [client/fleet.tsx, client/fleet-health.tsx, client/fleet-roster.tsx, client/timeline.tsx, client/loops.tsx]
+  P-initiatives:
+    name: J8 Initiatives — lateness loudest; a due review is an Ask on its due date in the Feed deck (B2). M8 on the phone
+    status: change
+    frame: h5eiGd
+    png: j8-initiatives.png
+    phone_png: m8-initiatives-mobile.png
+    phone_frame: VaM84
+    components: [C-initiative-card, C-decision-card, C-button, C-inspector, C-detail-header]
+    reads: [I-initiatives-list, I-needs-list]
+    writes: [I-ask-answer, I-initiatives-file, I-undo]
+    code: [client/initiatives.tsx]
+  P-new-work:
+    name: J9 New work — grows from New work over a dimmed Feed; who starts it (the lane, A8). M9 grows from +
+    status: change
+    frame: xtq5c
+    png: j9-new-work.png
+    phone_png: m9-new-work-mobile.png
+    phone_frame: XpUj7
+    components: [C-composer, C-pill, C-kbd, C-button]
+    reads: [I-config-get, I-folder-inspect, I-lanes-get]
+    writes: [I-work-create]
+    code: [client/new-work.tsx]
+  P-phone:
+    name: M10 From a push — Paseo's push, the asking session's card, Open in Maestro on the same hold
+    status: new
+    frame: jCoTw
+    png: m10-from-a-push.png
+    components: [C-hold-card, C-tabs]
+    reads: [I-needs-list]
+    writes: [I-approval-decide, I-ask-answer, I-undo]
+  P-settings-sweep-fleet:
+    name: B2 Settings › Sweep and fleet
+    status: change
+    frame: V4SfuM
+    png: b2-settings-loop-fleet.png
+    phone_png: m11-settings-mobile.png
+    phone_frame: m6wUjy
+    components: [C-settings-row, C-toggle, C-segmented, C-button]
+    reads: [I-sweep-get, I-fleet-get, I-config-get]
+    writes: [I-config-set, I-sweep-wake, I-fleet-mode-set, I-fleet-tick-run, I-undo]
+    code: [client/settings.tsx, client/loop.tsx]
+  P-settings-loops-notices-approvals:
+    name: B3 Settings › Loops, Notices, Approvals
+    status: new
+    frame: uJmBk
+    png: b3-settings-loops-notices-approvals.png
+    phone_png: m11-settings-mobile.png
+    phone_frame: m6wUjy
+    components: [C-settings-row, C-toggle, C-button]
+    reads: [I-loops-get, I-notices-registry-get, I-policy-get]
+    writes: [I-loop-control, I-notices-registry-propose, I-undo]
+  P-settings-lanes:
+    name: D4 Settings › Lanes — the conductor, each lane, its composed prompt
+    status: new
+    frame: ZTPUm
+    png: d4-settings-lanes.png
+    phone_png: m11-settings-mobile.png
+    phone_frame: m6wUjy
+    components: [C-lane-card, C-settings-row, C-button]
+    reads: [I-lanes-get]
+    writes: [I-lanes-propose, I-conductor-wake, I-lane-tick-run, I-undo]
+  P-presence:
+    name: P1 Presence — the menu from the presence pill (desktop and phone) and what each state changes
+    status: new
+    frame: FUo1Q
+    png: p1-presence.png
+    phone_frame: FUo1Q
+    phone_png: p1-presence.png
+    components: [C-presence-menu, C-segmented, C-toggle]
+    reads: [I-presence-get]
+    writes: [I-presence-set, I-undo]
+  P-agent-panel:
+    name: The Work panel beside a Paseo agent
+    status: keep
+    frame: today
+    components: [C-briefing, C-button]
+    reads: [I-work-for-agent]
+    writes: [I-work-adopt]
+    code: [client/agent-panel.tsx]
+  P-composer-pill:
+    name: The work pill in Paseo's composer
+    status: keep
+    frame: today
+    components: [C-state-label, C-button]
+    reads: [I-work-for-agent]
+    code: [client/composer-pill.tsx]
+  P-command-center:
+    name: Command Center items and /maestro
+    status: keep
+    frame: today
+    writes: [I-work-adopt]
+    code: [index.client.tsx]
+  P-cli:
+    name: bin/maestro (ls, show, new, track, mine, config)
+    status: change
+    frame: today
+    reads: [I-work-list, I-work-get, I-work-for-agent, I-config-get]
+    writes: [I-work-create, I-work-adopt]
+    code: [bin/maestro.ts]
+
+  # Today's surfaces the design folds into others.
+  P-notices-band:
+    name: Notices band above every view
+    status: retire
+    replaced_by: [P-feed]
+    code: [client/plane.tsx]
+  P-tab-board:
+    name: Board tab
+    status: retire
+    replaced_by: [P-work]
+    code: [client/plane-views.tsx]
+  P-tab-list:
+    name: List tab
+    status: retire
+    replaced_by: [P-work]
+    code: [client/plane-views.tsx]
+  P-tab-history:
+    name: History tab
+    status: retire
+    replaced_by: [P-work]
+    code: [client/history.tsx]
+  P-tab-fleet:
+    name: Fleet tab
+    status: retire
+    replaced_by: [P-health]
+    code: [client/fleet.tsx]
+  P-tab-timeline:
+    name: Timeline tab
+    status: retire
+    replaced_by: [P-health]
+    code: [client/timeline.tsx]
+  P-tab-loops:
+    name: Loops tab
+    status: retire
+    replaced_by: [P-health, P-settings-loops-notices-approvals]
+    code: [client/loops.tsx]
+  P-loop-panel:
+    name: The inline loop panel and chip
+    status: retire
+    replaced_by: [P-settings-sweep-fleet]
+    code: [client/loop.tsx]
+
+components:
+  C-header: { name: "Shell/Header", status: change, pen: R4srT, code: [client/plane.tsx] }
+  C-tabs: { name: "Tabs", status: change, pen: null, code: [client/plane-controls.tsx] }
+  C-count-chip: { name: "Count chip by kind", status: new, pen: p5UJ7N }
+  C-button: { name: "Button (primary, secondary, ghost)", status: keep, pen: fNXA8, code: [client/ui.tsx] }
+  C-pill: { name: "Pill", status: change, pen: p5UJ7N, code: [client/fleet-ui.tsx, client/new-work.tsx] }
+  C-segmented: { name: "Segmented", status: change, pen: null, code: [client/ui.tsx, client/fleet-ui.tsx] }
+  C-kbd: { name: "Kbd", status: keep, pen: Mpif9, code: [client/ui.tsx] }
+  C-state-label: { name: "StateLabel and StateDot (the six canonical states, tidepool dot)", status: keep, pen: null, code: [client/ui.tsx] }
+  C-hold-card:
+    name: Hold card — variants ask, approval, owner step; the verbs in place
+    status: new
+    pen: null
+    code: [client/decision-card.tsx, client/gate-card.tsx]
+  C-finished-card: { name: "Finished card", status: new, pen: null, code: [client/arc-report.tsx] }
+  C-notice-card: { name: "Notice card", status: change, pen: null, code: [client/fleet-queue.tsx] }
+  C-work-row: { name: "Work row (Undertow while running)", status: change, pen: null, code: [client/plane-views.tsx, client/feed.tsx] }
+  C-rail: { name: "Feed rail (Decide, Handled for you, Proposals, Today)", status: new, pen: null }
+  C-briefing: { name: "Briefing pane", status: change, pen: null, code: [client/detail.tsx] }
+  C-decision-card: { name: "Decision card", status: keep, pen: null, code: [client/decision-card.tsx] }
+  C-progress: { name: "Progress bar", status: keep, pen: null, code: [client/ui.tsx] }
+  C-markdown: { name: "Markdown view", status: keep, pen: null, code: [client/markdown-view.tsx] }
+  C-tick-strip: { name: "Tick strip", status: keep, pen: zctVD, code: [client/fleet-health.tsx] }
+  C-roster: { name: "Session roster and inspector", status: keep, pen: null, code: [client/fleet-roster.tsx] }
+  C-initiative-card: { name: "Initiative card", status: keep, pen: null, code: [client/initiatives.tsx] }
+  C-composer: { name: "Composer", status: change, pen: null, code: [client/new-work.tsx] }
+  C-settings-row: { name: "Settings row", status: new, pen: null, code: [client/settings.tsx] }
+  C-toggle: { name: "Toggle", status: new, pen: null }
+  C-lane-card: { name: "Lane card", status: new, pen: null }
+  # The J/M kit (BRO-3034).
+  C-inspector: { name: "Inspector (per-kind body; action bar frosted on desktop, solid on iOS)", status: new, pen: VbnhW }
+  C-glance-tile: { name: "Glance tile", status: new, pen: oatDw }
+  C-deck: { name: "Deck (phone; one hold at a time)", status: new, pen: null }
+  C-pull-sheet: { name: "Pull-up sheet (phone; peeks from the bottom edge)", status: new, pen: null }
+  C-tab-bar: { name: "Tab bar riding on the sheet (phone)", status: new, pen: P1PV0 }
+  C-detail-header: { name: "Detail header (grabber, close, kind and place, more)", status: new, pen: Faf21 }
+  C-swipe-row: { name: "Swipe row (right default, left Snooze or Open; never a hold)", status: new, pen: null }
+  C-undo-toast: { name: "Undo toast (8 s)", status: new, pen: xuqvS }
+  C-undertow: { name: "Undertow halo, tidepool dot and standing pulse (Running only)", status: new, pen: L4xCf4 }
+  C-presence-menu: { name: "Presence menu", status: new, pen: kJOpv }
+
+interfaces:
+  # Reads. Pure: no write, no send, no create (BRO-2995).
+  I-needs-list:
+    name: needs.list(kind) — the one projection every count reads
+    status: new
+    handler: plugin
+    callers: [ui, conductor]
+    code: [server/attention.ts]
+  I-handled-list: { name: "handled.list", status: new, handler: plugin, callers: [ui] }
+  I-work-list: { name: "work.list", status: change, handler: plugin, callers: [ui, worker], code: [server/engine.ts, shared/contracts.ts] }
+  I-work-get: { name: "work.get", status: keep, handler: plugin, callers: [ui, worker], code: [server/engine.ts] }
+  I-work-history: { name: "work.history", status: keep, handler: plugin, callers: [ui], code: [server/records.ts] }
+  I-work-files: { name: "work.files and work.file", status: keep, handler: plugin, callers: [ui], code: [server/records.ts] }
+  I-work-for-agent: { name: "work.for-agent", status: keep, handler: plugin, callers: [ui, worker], code: [server/engine.ts] }
+  I-asks-workspace: { name: "asks.workspace", status: keep, handler: plugin, callers: [ui], code: [server/control-home.ts] }
+  I-fleet-get: { name: "fleet.get", status: keep, handler: plugin, callers: [ui], code: [server/fleet.ts] }
+  I-fleet-tick: { name: "fleet.tick", status: keep, handler: plugin, callers: [ui], code: [server/fleet.ts] }
+  I-timeline-get: { name: "timeline.get and timeline.log", status: keep, handler: plugin, callers: [ui], code: [server/timeline.ts] }
+  I-loops-get: { name: "loops.get", status: change, handler: plugin, callers: [ui], code: [server/loops.ts] }
+  I-initiatives-list: { name: "initiatives.list", status: keep, handler: plugin, callers: [ui], code: [server/initiatives.ts] }
+  I-config-get: { name: "config.get", status: keep, handler: plugin, callers: [ui, worker], code: [server/config.ts] }
+  I-folder-inspect: { name: "folder.inspect", status: keep, handler: plugin, callers: [ui], code: [server/folders.ts] }
+  I-sweep-get: { name: "sweep.get (today loop.get)", status: change, handler: plugin, callers: [ui], code: [server/loop.ts] }
+  I-lanes-get: { name: "lanes.get", status: new, handler: plugin, callers: [ui, conductor] }
+  I-presence-get: { name: "presence.get", status: new, handler: plugin, callers: [ui, conductor] }
+  I-policy-get: { name: "policy.get (policy.yaml and preauth, read only)", status: new, handler: plugin, callers: [ui] }
+  I-notices-registry-get: { name: "notices.registry", status: new, handler: plugin, callers: [ui] }
+  I-notices-list: { name: "notices.list (the Health deck: stuck, quiet, schedule, loop, initiative)", status: new, handler: plugin, callers: [ui, conductor] }
+  I-answers-status: { name: "answers.status (waiting to land, routed, acted, held, recent)", status: new, handler: plugin, callers: [ui] }
+
+  # Owner verbs. Each records a receipt and honours the undo window (BRO-2999).
+  I-ask-answer:
+    name: ask.answer
+    status: keep
+    handler: plugin
+    callers: [ui]
+    gate: owner
+    stores: [S-ask-receipts, S-answers-branch]
+    code: [server/control-home.ts, server/control-asks.ts]
+  I-approval-decide:
+    name: approval.decide (Allow or Deny, against the exact action)
+    status: new
+    handler: plugin
+    callers: [ui]
+    gate: owner
+    stores: [S-ask-receipts]
+  I-owner-step-done: { name: "owner_step.done", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-ask-receipts] }
+  I-undo: { name: "work.undo (and every verb's undo)", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
+  I-verb-apply: { name: "apply a pending owner verb once its 8 s undo window passes (the owner already chose)", status: change, handler: plugin, callers: [plugin], stores: [S-work], code: [server/engine.ts] }
+  I-work-unblock: { name: "work.unblock", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
+  I-work-cancel: { name: "work.cancel", status: keep, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
+  I-work-stop: { name: "work.stop", status: keep, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
+  I-notice-snooze: { name: "notice.snooze", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-notices-state] }
+  I-config-set: { name: "config.set", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-config], code: [server/config.ts] }
+  I-sweep-wake: { name: "sweep.wake (today loop.wake)", status: change, handler: plugin, callers: [ui, plugin], stores: [S-wake-log, S-work], code: [server/loop.ts] }
+  I-presence-set: { name: "presence.set", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-presence] }
+  I-session-prompt:
+    name: session.prompt (Continue, Change course, Send a prompt; the conductor's auto-continue)
+    status: change
+    handler: plugin
+    callers: [ui, conductor]
+    code: [server/engine.ts]
+    note: "Prompts an existing session; never creates one. A8 forbids creating work by rule; Continue is the owner's verb, auto-continue is A3."
+  I-initiatives-file: { name: "initiatives.file", status: keep, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/initiatives.ts] }
+
+  # Work records. Queue only: launching is a lane's (A8).
+  I-work-create: { name: "work.create (queues; no dispatch flag)", status: change, handler: plugin, callers: [ui, worker, lane], stores: [S-work], code: [server/engine.ts] }
+  I-work-adopt: { name: "work.adopt (verified caller, BRO-2996)", status: change, handler: plugin, callers: [ui, worker], stores: [S-work], code: [server/engine.ts] }
+
+  # The agent contract (C1): typed reaches, written through the ledger library.
+  I-ask-raise: { name: "ask.raise", status: new, handler: bstack, callers: [worker, lane, bstack], stores: [S-asks-ledgers] }
+  I-approval-request: { name: "approval.request", status: new, handler: bstack, callers: [worker, lane], stores: [S-asks-ledgers] }
+  I-owner-step-raise: { name: "owner_step.raise", status: new, handler: bstack, callers: [worker, lane], stores: [S-asks-ledgers] }
+  I-finished: { name: "finished", status: new, handler: bstack, callers: [worker], stores: [S-asks-ledgers] }
+  I-proposal-file: { name: "proposal.file", status: new, handler: bstack, callers: [worker, lane, bstack], stores: [S-asks-ledgers] }
+  I-ledger-answer: { name: "the ledger library's answer write (ask_ledger)", status: change, handler: bstack, callers: [plugin], stores: [S-asks-ledgers], code: [server/control-asks.ts] }
+
+  # Notices.
+  I-notice-raise: { name: "notice.raise", status: new, handler: plugin, callers: [worker, lane, bstack, plugin], stores: [S-notices-state] }
+  I-notice-resolve: { name: "notice.resolve(key)", status: new, handler: plugin, callers: [plugin, lane, bstack], stores: [S-notices-state] }
+
+  # The conductor's hands (D1).
+  I-approval-apply: { name: "approval.apply (runs the allowed exact action)", status: new, handler: plugin, callers: [conductor] }
+  I-answer-route: { name: "answer.route (to the asker, a sibling, the driver)", status: change, handler: plugin, callers: [conductor], stores: [S-ask-receipts], code: [server/answer-routes.ts] }
+  I-answers-land: { name: "answers.land (one PR for maestro/answers)", status: change, handler: plugin, callers: [conductor], stores: [S-answers-branch], code: [server/answers-landing.ts] }
+  I-ask-default: { name: "ask.default (a reversible ask takes its default after 30 min, A4)", status: new, handler: plugin, callers: [conductor], stores: [S-ask-receipts] }
+  I-inbox-push: { name: "the inbox echo session that makes a push", status: change, handler: plugin, callers: [plugin], stores: [S-inbox], code: [server/inbox.ts] }
+  I-paseo-events: { name: "Paseo hooks (turn started and ended, permission, archived)", status: keep, handler: plugin, callers: [paseo], code: [index.server.ts] }
+
+  # Conductor and lanes.
+  I-lane-report: { name: "lane.report", status: new, handler: conductor, callers: [lane], stores: [S-conductor-state] }
+  I-conductor-log: { name: "the conductor's tick record and state.yaml", status: new, handler: conductor, callers: [conductor], stores: [S-conductor-state] }
+  I-lane-assign: { name: "lane.assign", status: new, handler: lane, callers: [conductor], stores: [S-lane-state] }
+  I-arc-launch: { name: "arc.launch (a profile and a brief)", status: new, handler: lane, callers: [lane], launches: true }
+  I-conductor-wake: { name: "wake the conductor's heartbeat", status: new, handler: paseo, callers: [ui, plugin] }
+  I-lane-tick-run: { name: "run a lane's tick now", status: new, handler: paseo, callers: [ui, conductor] }
+
+  # bstack-owned writes, called through their CLIs or a PR (B2, B3, D4).
+  I-fleet-mode-set: { name: "fleet mode and on/off (fleet CLI, launchctl)", status: new, handler: bstack, callers: [ui], gate: owner, stores: [S-fleet-config] }
+  I-fleet-tick-run: { name: "run a fleet tick now", status: new, handler: bstack, callers: [ui, conductor], stores: [S-fleet-state] }
+  I-fleet-ask-answer: { name: "answer a fleet ask through the fleet CLI", status: change, handler: bstack, callers: [ui], gate: owner, stores: [S-fleet-asks], code: [server/fleet.ts] }
+  I-proposal-review: { name: "review a proposal through the fleet CLI", status: change, handler: bstack, callers: [ui], gate: owner, stores: [S-fleet-reviews], code: [server/fleet.ts] }
+  I-loop-control: { name: "pause, resume, run a loop now", status: new, handler: bstack, callers: [ui], gate: owner, stores: [S-loop-ledger] }
+  I-notices-registry-propose: { name: "propose a notices.yaml change (a PR)", status: new, handler: bstack, callers: [ui], gate: owner, stores: [S-notices-registry] }
+  I-lanes-propose: { name: "propose a lanes.yaml change (a PR)", status: new, handler: bstack, callers: [ui], gate: owner, stores: [S-lanes] }
+  I-drift-record: { name: "record a loop drift transition (pinned writer, BRO-3002)", status: change, handler: bstack, callers: [plugin], stores: [S-loop-drift], code: [server/loops.ts] }
+
+  # Retired.
+  I-work-dispatch: { name: "work.dispatch (the plugin starts a session)", status: retire, handler: plugin, callers: [ui, worker, plugin], launches: true, stores: [S-work], code: [server/engine.ts, server/runs.ts] }
+  I-work-verdict: { name: "work.verdict approve, revise, block", status: retire, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
+  I-work-attention: { name: "work.attention (lists the client sums)", status: retire, handler: plugin, callers: [ui], code: [server/attention.ts] }
+
+stores:
+  S-config: { name: "~/.config/maestro-paseo/config.json", status: change, owner: plugin, modules: [server/config.ts], code: [server/config.ts] }
+  S-work:
+    name: <workRoot>/<item>/_work.md and _events.jsonl
+    status: change
+    owner: plugin
+    modules: [server/store.ts]
+    code: [server/store.ts]
+  S-wake-log: { name: "~/.config/maestro-paseo/wake-log.jsonl", status: keep, owner: plugin, modules: [server/wake-log.ts], code: [server/wake-log.ts] }
+  S-ask-receipts:
+    name: ~/.local/state/maestro-paseo/asks.jsonl
+    status: change
+    owner: plugin
+    modules: [server/control-asks.ts, server/answer-routes.ts]
+    exception: two appenders on different in-process chains, no file lock, until BRO-2997
+    code: [server/control-asks.ts, server/answer-routes.ts]
+  S-answers-branch:
+    name: the maestro/answers worktree and branch
+    status: change
+    owner: plugin
+    modules: [server/control-home.ts, server/answers-landing.ts]
+    exception: serialized in process only, until BRO-2997
+    code: [server/control-home.ts, server/answers-landing.ts]
+  S-asks-ledgers:
+    name: <checkout>/.control/asks/*.yaml — asks, approvals, owner steps, finished, proposals
+    status: change
+    owner: bstack
+    modules: [server/control-asks.ts, bstack ask_ledger.py]
+    exception: Maestro writes answers itself instead of through the ledger library, until BRO-2997
+    code: [server/control-asks.ts]
+  S-notices-state: { name: "notice state (raised, snoozed, resolved by key)", status: new, owner: plugin }
+  S-presence: { name: "owner presence (present, away, off)", status: new, owner: plugin }
+  S-inbox: { name: "~/.config/maestro-paseo/inbox.json", status: change, owner: plugin, modules: [server/inbox.ts], code: [server/inbox.ts] }
+  S-conductor-state: { name: "the conductor's state.yaml and ticks ledger", status: new, owner: conductor }
+  S-lane-state: { name: "each lane's tick state and ledger", status: keep, owner: lane }
+  S-lanes: { name: ".broomva/lanes.yaml", status: new, owner: bstack }
+  S-notices-registry: { name: ".broomva/notices.yaml", status: new, owner: bstack }
+  S-loop-ledger: { name: ".broomva/loops/*.yaml on origin/main", status: keep, owner: bstack, code: [server/loops-ledger.ts] }
+  S-loop-drift: { name: "~/.broomva/ledger/loops/drift.jsonl", status: change, owner: bstack, modules: [server/loops.ts], code: [server/loops.ts] }
+  S-fleet-config: { name: "~/.config/ctx/fleet.json and the launchd jobs", status: keep, owner: bstack, code: [server/fleet.ts] }
+  S-fleet-state: { name: "~/.local/state/fleet-reconcile/<scope>/ (ledger, ticks, reports)", status: keep, owner: bstack, code: [server/fleet.ts] }
+  S-fleet-asks:
+    name: <fleet state>/.control/asks/*.yaml
+    status: change
+    owner: bstack
+    modules: [server/fleet.ts, fleet-reconcile tick.sh]
+    exception: Maestro writes the fleet's ledger directly, until BRO-2997
+    code: [server/fleet.ts]
+  S-fleet-reviews:
+    name: <fleet state>/proposal-reviews.jsonl
+    status: change
+    owner: bstack
+    modules: [server/fleet.ts]
+    code: [server/fleet.ts]
+  S-initiatives: { name: ".control/initiatives/*.yaml", status: keep, owner: bstack, code: [server/initiatives.ts] }
+  S-p9: { name: "~/.config/broomva/p9 (CI waits)", status: keep, owner: bstack, code: [server/p9.ts] }
+  S-launchd: { name: "~/Library/LaunchAgents plists and logs (read only)", status: keep, owner: bstack, code: [server/launchd.ts] }
+  S-paseo-registry: { name: "Paseo agents, labels, timelines, schedules, heartbeats", status: keep, owner: paseo }
+
+loops:
+  L-conductor-tick:
+    name: The conductor's tick — reconcile, sweep, allocate, govern, log; resume on events (D5)
+    status: new
+    scheduler: Paseo heartbeat maestro-conductor, every 15 min, woken by an answer, a death, a lane report or a merge (A7)
+    owner: conductor
+    calls: [I-needs-list, I-lanes-get, I-presence-get, I-lane-assign, I-approval-apply, I-answer-route, I-answers-land, I-ask-default, I-session-prompt, I-conductor-log, I-lane-tick-run]
+  L-coordinator-tick:
+    name: Broomva lane — bstack orchestrator-tick base + coordinator overlay (A11 pilot)
+    status: keep
+    scheduler: Paseo heartbeat coordinator-tick, every 2 h
+    owner: lane
+    calls: [I-lane-report, I-arc-launch, I-work-create, I-ask-raise, I-notice-raise]
+  L-sri-tick:
+    name: SRI lane — its own tick prompt until the 10-16 pilot check (BRO-2983)
+    status: keep
+    scheduler: Paseo heartbeat sri-coordinator-tick at :17 and :47
+    owner: lane
+    calls: [I-lane-report, I-arc-launch]
+  L-fleet-reconcile:
+    name: fleet-reconcile, one scope per job, dry run
+    status: keep
+    scheduler: launchd, hourly per scope
+    owner: bstack
+    calls: [I-fleet-tick-run, I-ask-raise, I-proposal-file]
+  L-plugin-sweep:
+    name: The plugin sweep — closes cards whose source resolved, records drift; never dispatches (A8)
+    status: change
+    scheduler: plugin timer (sweep minutes, off by default)
+    owner: plugin
+    calls: [I-sweep-wake, I-notice-resolve, I-drift-record]
+    code: [server/loop.ts]
+  L-undo-window:
+    name: The 8 s undo timers that apply a pending owner verb (B4)
+    status: keep
+    scheduler: plugin timer, 8 s after the verb
+    owner: plugin
+    calls: [I-verb-apply]
+    code: [server/engine.ts]
+  L-paseo-events:
+    name: Paseo lifecycle hooks
+    status: keep
+    scheduler: Paseo events
+    owner: plugin
+    calls: [I-paseo-events]
+    code: [index.server.ts]
+  L-inbox-grace:
+    name: The 15 min grace before an orchestrator's landing is pushed
+    status: change
+    scheduler: plugin timer, one shot
+    owner: plugin
+    calls: [I-inbox-push]
+    code: [server/inbox.ts]
+  L-client-query:
+    name: The client's one subscription to needs.list and handled.list
+    status: change
+    scheduler: React Query, invalidated by plugin events
+    owner: ui
+    calls: [I-needs-list, I-handled-list]
+    code: [client/hooks.ts, client/integrations.ts]
+  L-loop-start-queued:
+    name: Today's plugin loop step that starts queued work
+    status: retire
+    scheduler: plugin timer (loopMinutes)
+    owner: plugin
+    calls: [I-work-dispatch]
+    code: [server/loop.ts]
+
+findings:
+  # Blockers: they break an owner answer.
+  FND-plugin-launches:
+    name: The plugin loop starts sessions (loop wake → startQueued → dispatch → agents.create), against A8
+    severity: blocker
+    state: open
+    ticket: BRO-2990
+    about: [L-loop-start-queued, I-work-dispatch, F-plugin-dispatch]
+    code: [server/loop.ts:512, server/runs.ts:161]
+  FND-routed-answer-runs:
+    name: An answer filed as queued work with no hold is dispatched on the next wake (the 13b97ad9 burst)
+    severity: blocker
+    state: open
+    ticket: BRO-2990
+    about: [I-answer-route, F-answer-routing]
+    code: [server/answer-routes.ts:563, server/loop.ts:512]
+
+  FND-undo-ten-seconds:
+    name: UNDO_MS is 10 s in the code; the owner set 8 s everywhere (B4)
+    severity: minor
+    state: open
+    ticket: BRO-3032
+    about: [F-undo, L-undo-window, I-undo]
+    code: [server/engine.ts:191]
+
+  # Major: wiring that breaks a stated invariant.
+  FND-reads-mutate:
+    name: Polled reads write — work.list reconciles and sweeps, work.attention sweeps, loops.get records drift, a poll can open a session
+    severity: major
+    state: open
+    ticket: BRO-2995
+    about: [I-work-list, I-loops-get, I-work-attention]
+    code: [server/engine.ts:605, server/loops.ts:588, server/inbox.ts:398]
+  FND-self-close:
+    name: A session can close its own gated work by printing ARC-STATUS and calling maestro ls
+    severity: major
+    state: open
+    ticket: BRO-2996
+    about: [I-work-list, F-agent-cli]
+    code: [server/engine.ts:2149, server/events.ts:491]
+  FND-socket-caller:
+    name: The socket trusts a self-reported caller; adopt any session, dispatch any queued item
+    severity: major
+    state: open
+    ticket: BRO-2996
+    about: [I-work-adopt, I-work-create, P-cli]
+    code: [server/agent-socket.ts:95, bin/maestro.ts:55]
+  FND-agent-dispatch-policy:
+    name: maestro dispatch from a session uses a weaker run policy than the loop
+    severity: major
+    state: open
+    ticket: BRO-2996
+    about: [I-work-dispatch]
+    code: [server/engine.ts:343, server/runs.ts:101]
+  FND-client-counts:
+    name: The client sums six lists into the count, and three surfaces disagree (Fleet band omits loops)
+    severity: major
+    state: open
+    ticket: BRO-3001
+    about: [I-needs-list, F-header-counts, P-header]
+    code: [client/header-count.ts:36, client/fleet-cockpit-model.ts:318, client/plane-model.ts:55]
+  FND-permission-bypass:
+    name: Allow and Deny call Paseo straight from the client in two copied handlers; the engine learns late
+    severity: major
+    state: open
+    ticket: BRO-2999
+    about: [I-approval-decide, P-approval-card]
+    code: [client/detail.tsx:318, client/gate-card.tsx:256]
+  FND-approve-on-work:
+    name: The gate card and the detail pane still offer Approve on work
+    severity: major
+    state: open
+    ticket: BRO-2999
+    about: [F-approve-work, I-work-verdict, P-approval-card]
+    code: [client/gate-card.tsx:187, server/engine.ts:954]
+  FND-no-undo:
+    name: Stop, cancel, unblock, answer, review and config.set apply at once, with no undo
+    severity: major
+    state: open
+    ticket: BRO-2999
+    about: [I-work-stop, I-work-cancel, I-ask-answer, I-config-set, F-undo]
+    code: [server/engine.ts:1474, index.server.ts]
+  FND-multi-writer-stores:
+    name: asks.jsonl, the answers branch, the ask ledgers and the fleet's ledgers each have two writer modules
+    severity: major
+    state: open
+    ticket: BRO-2997
+    about: [S-ask-receipts, S-answers-branch, S-asks-ledgers, S-fleet-asks]
+    code: [server/control-asks.ts:882, server/answer-routes.ts:755, server/answers-landing.ts:331]
+  FND-work-lock:
+    name: The work store has only an in-memory lock; two daemons on one workRoot race
+    severity: major
+    state: open
+    ticket: BRO-2997
+    about: [S-work]
+    code: [server/store.ts:46, server/store.ts:252]
+  FND-writes-fleet-state:
+    name: Maestro writes fleet-reconcile's ledgers and reviews directly
+    severity: major
+    state: open
+    ticket: BRO-2997
+    about: [S-fleet-asks, S-fleet-reviews, I-fleet-ask-answer, I-proposal-review]
+    code: [server/fleet.ts:893, server/fleet.ts:975]
+  FND-live-script:
+    name: The daemon pipes origin/main:scripts/broomva_home.py into python3 on drift writes
+    severity: major
+    state: open
+    ticket: BRO-3002
+    about: [I-drift-record, S-loop-drift]
+    code: [server/loops.ts:287]
+  FND-pen-components:
+    name: Only Shell/Header is a Pen instance; hold, finished, notice cards, rows and settings rows are drawn by hand
+    severity: major
+    state: open
+    ticket: BRO-3034
+    about: [C-hold-card, C-finished-card, C-notice-card, C-work-row, C-settings-row, C-toggle, C-lane-card, C-segmented]
+    note: "Partly: M components, M/Detail header and the Undertow are reusable in the .pen; the desktop inspector is still drawn per frame. BRO-3000 closed; the build kit is BRO-3034."
+  FND-presence-undrawn:
+    name: No screen has the presence switch; it exists only in D5's table
+    severity: major
+    state: fixed
+    ticket: BRO-3000
+    about: [F-presence, P-header]
+
+  # Minor: hygiene.
+  FND-four-pollers:
+    name: Four pollers on work.attention at three rates, one outside React Query
+    severity: minor
+    state: open
+    ticket: BRO-3001
+    about: [L-client-query, I-work-attention]
+    code: [client/hooks.ts:114, client/timeline.tsx:563, client/loops.tsx:224, client/integrations.ts:176]
+  FND-inbox-echo:
+    name: A push needs an echo session from a fake provider; waits on Paseo's notify API (A5)
+    severity: minor
+    state: open
+    ticket: BRO-2999
+    about: [I-inbox-push, F-phone-push, P-phone]
+    code: [server/inbox.ts:98, server/inbox.ts:398]
+  FND-dead-code:
+    name: FeedView never renders; WorkspaceDecisions and NewWorkPane have no callers; 20+ test-only exports
+    severity: minor
+    state: open
+    ticket: BRO-2998
+    about: [P-feed, P-decisions, P-new-work]
+    code: [client/plane.tsx:376, client/decisions.tsx:196, client/new-work.tsx:107]
+  FND-filter-intent:
+    name: The filter intent from "What needs you" does nothing on the Feed
+    severity: minor
+    state: open
+    ticket: BRO-2998
+    about: [P-feed, P-header]
+    code: [client/plane.tsx:113, client/header-count.ts:56]
+  FND-duplicate-primitives:
+    name: Segmented, Verb and Pill exist twice each in the client
+    severity: minor
+    state: open
+    ticket: BRO-2998
+    about: [C-segmented, C-pill, C-button]
+    code: [client/ui.tsx:562, client/fleet-ui.tsx:303, client/new-work.tsx:1366, client/decision-card.tsx:72]
+  FND-large-modules:
+    name: Six modules over 1000 lines (engine.ts 2222, new-work.tsx 1464)
+    severity: minor
+    state: open
+    ticket: BRO-2998
+    about: [P-new-work, P-health, I-work-list]
+    code: [server/engine.ts, client/new-work.tsx, client/fleet-queue.tsx, server/control-home.ts, server/events.ts, server/fleet.ts]
+  FND-runners:
+    name: Three git and gh runners with different hardening; test doubles ship in the package
+    severity: minor
+    state: open
+    ticket: BRO-3002
+    about: [I-answers-land, I-asks-workspace]
+    code: [server/control-home.ts:407, server/worktree.ts:86, package.json]
+  FND-lanes-in-health:
+    name: S7 Health has no Lanes section
+    severity: minor
+    state: fixed
+    ticket: BRO-3000
+    about: [P-health, F-lanes]
+  FND-ask-countdown:
+    name: The Ask card does not show the 30-minute default and Snooze together
+    severity: minor
+    state: fixed
+    ticket: BRO-3000
+    about: [F-need-ask, C-hold-card]
+  FND-phone-buttons:
+    name: Phone pushes have no Allow / Deny until Paseo adds push categories (A5 request)
+    severity: minor
+    state: open
+    about: [P-phone, F-phone-push]
+  FND-today-surfaces:
+    name: The agent panel, composer pill, Command Center and CLI are kept as they are, with no frame
+    severity: minor
+    state: open
+    about: [P-agent-panel, P-composer-pill, P-command-center, P-cli]
+    note: "Kept as they are by design; they get frames only if a later pass changes them (BRO-3000 closed)."
