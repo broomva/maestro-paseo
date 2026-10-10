@@ -37,7 +37,10 @@ interface FrameStats {
   maxMs: number;
 }
 
-/** Counts animation frames between start() and stop(): a frame later than 20 ms is a dropped one at 60 Hz. */
+/**
+ * Counts animation frames from touch-down until the release spring settles (both run on the JS thread):
+ * a frame later than 20 ms is a dropped one at 60 Hz.
+ */
 function useFrameMeter(name: string) {
   const [stats, setStats] = useState<FrameStats | null>(null);
   const state = useRef<{ raf: number; last: number; s: FrameStats } | null>(null);
@@ -132,7 +135,7 @@ function DragProbe({ name, axis, busyMs }: { name: string; axis: "x" | "y" | "xy
       <Text testID={`frames-${name}`} style={{ fontSize: 12 }}>
         {s
           ? `frames ${s.frames} · >20ms ${s.over20} · >33ms ${s.over33} · max ${s.maxMs}ms`
-          : "frames: drag it, then let go"}
+          : "frames (drag + spring back): drag it, then let go"}
         {outcome ? ` · ${outcome}` : ""}
       </Text>
     </View>
@@ -182,6 +185,7 @@ export function createDeviceProbe(client: Pick<PluginClientContext, "openScreen"
     const renders = useRef(0);
     renders.current += 1;
     const root = useRef<View>(null);
+    const composer = useRef<View>(null);
     const [frame, setFrame] = useState<string>("");
     const [kb, setKb] = useState<string[]>([]);
     const [kbHeight, setKbHeight] = useState(0);
@@ -203,6 +207,15 @@ export function createDeviceProbe(client: Pick<PluginClientContext, "openScreen"
           const line = `${n} h=${Math.round(h)} screenY=${Math.round(e?.endCoordinates?.screenY ?? 0)} dur=${e?.duration ?? "?"}`;
           log("keyboard", line);
           setKb((prev) => [...prev.slice(-5), line]);
+          // How far the keyboard's top edge reaches over the composer's bottom: the lift a composer needs.
+          const top = e?.endCoordinates?.screenY;
+          if (top !== undefined) {
+            composer.current?.measureInWindow((_x, y, _w, ch) => {
+              const overlap = `${n}: composer bottom=${Math.round(y + ch)} keyboard top=${Math.round(top)} overlap=${Math.round(y + ch - top)}`;
+              log("keyboard-overlap", overlap);
+              setKb((prev) => [...prev.slice(-5), overlap]);
+            });
+          }
           if (n === "keyboardWillShow" || n === "keyboardDidShow") setKbHeight(h);
           if (n === "keyboardWillHide" || n === "keyboardDidHide") setKbHeight(0);
         }),
@@ -214,10 +227,12 @@ export function createDeviceProbe(client: Pick<PluginClientContext, "openScreen"
 
     const measure = () => {
       root.current?.measureInWindow((x, y, w, h) => {
+        // A hidden instance (an earlier openScreen still mounted) measures 0x0: not a reading.
+        if (w === 0 || h === 0) return;
         const win = Dimensions.get("window");
         const scr = Dimensions.get("screen");
         const text = `screen top=${Math.round(y)} left=${Math.round(x)} w=${Math.round(w)} h=${Math.round(h)} · window ${win.width}x${win.height} · screen ${scr.width}x${scr.height} · room below=${Math.round(win.height - (y + h))}`;
-        log("frame", text);
+        log("frame", { mountId, text });
         setFrame(text);
       });
     };
@@ -302,6 +317,7 @@ export function createDeviceProbe(client: Pick<PluginClientContext, "openScreen"
           <View style={{ height: 320 }} />
         </ScrollView>
         <View
+          ref={composer}
           testID="probe-composer"
           style={{
             padding: 8,

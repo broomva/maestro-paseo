@@ -48,10 +48,10 @@ Everything else on the canvas is reference:
 The cards in sessions are BRO-3008.
 
 **Device checks** (BRO-3033, [`device-checks.md`](device-checks.md)): what Paseo 0.11.1 does around a plugin screen on the desktop and on iOS.
-- **The iPhone header:** Paseo draws the title and an X only, and nothing at the bottom. The tab bar pads itself with RN `SafeAreaView`.
+- **The iPhone header:** Paseo draws an optional icon, the title and an X, and nothing at the bottom. The tab bar pads itself with RN `SafeAreaView`.
 - **`openScreen` params:** they carry a hold key. Each call mounts a new screen.
 - **Rightward swipes on the phone open Paseo's sidebar.** Deck and row swipes are leftward only there (BRO-3062).
-- **The keyboard:** the composer lifts itself from RN `Keyboard` events.
+- **The keyboard:** RN `Keyboard` events reach the plugin and the host gives no inset (source), so the composer lifts itself. The software keyboard itself is an owner check on the phone.
 - **Gradients:** they render with `backgroundImage` on the desktop and `experimental_backgroundImage` on iOS.
 - **The push:** it reads `Agent finished` over about 80 visible characters (BRO-3063).
 
