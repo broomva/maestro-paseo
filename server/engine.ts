@@ -33,6 +33,7 @@ import {
   verdictTarget,
 } from "../shared/states";
 import { TICKET, ticketOf } from "../shared/text";
+import { UNDO_MS } from "../shared/undo";
 import { adopterNames } from "./adopter-names";
 import {
   ARCHIVED_BETWEEN_TURNS,
@@ -187,8 +188,8 @@ const MISSED_END_MS = 90_000;
 /** Why adopted work left your gate: its session went on with its arc, handing you nothing (engine.ts endTurn). */
 const KEPT_WORKING = "The session kept working on its arc; it handed you nothing to decide";
 
-/** How long a decision at the gate waits before it takes effect. */
-export const UNDO_MS = 10_000;
+/** How long a decision at the gate waits before it takes effect: the shared undo window. */
+export { UNDO_MS };
 
 /** The reason work you stopped is stuck. */
 export const STOPPED = "You stopped the run";

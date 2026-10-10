@@ -28,4 +28,7 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx biome ci .
-      - run: bun test
+      # 30 s, not bun's 5 s: this host is shared with the owner's work, and git-heavy suites overran 5 s
+      # under load with nothing wrong (BRO-3060). Only the flag holds suite-wide: a preloaded
+      # setDefaultTimeout passed alone and still timed out at 5 s inside the full suite.
+      - run: bun test --timeout 30000
