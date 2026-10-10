@@ -221,6 +221,13 @@ export function check(inv: Inventory, root: string): string[] {
     if (typeof p.phone_png === "string" && p.phone_png && !PHONE_EXPORT.test(p.phone_png))
       out.push(`${id}: phone export ${p.phone_png} is not an M or P frame`);
     if (Boolean(p.phone_frame) !== Boolean(p.phone_png)) out.push(`${id}: phone_frame and phone_png come together`);
+    if (p.phone_png && typeof p.png === "string" && /^m\d/.test(p.png))
+      out.push(`${id}: png ${p.png} is a phone export; the desktop export goes in png and the phone one in phone_png`);
+    const ownerVerbs = (p.writes ?? []).filter((w) => has("interfaces", w) && inv.interfaces[w].gate === "owner");
+    if (p.frame !== "today" && ownerVerbs.some((w) => w !== "I-undo") && !(p.writes ?? []).includes("I-undo"))
+      out.push(
+        `${id}: writes owner verbs (${ownerVerbs.join(", ")}) without I-undo; every owner verb has the 8 s undo (B4)`,
+      );
     for (const c of p.components ?? [])
       if (has("components", c) && !live(inv.components[c])) out.push(`${id}: uses retired component ${c}`);
   }
@@ -316,6 +323,7 @@ export function contractDrift(inv: Inventory, markdown: string): string[] {
     const cells = line.split("|").map((c) => c.trim());
     if (!cells[1]?.startsWith("P-")) continue;
     const ids = (c: string | undefined) => (c ?? "").match(/I-[a-z0-9-]+/g) ?? [];
+    if (rows.has(cells[1])) out.push(`${cells[1]}: two rows in view-models.md`);
     rows.set(cells[1], { reads: ids(cells[3]), writes: ids(cells[4]) });
   }
   const same = (a: string[], b: string[]) => a.length === b.length && [...a].sort().join() === [...b].sort().join();
@@ -337,6 +345,35 @@ export function contractDrift(inv: Inventory, markdown: string): string[] {
   }
   for (const id of rows.keys())
     if (!Object.hasOwn(inv.pages, id)) out.push(`${id}: in view-models.md but not in the inventory`);
+  return out;
+}
+
+// Every frame and component id the inventory names must exist in the saved .pen (plain JSON). A stale
+// .pen, or a frame deleted from the canvas, fails here instead of reaching a builder.
+export function penIds(root: string): Set<string> {
+  const ids = new Set<string>();
+  const walk = (n: unknown): void => {
+    if (Array.isArray(n)) for (const v of n) walk(v);
+    else if (n && typeof n === "object") {
+      const o = n as Record<string, unknown>;
+      if (typeof o.id === "string") ids.add(o.id);
+      for (const v of Object.values(o)) walk(v);
+    }
+  };
+  walk(JSON.parse(readFileSync(join(root, "docs/design/maestro-next.pen"), "utf8")));
+  return ids;
+}
+
+export function missingFrames(inv: Inventory, ids: Set<string>): string[] {
+  const out: string[] = [];
+  for (const [id, p] of Object.entries(inv.pages))
+    for (const k of ["frame", "phone_frame"] as const) {
+      const f = p[k];
+      if (typeof f === "string" && f !== "today" && !ids.has(f))
+        out.push(`${id}: ${k} ${f} is not in maestro-next.pen`);
+    }
+  for (const [id, c] of Object.entries(inv.components))
+    if (typeof c.pen === "string" && !ids.has(c.pen)) out.push(`${id}: pen ${c.pen} is not in maestro-next.pen`);
   return out;
 }
 
@@ -363,6 +400,7 @@ if (import.meta.main) {
   const findings = [
     ...check(inv, root),
     ...contractDrift(inv, readFileSync(join(root, "docs/design/next/view-models.md"), "utf8")),
+    ...missingFrames(inv, penIds(root)),
   ];
   for (const f of findings) console.log(`✗ ${f}`);
   console.log(findings.length ? `${findings.length} findings` : "inventory: clean");

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { check, contractDrift, type Inventory, load } from "./inventory-check";
+import { check, contractDrift, type Inventory, load, missingFrames, penIds } from "./inventory-check";
 
 const root = join(import.meta.dir, "..");
 
@@ -23,7 +23,7 @@ function clean(): Inventory {
         phone_png: "m1-feed-home-mobile.png",
         components: ["C-card"],
         reads: ["I-needs"],
-        writes: ["I-answer"],
+        writes: ["I-answer", "I-undo"],
       },
     },
     components: { "C-card": { name: "Card", status: "keep" } },
@@ -37,6 +37,7 @@ function clean(): Inventory {
         stores: ["S-asks"],
       },
       "I-needs": { name: "needs.list", status: "keep", handler: "plugin", callers: ["ui"] },
+      "I-undo": { name: "undo", status: "keep", handler: "plugin", callers: ["ui"], gate: "owner" },
       "I-sweep": { name: "sweep", status: "keep", handler: "plugin", callers: ["plugin"] },
     },
     stores: { "S-asks": { name: "asks", status: "keep", owner: "plugin", modules: ["server/control-asks.ts"] } },
@@ -74,6 +75,22 @@ describe("inventory-check", () => {
   const contract = () => readFileSync(join(root, "docs/design/next/view-models.md"), "utf8");
   test("view-models.md and the inventory agree on every live page", () => {
     expect(contractDrift(load(root), contract())).toEqual([]);
+  });
+  test("every frame and component id the inventory names exists in the saved .pen", () => {
+    expect(missingFrames(load(root), penIds(root))).toEqual([]);
+  });
+  test("a frame missing from the .pen is caught", () => {
+    const inv = load(root);
+    inv.pages["P-feed"].frame = "NOPE9";
+    inv.components["C-inspector"].pen = "NOPE8";
+    const out = missingFrames(inv, penIds(root)).join("\n");
+    expect(out).toMatch(/P-feed: frame NOPE9 is not in maestro-next.pen/);
+    expect(out).toMatch(/C-inspector: pen NOPE8 is not in maestro-next.pen/);
+  });
+  test("a duplicated contract row is caught", () => {
+    const md = contract();
+    const row = md.split("\n").find((l) => l.startsWith("| P-feed "));
+    expect(contractDrift(load(root), `${md}\n${row}`).join("\n")).toMatch(/P-feed: two rows in view-models.md/);
   });
   test("contract drift is caught: an extra write, a missing row, an unknown page", () => {
     const inv = load(root);

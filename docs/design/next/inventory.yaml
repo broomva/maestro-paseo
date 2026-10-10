@@ -101,7 +101,7 @@ features:
     name: An 8 s undo on every owner verb that changes state (B4)
     status: change
     kind: control
-    pages: [P-briefing, P-approval-card, P-feed, P-decisions, P-work, P-health, P-initiatives, P-phone]
+    pages: [P-briefing, P-approval-card, P-feed, P-decisions, P-work, P-health, P-initiatives, P-phone, P-settings-sweep-fleet, P-settings-loops-notices-approvals, P-settings-lanes, P-presence]
     interfaces: [I-undo]
     code: [server/engine.ts]
 
@@ -367,7 +367,7 @@ pages:
     phone_frame: m6wUjy
     components: [C-settings-row, C-toggle, C-segmented, C-button]
     reads: [I-sweep-get, I-fleet-get, I-config-get]
-    writes: [I-config-set, I-sweep-wake, I-fleet-mode-set, I-fleet-tick-run]
+    writes: [I-config-set, I-sweep-wake, I-fleet-mode-set, I-fleet-tick-run, I-undo]
     code: [client/settings.tsx, client/loop.tsx]
   P-settings-loops-notices-approvals:
     name: B3 Settings › Loops, Notices, Approvals
@@ -378,7 +378,7 @@ pages:
     phone_frame: m6wUjy
     components: [C-settings-row, C-toggle, C-button]
     reads: [I-loops-get, I-notices-registry-get, I-policy-get]
-    writes: [I-loop-control, I-notices-registry-propose]
+    writes: [I-loop-control, I-notices-registry-propose, I-undo]
   P-settings-lanes:
     name: D4 Settings › Lanes — the conductor, each lane, its composed prompt
     status: new
@@ -388,7 +388,7 @@ pages:
     phone_frame: m6wUjy
     components: [C-lane-card, C-settings-row, C-button]
     reads: [I-lanes-get]
-    writes: [I-lanes-propose, I-conductor-wake, I-lane-tick-run]
+    writes: [I-lanes-propose, I-conductor-wake, I-lane-tick-run, I-undo]
   P-presence:
     name: P1 Presence — the menu from the presence pill (desktop and phone) and what each state changes
     status: new
@@ -398,7 +398,7 @@ pages:
     phone_png: p1-presence.png
     components: [C-presence-menu, C-segmented, C-toggle]
     reads: [I-presence-get]
-    writes: [I-presence-set]
+    writes: [I-presence-set, I-undo]
   P-agent-panel:
     name: The Work panel beside a Paseo agent
     status: keep

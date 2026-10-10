@@ -85,7 +85,8 @@ be swiped (B1 and M1).
 
 Ids are the inventory's. `scripts/inventory-check.test.ts` parses this table and fails when a row's
 reads or writes differ from `inventory.yaml`, or when a live page has no row. Every owner verb
-here has the 8 s undo, so `I-undo` appears wherever a verb does.
+here has the 8 s undo (B4), settings and presence included, so `I-undo` appears on every page that
+writes an owner verb. The checker enforces it.
 
 | Page | Screens | Reads | Writes | New fields |
 |---|---|---|---|---|
@@ -99,10 +100,10 @@ here has the 8 s undo, so `I-undo` appears wherever a verb does.
 | P-initiatives | J8, M8 | I-initiatives-list, I-needs-list | I-ask-answer, I-initiatives-file, I-undo | `reviewDue`, `late`, `driver.live`; the review is an `ask` row raised by `ask.raise` on its due date (B2) |
 | P-new-work | J9, M9 | I-config-get, I-folder-inspect, I-lanes-get | I-work-create | "who starts it" from `lanes.get` (A8); `work.create` only queues |
 | P-phone | M10 | I-needs-list | I-approval-decide, I-ask-answer, I-undo | the push body (≤220 characters); `openScreen` with `{ hold: key }`, checked in BRO-3033 |
-| P-presence | P1 | I-presence-get | I-presence-set | `presence.get` → `{ state: present \| away \| off, from: signals \| manual, until? }` |
-| P-settings-sweep-fleet | B2, M11 | I-sweep-get, I-fleet-get, I-config-get | I-config-set, I-sweep-wake, I-fleet-mode-set, I-fleet-tick-run | none |
-| P-settings-loops-notices-approvals | B3, M11 | I-loops-get, I-notices-registry-get, I-policy-get | I-loop-control, I-notices-registry-propose | none |
-| P-settings-lanes | D4, M11 | I-lanes-get | I-lanes-propose, I-conductor-wake, I-lane-tick-run | none |
+| P-presence | P1 | I-presence-get | I-presence-set, I-undo | `presence.get` → `{ state: present \| away \| off, from: signals \| manual, until? }` |
+| P-settings-sweep-fleet | B2, M11 | I-sweep-get, I-fleet-get, I-config-get | I-config-set, I-sweep-wake, I-fleet-mode-set, I-fleet-tick-run, I-undo | none |
+| P-settings-loops-notices-approvals | B3, M11 | I-loops-get, I-notices-registry-get, I-policy-get | I-loop-control, I-notices-registry-propose, I-undo | none |
+| P-settings-lanes | D4, M11 | I-lanes-get | I-lanes-propose, I-conductor-wake, I-lane-tick-run, I-undo | none |
 
 `I-session-prompt` prompts an existing session and never creates one. A8 forbids creating work by
 rule; Continue is the owner's verb, and auto-continue is A3.
