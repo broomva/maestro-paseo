@@ -52,6 +52,7 @@ import {
   stopWork,
   unblockWork,
   undoWork,
+  type WorkItem,
   wakeLoop,
   workForAgent,
 } from "./shared/contracts";
@@ -372,7 +373,14 @@ export default function contribute(host: PluginServerContext) {
   // A source that cannot be read costs its own rows, never the rest.
   const workspaceName = control.repo ? basename(control.repo) : "workspace";
   // A pure read (BRO-2995): no client, so no reconcile; the plugin sweep keeps the work true, at most SWEEP_MS stale.
-  const workItems = () => engine.list().then(({ items }) => items);
+  const workItems = (): Promise<WorkItem[] | null> =>
+    engine
+      .list()
+      .then(({ items }) => items)
+      .catch((error) => {
+        log(`needs: reading the work: ${(error as Error).message}`);
+        return null;
+      });
   /** Every ask read, the workspace's and each fleet root's, and whether both were read. */
   const allAsks = async (): Promise<[DecisionAsk[], boolean]> => {
     let read = true;
@@ -399,7 +407,7 @@ export default function contribute(host: PluginServerContext) {
   const needsNow = async (kind?: NeedKind) => {
     // A source that cannot be read this time costs its rows, never their first-seen times.
     let partial = false;
-    const [items, [asks, asksRead], reviews, landing] = await Promise.all([
+    const [read, [asks, asksRead], reviews, landing] = await Promise.all([
       workItems(),
       allAsks(),
       (initiatives?.reviews() ?? Promise.resolve([])).catch((error) => {
@@ -412,18 +420,21 @@ export default function contribute(host: PluginServerContext) {
         return null;
       }),
     ]);
+    // The work that could not be read costs its own rows, never the asks', the reviews' or the batch's.
+    const items = read ?? [];
     const now = Date.now();
     const needs = needsOf({ items, asks, reviews, landing, workspace: workspaceName }, now, kind, firstSeen.at);
     if (!kind)
       firstSeen.keep(
         needs.rows.map((row) => row.key),
-        !partial && asksRead,
+        !partial && asksRead && read !== null,
       );
     return needs;
   };
   server.handle(listNeeds, ({ kind }) => needsNow(kind));
   server.handle(listHandled, async () => {
-    const [items, [asks]] = await Promise.all([workItems(), allAsks()]);
+    const [read, [asks]] = await Promise.all([workItems(), allAsks()]);
+    const items = read ?? [];
     const now = new Date();
     const dayStart = new Date(now);
     dayStart.setHours(0, 0, 0, 0);

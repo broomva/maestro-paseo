@@ -1,6 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Needs } from "../shared/needs";
-import { type NeedsFrom, onNeeds, publishNeeds, resetNeedsBus, sessionSignal, watchSessions } from "./needs-bus";
+import {
+  latestNeeds,
+  type NeedsFrom,
+  onNeeds,
+  publishNeeds,
+  readTicket,
+  resetNeedsBus,
+  sessionSignal,
+  stampNeeds,
+  ticketOf,
+  watchSessions,
+} from "./needs-bus";
 
 afterEach(resetNeedsBus);
 
@@ -13,15 +24,36 @@ describe("one snapshot of what needs you (BRO-3001)", () => {
   test("a read reaches every listener with who made it; the same snapshot again is no news, so readers never echo", () => {
     const heard: [number, NeedsFrom][] = [];
     const stop = onNeeds((next, from) => heard.push([next.summary.total, from]));
-    publishNeeds(needs(2), "screen");
-    publishNeeds(needs(2), "header");
-    publishNeeds(needs(3), "header");
+    expect(publishNeeds(needs(2), "screen", readTicket())).toBe("newer");
+    expect(publishNeeds(needs(2), "header", readTicket())).toBe("same");
+    publishNeeds(needs(3), "header", readTicket());
     stop();
-    publishNeeds(needs(4), "screen");
+    publishNeeds(needs(4), "screen", readTicket());
     expect(heard).toEqual([
       [2, "screen"],
       [3, "header"],
     ]);
+  });
+});
+
+describe("snapshots in the order their reads started", () => {
+  test("a read that started earlier never replaces one that started later, whichever lands first", () => {
+    const heard: number[] = [];
+    onNeeds((next) => heard.push(next.summary.total));
+    const early = readTicket();
+    const late = readTicket();
+    // The later read lands first; the earlier one, slow, lands after it with an older count.
+    expect(publishNeeds(needs(3), "screen", late)).toBe("newer");
+    expect(publishNeeds(needs(1), "header", early)).toBe("older");
+    expect(latestNeeds()?.summary.total).toBe(3);
+    expect(heard).toEqual([3]);
+    // The same snapshot from an older read is no news either way.
+    expect(publishNeeds(needs(3), "header", early)).toBe("same");
+    // An answer carries the ticket its read started with.
+    const ticket = readTicket();
+    const answer = stampNeeds(needs(5), ticket);
+    expect(ticketOf(answer)).toBe(ticket);
+    expect(ticketOf(needs(5))).toBeGreaterThan(ticket);
   });
 });
 

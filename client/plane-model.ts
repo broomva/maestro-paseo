@@ -115,15 +115,27 @@ export interface Initiative {
   needsYou: number;
 }
 
-/** Initiatives by name, so chips hold their place while work moves. */
-export function initiatives(items: readonly WorkItem[]): Initiative[] {
+/**
+ * Initiatives by name, so chips hold their place while work moves. `needsYou`
+ * is each one's holds as needs.list counts them (feed-model.ts
+ * needsByInitiative: its work, its asks, its review), never a count of work
+ * items of the client's own.
+ */
+export function initiatives(
+  items: readonly WorkItem[],
+  needsYou: ReadonlyMap<string, number> = new Map(),
+): Initiative[] {
   const byName = new Map<string, Initiative>();
   for (const item of items) {
     if (!item.initiative) continue;
-    const entry = byName.get(item.initiative) ?? { name: item.initiative, open: 0, total: 0, needsYou: 0 };
+    const entry = byName.get(item.initiative) ?? {
+      name: item.initiative,
+      open: 0,
+      total: 0,
+      needsYou: needsYou.get(item.initiative) ?? 0,
+    };
     entry.total += 1;
     if (item.group !== "done") entry.open += 1;
-    if (needsHand(item)) entry.needsYou += 1;
     byName.set(item.initiative, entry);
   }
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));

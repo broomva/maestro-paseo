@@ -67,8 +67,8 @@ Where each hold comes from today:
 
 | Kind | Source | Key | `blocksWork` | `since` |
 |---|---|---|---|---|
-| approval | Work at your gate, paused on a permission prompt. `heldBy: permission`; the action is the prompt | `work:<id>` | yes | the work's last change (`updatedAt`; the wire has no landing time) |
-| approval | Work Maestro's human gate holds. `heldBy: gate`, action "Close it as done", until BRO-2999 makes it Allow / Deny on a held action | `work:<id>` | yes | the work's last change |
+| approval | Work at your gate, paused on a permission prompt. `heldBy: permission`; the action is the prompt | `work:<id>` | yes | when it reached your gate (`WorkItem.landedAt`, its move into review) |
+| approval | Work Maestro's human gate holds. `heldBy: gate`, action "Close it as done", until BRO-2999 makes it Allow / Deny on a held action | `work:<id>` | yes | when it reached your gate |
 | ask | A decision ask that waits on you (`isWaiting`: blocking, or recommending what cannot be undone), the workspace's and each fleet root's | `ask:<askKey>` | its `blocking` | `askedAt`, else when first seen |
 | ask, review body | An initiative whose review date passed, or a parked one whose wake date came (B2) | `review:<initiative>` | no | the due date |
 | owner_step | Queued work only you may start ("Start it yourself": the loop's `yours` flag, or a `failed` start from before A8) | `work:<id>` | yes | the flag's time |
@@ -79,6 +79,10 @@ Where each hold comes from today:
   does not wait on you; Decisions lists it. So is an idea filed for an initiative: a proposal, which
   Initiatives triages and which holds no session. Work's own lists put stuck work under Stuck and a quiet run under
   Running (`shared/needs-you.ts`), so no surface counts them.
+- **One prompt is one hold.** fleet-reconcile files a blocking "Session … is waiting at a prompt" ask, keyed
+  `prompt:<session>:…` (`DecisionAsk.promptSession`). When that session's work already holds the prompt as an
+  approval, the ask is dropped and the prompt counts once. When Maestro does not track the session, the
+  ask stays, since it is then the prompt's only hold.
 - **An answer that waits for the conductor is not a need.** Its asker is gone, and the conductor gives it to
   a lane (BRO-2990). File as work and Dismiss stay your verbs in Decisions (`conductor.decide`, with the 8 s
   undo), but nothing holds on you: an unrouted answer delays a lane, not you. It is `answers.status.held`
@@ -118,9 +122,13 @@ Where each hold comes from today:
   session changes (`useNeedsEvents`, Paseo's agent events, one read per burst), when a verb settles, and
   otherwise every 30 s. The header button in every workspace runs outside React, so it shares one snapshot
   with the screen (`client/needs-bus.ts`): every read either makes moves the other at once, and an answer
-  given in Decisions moves the header with it.
-  These all read `needs.list`: the header button, the subtitle, the Feed's Needs you section, the tab
-  badges, the Fleet band's "in Maestro", the ask, answers and review bands, and the push ("N need you · …",
+  given in Decisions moves the header with it. Every read takes a ticket when it starts, so one that
+  started earlier and answers later never replaces a newer snapshot (`readTicket`, `publishNeeds`).
+- **A source that cannot be read costs its own rows.** That includes the work: a failed `engine.list()`
+  leaves the asks, the reviews and the batch.
+  These all read `needs.list`: the header button, the subtitle, the Feed's Needs you section, the List's
+  Needs you chip (it counts and lists the holds in scope, asks included), each initiative's "N need you"
+  (`needsByInitiative`: its work, its asks, its review), the tab badges, the Fleet band's "in Maestro", the ask, answers and review bands, and the push ("N need you · …",
   counted as it goes out; a count slower than 3 s is left out, never waited on). The Fleet band's own health
   is watched: its ticks "want a look", and never say "need you".
   The badges are: Feed, the total; Decisions, the holds it lists; Initiatives, the due reviews. Handled for

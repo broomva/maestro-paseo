@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { askKey } from "../client/decisions-model";
 import { fakeWork } from "../client/fake-work";
 import type { AnswersLanding } from "../shared/answers";
@@ -19,6 +22,11 @@ import {
   summaryOf,
   workNeed,
 } from "./needs";
+
+const roots: string[] = [];
+afterAll(async () => {
+  for (const root of roots) await rm(root, { recursive: true, force: true });
+});
 
 const NOW = Date.parse("2026-10-10T15:00:00.000Z");
 const A1KEY = 'ask:["origin/main","bro-3001.yaml",null,"A1"]';
@@ -229,6 +237,120 @@ describe("needs.list's kinds (owner answer A1)", () => {
       },
     });
     expect(needsOf(sources({ asks: [waiting] }), NOW).rows).toEqual([]);
+  });
+
+  test("one permission prompt is one hold: fleet-reconcile's prompt ask for a session whose work holds the approval drops", () => {
+    // As fleet-reconcile files it (fleet-<scope>.yaml): blocking, an `ack` only, keyed by the waiting session.
+    const prompt = (agentId: string, id: string) =>
+      ask(id, {
+        headline: `Session act-on-your-answer (${agentId.slice(0, 8)}) is waiting at a prompt: listing: status waiting, waitingFor 'permission prompt'. The fleet never approves prompts.`,
+        blocking: true,
+        scope: "broomva",
+        ledger: "fleet-broomva.yaml",
+        home: { kind: "root", path: "/state/broomva/.control/asks", branch: null },
+        options: [{ id: "ack", label: "Acknowledge", consequence: null, reversible: true, recommended: true }],
+        promptSession: agentId,
+      });
+    const items = [
+      fakeWork(
+        "p1",
+        "review",
+        { agentId: "agent-p1", workspaceId: "ws1" },
+        {
+          permission: { requestId: "r1", title: "Bash", detail: "git push" },
+        },
+      ),
+      fakeWork(
+        "p2",
+        "review",
+        { agentId: "agent-p2", workspaceId: "ws1" },
+        {
+          permission: { requestId: "r2", title: "Bash", detail: "rm -rf build" },
+        },
+      ),
+    ];
+    // Five sessions at a prompt; Maestro tracks two of them. The other three only the fleet sees: they count.
+    const asks = ["agent-p1", "agent-p2", "agent-x3", "agent-x4", "agent-x5"].map((agentId, at) =>
+      prompt(agentId, `fleet-broomva-${at}`),
+    );
+    const { rows, summary } = needsOf(sources({ items, asks }), NOW);
+    expect(summary.byKind).toEqual({ ask: 3, approval: 2, owner_step: 0 });
+    expect(rows.filter((row) => row.kind === "ask").map((row) => row.title.slice(0, 40))).toEqual([
+      "Session act-on-your-answer (agent-x3) is",
+      "Session act-on-your-answer (agent-x4) is",
+      "Session act-on-your-answer (agent-x5) is",
+    ]);
+    // An ask that is not a prompt, from a session with an approval, still counts.
+    const other = ask("own", { blocking: true, origin: { agentId: "agent-p1", cwd: null } });
+    expect(needsOf(sources({ items, asks: [other] }), NOW).summary.total).toBe(3);
+  });
+
+  test("an approval waits from when it reached your gate, not from its last note", () => {
+    const row = workNeed(
+      fakeWork("g", "review", live, { landedAt: "2026-10-10T09:00:00.000Z", updatedAt: "2026-10-10T14:00:00.000Z" }),
+    );
+    expect(row?.since).toBe("2026-10-10T09:00:00.000Z");
+    // From an older daemon, with no landing time: its last change.
+    expect(workNeed(fakeWork("o", "review", live, { updatedAt: "2026-10-10T14:00:00.000Z" }))?.since).toBe(
+      "2026-10-10T14:00:00.000Z",
+    );
+  });
+
+  test("the wire says when work reached your gate: its move into review, which a later note does not move", async () => {
+    const { WorkStore } = await import("./store");
+    const { toWire } = await import("./wire");
+    const { defaultConfig } = await import("./config");
+    const root = await mkdtemp(join(tmpdir(), "maestro-needs-"));
+    roots.push(root);
+    const config = { ...defaultConfig(), workRoot: join(root, "work"), provider: "claude", modeId: null };
+    const store = new WorkStore(config.workRoot, () => new Date(NOW));
+    const item = await store.create({
+      title: "Landed",
+      brief: "",
+      repo: root,
+      gate: "human",
+      check: "",
+      initiative: "",
+    });
+    const workFile = join(item.dir, "_work.md");
+    await writeFile(workFile, (await readFile(workFile, "utf8")).replace(/^state: \w+$/m, "state: review"));
+    const event = (ts: string, extra: object) => `${JSON.stringify({ ts, ...extra })}\n`;
+    await appendFile(
+      join(item.dir, "_events.jsonl"),
+      event("2026-10-10T09:00:00.000Z", {
+        type: "state",
+        actor: "agent",
+        from: "running",
+        to: "review",
+        reason: null,
+      }) + event("2026-10-10T14:00:00.000Z", { type: "note", actor: "maestro", text: "A remark" }),
+    );
+    const wire = toWire(await store.load(item.dir), NOW, config);
+    expect(wire.landedAt).toBe("2026-10-10T09:00:00.000Z");
+    expect(wire.updatedAt).toBe("2026-10-10T14:00:00.000Z");
+    expect(workNeed(wire)?.since).toBe("2026-10-10T09:00:00.000Z");
+  });
+
+  test("the prompt's session is read from the ledger as fleet-reconcile writes it", async () => {
+    const { decisionsOf } = await import("./control-asks");
+    const [prompt, plain] = decisionsOf(
+      [
+        "asks:",
+        '  - id: "fleet-broomva-5e59e6c987aa"',
+        '    uid: "fleet-broomva-5e59e6c987aa"',
+        "    headline: \"Session x (10b2b212) is waiting at a prompt: listing: status waiting, waitingFor 'permission prompt'.\"",
+        "    blocking: true",
+        '    options: [{"id": "ack", "label": "Acknowledge", "reversible": true, "recommended": true}]',
+        '    fleet: {"scope": "broomva", "key": "prompt:10b2b212-66f6-4164-8fde-20a2bc92dd50:5bc8f7aa", "class": "3"}',
+        '  - id: "fleet-broomva-other"',
+        "    headline: Something else",
+        "    blocking: true",
+        '    fleet: {"scope": "broomva", "key": "alert:tick-observe"}',
+      ].join("\n"),
+      "fleet-broomva.yaml",
+    );
+    expect(prompt?.promptSession).toBe("10b2b212-66f6-4164-8fde-20a2bc92dd50");
+    expect(plain?.promptSession).toBeNull();
   });
 
   test("an idea filed for an initiative is a proposal, watched (A1), even when it would wait", () => {

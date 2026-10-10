@@ -981,6 +981,14 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
       feedTab: tabBadges(after).feed?.count,
       push: Number(/^\*\*(\d+) needs? you\*\*/.exec(noticeText(notice))?.[1]),
     }).toEqual({ sumOfKinds: total, header: total, section: total, feedTab: total, push: total });
+
+    // The work cannot be read (a broken config): that costs the work's own rows, never the asks', the review's
+    // or the batch's, and the read still answers.
+    await writeFile(config, "{ not json");
+    const unread = await needsNow();
+    expect(unread.rows.filter((row) => row.key.startsWith("work:"))).toEqual([]);
+    expect(unread.summary.total).toBe(after.rows.filter((row) => !row.key.startsWith("work:")).length);
+    expect(unread.summary.total).toBeGreaterThan(0);
   } finally {
     await cleanup();
     process.env.MAESTRO_PASEO_CONFIG = saved.config;

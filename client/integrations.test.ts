@@ -8,7 +8,7 @@ import type { OrchState } from "../shared/states";
 import { fakeWork } from "./fake-work";
 import { type IntegrationClient, REFRESH, sessionSignal, startIntegrations, workspaceIds } from "./integrations";
 import { takeIntent } from "./intent";
-import { onNeeds, publishNeeds, resetNeedsBus } from "./needs-bus";
+import { latestNeeds, onNeeds, publishNeeds, readTicket, resetNeedsBus } from "./needs-bus";
 
 afterEach(() => {
   takeIntent();
@@ -257,7 +257,7 @@ describe("the header count", () => {
     expect(face(fake.headers[0] as Registered)).toMatchObject({ label: "1 needs you" });
     // You answered in Decisions: the screen refetched; the header says its number now, with no read of its own.
     const reads = fake.reads.length;
-    publishNeeds(holds("r", "s", "t"), "screen");
+    publishNeeds(holds("r", "s", "t"), "screen", readTicket());
     expect(face(fake.headers[0] as Registered)).toMatchObject({ label: "3 need you" });
     expect(fake.reads).toHaveLength(reads);
     // And the press opens where those are.
@@ -266,6 +266,27 @@ describe("the header count", () => {
     void behavior.onPress();
     expect(takeIntent()).toEqual({ kind: "filter", group: "review" });
     await clock.advance(0);
+  });
+
+  test("a slow header read never overwrites a newer count the screen handed in meanwhile", async () => {
+    const fake = fakeClient();
+    fake.state.needs = holds("r");
+    const { integrations } = start(fake);
+    await settle();
+    // The header starts a read that hangs; it will answer with the count as it was (1).
+    const gate = latch();
+    fake.state.hold = gate.held;
+    const reading = integrations.refresh();
+    await settle();
+    // Meanwhile you answered on the screen, whose read started later and lands first: 3.
+    publishNeeds(holds("r", "s", "t"), "screen", readTicket());
+    expect(face(fake.headers[0] as Registered)).toMatchObject({ label: "3 need you" });
+    // The slow read lands: older, so the header keeps the screen's number.
+    fake.state.hold = null;
+    gate.release();
+    await reading;
+    expect(face(fake.headers[0] as Registered)).toMatchObject({ label: "3 need you" });
+    expect(latestNeeds()?.summary.total).toBe(3);
   });
 
   test("pressing it opens Maestro where the holds are, as needs.list stands when pressed", async () => {

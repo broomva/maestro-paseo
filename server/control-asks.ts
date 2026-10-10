@@ -254,8 +254,17 @@ export function decisionOf(
     idea: ideaOf(row),
     audit: auditOf(row),
     initiative: text(row.initiative) ?? text(data.initiative),
+    promptSession: promptSessionOf(row),
     fate: null,
   };
+}
+
+/** The session a fleet-reconcile prompt ask is about, from its `fleet.key` (`prompt:<session>:<hash>`), else null. */
+export function promptSessionOf(row: Row): string | null {
+  const fleet = isRow(row.fleet) ? row.fleet : {};
+  const key = text(fleet.key);
+  const match = key ? /^prompt:([0-9A-Za-z-]+):/.exec(key) : null;
+  return match?.[1] ?? null;
 }
 
 export function parsed(source: string): Row {

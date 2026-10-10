@@ -28,7 +28,7 @@ import {
 } from "../shared/contracts";
 import { listHandled, listNeeds, type Needs } from "../shared/needs";
 import { type LoopState, loopPollMs } from "./loop-model";
-import { onNeeds, publishNeeds, watchSessions } from "./needs-bus";
+import { latestNeeds, onNeeds, publishNeeds, readTicket, stampNeeds, ticketOf, watchSessions } from "./needs-bus";
 
 const KEY = ["maestro"] as const;
 const POLL_MS = 4000;
@@ -124,7 +124,15 @@ export const NEEDS_NUDGE_MS = 2_000;
  */
 export function useNeeds() {
   const read = useRpc(listNeeds);
-  return useQuery({ queryKey: NEEDS_KEY, queryFn: () => read({}), refetchInterval: NEEDS_POLL_MS });
+  return useQuery({
+    queryKey: NEEDS_KEY,
+    // Stamped with when the read started, so a slower, older read never replaces a newer one (client/needs-bus.ts).
+    queryFn: async () => {
+      const ticket = readTicket();
+      return stampNeeds(await read({}), ticket);
+    },
+    refetchInterval: NEEDS_POLL_MS,
+  });
 }
 
 /** What closed, and today's counts (handled.list): one query, refetched with needs.list. */
@@ -169,7 +177,12 @@ export function useNeedsEvents(): void {
       if (event.type !== "updated" || event.action.type !== "success") return;
       if (JSON.stringify(event.query.queryKey) !== key) return;
       const data = event.query.state.data as Needs | undefined;
-      if (data) publishNeeds(data, "screen");
+      if (!data) return;
+      // A read that started before the snapshot the header already handed in is older: the screen takes that one.
+      if (publishNeeds(data, "screen", ticketOf(data)) === "older") {
+        const newest = latestNeeds();
+        if (newest) client.setQueryData(NEEDS_KEY, newest);
+      }
     });
     return () => {
       stopWatching();

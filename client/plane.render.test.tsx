@@ -188,7 +188,7 @@ const { MaestroSettings } = await import("./settings");
 const { handledOf, needsOf } = await import("../server/needs");
 const { needsYouOf } = await import("../shared/needs-you");
 const { headerFace } = await import("./header-count");
-const { onNeeds, publishNeeds, resetNeedsBus } = await import("./needs-bus");
+const { onNeeds, publishNeeds, readTicket, resetNeedsBus } = await import("./needs-bus");
 const { linkSettings } = await import("./settings-link");
 const { LOOP_HINT: LOOP_SETTINGS_HINT } = await import("./loop-model");
 const { focusRing } = await import("./ui");
@@ -1473,7 +1473,7 @@ describe("the changed line", () => {
       const reads = calls.filter((call) => call.method === "needs.list").length;
       const header = needsNow();
       const newer = { ...header, rows: header.rows.slice(0, 1), summary: { ...header.summary, total: 1 } };
-      await step(generation, () => publishNeeds(newer, "header"));
+      await step(generation, () => publishNeeds(newer, "header", readTicket()));
       for (let tries = 0; tries < 100 && !view.byLabel("Feed, 1 needs you"); tries += 1) await settle(20);
       expect(view.byLabel("Feed, 1 needs you")).not.toBeNull();
       expect(view.text()).toContain("1 needs you · 1 running");
@@ -2075,6 +2075,33 @@ describe("views and filters", () => {
       expect(view.pressed(`${title}, ${count}`)).toBe("true");
       expect([title, view.all('[role="button"]').filter(isCard).length]).toEqual([title, count]);
     }
+  });
+
+  test("the Needs you chip and each initiative's count are needs.list's: asks included, as the header says (BRO-3001)", async () => {
+    workspaceNow = [
+      {
+        ...decisionFixture(),
+        id: "W1",
+        headline: "Ship the hawthorne cut?",
+        blocking: true,
+        waiting: true,
+        initiative: "hawthorne",
+      },
+    ];
+    const view = await mount(surface(false));
+    // needs.list: Work a and Work g at your gate, and the ask: 3, the header's number.
+    for (let tries = 0; tries < 100 && !view.byLabel("Feed, 3 need you"); tries += 1) await settle(20);
+    expect(needsNow().summary.total).toBe(3);
+    await view.press(view.tabs()[2]);
+    for (let tries = 0; tries < 100 && !view.byLabel("Needs you, 3"); tries += 1) await settle(20);
+    // The chip counts what its filter lists, the ask among them, not only the work.
+    await view.press(view.byLabel("Needs you, 3"));
+    expect(view.text()).toContain("Ship the hawthorne cut?");
+    expect(view.text()).toContain("Work a");
+    expect(view.text()).toContain("Work g");
+    // hawthorne's own holds: Work a and the ask that names it.
+    const hawthorne = view.all('[aria-label^="hawthorne, "]').map((el) => el.getAttribute("aria-label"));
+    expect(hawthorne.some((label) => label?.endsWith("2 waiting on you"))).toBe(true);
   });
 
   test("a filter intent opens the feed, drops the scope, and checks its chip on the List", async () => {

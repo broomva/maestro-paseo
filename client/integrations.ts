@@ -23,7 +23,7 @@ import { listNeeds, type Needs } from "../shared/needs";
 import type { OrchState } from "../shared/states";
 import { type HeaderSpec, headerFace, headerSpecs, needsTarget } from "./header-count";
 import { type MaestroIntent, requestIntent } from "./intent";
-import { onNeeds, publishNeeds, sessionSignal } from "./needs-bus";
+import { latestNeeds, onNeeds, publishNeeds, readTicket, sessionSignal } from "./needs-bus";
 import { type PillSpec, pillFace, pillSpecs } from "./pills";
 import { createRegistrations } from "./registrations";
 
@@ -170,6 +170,8 @@ export function startIntegrations(
     if (stopped || busy) return;
     busy = true;
     try {
+      // Taken before the read: a screen's read that starts after this one and lands first is newer.
+      const ticket = readTicket();
       const [needed, live, spaces] = await Promise.allSettled([
         client.rpc(listNeeds, {}),
         client.rpc(attentionWork, {}),
@@ -179,9 +181,9 @@ export function startIntegrations(
       // A failed read keeps what was last known rather than hiding everything until the next one.
       if (spaces.status === "fulfilled") workspaces = spaces.value;
       if (needed.status === "fulfilled") {
-        needs = needed.value;
-        // An open screen takes the same snapshot (client/needs-bus.ts).
-        publishNeeds(needs, "header");
+        // An open screen takes the same snapshot (client/needs-bus.ts); one the screen read since is newer, and stays.
+        const verdict = publishNeeds(needed.value, "header", ticket);
+        needs = verdict === "older" ? (latestNeeds() ?? needs) : needed.value;
       }
       if (live.status === "fulfilled") pills.sync(pillSpecs(live.value.sessions));
       if (needed.status === "fulfilled" || live.status === "fulfilled") {

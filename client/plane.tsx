@@ -25,7 +25,15 @@ import { AnswersNotices, AskNotices, useWorkspaceAsks } from "./decisions";
 import { decisionAsks, ledgerOf } from "./decisions-model";
 import { WorkDetail } from "./detail";
 import { DecideSection, FeedControls, FeedSectionsView, NeedsSection } from "./feed";
-import { handledForYou, handledShown, headerLine, matchesQuery, needsSection, sectionsOf } from "./feed-model";
+import {
+  handledForYou,
+  handledShown,
+  headerLine,
+  matchesQuery,
+  needsByInitiative,
+  needsSection,
+  sectionsOf,
+} from "./feed-model";
 import { FleetNotices, FleetView } from "./fleet";
 import { duration, errorText, plural } from "./format";
 import { holdTarget, tabBadges } from "./header-count";
@@ -116,7 +124,9 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
 
   const items = list.data?.items ?? [];
   const current = selected && items.some((item) => item.id === selected) ? selected : null;
-  const scopes = initiatives(items);
+  // Every hold needs.list holds, joined to the work and asks this client has: each initiative's count is its own.
+  const needsRows = needs.data?.rows ?? [];
+  const scopes = initiatives(items, needsByInitiative(needsSection(needsRows, items, asks)));
   const scope = resolveScope(items, chosenScope);
   const loaded = list.data !== undefined;
   // A scope whose initiative left the list is dropped, so it cannot come back unseen.
@@ -124,13 +134,15 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     if (loaded && chosenScope !== null && scope === null) setScope(null);
   }, [loaded, chosenScope, scope]);
   const scoped = inScope(items, scope);
-  const counts = countFilters(scoped);
+  // The Needs you chip counts and lists needs.list's holds in scope, asks included: the header's number, unscoped.
+  const scopedNeeds = needsSection(needsRows, items, asks, scope);
+  const counts = { ...countFilters(scoped), review: scopedNeeds.length };
   const shown = view === "board" ? scoped : applyFilter(scoped, filter);
   const pick = { theme, selected: current, onSelect: setSelected };
   // The Feed home (client/feed.tsx): sections from the scoped work the search keeps.
   const sections = sectionsOf(scoped.filter((item) => matchesQuery(item, query)));
   // Needs you: needs.list's rows in their order, joined to the work and asks this client has (scope and search apply).
-  const needsEntries = needsSection(needs.data?.rows ?? [], items, asks, scope, query);
+  const needsEntries = needsSection(needsRows, items, asks, scope, query);
   // Handled for you, scoped and searched as the other sections are; the subtitle counts all of it.
   const allHandled = handled.data?.rows ?? [];
   const handledRows = handledShown(
@@ -384,6 +396,19 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
               )}
               {view === "history" ? (
                 <HistoryView {...pick} scope={scope} />
+              ) : filter === "review" && view !== "board" ? (
+                scopedNeeds.length === 0 ? (
+                  <Text style={text.muted}>{emptyText(filter)}</Text>
+                ) : (
+                  <NeedsSection
+                    {...pick}
+                    entries={scopedNeeds}
+                    onOpenAsk={(ask) =>
+                      openDecisions(ledgerOf(ask), { ledger: ledgerOf(ask), uid: ask.uid, id: ask.id })
+                    }
+                    onOpenHold={(row) => requestIntent(holdTarget(row))}
+                  />
+                )
               ) : shown.length === 0 && view !== "board" ? (
                 <Text style={text.muted}>{emptyText(filter)}</Text>
               ) : view === "board" ? (

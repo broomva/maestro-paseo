@@ -299,6 +299,13 @@ export const DecisionAskSchema = z.object({
   /** The initiative the ask names (its own `initiative`, else the ledger's); null when none. */
   initiative: z.string().nullable().optional(),
   /**
+   * The Paseo session a fleet-reconcile prompt ask is about: its `fleet.key` is
+   * `prompt:<session>:…` ("Session … is waiting at a prompt"). needs.list counts
+   * that prompt once, as the session's approval, when Maestro tracks the
+   * session's work (BRO-3001). Null for every other ask; absent from an older daemon.
+   */
+  promptSession: z.string().nullable().optional(),
+  /**
    * An answer Maestro wrote, after it: in the batch, landed, or acted on
    * (shared/answers.ts). Null for an open ask, and for one answered elsewhere.
    */

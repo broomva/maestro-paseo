@@ -12,6 +12,7 @@ import {
   handledTitle,
   headerLine,
   matchesQuery,
+  needsByInitiative,
   needsSection,
   sectionsOf,
   ticketOf,
@@ -103,6 +104,29 @@ describe("Needs you on the Feed (BRO-3001)", () => {
       ["g", null],
       ["p", null],
     ]);
+  });
+
+  test("each initiative's count is the length of the section its scope lists: its work, its asks, its review", () => {
+    const review = {
+      id: "genesis",
+      file: "genesis.yaml",
+      title: "genesis",
+      quote: null,
+      summary: null,
+      nextAction: null,
+      driver: null,
+      waitingOn: [],
+      stale: { kind: "overdue", date: "2026-10-01" },
+    } as unknown as Parameters<typeof needsOf>[0]["reviews"][number];
+    const all = needsOf({ items, asks: [blocking], reviews: [review], landing: null, workspace: "broomva" }, NOW);
+    const counts = needsByInitiative(needsSection(all.rows, items, [blocking]));
+    expect([...counts].sort()).toEqual([
+      ["genesis", 2],
+      ["hawthorne", 2],
+    ]);
+    for (const [initiative, count] of counts) {
+      expect([initiative, count]).toEqual([initiative, needsSection(all.rows, items, [blocking], initiative).length]);
+    }
   });
 
   test("a hold this client cannot join still shows, as its row", () => {

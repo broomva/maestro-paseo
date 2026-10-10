@@ -31,8 +31,9 @@ those, and nothing Paseo already does.
   Needs you holds work at your gate and queued work only you may start, the work the header count
   counts; stuck work and a quiet run are watched, under Stuck and Running: see
   [What needs you](#what-needs-you)), the unsupervised-hours scoreboard, and a detail pane with the
-  verb each item needs. The chips follow the sections: each counts exactly what it shows, and Needs
-  you, Stuck, Running, Queued and Done add up to All.
+  verb each item needs. The chips follow the sections: each counts exactly what it shows. Stuck,
+  Running, Queued and Done hold work; Needs you holds every hold in scope, asks included, so with no
+  scope it says the header's number.
 - **Two groups of views.** *Work*: Feed, Board, List, History. *System*: Fleet, Decisions, Timeline,
   Initiatives, Loops. A wide window shows them as tabs under their group's label. The Feed carries
   what needs you (needs.list's total), Decisions the asks that wait on you and the answers batch,

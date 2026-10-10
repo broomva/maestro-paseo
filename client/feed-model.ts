@@ -121,16 +121,30 @@ export function needsSection(
         ask: hold?.kind === "ask" ? (byKey.get(row.key) ?? null) : null,
       };
     })
-    .filter(({ row, item, ask }) => {
-      if (scope !== null) {
-        const hold = holdOf(row.key);
-        const initiative =
-          item?.initiative ?? ask?.initiative ?? (hold?.kind === "review" ? hold.initiative : null) ?? null;
-        if (initiative !== scope) return false;
-      }
+    .filter((entry) => {
+      if (scope !== null && initiativeOfEntry(entry) !== scope) return false;
       if (!q) return true;
-      return item ? matchesQuery(item, q) : row.title.toLowerCase().includes(q);
+      return entry.item ? matchesQuery(entry.item, q) : entry.row.title.toLowerCase().includes(q);
     });
+}
+
+/** The initiative a hold belongs to: its work's, its ask's, or the one under review; null for none. */
+export function initiativeOfEntry({ row, item, ask }: NeedEntry): string | null {
+  const hold = holdOf(row.key);
+  return item?.initiative ?? ask?.initiative ?? (hold?.kind === "review" ? hold.initiative : null) ?? null;
+}
+
+/**
+ * How many holds each initiative has: the length of the Needs you section
+ * that initiative's scope lists (needsSection), from needs.list's rows. Pure.
+ */
+export function needsByInitiative(entries: readonly NeedEntry[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const entry of entries) {
+    const initiative = initiativeOfEntry(entry);
+    if (initiative) counts.set(initiative, (counts.get(initiative) ?? 0) + 1);
+  }
+  return counts;
 }
 
 export type Tone = "success" | "warning" | "danger" | "accent" | "muted";

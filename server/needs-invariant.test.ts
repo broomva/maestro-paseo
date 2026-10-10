@@ -12,9 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginButton } from "@getpaseo/plugin/client";
 import { fakeWork } from "../client/fake-work";
-import { needsSection } from "../client/feed-model";
+import { needsByInitiative, needsSection } from "../client/feed-model";
 import { headerFace, tabBadges } from "../client/header-count";
 import { type IntegrationClient, startIntegrations } from "../client/integrations";
+import { initiatives } from "../client/plane-model";
 import type { AnswersLanding } from "../shared/answers";
 import type { WorkItem } from "../shared/contracts";
 import type { DecisionAsk } from "../shared/fleet";
@@ -65,22 +66,32 @@ const ask = (id: string, extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
 /** Work in every state, every flag, a permission prompt; asks of every kind; a due review; the batch. */
 function everything(): { items: WorkItem[]; asks: DecisionAsk[]; reviews: Initiative[]; landing: AnswersLanding } {
   const items = [
-    fakeWork("gate", "review", live("gate"), { updatedAt: at(50) }),
+    fakeWork("gate", "review", live("gate"), { updatedAt: at(50), initiative: "hawthorne" }),
     fakeWork("perm", "review", live("perm"), {
       updatedAt: at(40),
+      initiative: "hawthorne",
       permission: { requestId: "r", title: "Run bash", detail: "git push" },
     }),
     fakeWork("stuck", "blocked", live("stuck"), { reason: "Stopped before finishing" }),
     fakeWork("quiet", "running", live("quiet"), { flag: flag("quiet") }),
     fakeWork("run", "running", live("run")),
     fakeWork("queued", "proposed"),
-    fakeWork("yours", "proposed", null, { flag: flag("yours") }),
+    fakeWork("yours", "proposed", null, { flag: flag("yours"), initiative: "genesis" }),
     fakeWork("failed", "triggered", null, { flag: flag("failed") }),
     fakeWork("done", "done", null, { closed: { by: "you", at: at(10) } }),
     fakeWork("canceled", "canceled", null, { closed: { by: "maestro", at: at(10) } }),
   ];
   const asks = [
-    ask("blocks", { blocking: true }),
+    ask("blocks", { blocking: true, initiative: "genesis" }),
+    // fleet-reconcile's ask for the same permission prompt the "perm" work holds: one prompt, one hold.
+    ask("prompt", {
+      blocking: true,
+      scope: "broomva",
+      ledger: "fleet-broomva.yaml",
+      home: { kind: "root", path: "/state/broomva/.control/asks", branch: null },
+      options: [{ id: "ack", label: "Acknowledge", consequence: null, reversible: true, recommended: true }],
+      promptSession: "agent-perm",
+    }),
     ask("one-way", {
       options: [{ id: "go", label: "Go", consequence: null, reversible: false, recommended: true }],
     }),
@@ -245,18 +256,34 @@ test("invariant 1: header total == Σ kinds == the Needs you section == the Feed
   const header = await headerButton(needs);
   const headerCount = Number(/^(\d+) needs? you$/.exec(header.label ?? "")?.[1]);
   const section = needsSection(needs.rows, items, asks).length;
+  // The List's Needs you chip counts what its filter lists: needs.list's holds in scope, here every one.
+  const chip = needsSection(needs.rows, items, asks, null).length;
   const feedTab = tabBadges(needs).feed?.count;
   const push = await pushText(async () => needs.summary.total);
   const pushCount = Number(/^\*\*(\d+) needs? you\*\*/.exec(push)?.[1]);
 
-  expect({ rows: needs.rows.length, sumOfKinds, headerCount, section, feedTab, pushCount }).toEqual({
+  expect({ rows: needs.rows.length, sumOfKinds, headerCount, section, chip, feedTab, pushCount }).toEqual({
     rows: total,
     sumOfKinds: total,
     headerCount: total,
     section: total,
+    chip: total,
     feedTab: total,
     pushCount: total,
   });
+  // Each initiative's "N need you" is the section its scope lists, from the same rows.
+  const byInitiative = needsByInitiative(needsSection(needs.rows, items, asks));
+  expect([...byInitiative].sort()).toEqual([
+    ["genesis", 2],
+    ["hawthorne", 2],
+    ["skene", 1],
+  ]);
+  for (const scope of initiatives(items, byInitiative)) {
+    expect([scope.name, scope.needsYou]).toEqual([
+      scope.name,
+      needsSection(needs.rows, items, asks, scope.name).length,
+    ]);
+  }
   expect(header).toMatchObject(headerFace(total));
   expect(push).toBe("**9 need you** · Work gate\n\nMerge it?");
 });

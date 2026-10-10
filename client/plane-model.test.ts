@@ -192,23 +192,25 @@ describe("filters", () => {
 });
 
 describe("initiative scope", () => {
-  test("open over total, with a badge for work waiting on a person", () => {
+  test("open over total, with a badge that is needs.list's count for the initiative, never a count of its work", () => {
     expect(initiatives(plane)).toEqual([
       { name: "genesis", open: 1, total: 2, needsYou: 0 },
-      { name: "hawthorne", open: 3, total: 4, needsYou: 1 },
+      { name: "hawthorne", open: 3, total: 4, needsYou: 0 },
+    ]);
+    // hawthorne's holds as needs.list has them (its work at your gate, an ask that names it, its review): 3,
+    // though only one of its work items is at your gate.
+    expect(initiatives(plane, new Map([["hawthorne", 3]]))).toEqual([
+      { name: "genesis", open: 1, total: 2, needsYou: 0 },
+      { name: "hawthorne", open: 3, total: 4, needsYou: 3 },
     ]);
   });
 
-  test("the badge counts work only you may start; a quiet run and stuck work are watched, not waiting (A1)", () => {
+  test("what needs a hand is work only you may start; a quiet run and stuck work are watched, not waiting (A1)", () => {
     expect(needsHand(work("y", "proposed", { flag: yoursFlag }))).toBe(true);
     expect(needsHand(work("t", "triggered", { flag: { ...yoursFlag, kind: "failed" } }))).toBe(true);
     expect(needsHand(work("z", "running", { flag: quietFlag }))).toBe(false);
     expect(needsHand(work("s", "blocked"))).toBe(false);
     expect(needsHand(work("c", "running"))).toBe(false);
-    expect(initiatives([...plane, work("y", "proposed", { initiative: "genesis", flag: yoursFlag })])).toEqual([
-      { name: "genesis", open: 2, total: 3, needsYou: 1 },
-      { name: "hawthorne", open: 3, total: 4, needsYou: 1 },
-    ]);
   });
 
   test("work without an initiative is in no scope chip", () => {

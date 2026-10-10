@@ -15,14 +15,51 @@ export type NeedsFrom = "screen" | "header";
 type Listener = (needs: Needs, from: NeedsFrom) => void;
 
 const listeners = new Set<Listener>();
-let last: string | null = null;
+let last: { text: string; needs: Needs; ticket: number } | null = null;
+let tickets = 0;
+const stamped = new WeakMap<object, number>();
 
-/** Hands a fresh read to every listener; the same snapshot again is no news, so two readers never echo. */
-export function publishNeeds(needs: Needs, from: NeedsFrom): void {
+/**
+ * A read's place in line, taken when it starts: a read that started later
+ * knows more, whichever answer arrives first.
+ */
+export function readTicket(): number {
+  tickets += 1;
+  return tickets;
+}
+
+/** Marks a read's answer with the ticket it started with, so whoever hands it on later can say how old it is. */
+export function stampNeeds(needs: Needs, ticket: number): Needs {
+  stamped.set(needs, ticket);
+  return needs;
+}
+
+/** The ticket an answer was stamped with, else a fresh one (an answer from nowhere is as new as now). */
+export function ticketOf(needs: Needs): number {
+  return stamped.get(needs) ?? readTicket();
+}
+
+/** The newest snapshot any reader has handed in, or null before the first. */
+export function latestNeeds(): Needs | null {
+  return last?.needs ?? null;
+}
+
+/**
+ * Hands a read to every listener, unless it is no news: the same snapshot
+ * again (`same`), or one whose read started before the snapshot already held
+ * (`older`), which arrived late and must not replace what came after it. A
+ * reader told `older` keeps, or takes, latestNeeds().
+ */
+export function publishNeeds(needs: Needs, from: NeedsFrom, ticket: number): "newer" | "same" | "older" {
   const text = JSON.stringify(needs);
-  if (text === last) return;
-  last = text;
+  if (text === last?.text) {
+    last = { text, needs: last.needs, ticket: Math.max(last.ticket, ticket) };
+    return "same";
+  }
+  if (last && ticket < last.ticket) return "older";
+  last = { text, needs, ticket };
   for (const listener of [...listeners]) listener(needs, from);
+  return "newer";
 }
 
 /** Hears every fresh read; returns how to stop. */

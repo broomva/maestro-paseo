@@ -162,7 +162,9 @@ export function workNeed(item: WorkItem): NeedRow | null {
             "Allow closes it as done; Deny sends it back to its session with your note",
           ],
         };
-    return { ...base, ...session, kind: "approval", since: item.updatedAt, verbs: [...KIND_VERBS.approval], body };
+    // Waiting since it reached your gate, not since its last note: a remark never makes it look newer.
+    const since = item.landedAt ?? item.updatedAt;
+    return { ...base, ...session, kind: "approval", since, verbs: [...KIND_VERBS.approval], body };
   }
   // Only you may start it (onlyYouStart): the flag says why.
   const flag = item.flag;
@@ -346,9 +348,16 @@ export function summaryOf(rows: readonly NeedRow[]): NeedSummary {
 
 /** needs.list: every hold, in deck order, each key once; `kind` narrows it to one kind. */
 export function needsOf(sources: NeedSources, now: number, kind?: NeedKind, seen?: FirstSeen): Needs {
+  const work = sources.items.map(workNeed);
+  // One prompt is one hold: fleet-reconcile's "Session … is waiting at a prompt" ask is the same permission
+  // prompt the session's work holds as an approval, so it counts once, as the approval.
+  const approving = new Set(
+    work.flatMap((row) => (row?.kind === "approval" && row.session ? [row.session.agentId] : [])),
+  );
+  const asks = sources.asks.filter((ask) => !(ask.promptSession && approving.has(ask.promptSession)));
   const all = [
-    ...sources.items.map(workNeed),
-    ...sources.asks.map((ask) => askNeed(ask, sources.workspace, now, seen)),
+    ...work,
+    ...asks.map((ask) => askNeed(ask, sources.workspace, now, seen)),
     ...sources.reviews.map((initiative) => reviewNeed(initiative, sources.items, sources.asks, sources.workspace)),
     answersNeed(sources.landing, sources.workspace, now, seen),
   ].filter((row): row is NeedRow => row !== null);
