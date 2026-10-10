@@ -35,58 +35,85 @@ interface FrameStats {
   over20: number;
   over33: number;
   maxMs: number;
+  medianMs: number;
 }
 
 /**
  * Counts animation frames from touch-down until the release spring settles (both run on the JS thread):
- * a frame later than 20 ms is a dropped one at 60 Hz.
+ * a frame later than 20 ms is a dropped one at 60 Hz. The median interval says which rate the screen runs at
+ * (16.7 ms at 60 Hz, 8.3 ms at 120 Hz), so the threshold can be read against it.
  */
 function useFrameMeter(name: string) {
   const [stats, setStats] = useState<FrameStats | null>(null);
-  const state = useRef<{ raf: number; last: number; s: FrameStats } | null>(null);
-  return {
-    stats,
-    start() {
-      const s: FrameStats = { frames: 0, over20: 0, over33: 0, maxMs: 0 };
-      const tick = (t: number) => {
-        const cur = state.current;
-        if (!cur) return;
-        if (cur.last) {
-          const dt = t - cur.last;
-          s.frames += 1;
-          if (dt > 20) s.over20 += 1;
-          if (dt > 33.4) s.over33 += 1;
-          if (dt > s.maxMs) s.maxMs = Math.round(dt);
-        }
-        cur.last = t;
-        cur.raf = requestAnimationFrame(tick);
-      };
-      state.current = { raf: requestAnimationFrame(tick), last: 0, s };
-    },
-    stop() {
+  const state = useRef<{ raf: number; last: number; gaps: number[] } | null>(null);
+  const meter = useMemo(() => {
+    const stop = () => {
       const cur = state.current;
       if (!cur) return;
       cancelAnimationFrame(cur.raf);
       state.current = null;
-      setStats({ ...cur.s });
-      log(`frames ${name}`, cur.s);
-    },
-  };
+      const gaps = [...cur.gaps].sort((a, b) => a - b);
+      const s: FrameStats = {
+        frames: gaps.length,
+        over20: gaps.filter((g) => g > 20).length,
+        over33: gaps.filter((g) => g > 33.4).length,
+        maxMs: Math.round(gaps.at(-1) ?? 0),
+        medianMs: Math.round((gaps[Math.floor(gaps.length / 2)] ?? 0) * 10) / 10,
+      };
+      setStats(s);
+      log(`frames ${name}`, s);
+    };
+    return {
+      start() {
+        // A grab during the previous spring-back ends that measurement first, so two loops never share one.
+        if (state.current) cancelAnimationFrame(state.current.raf);
+        const cur = { raf: 0, last: 0, gaps: [] as number[] };
+        const tick = (t: number) => {
+          if (state.current !== cur) return;
+          if (cur.last) cur.gaps.push(t - cur.last);
+          cur.last = t;
+          cur.raf = requestAnimationFrame(tick);
+        };
+        state.current = cur;
+        cur.raf = requestAnimationFrame(tick);
+      },
+      stop,
+    };
+  }, [name]);
+  return { stats, ...meter };
 }
 
-/** A card the finger drags anywhere; on release it springs home carrying the gesture's velocity. */
-function DragProbe({ name, axis, busyMs }: { name: string; axis: "x" | "y" | "xy"; busyMs: number }) {
+/**
+ * A card the finger drags; on release it springs home carrying the gesture's velocity.
+ * claim "start" takes the touch at once (a deck card); "move" takes it only once the drag is on its axis
+ * (a row inside a vertical list).
+ */
+function DragProbe({
+  name,
+  axis,
+  busyMs,
+  claim = "start",
+}: {
+  name: string;
+  axis: "x" | "y" | "xy";
+  busyMs: number;
+  claim?: "start" | "move";
+}) {
   const pos = useRef(new Animated.ValueXY()).current;
   const meter = useFrameMeter(name);
+  const { start, stop } = meter;
   const [outcome, setOutcome] = useState("");
   const responder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
+        onStartShouldSetPanResponder: () => claim === "start",
         onMoveShouldSetPanResponder: (_e, g) =>
           axis === "x" ? Math.abs(g.dx) > Math.abs(g.dy) : axis === "y" ? Math.abs(g.dy) > Math.abs(g.dx) : true,
         onPanResponderTerminationRequest: () => false,
-        onPanResponderGrant: () => meter.start(),
+        onPanResponderGrant: () => {
+          pos.stopAnimation();
+          start();
+        },
         onPanResponderMove: (_e, g) => {
           // Optional synthetic render cost, to see how close a real card is to the edge.
           if (busyMs > 0) {
@@ -104,16 +131,19 @@ function DragProbe({ name, axis, busyMs }: { name: string; axis: "x" | "y" | "xy
             toValue: { x: 0, y: 0 },
             velocity: { x: g.vx, y: g.vy },
             useNativeDriver: false,
-          }).start(() => meter.stop());
+          }).start(({ finished }) => {
+            // An interrupted spring (a new grab) leaves the new measurement running.
+            if (finished) stop();
+          });
         },
         onPanResponderTerminate: (_e, g) => {
           log(`terminated ${name}`);
           setOutcome(`TERMINATED by host at dx=${Math.round(g.dx)} dy=${Math.round(g.dy)}`);
           pos.setValue({ x: 0, y: 0 });
-          meter.stop();
+          stop();
         },
       }),
-    [axis, busyMs, meter, name, pos, setOutcome],
+    [axis, busyMs, claim, name, pos, start, stop],
   );
   const s = meter.stats;
   return (
@@ -134,7 +164,7 @@ function DragProbe({ name, axis, busyMs }: { name: string; axis: "x" | "y" | "xy
       </Animated.View>
       <Text testID={`frames-${name}`} style={{ fontSize: 12 }}>
         {s
-          ? `frames ${s.frames} · >20ms ${s.over20} · >33ms ${s.over33} · max ${s.maxMs}ms`
+          ? `frames ${s.frames} · median ${s.medianMs}ms · >20ms ${s.over20} · >33ms ${s.over33} · max ${s.maxMs}ms`
           : "frames (drag + spring back): drag it, then let go"}
         {outcome ? ` · ${outcome}` : ""}
       </Text>
@@ -189,6 +219,8 @@ export function createDeviceProbe(client: Pick<PluginClientContext, "openScreen"
     const [frame, setFrame] = useState<string>("");
     const [kb, setKb] = useState<string[]>([]);
     const [kbHeight, setKbHeight] = useState(0);
+    const lift = useRef(0);
+    const [liftState, setLiftState] = useState(0);
     const [safe, setSafe] = useState("");
 
     useEffect(() => {
@@ -207,17 +239,25 @@ export function createDeviceProbe(client: Pick<PluginClientContext, "openScreen"
           const line = `${n} h=${Math.round(h)} screenY=${Math.round(e?.endCoordinates?.screenY ?? 0)} dur=${e?.duration ?? "?"}`;
           log("keyboard", line);
           setKb((prev) => [...prev.slice(-5), line]);
-          // How far the keyboard's top edge reaches over the composer's bottom: the lift a composer needs.
-          const top = e?.endCoordinates?.screenY;
-          if (top !== undefined) {
-            composer.current?.measureInWindow((_x, y, _w, ch) => {
-              const overlap = `${n}: composer bottom=${Math.round(y + ch)} keyboard top=${Math.round(top)} overlap=${Math.round(y + ch - top)}`;
-              log("keyboard-overlap", overlap);
-              setKb((prev) => [...prev.slice(-5), overlap]);
-            });
+          setKbHeight(n === "keyboardWillShow" || n === "keyboardDidShow" ? h : 0);
+          if (n === "keyboardWillHide" || n === "keyboardDidHide") {
+            lift.current = 0;
+            setLiftState(0);
+            return;
           }
-          if (n === "keyboardWillShow" || n === "keyboardDidShow") setKbHeight(h);
-          if (n === "keyboardWillHide" || n === "keyboardDidHide") setKbHeight(0);
+          // Lift by how far the keyboard's top edge reaches over the composer's bottom (measured with the
+          // current lift applied), not by the raw height: the composer sits above the tab bar and the inset.
+          const top = e?.endCoordinates?.screenY;
+          if (top === undefined) return;
+          composer.current?.measureInWindow((_x, y, _w, ch) => {
+            const overlap = Math.round(y + ch - top);
+            const next = Math.max(0, lift.current + overlap);
+            const text = `${n}: composer bottom=${Math.round(y + ch)} keyboard top=${Math.round(top)} overlap=${overlap} → lift ${next}`;
+            log("keyboard-overlap", text);
+            setKb((prev) => [...prev.slice(-5), text]);
+            lift.current = next;
+            setLiftState(next);
+          });
         }),
       );
       return () => {
@@ -296,13 +336,15 @@ export function createDeviceProbe(client: Pick<PluginClientContext, "openScreen"
             <DragProbe name="sheet" axis="y" busyMs={0} />
             <DragProbe name="deck-busy" axis="x" busyMs={8} />
             <ScrollView horizontal={false} style={{ maxHeight: 120 }} nestedScrollEnabled>
-              <DragProbe name="row-in-scroll" axis="x" busyMs={0} />
+              <DragProbe name="row-in-scroll" axis="x" busyMs={0} claim="move" />
               <Text style={{ fontSize: 12, paddingVertical: 40 }}>(vertical scroll room)</Text>
             </ScrollView>
           </Section>
           <Section title="4 · Keyboard">
             <Text testID="probe-kb">{kb.length ? kb.join("\n") : "no keyboard events yet"}</Text>
-            <Text testID="probe-kb-height">keyboard height {Math.round(kbHeight)}</Text>
+            <Text testID="probe-kb-height">
+              keyboard height {Math.round(kbHeight)} · composer lift {liftState}
+            </Text>
             <HostTextInput
               testID="probe-host-input"
               placeholder="host TextInput"
@@ -321,7 +363,7 @@ export function createDeviceProbe(client: Pick<PluginClientContext, "openScreen"
           testID="probe-composer"
           style={{
             padding: 8,
-            marginBottom: kbHeight,
+            marginBottom: liftState,
             borderTopWidth: 1,
             borderTopColor: "#888",
             backgroundColor: props.theme.colors.surface1,
@@ -329,7 +371,7 @@ export function createDeviceProbe(client: Pick<PluginClientContext, "openScreen"
         >
           <RNTextInput
             testID="probe-composer-input"
-            placeholder="bottom composer: does it ride the keyboard?"
+            placeholder="bottom composer: does it sit just above the keyboard?"
             style={{ borderWidth: 1, borderColor: "#888", borderRadius: 8, padding: 8 }}
           />
         </View>

@@ -1,0 +1,66 @@
+BRO-3033: iOS simulator readings, taken from the probe screen's own text through
+`axe describe-ui` (each line is "type | label | value | x y w h").
+Paseo 0.11.1 built from source; iPhone 16 Pro simulator on iOS 26.3.1; probe at
+commit df4e6aa. The simulator was deleted after the run, so these lines and the
+JPEGs beside them are the record.
+
+## 1. Chrome and layout (08:07)
+StaticText | Probe · from-sidebar |  | 8 89 142 18
+GenericElement | Close plugin |  | 362 82 32 32
+StaticText | platform ios · compact true · RN ios 26.3.1 |  | 16 205 370 17
+StaticText | screen top=126 left=0 w=402 h=748 · window 402x874 · screen 402x874 · room below=0 |  | 16 230 370 34
+StaticText | M1 tab bar in RN SafeAreaView (purple below = bottom inset) tab bar content h=49 y=0 |  | 0 801 402 29
+
+## 2. openScreen params (08:09-08:10)
+(opened from the sidebar)
+StaticText | params {"hold":"from-sidebar"} |  | 16 314 370 17
+StaticText | mount #1 · renders 4 |  | 16 339 370 17
+(tapped hold=ask:7f3e)
+StaticText | Probe · ask:7f3e |  | 8 89 111 18
+StaticText | params {"hold":"ask:7f3e","tab":"decisions"} |  | 16 314 370 17
+StaticText | mount #2 · renders 4 |  | 16 339 370 17
+(tapped Close plugin)
+StaticText | Probe · from-sidebar |  | 8 89 142 18
+StaticText | params {"hold":"from-sidebar"} |  | 16 314 370 17
+StaticText | mount #1 · renders 10 |  | 16 339 370 17
+(tapped hold=unicode+&/?#)
+StaticText | Probe · café & co/?#=1 ✓ |  | 8 89 171 18
+StaticText | params {"hold":"café & co/?#=1 ✓","long":"xxxx…(600 x)…"} |  | 16 314 370 217
+StaticText | mount #3 · renders 4 |  | 16 540 370 17
+
+## 3. PanResponder (08:08-08:09), each drag 0.8 s with AXe swipe --delta 4
+(deck, leftward 330→70)
+StaticText | frames 136 · >20ms 0 · >33ms 0 · max 18ms · released dx=-260 dy=0 vx=-0.22 vy=0.00 |  | 16 719 370 29
+(deck, rightward 70→330; Paseo's sidebar then covered the screen: sim-8-deck-right-swipe.jpg)
+StaticText | frames 2 · >20ms 0 · >33ms 0 · max 17ms · TERMINATED by host at dx=12 dy=0 |  | 16 719 370 29
+(sheet, down 192→392)
+StaticText | frames 137 · >20ms 0 · >33ms 0 · max 17ms · released dx=0 dy=200 vx=0.00 vy=0.19 |  | 16 403 370 29
+(deck-busy, leftward)
+StaticText | frames 136 · >20ms 0 · >33ms 0 · max 18ms · released dx=-260 dy=0 vx=-0.26 vy=0.00 |  | 16 488 370 29
+(row-in-scroll, leftward)
+StaticText | frames 137 · >20ms 0 · >33ms 0 · max 18ms · released dx=-240 dy=0 vx=-0.23 vy=0.00 |  | 16 574 370 29
+(row-in-scroll, rightward; the sidebar opened)
+StaticText | frames 2 · >20ms 0 · >33ms 0 · max 17ms · TERMINATED by host at dx=12 dy=0 |  | 16 574 370 29
+Button | Close sidebar |  | 361 74 32 32
+(right swipe 120→330 at y=600 on the real Maestro screen; the sidebar opened: sim-5-midscreen-right-swipe.jpg)
+Button | New workspace |  | 8 70 386 28
+Button | Device probe |  | 8 220 386 28
+Button | Close sidebar |  | 361 74 32 32
+
+## 4. Keyboard
+(08:09, the bottom composer tapped after AXe had typed in the Direct connection form; cursor in the composer, no software keyboard)
+StaticText | keyboardWillHide h=311 screenY=874 dur=0 / keyboardDidHide h=311 screenY=874 dur=0 |  | 16 696 370 34
+StaticText | keyboard height 0 |  | 16 738 370 17
+(08:10, after a simulator reboot, the composer tapped again: the same two events, h=311)
+StaticText | keyboardWillHide h=311 screenY=874 dur=0 / keyboardDidHide h=311 screenY=874 dur=0 |  | 16 1358 370 34
+(08:12, after the push tests put the app in the background and brought it back: two more hide events, h=0)
+keyboardWillHide h=0 screenY=874 dur=0 / keyboardDidHide h=0 screenY=874 dur=0
+No keyboardWillShow arrived at any point. The software keyboard never appeared.
+
+## 6. Push (08:10-08:11), `xcrun simctl push` of push-*.apns
+(background, long notice: sim-12-push-banner-long.jpg)
+StaticText | Agent finished |  | 72 70 270 18
+StaticText | Needs you · Migrate webhooks to the v3 signing scheme The v3 signer is ready behind a flag. Two partners (Acme |  | 72 88 305 36
+(background, typical notice: sim-13-push-banner-typical.jpg)
+GenericElement | PASEO DEBUG, now, Agent finished, Needs you · Retry failed card charges with backoff Approve the retry policy: |  | 8 59 386 79
+(foreground, short notice: sim-14-push-foreground.jpg): the tree held no "Agent finished" element; the probe screen stayed as it was.

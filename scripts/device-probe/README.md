@@ -5,8 +5,8 @@
 - the `params` it was opened with, its mount number and render count, and three buttons that call `openScreen` with a hold key, a JSON-ish key and a unicode plus 600-character value;
 - where the host put it (`measureInWindow`), `layout.platform` and `layout.compact`;
 - gradient swatches: `backgroundImage` and `experimental_backgroundImage`, linear and radial, and a `boxShadow` ring (grey means it did not render);
-- four `PanResponder` cards (deck x, sheet y, deck x with 8 ms of JS work per move, a row inside a ScrollView). Each counts animation frames over 20 ms and 33 ms while dragged and says whether it was released or **terminated by the host**;
-- RN `Keyboard` events, a host `TextInput`, an RN `TextInput` and a bottom composer that rides `endCoordinates.height`;
+- four `PanResponder` cards: deck x, sheet y, deck x with 8 ms of JS work per move, and an axis-locked row inside a ScrollView. Each counts animation frames from touch-down until its spring back settles (median interval, over 20 ms, over 33 ms) and says whether it was released or **terminated by the host**;
+- RN `Keyboard` events, a host `TextInput`, an RN `TextInput` and a bottom composer that lifts by its measured overlap with the keyboard's top edge (`endCoordinates.screenY`);
 - an M1-style 49 pt tab bar inside RN `SafeAreaView`.
 
 The results are in [`docs/design/next/device-checks.md`](../../docs/design/next/device-checks.md).
