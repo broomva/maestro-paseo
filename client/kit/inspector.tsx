@@ -632,6 +632,13 @@ function useSlide(shown: boolean, value: Animated.Value, hidden: number, reduced
   return present;
 }
 
+/** Whether a key press comes from somewhere you type: it keeps its own Esc (as client/decision-triage.tsx). */
+function typingIn(target: unknown): boolean {
+  const el = target as { tagName?: string; isContentEditable?: boolean } | null;
+  const tag = el?.tagName?.toUpperCase();
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable === true;
+}
+
 /** The width a sideways swipe on the phone card is measured against: the 393 pt column less its margins. */
 const CARD_SWIPE_WIDTH = 360;
 
@@ -657,6 +664,7 @@ export function InspectorPanel({
   width = 480,
   inset = 16,
   frost,
+  scope,
 }: {
   theme: PluginTheme;
   item: InspectorItem | null;
@@ -669,8 +677,10 @@ export function InspectorPanel({
   onOpenSession?: () => void;
   width?: number;
   inset?: number;
-  /** Assumption A2's override: the bar's look. */
+  /** F2's override: the bar's look. */
   frost?: FrostLook;
+  /** Maestro's screen, whose focus Esc belongs to; without it every Esc not typed in a field is Maestro's. */
+  scope?: { current: unknown };
 }) {
   const kit = kitOf(theme);
   const reduced = useReducedMotion();
@@ -682,20 +692,28 @@ export function InspectorPanel({
   const picked = useChoice(item ?? kept);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
-  const panel = useRef<unknown>(null);
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
   useEffect(() => {
     if (!shown || Platform.OS !== "web") return;
     const doc = (globalThis as { document?: KeyTarget }).document;
     if (!doc) return;
-    // Esc is the inspector's only while Maestro has focus: inside the panel, or nowhere in particular (the page).
-    // Esc in Paseo's own ⌘K palette or a host field is Paseo's (paseo-plugin-capabilities.md §7).
+    // Esc is Maestro's while Maestro has focus: anywhere in `scope` (the screen; a pressed card or tile keeps
+    // focus there), or nowhere in particular (the page). A field someone types in keeps its Esc, and so does
+    // anything outside the scope, such as Paseo's ⌘K palette (paseo-plugin-capabilities.md §7).
     const onKey = (event: { key: string; target?: unknown }) => {
       if (event.key !== "Escape") return;
       const target = event.target;
-      const root = panel.current as { contains?: (other: unknown) => boolean } | null;
-      const page = (doc as { body?: unknown; documentElement?: unknown }).body;
+      const page = (doc as { body?: unknown }).body;
       const unfocused = !target || target === doc || target === page;
-      if (unfocused || root?.contains?.(target)) closeRef.current();
+      if (unfocused) {
+        closeRef.current();
+        return;
+      }
+      if (typingIn(target)) return;
+      const within = scopeRef.current?.current as { contains?: (other: unknown) => boolean } | null | undefined;
+      if (within?.contains && !within.contains(target)) return;
+      closeRef.current();
     };
     doc.addEventListener("keydown", onKey);
     return () => doc.removeEventListener("keydown", onKey);
@@ -705,7 +723,6 @@ export function InspectorPanel({
   const hold = KIND_LOOK[showing.kind].hold;
   return (
     <Animated.View
-      ref={panel as never}
       testID="inspector-panel"
       accessibilityElementsHidden={!shown}
       importantForAccessibility={shown ? "auto" : "no-hide-descendants"}

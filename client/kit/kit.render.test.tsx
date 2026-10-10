@@ -422,9 +422,16 @@ async function drag(target: El | null, dx: number, dy = 0) {
       Object.defineProperty(event, key, { value });
     (on as { dispatchEvent(e: unknown): boolean }).dispatchEvent(event);
   };
+  // Each event in its own act, as a finger's events arrive frames apart: a render lands between them.
   await act(async () => {
     mouse("mousedown", at.x, at.y, target);
-    for (let step = 1; step <= 8; step += 1) mouse("mousemove", at.x + (dx * step) / 8, at.y + (dy * step) / 8, target);
+  });
+  for (let step = 1; step <= 8; step += 1)
+    await act(async () => {
+      mouse("mousemove", at.x + (dx * step) / 8, at.y + (dy * step) / 8, target);
+    });
+  await settle();
+  await act(async () => {
     mouse("mouseup", at.x + dx, at.y + dy, target);
   });
   await settle(60);
@@ -570,6 +577,22 @@ describe("the inspector", () => {
     );
     expect(card.id("inspector-card")).toBeNull();
   });
+  it("Esc after pressing a card elsewhere in Maestro still sends it back", async () => {
+    let closed = 0;
+    const view = await mount(
+      <>
+        <web.Pressable accessibilityRole="button" accessibilityLabel="A rail card" onPress={ignore} />
+        <InspectorPanel theme={theme} item={APPROVAL} open onClose={() => (closed += 1)} onVerb={ignore} />
+      </>,
+    );
+    const card = view.label("A rail card") as unknown as { focus(): void; dispatchEvent(e: unknown): boolean };
+    await act(async () => {
+      card.focus();
+      card.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await settle();
+    expect(closed).toBe(1);
+  });
   it("Esc from a field outside Maestro is not the inspector's", async () => {
     let closed = 0;
     const view = await mount(
@@ -589,11 +612,16 @@ describe("the inspector", () => {
     const { InspectorBody } = await import("./inspector");
     // Tidepool in the light theme: #0072A3, however the style spells it.
     const tidepool = (el: El) => /0072a3|0,\s*114,\s*163/i.test(el.getAttribute("style") ?? "");
-    const waiting = await mount(<InspectorBody theme={theme} item={APPROVAL} />);
-    expect(waiting.all("div").filter(tidepool).length).toBeGreaterThan(0);
-    const idle = { ...NOTICE, session: { name: "s", status: "idle", state: "queued" } };
+    const sessionDots = (view: { one(selector: string): El | null }) => {
+      const row = view.one('[aria-label^="Session "]');
+      if (!row) throw new Error("no session row");
+      return [...(row.querySelectorAll("div") as unknown as El[])].filter(tidepool);
+    };
+    const waiting = await mount(<InspectorBody theme={theme} item={{ ...APPROVAL, history: [] }} />);
+    expect(sessionDots(waiting).length).toBeGreaterThan(0);
+    const idle = { ...APPROVAL, history: [], session: { name: "s", status: "idle", state: "queued" } };
     const view = await mount(<InspectorBody theme={theme} item={idle} />);
-    expect(view.all("div").filter(tidepool)).toHaveLength(0);
+    expect(sessionDots(view)).toHaveLength(0);
   });
   it("an Answer carries the option chosen", async () => {
     const pressed: [string, string | undefined][] = [];
