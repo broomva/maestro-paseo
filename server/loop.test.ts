@@ -11,7 +11,7 @@ import { type CreateInput, Engine, NEVER_BY_RULE, NOT_QUIET, type Timer } from "
 import { LOOP, type Origin } from "./events";
 import { fakePaseo } from "./fake-paseo";
 import { ACTIVE_AGAIN, quietCleared, sessionActiveAt } from "./flags";
-import { ALREADY_WAKING, ASK_NOT_CONNECTED, Loop, NOT_CONNECTED, QUIET_MS } from "./loop";
+import { ALREADY_WAKING, ASK_NOT_CONNECTED, Loop, NOT_CONNECTED, QUIET_MS, SWEEP_OVERRAN } from "./loop";
 import type { Paseo } from "./runs";
 import { HELD_FOR_YOU } from "./runs";
 import { WorkStore } from "./store";
@@ -1139,5 +1139,37 @@ describe("the wake and the plugin sweep (BRO-2995)", () => {
     const entry = await loop.wake("manual");
     expect(order).toEqual(["sweep", "list"]);
     expect(entry.needsYou.stuck).toBe(1);
+  });
+
+  test("a sweep that hangs never holds the wake: two wakes in a row complete and are recorded, each saying so", async () => {
+    const { engine, client, timers, wakeLog, queue } = await setup();
+    await queue("Waiting in the queue");
+    const runs: number[] = [];
+    const logs: string[] = [];
+    const loop = new Loop({
+      engine,
+      client: () => client.paseo,
+      timer: timers.timer,
+      wakeLog,
+      log: (line) => logs.push(line),
+      askMs: 100,
+      sweepWaitMs: 20,
+      // Never settles: its lease is never released, so a second run would join it.
+      sweep: {
+        run: () => {
+          runs.push(runs.length + 1);
+          return new Promise<never>(() => undefined);
+        },
+      },
+    });
+    const first = await loop.wake("manual");
+    const second = await loop.wake("manual");
+    for (const entry of [first, second]) {
+      expect(entry.skipped).toBeUndefined();
+      expect(entry.narrative).toContain(SWEEP_OVERRAN);
+    }
+    expect((await loop.get()).recent.map((entry) => entry.tickId)).toEqual([second.tickId, first.tickId]);
+    expect(runs).toEqual([1, 2]);
+    expect(logs.filter((line) => line.includes("waited"))).toHaveLength(2);
   });
 });

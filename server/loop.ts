@@ -7,8 +7,9 @@
 // engine with no dispatch (LoopEngine): it cannot start a run. Each wake:
 //   1. runs the plugin sweep first (server/sweep.ts, under its lease), which
 //      keeps bound work true to Paseo and applies decisions whose undo window
-//      has closed, then reads the work through the engine's list, a pure read
-//      (BRO-2995);
+//      has closed, waiting for it at most SWEEP_WAIT_MS (one that hangs is said
+//      and left running), then reads the work through the engine's list, a
+//      pure read (BRO-2995);
 //   2. counts what needs you, and names running work quiet for 30 minutes:
 //      Maestro sees only turn boundaries, so work quiet by its events is
 //      quiet only if its session, asked (bounded, ASK_MS), has done nothing
@@ -76,6 +77,13 @@ export const RECENT = 20;
 /** The longest a wake waits for a session to say when it last worked. */
 export const ASK_MS = 10_000;
 
+/** The longest a wake waits for the sweep it runs first; one that hangs never holds the wake past this. */
+export const SWEEP_WAIT_MS = 90_000;
+
+/** Said in a wake whose sweep ran past SWEEP_WAIT_MS. */
+export const SWEEP_OVERRAN =
+  "The sweep before this wake ran past its time, so the wake read the work as the files are now. The sweep goes on.";
+
 /** Why a session could not be asked: the plugin has no Paseo client yet. */
 export const ASK_NOT_CONNECTED = "Paseo has not connected to Maestro yet";
 
@@ -113,6 +121,8 @@ export interface LoopOptions {
   answers?: AnswersStep;
   /** Step 1's sweep (server/sweep.ts): run before the work is read, so the wake reads it current. */
   sweep?: { run(): Promise<unknown> };
+  /** How long a wake waits for that sweep (SWEEP_WAIT_MS); tests pass a short one. */
+  sweepWaitMs?: number;
 }
 
 /**
@@ -169,6 +179,7 @@ export class Loop {
   private readonly askMs: number;
   private readonly answers: AnswersStep | null;
   private readonly sweep: LoopOptions["sweep"] | null;
+  private readonly sweepWaitMs: number;
   private cancel: (() => void) | null = null;
   private nextAt: Date | null = null;
   /** The lease: true while a wake runs. Set before the wake's first await, so two can never both run. */
@@ -197,6 +208,7 @@ export class Loop {
     this.askMs = options.askMs ?? ASK_MS;
     this.answers = options.answers ?? null;
     this.sweep = options.sweep ?? null;
+    this.sweepWaitMs = options.sweepWaitMs ?? SWEEP_WAIT_MS;
   }
 
   /** The loop now: its period (null: off), the next wake, whether one is running, the newest wakes first. */
@@ -317,8 +329,22 @@ export class Loop {
   private async tick(cause: Cause): Promise<WakeEntry> {
     const entry = this.blank(cause);
     const notes: string[] = [];
-    // The sweep first, under its lease (it never throws): the reads below only read.
-    await this.sweep?.run();
+    // The sweep first, under its lease (it never throws): the reads below only read. Waited for at most
+    // sweepWaitMs, so a sweep that hangs never holds this wake, nor every wake after it: past that the wake reads
+    // the files as they are and says so. The lease stays the sweep's; a wake never runs a second one beside it.
+    const { sweep } = this;
+    if (sweep) {
+      const overran = await within(() => sweep.run(), this.sweepWaitMs).then(
+        () => false,
+        () => true,
+      );
+      if (overran) {
+        notes.push(SWEEP_OVERRAN);
+        this.log(
+          `the loop's wake waited ${Math.round(this.sweepWaitMs / 1000)} s for the sweep, which is still running`,
+        );
+      }
+    }
     const paseo = this.client();
     let items: WorkItem[] = [];
     try {

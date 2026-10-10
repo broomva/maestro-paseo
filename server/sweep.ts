@@ -21,6 +21,9 @@
 // the background (a fetch, the loops' whole view) is started by the sweep and
 // not waited for, so a slow network or launchd read never holds up the work;
 // it runs one at a time, and a sweep that finds it still running leaves it.
+// One still running past BACKGROUND_MS is abandoned: logged, started again by
+// the next sweep, and whatever it says when it ends late is dropped, so a
+// step that hangs never stops that step for good.
 // A step that fails is logged and never keeps the others from running. It
 // starts nothing (A8): no step dispatches.
 
@@ -29,6 +32,9 @@ import type { Paseo } from "./runs";
 
 /** How often the sweep runs on its own. */
 export const SWEEP_MS = 30_000;
+
+/** How long a background step may run before it is abandoned and may start again. */
+export const BACKGROUND_MS = 5 * 60_000;
 
 /** One of the sweep's steps, by name for the log. It may throw: the sweep says so and goes on. */
 export interface SweepStep {
@@ -54,6 +60,8 @@ export interface SweepOptions {
   client: () => Paseo | null;
   /** The cadence; SWEEP_MS unless a test or the environment says otherwise. */
   everyMs?: number;
+  /** How long a background step may run (BACKGROUND_MS); tests pass a short one. */
+  backgroundMs?: number;
   timer?: Timer;
   now?: () => Date;
   log?: (message: string) => void;
@@ -91,7 +99,8 @@ export class Sweep {
   /** The sweep after it, once: every sweep asked for while one runs. */
   private next: Promise<SweepRun> | null = null;
   /** The background steps running now, by name. */
-  private readonly flying = new Map<string, Promise<void>>();
+  private readonly flying = new Map<string, { flight: symbol; done: Promise<void> }>();
+  private readonly backgroundMs: number;
   private cancel: (() => void) | null = null;
   private started = false;
   private stopped = false;
@@ -100,6 +109,7 @@ export class Sweep {
     this.steps = options.steps;
     this.client = options.client;
     this.everyMs = options.everyMs ?? SWEEP_MS;
+    this.backgroundMs = options.backgroundMs ?? BACKGROUND_MS;
     this.timer = options.timer ?? realTimer;
     this.now = options.now ?? (() => new Date());
     this.log = options.log ?? ((message) => console.log(`[maestro] ${message}`));
@@ -159,10 +169,7 @@ export class Sweep {
           run.steps.push({ name: step.name, outcome: "running", error: null });
           continue;
         }
-        const flying = this.attempt(step, paseo).then(() => {
-          this.flying.delete(step.name);
-        });
-        this.flying.set(step.name, flying);
+        this.launch(step, paseo);
         run.steps.push({ name: step.name, outcome: "started", error: null });
         continue;
       }
@@ -179,19 +186,46 @@ export class Sweep {
     return run;
   }
 
-  /** For a test: waits for the background steps running now. */
-  async settled(): Promise<void> {
-    await Promise.all(this.flying.values());
+  /**
+   * Starts a background step, one flight at a time per step. A flight still
+   * running after backgroundMs is abandoned: said in the log, and the next
+   * sweep starts the step again. An abandoned flight that ends later is
+   * dropped: it neither ends the flight after it nor logs its failure.
+   */
+  private launch(step: SweepStep, paseo: Paseo | null): void {
+    const flight = Symbol(step.name);
+    const current = () => this.flying.get(step.name)?.flight === flight;
+    const abandon = this.timer(async () => {
+      if (!current()) return;
+      this.flying.delete(step.name);
+      this.log(
+        `sweep: ${step.name} has run ${Math.round(this.backgroundMs / 1000)} s; abandoned, so the next sweep starts it again`,
+      );
+    }, this.backgroundMs);
+    const done = this.attempt(step, paseo, current).then(() => {
+      abandon();
+      if (current()) this.flying.delete(step.name);
+    });
+    this.flying.set(step.name, { flight, done });
   }
 
-  /** Runs one step: why it failed, said in the log, or null. */
-  private async attempt(step: SweepStep, paseo: Paseo | null): Promise<string | null> {
+  /** For a test: waits for the background steps running now. */
+  async settled(): Promise<void> {
+    await Promise.all([...this.flying.values()].map((entry) => entry.done));
+  }
+
+  /** Runs one step: why it failed, said in the log while `said()` holds, or null. */
+  private async attempt(
+    step: SweepStep,
+    paseo: Paseo | null,
+    said: () => boolean = () => true,
+  ): Promise<string | null> {
     try {
       await step.run(paseo);
       return null;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.log(`sweep: ${step.name} failed: ${message}`);
+      if (said()) this.log(`sweep: ${step.name} failed: ${message}`);
       return message;
     }
   }

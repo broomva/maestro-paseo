@@ -260,7 +260,10 @@ even with the loop off. Each sweep:
   process left behind.
 
 One sweep runs at a time (its lease): a sweep asked for while one runs is the next one, shared by
-everyone who asked meanwhile. A step that fails is logged and keeps no other from running. The first
+everyone who asked meanwhile. A step that fails is logged and keeps no other from running. A wake
+waits at most 90 seconds for its sweep, then reads the files as they are and says the sweep ran
+over; a background step still running after 5 minutes is abandoned, logged, and started again by
+the next sweep, so a step that hangs never stops a wake or that step for good. The first
 sweep runs as the plugin starts; the first client a hook brings runs another at once. The sweep
 starts no work (A8).
 

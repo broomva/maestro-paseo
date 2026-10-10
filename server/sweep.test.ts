@@ -91,6 +91,52 @@ describe("the plugin sweep (BRO-2995)", () => {
     await sweep.settled();
   });
 
+  test("a background step that hangs is abandoned at its deadline: logged, started again, its late end dropped", async () => {
+    const timers = fakeTimers();
+    const logged: string[] = [];
+    const flights: Array<{ settle: (error: Error | null) => void }> = [];
+    const sweep = new Sweep({
+      steps: [
+        {
+          name: "the fleet's leftover locks",
+          background: true,
+          run: () =>
+            new Promise<void>((resolve, reject) => {
+              flights.push({ settle: (error) => (error ? reject(error) : resolve()) });
+            }),
+        },
+      ],
+      client: () => null,
+      timer: timers.timer,
+      backgroundMs: 60_000,
+      log: (line) => logged.push(line),
+    });
+    expect((await sweep.run()).steps[0]?.outcome).toBe("started");
+    expect((await sweep.run()).steps[0]?.outcome).toBe("running");
+    expect(flights).toHaveLength(1);
+    expect(timers.live().map((entry) => entry.ms)).toEqual([60_000]);
+    // Its deadline passes with the flight still hung: abandoned, said, and the next sweep starts it again.
+    await timers.fire();
+    expect(logged).toEqual([
+      "sweep: the fleet's leftover locks has run 60 s; abandoned, so the next sweep starts it again",
+    ]);
+    expect((await sweep.run()).steps[0]?.outcome).toBe("started");
+    expect(flights).toHaveLength(2);
+    // The abandoned one ends late, failing: dropped. It neither ends the new flight nor logs.
+    flights[0]?.settle(new Error("late"));
+    await flush();
+    expect(logged).toHaveLength(1);
+    expect((await sweep.run()).steps[0]?.outcome).toBe("running");
+    // The new one ends in time: its deadline is canceled, and the step may start again.
+    flights[1]?.settle(null);
+    await sweep.settled();
+    expect(timers.live()).toEqual([]);
+    expect((await sweep.run()).steps[0]?.outcome).toBe("started");
+    expect(flights).toHaveLength(3);
+    flights[2]?.settle(null);
+    await sweep.settled();
+  });
+
   test("a step that fails is logged and keeps no other from running", async () => {
     const logged: string[] = [];
     const ran: string[] = [];
