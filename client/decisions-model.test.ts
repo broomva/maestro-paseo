@@ -10,6 +10,7 @@ import {
   decisionAsks,
   fallbackOption,
   fateLine,
+  forTheConductor,
   groupDecisions,
   groupMeta,
   handedAsks,
@@ -549,7 +550,7 @@ describe("a fleet scope's own asks, beside the workspace's (BRO-2856)", () => {
 });
 
 describe("what became of your answer (BRO-2827)", () => {
-  const fate = (stage: "unlanded" | "unrouted" | "acted" | "before", words: string) => ({
+  const fate = (stage: "unlanded" | "unrouted" | "acted" | "before" | "conductor", words: string) => ({
     stage,
     words,
     route: null,
@@ -568,6 +569,23 @@ describe("what became of your answer (BRO-2827)", () => {
     );
     expect(fateLine(ask("l", "A", { ...answered, fate: fate("acted", "Acted on: sent.") }))?.tone).toBe("done");
     expect(fateLine(ask("l", "A", { ...answered, fate: fate("before", "Answered before …") }))?.tone).toBe("plain");
+  });
+  test("an answer waiting for the conductor reads as waiting, never done, and Decisions lists it oldest first (A8)", () => {
+    const waits = (id: string, answeredAt: string) =>
+      ask("l", id, { state: "answered", answeredAt, fate: fate("conductor", "For the conductor: …") });
+    expect(fateLine(waits("A", "2026-10-09T14:29:01Z"))).toEqual({ words: "For the conductor: …", tone: "waiting" });
+    const acted = ask("l", "D", {
+      state: "answered",
+      answeredAt: "2026-10-09T14:00:00Z",
+      fate: fate("acted", "Acted on: sent."),
+    });
+    const open = ask("l", "E");
+    const later = waits("B", "2026-10-09T14:29:05Z");
+    const sooner = waits("C", "2026-10-09T14:29:02Z");
+    expect(forTheConductor([later, acted, open, sooner]).map((entry) => entry.id)).toEqual(["C", "B"]);
+    expect(forTheConductor([acted, open])).toEqual([]);
+    // Listed once: the recently answered leave them to the conductor's block.
+    expect(recentlyAnswered([later, acted, open, sooner]).map((entry) => entry.id)).toEqual(["D"]);
   });
   test("an older daemon sends no fate: an answer in the batch still never reads as done", () => {
     expect(fateLine(ask("l", "A", { state: "answered", batched: true }))?.tone).toBe("waiting");

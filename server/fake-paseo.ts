@@ -24,6 +24,9 @@ export interface FakeAgent {
   labels?: Record<string, string>;
   activeTurn: null;
   lastError?: string;
+  /** The session's mode now, as refresh() reports it. */
+  currentModeId?: string | null;
+  availableModes?: Array<{ id: string; label?: string; isUnattended?: boolean }>;
 }
 
 export interface FakePaseoOptions {
@@ -159,6 +162,25 @@ export function fakePaseo(options: FakePaseoOptions = {}) {
     },
     placeWorktreesIn: (folder: string) => {
       worktreeRoot = folder;
+    },
+    /**
+     * A live session that is not a run of Maestro's: a lane, the conductor, or
+     * any session that asks Maestro for a run. Its mode is its lane profile's.
+     */
+    addSession: (id: string, session: { provider?: string; modeId?: string | null; title?: string } = {}) => {
+      agents.set(id, {
+        id,
+        cwd: "/tmp",
+        status: "idle",
+        updatedAt: now().toISOString(),
+        workspaceId: `ws-${id}`,
+        provider: session.provider ?? "claude",
+        title: session.title ?? null,
+        archivedAt: null,
+        pendingPermissions: [],
+        activeTurn: null,
+        currentModeId: session.modeId ?? null,
+      });
     },
     /** The session did something at `at` (a tool call, a line of output): what refresh() reports from now. */
     setLastActivityAt: (agentId: string, at: Date | string) => {

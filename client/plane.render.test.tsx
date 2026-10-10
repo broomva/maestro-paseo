@@ -1082,6 +1082,24 @@ const invoke = async (method: string, input: unknown) => {
       },
     };
   }
+  // Your decision on an answer for the conductor: pending in its undo window until undone (BRO-2990).
+  if (method === "conductor.decide") {
+    const { key, verb } = input as { key: string; verb: "file" | "dismiss" };
+    const appliesAt = new Date(Date.now() + 8_000).toISOString();
+    workspaceNow = workspaceNow.map((ask) =>
+      ask.fate?.key === key
+        ? { ...ask, fate: { ...ask.fate, pending: { verb, receipt: `r-${verb}`, appliesAt } } }
+        : ask,
+    );
+    return { verb, receipt: `r-${verb}`, appliesAt };
+  }
+  if (method === "conductor.undo") {
+    const { receipt } = input as { receipt: string };
+    workspaceNow = workspaceNow.map((ask) =>
+      ask.fate?.pending?.receipt === receipt ? { ...ask, fate: { ...ask.fate, pending: null } } : ask,
+    );
+    return { undone: true };
+  }
   if (method === "ask.answer") {
     if (answerHeld) await answerHeld;
     if (answerFail) throw new Error(answerFail);
@@ -2368,7 +2386,7 @@ describe("the loop", () => {
 });
 
 describe("the Queued hint", () => {
-  const LOOP_HINT = "The loop starts these on its next wake, under the run cap";
+  const LOOP_HINT = "Started by you, a lane or the conductor, never the loop";
   const YOURS_HINT = "Ready when you dispatch it";
 
   for (const [on, shown, hidden] of [
@@ -2399,14 +2417,14 @@ describe("Settings", () => {
     const parts = [...(control?.children ?? [])].map((el) => el.textContent);
     expect(parts.slice(0, 2)).toEqual(["The loop", LOOP_SETTINGS_HINT]);
     expect(LOOP_SETTINGS_HINT).toBe(
-      "On a schedule, the loop starts Queued work under the run cap, and leaves work that skips permission prompts, or runs in a mode you chose, to you.",
+      "On a schedule, the loop flags quiet runs and acts on your answers; it never starts work, which waits for you, a lane or the conductor.",
     );
     expect(view.text().split(LOOP_SETTINGS_HINT)).toHaveLength(2);
   });
 
   test("the loop is a choice of off or a period, and Save sends the whole config back with it", async () => {
     const view = await mount(settingsScreen());
-    expect(view.text()).toContain("the loop starts Queued work under the run cap");
+    expect(view.text()).toContain("it never starts work");
     expect(view.pressed("The loop: Off")).toBe("true");
     for (const label of ["Every 5 minutes", "Every 15 minutes", "Every 30 minutes", "Every 60 minutes"]) {
       expect(view.byLabel(`The loop: ${label}`)).not.toBeNull();
@@ -3422,6 +3440,51 @@ describe("the Decisions tab", () => {
     expect(text).toContain("Hold it.Acted on: sent to the session that asked.");
     // The stranded one is never written as done: no "written to" line stands in for its fate.
     expect(text).not.toContain("In the answers batch on maestro/answers");
+  });
+
+  test("an answer whose asker is gone waits in view for the conductor; File as work and Dismiss, each with Undo (A8)", async () => {
+    workspaceNow = [
+      canvas("product-name"),
+      canvas("orphaned", {
+        state: "answered",
+        answer: "Change it.",
+        answeredAt: new Date(Date.now() - H).toISOString(),
+        fate: {
+          stage: "conductor",
+          words:
+            "For the conductor: no session on its arc could take your answer, so it waits for the conductor to give it to a lane. Nothing was started.",
+          route: "conductor",
+          pr: null,
+          work: null,
+          agentId: "asker-1",
+          key: "k-1",
+          pending: null,
+        },
+      }),
+    ];
+    const view = await open();
+    await until(view, "For the conductor · 1");
+    // Shown without opening anything: its headline, your answer, and that nothing was started; listed once.
+    const text = view.text();
+    expect(view.byLabel("For the conductor · 1")).not.toBeNull();
+    expect(text).toContain("Nothing was started: each waits for the conductor to give it to a lane");
+    expect(text).toContain("Canvas ask orphaned");
+    expect(text).toContain("Change it.");
+    expect(view.byLabel("Recently answered · 1")).toBeNull();
+    // File as work: your decision, pending in its undo window, with Undo.
+    await view.press(view.byLabel("File as work, Canvas ask orphaned"));
+    expect(sent("conductor.decide")).toEqual([{ key: "k-1", verb: "file" }]);
+    await until(view, "Filing it as work: it is queued, never started");
+    await view.press(view.byLabel("Undo, Canvas ask orphaned"));
+    expect(sent("conductor.undo")).toEqual([{ receipt: "r-file" }]);
+    for (let tries = 0; tries < 100 && !view.byLabel("Dismiss, Canvas ask orphaned"); tries += 1) await settle(20);
+    // Undone, it waits again; Dismiss is the other verb.
+    await view.press(view.byLabel("Dismiss, Canvas ask orphaned"));
+    expect(sent("conductor.decide")).toEqual([
+      { key: "k-1", verb: "file" },
+      { key: "k-1", verb: "dismiss" },
+    ]);
+    await until(view, "Dismissing it: nothing follows from it");
   });
 
   test("one decision at a time, blocking first: its count and bar, the card's layers, the rail, up next", async () => {

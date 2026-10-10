@@ -148,4 +148,4 @@ export function loopOptions(current: number | null): { label: string; value: str
 
 /** The one sentence under the choice in Settings. */
 export const LOOP_HINT =
-  "On a schedule, the loop starts Queued work under the run cap, and leaves work that skips permission prompts, or runs in a mode you chose, to you.";
+  "On a schedule, the loop flags quiet runs and acts on your answers; it never starts work, which waits for you, a lane or the conductor.";

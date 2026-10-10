@@ -13,6 +13,7 @@ import { useIsMutating, useMutationState, useQuery, useQueryClient } from "@tans
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Easing, Platform, Pressable, Text, View } from "react-native";
 import type { DecisionAsk } from "../shared/fleet";
+import { ConductorAnswers } from "./conductor-answers";
 import {
   ANSWER_KEY,
   answeredColor,
@@ -33,6 +34,7 @@ import {
   cutAtWord,
   decisionAsks,
   fateLine,
+  forTheConductor,
   headlineOf,
   isTriaged,
   ledgerName,
@@ -570,6 +572,7 @@ export function DecisionsView({
   const totalOpen = rail.reduce((sum, entry) => sum + entry.open, 0);
   const totalWaiting = rail.reduce((sum, entry) => sum + entry.waiting, 0);
   const answeredList = recentlyAnswered(all);
+  const conductorList = forTheConductor(all);
   // M: every ask queued this visit; answered: those of them no longer open (here or elsewhere). Skips stay open.
   const visit = new Set([...seen, ...queue.map(askKey)]);
   const stillOpen = new Set(queue.map(askKey));
@@ -913,6 +916,8 @@ export function DecisionsView({
         </Card>
       )}
       {upNextView}
+      {/* Never folded away: an answer that would once have started work waits here, visibly, for the conductor (A8). */}
+      <ConductorAnswers theme={theme} asks={conductorList} compact={compact} />
       {answeredView}
     </View>
   );

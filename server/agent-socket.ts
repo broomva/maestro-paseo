@@ -7,9 +7,11 @@
 // It offers the noun and the verb, never the gate: approve, send back, undo,
 // stop, unblock, cancel, settings and the loop are not served, so no session
 // can pass its own gate, take back your decision, loosen how runs start, or
-// wake the loop to start work. A session starts
-// only queued work, and cannot write a done check: checks run as you with no
-// session in the loop.
+// drive the loop (which starts nothing anyway, A8). A session starts only
+// queued work, and only in a Settings mode that does not ask: the caller it
+// reports is not verified, so it never picks the mode a run takes (server/
+// runs.ts settingsLane, unattendedRefusal; BRO-2996 verifies callers). It
+// cannot write a done check: checks run as you with no session in the loop.
 // Everything done through it is recorded as the agent's, since nothing here
 // can prove a person asked, under the agent id the client reports (unverified).
 // This is the surface a session is offered, not a sandbox. A process running as
@@ -52,6 +54,8 @@ export const GATE_METHODS: ReadonlySet<string> = new Set([
   "loop.wake",
   "fleet.review",
   "ask.answer",
+  "conductor.decide",
+  "conductor.undo",
 ]);
 
 function method<S extends z.ZodType>(

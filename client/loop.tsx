@@ -108,7 +108,9 @@ export function LoopPanel({ theme, onClose }: { theme: PluginTheme; onClose: () 
           <View style={{ gap: space[1] }}>
             <Text style={text.body}>{periodText(state?.minutes ?? null)}</Text>
             <View style={{ flexDirection: "row", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
-              <Text style={text.small}>It starts Queued work under the run cap. Its period is set in Settings.</Text>
+              <Text style={text.small}>
+                It flags quiet runs and acts on your answers; it never starts work. Its period is set in Settings.
+              </Text>
               {openSettings ? (
                 <Button theme={theme} variant="quiet" icon="Settings" label="Open Settings" onPress={openSettings} />
               ) : null}
@@ -133,7 +135,7 @@ export function LoopPanel({ theme, onClose }: { theme: PluginTheme; onClose: () 
             </Text>
             {wakes.length === 0 ? (
               <Text style={text.muted}>
-                No wakes yet. Each one is listed here: what it started, what it left to you and why.
+                No wakes yet. Each one is listed here: what needs you, what went quiet, and what became of your answers.
               </Text>
             ) : (
               wakes.map((entry) => <WakeRow key={entry.tickId} theme={theme} entry={entry} />)

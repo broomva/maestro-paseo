@@ -44,11 +44,13 @@ async function setup() {
     ...defaultConfig(),
     workRoot: join(root, "work"),
     provider: "claude/test-model",
-    modeId: null,
+    // A Settings mode that does not ask: a session's run takes it (BRO-2990), whatever mode the session runs in.
+    modeId: "bypassPermissions",
     isolation: "worktree",
   };
   const engine = new Engine({ config: async () => config, log: () => {} });
   const fake = fakePaseo();
+  fake.addSession("session-1", { modeId: "default" });
   let handle: Paseo | null = fake.paseo;
   const methods = agentMethods(engine, () => handle);
   const ask = async (method: string, input: unknown = {}, caller: string | null = "session-1") => {
@@ -155,7 +157,10 @@ describe("what a session is offered", () => {
       expect(!response.ok && response.error).toContain("yours alone");
     }
     expect((await engine.get(item.id)).item.state).toBe("review");
-    expect((await ok("config.get")) as unknown as MaestroConfig).toMatchObject({ modeId: null });
+    expect((await ok("config.get")) as unknown as MaestroConfig).toMatchObject({
+      provider: "claude/test-model",
+      isolation: "worktree",
+    });
   });
 
   test("undo, stop and settings are refused, and take nothing back", async () => {
@@ -278,10 +283,10 @@ describe("what a session is offered", () => {
     if (!response.ok) throw new Error(response.error);
     const { item, notice } = response.output as { item: WorkItem; notice: string | null };
     expect(item.group).toBe("queued");
-    expect(notice).toContain("At capacity: 1 running. It stays queued.");
+    expect(notice).toContain("At capacity: 1 of 1 slot taken (1 running). It stays queued.");
     // The session holds the id, so it retries the dispatch, which refuses again without adding anything.
     const retry = await ask("work.dispatch", { id: item.id });
-    expect(!retry.ok && retry.error).toBe("At capacity: 1 running. It stays queued.");
+    expect(!retry.ok && retry.error).toBe("At capacity: 1 of 1 slot taken (1 running). It stays queued.");
     expect((await engine.list()).items.map((entry) => entry.title).sort()).toEqual(["First", "Second"]);
     expect(fake.created).toHaveLength(1);
   });
@@ -344,7 +349,7 @@ describe("what a session is offered", () => {
     const { item } = await ok("work.create", {
       title: "Loosened",
       repo,
-      modeId: "bypassPermissions",
+      modeId: "acceptEdits",
       provider: "codex/gpt-5.5",
       isolation: "directory",
       thinkingOptionId: "max",
@@ -353,10 +358,30 @@ describe("what a session is offered", () => {
     });
     const file = await readFile(join(config.workRoot, item.path, "_work.md"), "utf8");
     for (const key of ["provider:", "isolation:", "mode:", "thinking:", "features:"]) expect(file).not.toContain(key);
+    // The mode is your Settings' (it does not ask), never the one the input named nor the session's own.
     expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({
       provider: "claude/test-model",
+      modeId: "bypassPermissions",
     });
     expect(item.worker?.branch).toMatch(/^run\//);
+  });
+
+  test("with no Settings mode that does not ask, a session cannot start a run: it would wait on a permission nobody answers", async () => {
+    const { repo, ask, ok, engine, fake, config } = await setup();
+    config.modeId = "default";
+    // Naming a bypass session's id changes nothing: the caller is unverified, so it never picks the mode.
+    fake.addSession("session-2", { modeId: "bypassPermissions" });
+    const { item, notice } = (await ok("work.create", { title: "Unwatched", repo, dispatch: true }, "session-2")) as {
+      item: WorkItem;
+      notice: string | null;
+    };
+    // Filed and queued, with its id and why it did not start: you, or a lane that does not ask, may start it.
+    expect(item.state).toBe("proposed");
+    expect(notice).toStartWith(`Created ${item.id}, not started. A run nobody watches never starts in Always ask`);
+    expect(fake.created).toHaveLength(0);
+    const retry = await ask("work.dispatch", { id: item.id }, "session-2");
+    expect(!retry.ok && retry.error).toContain("asks before it acts");
+    expect((await engine.list()).items.map((listed) => listed.state)).toEqual(["proposed"]);
   });
 
   test("a session cannot start work that carries a mode you chose", async () => {

@@ -149,9 +149,9 @@ describe("the loop in Settings", () => {
     for (const minutes of [null, 1, 5, 45, 1440]) expect(loopMinutesOf(loopValue(minutes))).toBe(minutes);
   });
 
-  test("one sentence says what the loop starts and what it leaves to you", () => {
+  test("one sentence says what the loop does, and that it never starts work (A8)", () => {
     expect(LOOP_HINT.match(/\./g)).toHaveLength(1);
-    expect(LOOP_HINT).toContain("starts Queued work under the run cap");
-    expect(LOOP_HINT).toContain("leaves work that skips permission prompts");
+    expect(LOOP_HINT).toContain("flags quiet runs and acts on your answers");
+    expect(LOOP_HINT).toContain("it never starts work, which waits for you, a lane or the conductor");
   });
 });

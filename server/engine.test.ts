@@ -1479,7 +1479,9 @@ describe("concurrency cap", () => {
     const { create, engine, fake } = await setup({ concurrencyCap: 1 });
     await create();
     const queued = await create({ dispatch: false });
-    await expect(engine.dispatch(fake.paseo, queued.id)).rejects.toThrow("At capacity: 1 running. It stays queued.");
+    await expect(engine.dispatch(fake.paseo, queued.id)).rejects.toThrow(
+      "At capacity: 1 of 1 slot taken (1 running). It stays queued.",
+    );
     expect((await engine.get(queued.id)).item.state).toBe("proposed");
     expect(fake.created).toHaveLength(1);
     // A slot frees when the run lands at the gate.
@@ -1487,16 +1489,19 @@ describe("concurrency cap", () => {
     expect((await engine.dispatch(fake.paseo, queued.id)).state).toBe("running");
   });
 
-  test("the default cap is 3; stuck work stays stuck at the cap", async () => {
+  test("the default cap is 3; stuck work holds a slot, and stays stuck at the cap", async () => {
     const { create, engine, fake } = await setup();
     const first = await create();
     await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "boom" } }, []);
     await create();
     await create();
-    await create();
-    await expect(engine.dispatch(fake.paseo, first.id)).rejects.toThrow("At capacity: 3 running. It stays stuck.");
-    expect((await engine.get(first.id)).item.state).toBe("blocked");
-    await expect(create()).rejects.toThrow("At capacity: 3 running. It stays queued.");
+    // The stuck run still holds its slot (BRO-2990): two more runs fill the cap of 3.
+    await expect(create()).rejects.toThrow("At capacity: 3 of 3 slots taken (2 running, 1 stuck). It stays queued.");
+    // Restarting the stuck run itself does not count its own slot twice, and the other two still fill it.
+    await create({ dispatch: false });
+    await engine.onTurnEnded({ id: "agent-2" }, { kind: "completed" }, []);
+    expect((await engine.dispatch(fake.paseo, first.id)).state).toBe("running");
+    expect((await engine.get(first.id)).item.state).toBe("running");
   });
 
   test("no cap starts every dispatch", async () => {
@@ -1512,7 +1517,7 @@ describe("concurrency cap", () => {
     const results = await Promise.allSettled([engine.dispatch(fake.paseo, a.id), engine.dispatch(fake.paseo, b.id)]);
     expect(results.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
     const refused = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
-    expect(String(refused.reason)).toContain("At capacity: 2 running");
+    expect(String(refused.reason)).toContain("At capacity: 2 of 2 slots taken (1 running, 1 starting)");
     expect(fake.created).toHaveLength(2);
   });
 });
@@ -2458,7 +2463,8 @@ describe("round 2 of review: client, cap and stop", () => {
     releaseA();
     expect((await dispatchA).state).toBe("running");
     hold.release();
-    expect(await dispatchB).toBe("At capacity: 1 running. It stays queued.");
+    // B read the files while A was still queued on disk: A is counted by its slot, as starting.
+    expect(await dispatchB).toBe("At capacity: 1 of 1 slot taken (1 starting). It stays queued.");
     expect(fake.created).toHaveLength(1);
   });
 
@@ -2475,7 +2481,9 @@ describe("round 2 of review: client, cap and stop", () => {
       dispatch: true,
     });
     expect(item.state).toBe("proposed");
-    expect(notice).toBe(`Created ${item.id}, not started. At capacity: 1 running. It stays queued.`);
+    expect(notice).toBe(
+      `Created ${item.id}, not started. At capacity: 1 of 1 slot taken (1 running). It stays queued.`,
+    );
     expect(fake.created).toHaveLength(1);
   });
 
@@ -2843,7 +2851,8 @@ describe("the composer's choices", () => {
   });
 
   test("work a session creates carries none of the run choices: how runs start stays yours", async () => {
-    const { engine, fake, repo, config } = await setup();
+    // Settings' mode does not ask, so a session's run may start, in that mode, never the choices it passed.
+    const { engine, fake, repo, config } = await setup({ modeId: "bypassPermissions" });
     const item = await engine.create(
       fake.paseo,
       {
@@ -2861,7 +2870,7 @@ describe("the composer's choices", () => {
     const file = await readFile(join(config.workRoot, item.path, WORK_FILE), "utf8");
     for (const key of ["provider:", "isolation:", "mode:", "thinking:", "features:"]) expect(file).not.toContain(key);
     const options = fake.created[0] as { config: Record<string, unknown> };
-    expect(options.config).toEqual({ provider: "claude/sonnet" });
+    expect(options.config).toEqual({ provider: "claude/sonnet", modeId: "bypassPermissions" });
     expect(item.worker?.branch).toMatch(/^run\//);
   });
 });
@@ -2905,11 +2914,259 @@ describe("a mode you chose is yours to use", () => {
     expect(receipt?.detail).toStartWith("claude/sonnet (mode bypassPermissions, thinking high, fast_mode on) on run/");
   });
 
-  test("a session still starts queued work that has no mode of its own", async () => {
-    const { engine, fake, repo } = await setup({ modeId: "acceptEdits" });
+  test("a session still starts queued work that has no mode of its own, in Settings' mode, not its own", async () => {
+    const { engine, fake, repo } = await setup({ modeId: "bypassPermissions" });
+    fake.addSession("session-1", { modeId: "acceptEdits" });
     const item = await engine.create(fake.paseo, { ...moded(repo), modeId: undefined });
     const running = await engine.dispatch(fake.paseo, item.id, session);
-    expect(running.worker?.modeId).toBe("acceptEdits");
+    expect(running.worker?.modeId).toBe("bypassPermissions");
+  });
+});
+
+describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
+  const lane = { actor: "agent" as const, by: "lane-1" };
+  const fail = (engine: Engine, agentId: string) =>
+    engine.onTurnEnded({ id: agentId }, { kind: "failed", error: { message: "boom" } }, []);
+
+  test("3 stuck runs and a 4th dispatch is refused, yours or a lane's; nothing starts", async () => {
+    const { create, engine, fake } = await setup({ concurrencyCap: 3, modeId: "bypassPermissions" });
+    fake.addSession("lane-1", { modeId: "bypassPermissions" });
+    for (const n of [1, 2, 3]) {
+      await create();
+      await fail(engine, `agent-${n}`);
+    }
+    expect((await engine.list()).items.map((item) => item.state)).toEqual(["blocked", "blocked", "blocked"]);
+    const fourth = await create({ dispatch: false });
+    const full = "At capacity: 3 of 3 slots taken (3 stuck). It stays queued.";
+    await expect(engine.dispatch(fake.paseo, fourth.id)).rejects.toThrow(full);
+    await expect(engine.dispatch(fake.paseo, fourth.id, lane)).rejects.toThrow(full);
+    expect(fake.created).toHaveLength(3);
+    expect((await engine.get(fourth.id)).item.state).toBe("proposed");
+  });
+
+  test("stuck work holds its slot only while its session is there: your Stop or a session gone frees it", async () => {
+    const { create, engine, fake } = await setup({ concurrencyCap: 1 });
+    const next = await create({ dispatch: false });
+    const full = "At capacity: 1 of 1 slot taken (1 stuck). It stays queued.";
+    // A failed turn: the session is still there, waiting for a nudge, so the run keeps its slot.
+    const failed = await create();
+    await fail(engine, "agent-1");
+    expect((await engine.get(failed.id)).item.state).toBe("blocked");
+    await expect(engine.dispatch(fake.paseo, next.id)).rejects.toThrow(full);
+    // Canceling the stuck work frees it; now a run you stop: Stop archives its session, and the slot frees.
+    await engine.cancel(failed.id);
+    const stopped = await create();
+    await engine.stopRun(fake.paseo, stopped.id, { discard: true });
+    expect((await engine.get(stopped.id)).item).toMatchObject({ state: "blocked" });
+    expect(fake.archived).toContain("agent-2");
+    const started = await engine.dispatch(fake.paseo, next.id);
+    expect(started.state).toBe("running");
+    // A run whose session ended under it: stuck, and its slot is free too.
+    const gone = fake.agents.get("agent-3");
+    if (gone) gone.status = "closed";
+    await engine.list(fake.paseo);
+    expect((await engine.get(next.id)).item.state).toBe("blocked");
+    const after = await create();
+    expect(after.state).toBe("running");
+  });
+
+  test("a run stuck on a failed turn frees its slot once its session goes later: archived, or closed", async () => {
+    const { create, engine, fake } = await setup({ concurrencyCap: 1 });
+    const next = await create({ dispatch: false });
+    const full = "At capacity: 1 of 1 slot taken (1 stuck). It stays queued.";
+    // Archived in Paseo after the turn failed: the archive hook notes it, and the slot frees.
+    await create();
+    await fail(engine, "agent-1");
+    await expect(engine.dispatch(fake.paseo, next.id)).rejects.toThrow(full);
+    const archived = fake.agents.get("agent-1");
+    if (archived) archived.archivedAt = "2026-09-22T09:05:00.000Z";
+    await engine.onArchived({ id: "agent-1" });
+    expect((await engine.dispatch(fake.paseo, next.id)).state).toBe("running");
+    // `next` runs as agent-2 and fails too; then its session closes with no archive. The next look notes it.
+    await fail(engine, "agent-2");
+    const third = await create({ dispatch: false });
+    await expect(engine.dispatch(fake.paseo, third.id)).rejects.toThrow(full);
+    const closed = fake.agents.get("agent-2");
+    if (closed) closed.status = "closed";
+    await engine.list(fake.paseo);
+    expect((await engine.get(next.id)).events.some((event) => event.text === "The session has ended")).toBe(true);
+    expect((await engine.dispatch(fake.paseo, third.id)).state).toBe("running");
+  });
+
+  test("a run waiting on a permission holds its slot; one landed at your gate frees it", async () => {
+    const { create, engine, fake } = await setup({ concurrencyCap: 1 });
+    await create();
+    const asking = fake.agents.get("agent-1");
+    if (asking) asking.pendingPermissions = [{ id: "perm-1", name: "Bash" }];
+    await engine.onPermissionRequested({ id: "agent-1" }, { id: "perm-1", name: "Bash" } as never);
+    const [first] = (await engine.list()).items;
+    expect([first?.state, first?.phase]).toEqual(["review", "asking"]);
+    const next = await create({ dispatch: false });
+    await expect(engine.dispatch(fake.paseo, next.id)).rejects.toThrow(
+      "At capacity: 1 of 1 slot taken (1 waiting on a permission). It stays queued.",
+    );
+    // Its turn ends with the question gone: it lands at your gate, and the slot is free.
+    if (asking) asking.pendingPermissions = [];
+    await endTurn(engine, fake);
+    expect((await engine.dispatch(fake.paseo, next.id)).state).toBe("running");
+  });
+
+  test("your Dispatch starts work as Settings say, with the loop on and new work gated auto", async () => {
+    const { engine, fake, repo } = await setup({ defaultGate: "auto", loopMinutes: 30, modeId: null });
+    const item = await engine.create(fake.paseo, {
+      title: "Yours to start",
+      brief: "",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "",
+      dispatch: false,
+    });
+    const running = await engine.dispatch(fake.paseo, item.id);
+    expect(running.state).toBe("running");
+    // You watch your own run, so Settings' mode stands, none included: no lane profile is asked for.
+    expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({ provider: "claude/sonnet" });
+    expect(running.worker?.modeId).toBeNull();
+    const raw = (await engine.get(item.id)).events.find((event) => event.type === "dispatched");
+    expect(raw).toMatchObject({ actor: "human" });
+  });
+
+  test("a session cannot start work filed from your answer before A8; your Dispatch starts it", async () => {
+    // Settings' mode does not ask, so only the work itself can make a session's start refused.
+    const { engine, fake, repo } = await setup({ modeId: "bypassPermissions" });
+    fake.addSession("lane-1", { modeId: "default" });
+    // As the routing before A8 filed it: Maestro's, for an answer, no hold.
+    const legacy = await engine.create(
+      fake.paseo,
+      {
+        title: "Act on your answer: Ship it?",
+        brief: "",
+        repo,
+        gate: "human",
+        check: "",
+        initiative: "",
+        dispatch: false,
+        answer: "l.yaml#A1@2026-10-06T12:00:01Z",
+      },
+      { actor: "maestro", via: "loop" },
+    );
+    await expect(engine.dispatch(fake.paseo, legacy.id, lane)).rejects.toThrow(
+      "Filed from your answer before A8: start it yourself, or cancel it.",
+    );
+    expect(fake.created).toEqual([]);
+    expect((await engine.dispatch(fake.paseo, legacy.id)).state).toBe("running");
+  });
+
+  test("a session's run takes Settings' mode when it does not ask, whatever mode the session runs in", async () => {
+    const { create, engine, fake } = await setup({ modeId: "bypassPermissions" });
+    fake.addSession("lane-1", { modeId: "default", title: "SRI lane" });
+    const item = await create({ dispatch: false });
+    const running = await engine.dispatch(fake.paseo, item.id, lane);
+    expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({
+      provider: "claude/sonnet",
+      modeId: "bypassPermissions",
+    });
+    expect(running.worker?.modeId).toBe("bypassPermissions");
+  });
+
+  test("a session cannot borrow another session's mode by naming its id (unverified until BRO-2996)", async () => {
+    // Settings ask before acting; a bypass worker's id is in work.list for any session to read.
+    const { create, engine, fake } = await setup({ modeId: "default" });
+    fake.addSession("bypass-worker", { modeId: "bypassPermissions" });
+    const item = await create({ dispatch: false });
+    await expect(engine.dispatch(fake.paseo, item.id, { actor: "agent", by: "bypass-worker" })).rejects.toThrow(
+      "A run nobody watches never starts in Always ask, so this one was not started: the mode in your Settings (default) asks before it acts",
+    );
+    expect(fake.created).toEqual([]);
+    expect((await engine.get(item.id)).item.state).toBe("proposed");
+  });
+
+  test("a session's start that will be refused holds no slot while its profile is read: yours starts meanwhile", async () => {
+    let release!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const { create, engine, fake } = await setup(
+      { concurrencyCap: 1, modeId: null },
+      {
+        lane: async (_agentId, _paseo, config) => {
+          entered();
+          await reading;
+          return { name: "your Settings", provider: config.provider, modeId: config.modeId };
+        },
+      },
+    );
+    const theirs = await create({ dispatch: false });
+    const mine = await create({ dispatch: false });
+    const refused = engine.dispatch(fake.paseo, theirs.id, lane).then(
+      () => "started",
+      (error: Error) => error.message,
+    );
+    await inside;
+    // The session's start is still reading its profile: it has taken no slot, so your Dispatch at cap 1 starts.
+    expect((await engine.dispatch(fake.paseo, mine.id)).state).toBe("running");
+    release();
+    expect(await refused).toContain("your Settings name no mode for it");
+    expect(fake.created).toHaveLength(1);
+  });
+
+  test("a lane profile that cannot be read refuses the start, saying it could not be read", async () => {
+    const { create, engine, fake } = await setup(
+      {},
+      {
+        lane: async () => {
+          throw new Error("Paseo did not answer within 0.2s");
+        },
+      },
+    );
+    const item = await create({ dispatch: false });
+    await expect(engine.dispatch(fake.paseo, item.id, lane)).rejects.toThrow(
+      "Maestro could not read its profile (Paseo did not answer within 0.2s)",
+    );
+    expect(fake.created).toEqual([]);
+  });
+
+  test("modeId null never means Always ask for a run nobody watches: refused before any session starts", async () => {
+    const { create, engine, fake, config, repo } = await setup({ modeId: null });
+    // Whatever the calling session runs in: the profile is your Settings.
+    fake.addSession("lane-1", { modeId: "bypassPermissions" });
+    const item = await create({ dispatch: false });
+    const refusals: Array<[string, () => void, RegExp]> = [
+      ["no mode in Settings", () => undefined, /your Settings name no mode for it/],
+      ["a Settings mode that asks", () => (config.modeId = "default"), /asks before it acts/],
+    ];
+    for (const [what, arrange, why] of refusals) {
+      arrange();
+      for (const by of ["lane-1", null]) {
+        const refused = await engine.dispatch(fake.paseo, item.id, { actor: "agent", by }).then(
+          () => "started",
+          (error: Error) => error.message,
+        );
+        expect([what, refused]).toEqual([what, expect.stringMatching(why)]);
+        expect(refused).toStartWith("A run nobody watches never starts in Always ask");
+      }
+    }
+    // Work you gave another provider: Settings' mode is the Settings provider's, so it is not this run's.
+    config.modeId = "bypassPermissions";
+    const codex = await engine.create(fake.paseo, {
+      title: "On codex",
+      brief: "",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "",
+      dispatch: false,
+      provider: "codex/gpt-5.5",
+    });
+    await expect(engine.dispatch(fake.paseo, codex.id, lane)).rejects.toThrow("the mode in your Settings is claude's");
+    expect(fake.created).toEqual([]);
+    expect((await engine.get(item.id)).item.state).toBe("proposed");
+    // You may still start it.
+    expect((await engine.dispatch(fake.paseo, item.id)).state).toBe("running");
   });
 });
 

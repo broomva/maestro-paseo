@@ -215,12 +215,12 @@ features:
     pages: []
     interfaces: [I-session-prompt]
   F-answer-routing:
-    name: An answer goes home to the session that asked; owner-only answers wait for the owner
+    name: An answer goes home to the session that asked; owner-only answers wait for the owner; one no session can take waits for the conductor, or for you to file it as work or dismiss it (A8)
     status: change
     kind: orchestrate
-    answers: [A9]
+    answers: [A8, A9]
     pages: [P-decisions]
-    interfaces: [I-answer-route, I-answers-land]
+    interfaces: [I-answer-route, I-answers-land, I-conductor-decide]
     code: [server/answer-routes.ts, server/answers-landing.ts]
   F-phone-push:
     name: The push and the same list on the phone
@@ -312,8 +312,8 @@ pages:
     phone_frame: z4FVF
     components: [C-decision-card, C-progress, C-segmented, C-kbd, C-button, C-glance-tile, C-inspector, C-deck]
     reads: [I-asks-workspace, I-needs-list, I-answers-status]
-    writes: [I-ask-answer, I-fleet-ask-answer, I-undo]
-    code: [client/decision-triage.tsx, client/decision-card.tsx]
+    writes: [I-ask-answer, I-fleet-ask-answer, I-conductor-decide, I-undo]
+    code: [client/decision-triage.tsx, client/decision-card.tsx, client/conductor-answers.tsx]
   P-work:
     name: J6 Work — five lanes as trays, Undertow on running cards, who closed Done; J6b the inspector over the right-hand lanes (B3). M6 on the phone
     status: change
@@ -617,7 +617,8 @@ interfaces:
 
   # The conductor's hands (D1).
   I-approval-apply: { name: "approval.apply (runs the allowed exact action)", status: new, handler: plugin, callers: [conductor] }
-  I-answer-route: { name: "answer.route (to the asker, a sibling, the driver)", status: change, handler: plugin, callers: [conductor], stores: [S-ask-receipts], code: [server/answer-routes.ts] }
+  I-answer-route: { name: "answer.route (to the asker, a sibling, the driver; else a lane.assign candidate for the conductor)", status: change, handler: plugin, callers: [conductor], stores: [S-ask-receipts], code: [server/answer-routes.ts] }
+  I-conductor-decide: { name: "conductor.decide and conductor.undo (file an answer that waits for the conductor as queued work, or dismiss it; 8 s undo)", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-ask-receipts, S-work], code: [server/answer-routes.ts, client/conductor-answers.tsx] }
   I-answers-land: { name: "answers.land (one PR for maestro/answers)", status: change, handler: plugin, callers: [conductor], stores: [S-answers-branch], code: [server/answers-landing.ts] }
   I-ask-default: { name: "ask.default (a reversible ask takes its default after 30 min, A4)", status: new, handler: plugin, callers: [conductor], stores: [S-ask-receipts] }
   I-inbox-push: { name: "the inbox echo session that makes a push", status: change, handler: plugin, callers: [plugin], stores: [S-inbox], code: [server/inbox.ts] }
@@ -642,7 +643,7 @@ interfaces:
   I-drift-record: { name: "record a loop drift transition (pinned writer, BRO-3002)", status: change, handler: bstack, callers: [plugin], stores: [S-loop-drift], code: [server/loops.ts] }
 
   # Retired.
-  I-work-dispatch: { name: "work.dispatch (the plugin starts a session)", status: retire, handler: plugin, callers: [ui, worker, plugin], launches: true, stores: [S-work], code: [server/engine.ts, server/runs.ts] }
+  I-work-dispatch: { name: "work.dispatch (the plugin starts a session)", status: retire, handler: plugin, callers: [ui, worker, lane], launches: true, stores: [S-work], code: [server/engine.ts, server/runs.ts] }
   I-work-verdict: { name: "work.verdict approve, revise, block", status: retire, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
   I-work-attention: { name: "work.attention (lists the client sums)", status: retire, handler: plugin, callers: [ui], code: [server/attention.ts] }
 
@@ -778,17 +779,19 @@ findings:
   FND-plugin-launches:
     name: The plugin loop starts sessions (loop wake → startQueued → dispatch → agents.create), against A8
     severity: blocker
-    state: open
+    state: fixed
     ticket: BRO-2990
     about: [L-loop-start-queued, I-work-dispatch, F-plugin-dispatch]
-    code: [server/loop.ts:512, server/runs.ts:161]
+    code: [server/loop.ts, server/engine.ts]
+    note: "The loop has no start step and is typed against an engine with no dispatch (LoopEngine); Engine.dispatch refuses actor maestro outright (NEVER_BY_RULE). The cap counts running, waiting-on-permission, stuck and starting runs; a session's run takes its lane profile's mode and never starts in Always ask."
   FND-routed-answer-runs:
     name: An answer filed as queued work with no hold is dispatched on the next wake (the 13b97ad9 burst)
     severity: blocker
-    state: open
+    state: fixed
     ticket: BRO-2990
     about: [I-answer-route, F-answer-routing]
-    code: [server/answer-routes.ts:563, server/loop.ts:512]
+    code: [server/answer-routes.ts, server/a8-never-starts.test.ts]
+    note: "An answer no session can take is a lane.assign candidate for the conductor on its ask.routed receipt, never queued work; Decisions shows it waiting for the conductor. server/a8-never-starts.test.ts replays 13b97ad9."
 
   FND-undo-ten-seconds:
     name: UNDO_MS was 10 s in the code; the owner set 8 s everywhere (B4), now shared/undo.ts

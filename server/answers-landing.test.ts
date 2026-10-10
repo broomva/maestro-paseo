@@ -567,14 +567,17 @@ describe("landing the answers batch", () => {
     (prs[0] as { state: string }).state = "MERGED";
     expect((await lander.land()).stage).toBe("none");
     const routed = await router.route();
-    expect(routed.map((outcome) => [outcome.id, outcome.status, outcome.route])).toEqual([["A1", "routed", "work"]]);
-    expect(filed.length).toBe(1);
+    // Its asker named nowhere and no one on its arc: it waits for the conductor, never filed as work (BRO-2990).
+    expect(routed.map((outcome) => [outcome.id, outcome.status, outcome.route])).toEqual([
+      ["A1", "routed", "conductor"],
+    ]);
+    expect(filed.length).toBe(0);
     const read = await asks.read(true);
     const [fated] = await router.fates(
       read.all.filter((ask) => ask.id === "A1"),
       null,
     );
-    expect([fated?.uid, fated?.state, fated?.fate?.stage]).toEqual(["u-1", "answered", "acted"]);
+    expect([fated?.uid, fated?.state, fated?.fate?.stage]).toEqual(["u-1", "answered", "conductor"]);
   });
 
   test("round 5 (Medium): a ledger renamed on main while its answer waits never drops the answer", async () => {

@@ -229,11 +229,14 @@ async function main(): Promise<void> {
     const fakeAcp = join(dir, "bin", "fake-acp.ts");
     await copyFile(join(import.meta.dir, "fake-acp.ts"), fakeAcp);
 
+    // No run cap: the seed's stuck, running and asking items hold four slots (BRO-2990 counts each), so the
+    // default of 3 would refuse the seed's own last dispatch. Settings in the sandbox can set one to try it.
     const maestroConfig = {
       workRoot: state.workRoot,
       provider: `${PROVIDER}/${MODEL}`,
       modeId: null,
       isolation: "directory",
+      concurrencyCap: null,
     };
     await writeFile(state.maestroConfig, `${JSON.stringify(maestroConfig, null, 2)}\n`);
     await writeFile(

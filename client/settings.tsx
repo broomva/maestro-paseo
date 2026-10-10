@@ -90,7 +90,7 @@ export function MaestroSettings({ theme }: PluginSurfaceProps) {
           />
           <SettingsInput
             label="Runs at once"
-            hint="A dispatch past this many running is refused and the work stays queued. Leave empty for no cap."
+            hint="A dispatch past this many is refused and the work stays queued. Every session Maestro tracks counts while it runs, asks for a permission, or is stuck. Leave empty for no cap."
             error={capError}
             initialValue={draft.concurrencyCap === null ? "" : String(draft.concurrencyCap)}
             onChangeText={(text) => {

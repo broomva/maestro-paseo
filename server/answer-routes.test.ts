@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AnswersLanding } from "../shared/answers";
 import type { DecisionAsk } from "../shared/fleet";
+import { UNDO_MS } from "../shared/undo";
 import {
   AnswerRouter,
   afterBegan,
@@ -11,6 +12,7 @@ import {
   arcAskers,
   askFor,
   deliveryText,
+  FOR_THE_CONDUCTOR,
   ownerOnly,
   type Relay,
   readLog,
@@ -152,8 +154,21 @@ async function setup(options: {
   const drivers: string[] = [];
   const clock = { at: options.nowIs ?? "2026-10-06T13:00:00Z" };
   // A router over the same receipts and doubles: a fresh one is Maestro after a restart.
+  // A decision's undo window: armed here, fired by hand after the test moves the clock.
+  const armed: Array<{ run: () => Promise<void>; canceled: boolean }> = [];
+  const timer = (run: () => Promise<void>) => {
+    const entry = { run, canceled: false };
+    armed.push(entry);
+    return () => {
+      entry.canceled = true;
+    };
+  };
+  const fire = async () => {
+    for (const entry of armed.splice(0)) if (!entry.canceled) await entry.run();
+  };
   const routerOf = () =>
     new AnswerRouter({
+      timer,
       receipts,
       asks: {
         read: async () => {
@@ -187,6 +202,8 @@ async function setup(options: {
     sent,
     drivers,
     log,
+    fire,
+    armed,
     reads: () => reads,
   };
 }
@@ -311,29 +328,58 @@ describe("routing an answer", () => {
     expect([routed?.route, landed.sent[0]?.text.includes("on origin/main")]).toEqual(["delivered", true]);
   });
 
-  test("the session gone: queued work at your gate, in the ask's initiative, filed once", async () => {
+  test("the session gone, no one on its arc: a lane.assign candidate for the conductor, never work, once (A8)", async () => {
     const answered = receipt("A1", "checkout", { originAgentId: "agent-1", answerOption: "ship", answer: "Ship." });
-    const { router, created, sent, log } = await setup({ after: [answered], agents: { "agent-1": "archived" } });
-    const [outcome] = await router.route();
-    expect([outcome?.route, sent.length]).toEqual(["work", 0]);
-    expect(created.length).toBe(1);
-    const input = created[0] as Record<string, unknown>;
-    expect([input.gate, input.dispatch, input.initiative, input.answer, input.check]).toEqual([
-      "human",
-      false,
-      "maestro",
-      answerKey(answered as never),
-      "",
-    ]);
-    expect(String(input.title)).toBe("Act on your answer: Ship it?");
-    expect(String(input.brief)).toContain("> Ship.");
-    expect(String(input.brief)).toContain("- Ship: It ships. (your answer)");
-    expect((await log()).routed.get(answerKey(answered as never))?.work).toEqual({
-      id: "work-1",
-      title: "Act on your answer: Ship it?",
+    const { router, created, sent, log, root, asks } = await setup({
+      after: [answered],
+      agents: { "agent-1": "archived" },
     });
+    const [outcome] = await router.route();
+    expect([outcome?.status, outcome?.route, sent.length, created.length]).toEqual(["routed", "conductor", 0, 0]);
+    expect(outcome?.words).toBe(FOR_THE_CONDUCTOR);
+    const routed = (await log()).routed.get(answerKey(answered as never));
+    expect([routed?.route, routed?.work, routed?.agentId]).toEqual(["conductor", null, "agent-1"]);
+    expect(routed?.reason).toContain("Nothing was started.");
+    // The ask, your answer verbatim, and where to look: what lane.assign needs.
+    expect(routed?.candidate).toEqual({
+      for: "lane.assign",
+      ask: {
+        ledger: LEDGER,
+        uid: null,
+        id: "A1",
+        headline: "Ship it?",
+        question: "Ship the landing step now?",
+        stakes: "Answers strand until it ships.",
+        options: [
+          { id: "ship", label: "Ship", consequence: "It ships." },
+          { id: "hold", label: "Hold", consequence: "Nothing changes." },
+        ],
+      },
+      answer: { option: "ship", words: "Ship.", at: answered.at },
+      pointers: {
+        key: answerKey(answered as never),
+        home: answered.home,
+        homeKind: "checkout",
+        askedBy: "agent-1",
+        // The asker's folder is gone, so a lane works in the control repo.
+        repo: root,
+        initiative: "maestro",
+      },
+    });
+    expect(await router.candidates()).toEqual([routed?.candidate as never]);
+    // Routed once: a later pass does nothing, and files nothing.
     expect(await router.route()).toEqual([]);
-    expect(created.length).toBe(1);
+    expect(created.length).toBe(0);
+    // Decisions says it waits for the conductor, as a waiting stage, never as acted.
+    const [card] = await router.fates(
+      asks.filter((ask) => ask.id === "A1"),
+      null,
+    );
+    expect([card?.fate?.stage, card?.fate?.route, card?.fate?.words]).toEqual([
+      "conductor",
+      "conductor",
+      FOR_THE_CONDUCTOR,
+    ]);
   });
 
   test("filed before its receipt was written (a crash between): the item stands, none is filed again", async () => {
@@ -450,7 +496,7 @@ describe("round 1, Strata B (P20)", () => {
       asksAre: (asks) => asks.map((ask) => (ask.id === "A1" ? { ...ask, state: "archived" as const } : ask)),
     });
     const [acted] = await kept.router.route();
-    expect([acted?.route, kept.created.length]).toEqual(["work", 1]);
+    expect([acted?.route, kept.created.length]).toEqual(["conductor", 0]);
     const reopened = await setup({
       home: "main",
       after: [answered],
@@ -580,8 +626,8 @@ describe("round 1, Strata B (P20)", () => {
     });
     const { router, created } = await setup({ after: [first, second] });
     const outcomes = await router.route();
-    expect(outcomes.map((outcome) => outcome.route)).toEqual(["superseded", "work"]);
-    expect(created.length).toBe(1);
+    expect(outcomes.map((outcome) => outcome.route)).toEqual(["superseded", "conductor"]);
+    expect(created.length).toBe(0);
   });
 
   test("two passes at once (a wake, a turn's end, an answer) route an answer once", async () => {
@@ -637,7 +683,7 @@ describe("an answer its asker cannot take (BRO-2918, BRO-2910)", () => {
     expect([outcome?.status, outcome?.route, created.length, sent.length]).toEqual(["queued", null, 0, 0]);
   });
 
-  test("the arc's asker gone too: the initiative's driver takes it; with no driver, work is filed", async () => {
+  test("the arc's asker gone too: the initiative's driver takes it; with no driver, the conductor", async () => {
     const driven = await setup({
       after: [hold()],
       agents: { "agent-1": "archived", "agent-d": "idle" },
@@ -651,8 +697,8 @@ describe("an answer its asker cannot take (BRO-2918, BRO-2910)", () => {
       0,
     ]);
     const undriven = await setup({ after: [hold()], agents: { "agent-1": "archived" }, asksAre: unmarked });
-    const [filed] = await undriven.router.route();
-    expect([filed?.route, undriven.created.length]).toEqual(["work", 1]);
+    const [queued] = await undriven.router.route();
+    expect([queued?.route, undriven.created.length]).toEqual(["conductor", 0]);
   });
 
   test("owner-only with its asker gone: held work for you, never relayed, never started", async () => {
@@ -753,15 +799,15 @@ describe("an answer its asker cannot take, round 1 (P20)", () => {
     expect(drivers).toEqual(["maestro"]);
   });
 
-  test("Paseo not connected: waits when the arc has someone to ask; files work when it has no one", async () => {
+  test("Paseo not connected: waits when the arc has someone to ask; the conductor's when it has no one", async () => {
     const waits = await setup({ after: [hold()], asksAre: unmarked, noPaseo: true });
     const [waited] = await waits.router.route();
     expect([waited?.status, waits.created.length]).toEqual(["queued", 0]);
     const alone = (asks: DecisionAsk[]) =>
       unmarked(asks).map((ask) => ({ ...ask, origin: null, initiative: null })) as DecisionAsk[];
-    const files = await setup({ after: [hold()], asksAre: alone, noPaseo: true });
-    const [filed] = await files.router.route();
-    expect([filed?.route, files.created.length]).toEqual(["work", 1]);
+    const queues = await setup({ after: [hold()], asksAre: alone, noPaseo: true });
+    const [queued] = await queues.router.route();
+    expect([queued?.route, queues.created.length]).toEqual(["conductor", 0]);
   });
 
   test("an asker at work is waited on for RELAY_WAIT_MS from when it first was, then passed over", async () => {
@@ -966,5 +1012,130 @@ describe("an answer its asker cannot take, round 3 (P20)", () => {
     status.set("agent-1", "idle");
     const [outcome] = await router.route({ agentId: "agent-1" });
     expect([outcome?.route, sent.map((s) => s.agentId)]).toEqual(["relayed", ["agent-1"]]);
+  });
+});
+
+describe("your decision on an answer for the conductor (BRO-2990)", () => {
+  const gone = () => receipt("A1", "checkout", { originAgentId: "agent-1", answerOption: "ship", answer: "Ship." });
+  const conductorAnswer = async () => {
+    const answered = gone();
+    const routing = await setup({ after: [answered], agents: { "agent-1": "archived" } });
+    const [outcome] = await routing.router.route();
+    expect(outcome?.route).toBe("conductor");
+    return { ...routing, answered, key: answerKey(answered as never) };
+  };
+  const later = (clock: { at: string }, ms: number) => {
+    clock.at = new Date(Date.parse(clock.at) + ms).toISOString();
+  };
+
+  test("file as work: written now, applied UNDO_MS later as queued work, never dispatched; it leaves the conductor", async () => {
+    const { router, key, clock, created, fire, log, asks, root } = await conductorAnswer();
+    const pending = await router.decide(key, "file");
+    expect(pending).toMatchObject({ verb: "file", appliesAt: new Date(Date.parse(clock.at) + UNDO_MS).toISOString() });
+    // In its undo window: nothing is filed yet, the conductor no longer gets it, and the card says it waits.
+    expect(created).toEqual([]);
+    expect(await router.candidates()).toEqual([]);
+    const [waiting] = await router.fates(
+      asks.filter((ask) => ask.id === "A1"),
+      null,
+    );
+    expect([waiting?.fate?.stage, waiting?.fate?.pending?.verb, waiting?.fate?.key]).toEqual([
+      "conductor",
+      "file",
+      key,
+    ]);
+    later(clock, UNDO_MS);
+    await fire();
+    expect(created).toHaveLength(1);
+    const input = created[0] as Record<string, unknown>;
+    expect([input.gate, input.dispatch, input.answer, input.initiative, input.check, input.repo]).toEqual([
+      "human",
+      false,
+      key,
+      "maestro",
+      "",
+      root,
+    ]);
+    expect(String(input.title)).toBe("Act on your answer: Ship it?");
+    expect(String(input.brief)).toContain("> Ship.");
+    expect(String(input.brief)).toContain("- Ship: It ships. (your answer)");
+    expect(String(input.brief)).toContain("The session that asked: agent-1 (gone)");
+    const decision = (await log()).decisions.get(pending.receipt);
+    expect(decision?.closed?.work).toEqual({ id: "work-1", title: "Act on your answer: Ship it?" });
+    const [filed] = await router.fates(
+      asks.filter((ask) => ask.id === "A1"),
+      null,
+    );
+    expect([filed?.fate?.stage, filed?.fate?.words]).toEqual([
+      "acted",
+      'Acted on: you filed it as work, "Act on your answer: Ship it?".',
+    ]);
+    expect(await router.candidates()).toEqual([]);
+    await expect(router.decide(key, "dismiss")).rejects.toThrow("already filed as work or dismissed");
+  });
+
+  test("dismiss: a receipt that closes it once its window closes; nothing is filed", async () => {
+    const { router, key, clock, created, fire, asks } = await conductorAnswer();
+    await router.decide(key, "dismiss");
+    later(clock, UNDO_MS);
+    await fire();
+    expect(created).toEqual([]);
+    expect(await router.candidates()).toEqual([]);
+    const [card] = await router.fates(
+      asks.filter((ask) => ask.id === "A1"),
+      null,
+    );
+    expect([card?.fate?.stage, card?.fate?.words]).toEqual([
+      "acted",
+      "Dismissed by you: nothing follows from it, and the conductor will not get it.",
+    ]);
+  });
+
+  test("undo in the window takes it back: nothing happens, and it waits for the conductor again; after, too late", async () => {
+    const { router, key, clock, created, fire, asks } = await conductorAnswer();
+    const first = await router.decide(key, "file");
+    await expect(router.decide(key, "dismiss")).rejects.toThrow("already waits to take effect");
+    expect(await router.undo(first.receipt)).toEqual({ undone: true });
+    later(clock, UNDO_MS);
+    await fire();
+    expect(created).toEqual([]);
+    expect((await router.candidates()).map((candidate) => candidate.ask.id)).toEqual(["A1"]);
+    const [card] = await router.fates(
+      asks.filter((ask) => ask.id === "A1"),
+      null,
+    );
+    expect([card?.fate?.stage, card?.fate?.pending]).toEqual(["conductor", null]);
+    // A new decision, left to run out: its undo comes too late.
+    const second = await router.decide(key, "dismiss");
+    later(clock, UNDO_MS);
+    await expect(router.undo(second.receipt)).rejects.toThrow("Its undo window has closed");
+    await expect(router.decide("nope", "file")).rejects.toThrow("does not wait for the conductor");
+  });
+
+  test("a stopped router never applies a pending decision; the router that resumes after it applies it once", async () => {
+    const { router, routerOf, key, clock, created, armed } = await conductorAnswer();
+    await router.decide(key, "file");
+    // A reload inside the undo window: the old router is stopped, and its timer is cleared.
+    router.stop();
+    expect(armed.every((entry) => entry.canceled)).toBe(true);
+    later(clock, UNDO_MS + 1);
+    // Even a timer that fires anyway applies nothing on a stopped router.
+    for (const entry of armed) await entry.run();
+    expect(created).toEqual([]);
+    // The new router resumes and applies it, once; the old one, fired again, still applies nothing.
+    await routerOf().resume();
+    for (const entry of armed) await entry.run();
+    await routerOf().resume();
+    expect(created).toHaveLength(1);
+  });
+
+  test("a restart keeps your decision: a fresh router applies the due one when it resumes", async () => {
+    const { router, routerOf, key, clock, created } = await conductorAnswer();
+    await router.decide(key, "file");
+    later(clock, UNDO_MS + 1);
+    // Maestro restarted before the timer fired: the decision is in the receipts, and resume applies it.
+    await routerOf().resume();
+    expect(created).toHaveLength(1);
+    expect(await routerOf().candidates()).toEqual([]);
   });
 });

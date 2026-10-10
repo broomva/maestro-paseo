@@ -7,11 +7,11 @@ import type { MaestroConfig, WakeEntry } from "../shared/contracts";
 import type { RouteOutcome } from "./answer-routes";
 import { attentionOf } from "./attention";
 import { defaultConfig } from "./config";
-import { type CreateInput, Engine, MODED_BY_YOU, NOT_QUIET, PROMPT_FREE, type Timer } from "./engine";
-import { LOOP } from "./events";
+import { type CreateInput, Engine, NEVER_BY_RULE, NOT_QUIET, type Timer } from "./engine";
+import { LOOP, type Origin } from "./events";
 import { fakePaseo } from "./fake-paseo";
 import { ACTIVE_AGAIN, quietCleared, sessionActiveAt } from "./flags";
-import { ALREADY_WAKING, ASK_NOT_CONNECTED, AT_RUN_CAP, FAILED_BEFORE, Loop, NOT_CONNECTED, QUIET_MS } from "./loop";
+import { ALREADY_WAKING, ASK_NOT_CONNECTED, Loop, NOT_CONNECTED, QUIET_MS } from "./loop";
 import type { Paseo } from "./runs";
 import { HELD_FOR_YOU } from "./runs";
 import { WorkStore } from "./store";
@@ -87,18 +87,22 @@ async function setup(overrides: Partial<MaestroConfig> = {}) {
       log: (message) => logs.push(message),
       askMs: 100,
     });
-  /** Queued work, created as you create it in Maestro. */
-  const queue = (title: string, extra: Partial<CreateInput> = {}) =>
-    engine.create(fake.paseo, {
-      title,
-      brief: "",
-      repo,
-      gate: "human",
-      check: "",
-      initiative: "",
-      dispatch: false,
-      ...extra,
-    });
+  /** Queued work, created as you create it in Maestro (or, with `origin`, as someone else does). */
+  const queue = (title: string, extra: Partial<CreateInput> = {}, origin?: Origin) =>
+    engine.create(
+      fake.paseo,
+      {
+        title,
+        brief: "",
+        repo,
+        gate: "human",
+        check: "",
+        initiative: "",
+        dispatch: false,
+        ...extra,
+      },
+      origin,
+    );
   return {
     engine,
     fake,
@@ -182,27 +186,27 @@ describe("the schedule", () => {
 
   test("the timer wakes it when due and arms the next a period later; early or turned off, it only re-arms", async () => {
     const { loop, timers, queue, fake, config } = await setup({ loopMinutes: 5 });
-    await queue("Start me");
+    await queue("Waits for you");
     await loop.reschedule();
     // Fired before its time (a delay longer than a timer holds): nothing runs, it arms again.
     await timers.fire();
-    expect(fake.created).toHaveLength(0);
+    expect((await loop.get()).recent).toHaveLength(0);
     expect(timers.live().map((entry) => entry.ms)).toEqual([5 * 60_000]);
 
     tickMinutes(5);
     await timers.fire();
-    expect(fake.created).toHaveLength(1);
     const [entry] = (await loop.get()).recent;
-    expect(entry).toMatchObject({ cause: "timer", wokeAt: new Date(clock).toISOString() });
+    expect(entry).toMatchObject({ cause: "timer", wokeAt: new Date(clock).toISOString(), dispatched: [] });
     expect(timers.live().map((armed) => armed.ms)).toEqual([5 * 60_000]);
 
     // Turned off since it was armed: it does not wake, and nothing is armed again.
-    await queue("Not now");
     config.loopMinutes = null;
     tickMinutes(5);
     await timers.fire();
-    expect(fake.created).toHaveLength(1);
+    expect((await loop.get()).recent).toHaveLength(1);
     expect(timers.live()).toHaveLength(0);
+    // Woken or not, it started nothing.
+    expect(fake.created).toEqual([]);
   });
 
   test("stop leaves nothing armed", async () => {
@@ -217,128 +221,50 @@ describe("the schedule", () => {
 });
 
 describe("a wake", () => {
-  test("starts queued work in order, triggered first, up to the run cap, and defers the rest at the cap", async () => {
-    const { loop, queue, store, fake, engine } = await setup({ concurrencyCap: 3 });
-    // One run already holds a slot.
-    await engine.dispatch(fake.paseo, (await queue("Already running")).id);
-    const a = await queue("A, oldest");
+  test("never starts work, whatever the gate, the state, the Settings or the cap (A8, BRO-2990)", async () => {
+    // The incident's Settings (13b97ad9): new work gates auto, the loop wakes every 5 minutes, no cap.
+    const { loop, queue, store, fake, engine } = await setup({
+      concurrencyCap: null,
+      defaultGate: "auto",
+      loopMinutes: 5,
+    });
+    const plain = await queue("Plain");
     tickMinutes(1);
-    const b = await queue("B");
+    const triggered = await queue("Triggered");
+    await store.mutate(triggered.id, () => ({ to: "triggered" }));
     tickMinutes(1);
-    const c = await queue("C");
+    const auto = await queue("Checks decide", { gate: "auto", check: "true" });
     tickMinutes(1);
-    const d = await queue("D, triggered");
-    await store.mutate(d.id, () => ({ to: "triggered" }));
-    tickMinutes(1);
+    const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
+    // A spy on dispatch: the loop's engine has none to call, and nothing calls it for the loop.
     const tried: string[] = [];
     const dispatch = engine.dispatch.bind(engine);
     engine.dispatch = ((paseo, id, origin) => {
       tried.push(id);
       return dispatch(paseo, id, origin);
     }) as typeof engine.dispatch;
-
-    const entry = await loop.wake("manual");
-    expect(entry.cause).toBe("manual");
-    // Once dispatch refuses at the cap, the rest of the queue is not tried.
-    expect(tried).toEqual([d.id, a.id, b.id]);
-    expect(entry.dispatched).toEqual([
-      { id: d.id, title: d.title },
-      { id: a.id, title: a.title },
-    ]);
-    expect(entry.deferred).toEqual([
-      { id: b.id, title: b.title, reason: AT_RUN_CAP },
-      { id: c.id, title: c.title, reason: AT_RUN_CAP },
-    ]);
-    expect(fake.created).toHaveLength(3);
-    expect((await engine.get(b.id)).item.state).toBe("proposed");
-    expect(entry.narrative).toEqual([
-      "Woke because you asked.",
-      "Did:",
-      "  Started D, triggered.",
-      "  Started A, oldest.",
-      "Left alone:",
-      "  B: at the run cap.",
-      "  C: at the run cap.",
-    ]);
-    // The start is the loop's: recorded as Maestro's, with a byline.
-    const { events } = await engine.get(a.id);
-    const dispatched = events.find((event) => event.text === "Dispatched");
-    expect(dispatched).toMatchObject({ actor: "maestro" });
-    expect(dispatched?.detail).toContain("by the loop");
-    const raw = (await store.findById(a.id)).events;
-    expect(raw.find((event) => event.type === "dispatched")).toMatchObject({ actor: "maestro", via: "loop" });
-    expect(raw.at(-1)).toMatchObject({ type: "state", to: "running", actor: "maestro" });
-    // It is in the log, newest first.
-    expect((await loop.get()).recent[0]).toEqual(entry);
-  });
-
-  test("leaves work that skips permission prompts, or carries a mode you chose, to you", async () => {
-    const { loop, queue, fake } = await setup();
-    const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
-    tickMinutes(1);
-    const auto = await queue("Auto accept", { provider: "opencode", featureValues: { auto_accept: true } });
-    tickMinutes(1);
-    const planned = await queue("Planned", { modeId: "plan" });
-    tickMinutes(1);
-    const plain = await queue("Plain");
-    const entry = await loop.wake("manual");
-    expect(entry.dispatched).toEqual([{ id: plain.id, title: plain.title }]);
-    expect(entry.deferred).toEqual([
-      { id: bypass.id, title: bypass.title, reason: PROMPT_FREE },
-      { id: auto.id, title: auto.title, reason: PROMPT_FREE },
-      { id: planned.id, title: planned.title, reason: MODED_BY_YOU },
-    ]);
-    expect(entry.narrative).toContain("  Bypass: runs without permission prompts; start it yourself.");
-    expect(entry.narrative).toContain(`  Planned: ${MODED_BY_YOU}`);
-    expect(fake.created).toHaveLength(1);
-  });
-
-  test("leaves work held for you (an idea you chose to develop) to you, flagged, and only you start it", async () => {
-    const { loop, queue, fake, engine } = await setup();
-    const held = await queue("Held", { hold: "You chose to develop ideas-maestro.yaml I1." });
-    tickMinutes(1);
-    const plain = await queue("Plain");
-    expect(held.nextRun?.held).toBe("You chose to develop ideas-maestro.yaml I1.");
-    const entry = await loop.wake("manual");
-    expect(entry.dispatched).toEqual([{ id: plain.id, title: plain.title }]);
-    expect(entry.deferred).toEqual([{ id: held.id, title: held.title, reason: HELD_FOR_YOU }]);
-    // In Needs you, as the loop's other work it leaves to you.
-    const flagged = (await engine.get(held.id)).item;
-    expect(flagged.flag).toMatchObject({ kind: "yours", reason: "Start it yourself: it was filed to wait for you." });
-    // A session cannot start it either; you can.
-    await expect(engine.dispatch(fake.paseo, held.id, { actor: "agent", by: "a1" })).rejects.toThrow(HELD_FOR_YOU);
-    expect((await engine.dispatch(fake.paseo, held.id)).state).toBe("running");
-  });
-
-  test("after the cap, work the loop never starts keeps its own reason, not the cap's", async () => {
-    const { loop, queue, fake } = await setup({ concurrencyCap: 1 });
-    const first = await queue("First");
-    tickMinutes(1);
-    const second = await queue("Second");
-    tickMinutes(1);
-    const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
-    tickMinutes(1);
-    const planned = await queue("Planned", { modeId: "plan" });
-    tickMinutes(1);
-    const third = await queue("Third");
-    const entry = await loop.wake("manual");
-    expect(entry.dispatched).toEqual([{ id: first.id, title: first.title }]);
-    expect(entry.deferred).toEqual([
-      { id: second.id, title: second.title, reason: AT_RUN_CAP },
-      { id: bypass.id, title: bypass.title, reason: PROMPT_FREE },
-      { id: planned.id, title: planned.title, reason: MODED_BY_YOU },
-      { id: third.id, title: third.title, reason: AT_RUN_CAP },
-    ]);
-    expect(fake.created).toHaveLength(1);
-  });
-
-  test("a Settings mode that skips prompts keeps the loop from starting anything", async () => {
-    const { loop, queue, fake } = await setup({ modeId: "bypassPermissions" });
-    const plain = await queue("Plain");
-    const entry = await loop.wake("manual");
-    expect(entry.dispatched).toEqual([]);
-    expect(entry.deferred).toEqual([{ id: plain.id, title: plain.title, reason: PROMPT_FREE }]);
+    const entries = [await loop.wake("manual"), await loop.wake("timer")];
+    for (const entry of entries) {
+      expect([entry.dispatched, entry.deferred]).toEqual([[], []]);
+      expect(entry.narrative).not.toContain("Started");
+    }
+    // Only the work you gave a mode of its own is flagged, once: no lane may start it either.
+    expect(entries.map((entry) => entry.flagged.map((flag) => flag.id))).toEqual([[bypass.id], []]);
+    expect(tried).toEqual([]);
     expect(fake.created).toEqual([]);
+    for (const [item, state] of [
+      [plain, "proposed"],
+      [triggered, "triggered"],
+      [auto, "proposed"],
+    ] as const) {
+      const { item: wire } = await engine.get(item.id);
+      // Queued, unflagged: it waits for you, a lane or the conductor, not in Needs you.
+      expect([wire.state, wire.flag]).toEqual([state, null]);
+    }
+    expect((await engine.get(bypass.id)).item).toMatchObject({ state: "proposed", flag: { kind: "yours" } });
+    // Your Dispatch still starts it.
+    expect((await engine.dispatch(fake.paseo, plain.id)).state).toBe("running");
+    expect(fake.created).toHaveLength(1);
   });
 
   test("never starts stuck work", async () => {
@@ -352,34 +278,6 @@ describe("a wake", () => {
     expect(entry.deferred).toEqual([]);
     expect(entry.needsYou.stuck).toBe(1);
     expect(fake.created).toHaveLength(1);
-  });
-
-  test("a dispatch error is the reason, and the walk goes on", async () => {
-    const { loop, queue, fake } = await setup();
-    const first = await queue("First");
-    const second = await queue("Second", { repo: join(tmpdir(), "maestro-loop-gone") }).catch(() => null);
-    expect(second).toBeNull();
-    const original = fake.paseo.providers.listModels;
-    let calls = 0;
-    fake.paseo.providers.listModels = (async (...args: Parameters<typeof original>) => {
-      calls += 1;
-      if (calls === 1) throw new Error("provider list unavailable");
-      return original(...args);
-    }) as typeof original;
-    tickMinutes(1);
-    const later = await queue("Later");
-    const entry = await loop.wake("manual");
-    expect(entry.deferred).toEqual([
-      {
-        id: first.id,
-        title: first.title,
-        reason: "could not start: provider list unavailable",
-      },
-    ]);
-    expect(entry.dispatched).toEqual([{ id: later.id, title: later.title }]);
-    // The narrative says it once, too.
-    expect(entry.narrative).toContain("  First: could not start: provider list unavailable.");
-    expect(entry.narrative.join("\n")).not.toContain("Could not start the run");
   });
 
   test("a wake asked for while one runs is recorded as skipped, not queued", async () => {
@@ -401,14 +299,14 @@ describe("a wake", () => {
     expect(second.narrative).toEqual(["Woke on a scheduled check.", "Skipped: another check was already running."]);
     release();
     const ran = await first;
-    expect(ran.dispatched).toHaveLength(1);
-    expect(fake.created).toHaveLength(1);
+    expect(ran.dispatched).toEqual([]);
+    expect(fake.created).toEqual([]);
     const { recent, ticking } = await loop.get();
     expect(ticking).toBe(false);
     expect(recent.map((entry) => entry.tickId)).toEqual([ran.tickId, second.tickId]);
   });
 
-  test("with no Paseo client it records that it could not start work, and the first client runs another", async () => {
+  test("with no Paseo client it records that it could ask no session, and the first client runs another", async () => {
     const { loop, queue, client, fake, timers } = await setup({ loopMinutes: 5 });
     await queue("Waiting for Paseo");
     client.paseo = null;
@@ -420,8 +318,9 @@ describe("a wake", () => {
 
     client.paseo = fake.paseo;
     await loop.connected();
-    expect(fake.created).toHaveLength(1);
-    expect((await loop.get()).recent.map((logged) => logged.dispatched.length)).toEqual([1, 0]);
+    // The follow-up wake asks the sessions it could not; it starts nothing.
+    expect(fake.created).toEqual([]);
+    expect((await loop.get()).recent.map((logged) => logged.narrative.includes(NOT_CONNECTED))).toEqual([false, true]);
     // Only once: a second client handover does not wake it again.
     await loop.connected();
     expect((await loop.get()).recent).toHaveLength(2);
@@ -429,7 +328,7 @@ describe("a wake", () => {
 
   // The first client can arrive while a wake that found none is still running: before the wake
   // has recorded the miss (it is still reading the work) or after (it is writing its log). Either
-  // way the wake runs another once it ends, so the queue does not wait a whole period.
+  // way the wake runs another once it ends, so quiet runs and answers do not wait a whole period.
   for (const when of ["while it reads the work", "while it writes its log"] as const) {
     test(`a client that arrives ${when}, during a wake that found none, gets a follow-up wake`, async () => {
       const { loop, queue, client, fake, engine, wakeLog } = await setup({ loopMinutes: 5 });
@@ -468,11 +367,13 @@ describe("a wake", () => {
       const entry = await missed;
       expect(entry.narrative).toContain(NOT_CONNECTED);
       await arrived;
-      expect(fake.created).toHaveLength(1);
+      expect(fake.created).toEqual([]);
       const recent = (await loop.get()).recent;
-      expect(recent.map((logged) => [logged.cause, logged.dispatched.length, logged.skipped ?? null])).toEqual([
-        ["timer", 1, null],
-        ["timer", 0, null],
+      expect(
+        recent.map((logged) => [logged.cause, logged.narrative.includes(NOT_CONNECTED), logged.skipped ?? null]),
+      ).toEqual([
+        ["timer", false, null],
+        ["timer", true, null],
       ]);
     });
   }
@@ -518,32 +419,20 @@ describe("a wake", () => {
     ]);
   });
 
-  test("the loop's start is not a look; yours is", async () => {
+  test("a wake is not a look; your Dispatch is", async () => {
     const { loop, queue, engine, fake } = await setup();
-    await queue("By the loop");
+    const item = await queue("Waits for you");
     const before = (await engine.list()).scoreboard.looks;
-    expect((await loop.wake("manual")).dispatched).toHaveLength(1);
+    expect((await loop.wake("manual")).dispatched).toEqual([]);
     expect((await engine.list()).scoreboard.looks).toBe(before);
-    await engine.dispatch(fake.paseo, (await queue("By you")).id);
+    await engine.dispatch(fake.paseo, item.id);
     expect((await engine.list()).scoreboard.looks).toBe(before + 1);
   });
 });
 
 describe("flags in Needs you", () => {
   const PROMPTS = "Start it yourself: it runs without permission prompts.";
-  const MODED = "Start it yourself: it runs in a mode you chose.";
   const FAILED = "Could not start: provider list unavailable.";
-
-  /** Make the next `times` starts fail the way a provider outage does. */
-  function failStarts(fake: ReturnType<typeof fakePaseo>, times = 1) {
-    const original = fake.paseo.providers.listModels;
-    let calls = 0;
-    fake.paseo.providers.listModels = (async (...args: Parameters<typeof original>) => {
-      calls += 1;
-      if (calls <= times) throw new Error("provider list unavailable");
-      return original(...args);
-    }) as typeof original;
-  }
 
   async function raw(store: WorkStore, id: string) {
     return (await store.findById(id)).events;
@@ -551,98 +440,115 @@ describe("flags in Needs you", () => {
   const flags = async (store: WorkStore, id: string) =>
     (await raw(store, id)).filter((event) => event.type === "loop.flagged");
 
-  test("each kind is raised, as one loop.flagged event that reads as a receipt", async () => {
+  test("a wake raises quiet, and yours on queued work only you may start, each one loop.flagged receipt", async () => {
     const { loop, queue, engine, fake, store } = await setup({ concurrencyCap: null });
     const running = await queue("Long one");
     await engine.dispatch(fake.paseo, running.id);
     const dispatchedAt = new Date(clock).toISOString();
     tickMinutes(1);
+    // Only you may start these: a session's dispatch refuses a mode you chose, and work held for you.
     const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
-    tickMinutes(1);
     const planned = await queue("Planned", { modeId: "plan" });
-    tickMinutes(1);
-    const broken = await queue("Broken");
-    tickMinutes(1);
-    const capped = await queue("Plain");
-    failStarts(fake);
-    tickMinutes(30);
+    const held = await queue("Held", { hold: "You chose to develop ideas-maestro.yaml I1." });
+    // Anyone may start these: you as Settings say, a lane in its lane's mode. They wait unflagged.
+    const plain = await queue("Plain");
+    tickMinutes(33);
     const entry = await loop.wake("manual");
-    expect(entry.dispatched).toEqual([{ id: capped.id, title: capped.title }]);
+    expect(entry.dispatched).toEqual([]);
     expect(entry.flagged).toEqual([
       { id: running.id, title: running.title, kind: "quiet", reason: "Quiet for 34 minutes, worth a look." },
-      { id: bypass.id, title: bypass.title, kind: "yours", reason: PROMPTS },
-      { id: planned.id, title: planned.title, kind: "yours", reason: MODED },
-      { id: broken.id, title: broken.title, kind: "failed", reason: FAILED },
+      {
+        id: bypass.id,
+        title: bypass.title,
+        kind: "yours",
+        reason: "Start it yourself: it runs without permission prompts.",
+      },
+      {
+        id: planned.id,
+        title: planned.title,
+        kind: "yours",
+        reason: "Start it yourself: it runs in a mode you chose.",
+      },
+      { id: held.id, title: held.title, kind: "yours", reason: "Start it yourself: it was filed to wait for you." },
     ]);
     expect(entry.narrative.slice(-5)).toEqual([
       "Flagged for you:",
       "  Long one.",
       "  Bypass.",
       "  Planned.",
-      "  Broken.",
+      "  Held.",
     ]);
-    // On the work: the flag, when the loop raised it, and a receipt by Maestro.
-    for (const [item, kind, reason] of [
-      [running, "quiet", "Quiet for 34 minutes, worth a look."],
-      [bypass, "yours", PROMPTS],
-      [planned, "yours", MODED],
-      [broken, "failed", FAILED],
-    ] as const) {
-      const { item: wire, events } = await engine.get(item.id);
-      expect(wire.flag).toEqual({ kind, reason, at: entry.wokeAt });
-      expect(events.at(-1)).toEqual({
+    const { item: wire, events } = await engine.get(running.id);
+    expect(wire.flag).toEqual({ kind: "quiet", reason: "Quiet for 34 minutes, worth a look.", at: entry.wokeAt });
+    expect(events.at(-1)).toEqual({
+      ts: entry.wokeAt,
+      type: "loop.flagged",
+      actor: "maestro",
+      text: "Flagged for you by the loop",
+      detail: "Quiet for 34 minutes, worth a look.",
+    });
+    // A quiet flag keeps when the run last did anything, so its reason counts on from there.
+    expect(await flags(store, running.id)).toEqual([
+      {
         ts: entry.wokeAt,
         type: "loop.flagged",
         actor: "maestro",
-        text: "Flagged for you by the loop",
-        detail: reason,
-      });
-      // A quiet flag keeps when the run last did anything, so its reason counts on from there.
-      const since = kind === "quiet" ? { since: dispatchedAt } : {};
-      expect(await flags(store, item.id)).toEqual([
-        { ts: entry.wokeAt, type: "loop.flagged", actor: "maestro", kind, reason, ...since },
-      ]);
-      // A flag is not a change of state.
-      expect(wire.state).toBe(item.id === running.id ? "running" : "proposed");
-    }
-    // Started work and work deferred at the run cap are not flagged.
-    expect((await engine.get(capped.id)).item.flag).toBeNull();
+        kind: "quiet",
+        reason: "Quiet for 34 minutes, worth a look.",
+        since: dispatchedAt,
+      },
+    ]);
+    // A flag is not a change of state.
+    expect(wire.state).toBe("running");
+    expect((await engine.get(plain.id)).item.flag).toBeNull();
+    expect((await engine.get(held.id)).item.flag?.kind).toBe("yours");
+    expect(fake.created).toHaveLength(1);
   });
 
-  test("deferred at the run cap is not flagged: it starts when a slot frees", async () => {
-    const { loop, queue, engine, fake } = await setup({ concurrencyCap: 1 });
-    await engine.dispatch(fake.paseo, (await queue("Holds the slot")).id);
-    const waiting = await queue("Waits for a slot");
+  test("queued work the routing before A8 filed from an answer is yours in Needs you, once; never started", async () => {
+    const { loop, queue, engine, fake, store } = await setup();
+    // As the old routing filed it: Maestro's, for an answer, no hold, queued at your gate.
+    const stranded = await queue("Act on your answer: Ship it?", { answer: "l.yaml#A1@2026-10-06T12:00:01Z" }, LOOP);
+    // Work you filed from an answer yourself (File as work) is not stranded: it is plain queued work.
+    const yours = await queue("Filed by you", { answer: "l.yaml#A2@2026-10-06T12:00:02Z" });
     const entry = await loop.wake("manual");
-    expect(entry.deferred).toEqual([{ id: waiting.id, title: waiting.title, reason: AT_RUN_CAP }]);
-    expect(entry.flagged).toEqual([]);
-    expect((await engine.get(waiting.id)).item.flag).toBeNull();
+    expect(entry.flagged).toEqual([
+      {
+        id: stranded.id,
+        title: stranded.title,
+        kind: "yours",
+        reason: "Filed from your answer before A8: start it yourself, or cancel it.",
+      },
+    ]);
+    expect((await engine.get(yours.id)).item.flag).toBeNull();
+    expect((await loop.wake("manual")).flagged).toEqual([]);
+    expect(await flags(store, stranded.id)).toHaveLength(1);
+    expect(fake.created).toEqual([]);
+  });
+
+  test("Settings' own mode makes nothing yours: a lane's run takes its lane's mode instead", async () => {
+    const { loop, queue, engine, fake } = await setup({ modeId: "bypassPermissions" });
+    const plain = await queue("Plain");
+    expect((await loop.wake("manual")).flagged).toEqual([]);
+    expect((await engine.get(plain.id)).item.flag).toBeNull();
+    // A flag an older Maestro raised for Settings' mode comes down as it is read.
+    expect(await engine.flag(plain, "yours", "Start it yourself: it runs without permission prompts.")).toBe(false);
+    expect(fake.created).toEqual([]);
   });
 
   test("three wakes in a row write one flag per work, not three", async () => {
     const { loop, queue, engine, fake, store } = await setup();
     const running = await queue("Long one");
     await engine.dispatch(fake.paseo, running.id);
-    const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
-    tickMinutes(1);
-    const broken = await queue("Broken");
-    failStarts(fake);
+    await queue("Bypass", { modeId: "bypassPermissions" });
     tickMinutes(30);
     const entries: WakeEntry[] = [];
     for (let wake = 0; wake < 3; wake += 1) {
       entries.push(await loop.wake("timer"));
       tickMinutes(1);
     }
-    for (const item of [running, bypass, broken]) expect(await flags(store, item.id)).toHaveLength(1);
-    expect(entries.map((entry) => entry.flagged.map((flag) => flag.kind))).toEqual([
-      ["quiet", "yours", "failed"],
-      [],
-      [],
-    ]);
-    // The start that failed is not tried again while its flag stands: one failure note, not one a wake.
-    const notes = (await raw(store, broken.id)).filter((event) => event.type === "note");
-    expect(notes).toHaveLength(1);
-    expect(entries[2]?.deferred).toContainEqual({ id: broken.id, title: broken.title, reason: FAILED_BEFORE });
+    expect(await flags(store, running.id)).toHaveLength(1);
+    expect(entries.map((entry) => entry.flagged.map((flag) => flag.kind))).toEqual([["quiet", "yours"], [], []]);
     expect(fake.created).toHaveLength(1);
   });
 
@@ -668,7 +574,7 @@ describe("flags in Needs you", () => {
       events: [{ ts: new Date(clock).toISOString(), type: "note", actor: "human", text: "Later" }],
     }));
     expect((await engine.get(noteMe.id)).item.flag).toBeNull();
-    // Cleared, the next wake may raise it again: the note did not make the work the loop's.
+    // Cleared, the next wake may raise it again: the note did not make the work anyone else's to start.
     const again = await loop.wake("manual");
     expect(again.flagged).toEqual([{ id: noteMe.id, title: noteMe.title, kind: "yours", reason: PROMPTS }]);
   });
@@ -706,29 +612,24 @@ describe("flags in Needs you", () => {
     expect(await engine.flag(read, "quiet", "Quiet for 30 minutes, worth a look.")).toBe(true);
   });
 
-  test("a yours flag comes down when Settings hand the work back to the loop, which then starts it", async () => {
-    const { loop, queue, engine, fake, config } = await setup({ modeId: "bypassPermissions" });
-    const item = await queue("Plain");
-    expect((await loop.wake("manual")).flagged.map((flag) => flag.kind)).toEqual(["yours"]);
-    config.modeId = null;
-    expect((await engine.get(item.id)).item.flag).toBeNull();
-    const entry = await loop.wake("manual");
-    expect(entry.dispatched).toEqual([{ id: item.id, title: item.title }]);
-    expect(fake.created).toHaveLength(1);
-  });
-
   test("work.attention lists flagged work after the work at your gate or stuck", async () => {
     const { loop, queue, engine, fake } = await setup({ concurrencyCap: null });
     const stuck = await queue("Stuck");
     await engine.dispatch(fake.paseo, stuck.id);
     await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "boom" } }, []);
-    const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
+    const long = await queue("Long one");
+    await engine.dispatch(fake.paseo, long.id);
     await queue("Plain");
+    tickMinutes(30);
     await loop.wake("manual");
     const { waiting } = attentionOf((await engine.list()).items, clock);
     expect(waiting).toEqual([
       { id: stuck.id, group: "blocked", flag: null },
-      { id: bypass.id, group: "queued", flag: { kind: "yours", reason: PROMPTS, at: new Date(clock).toISOString() } },
+      {
+        id: long.id,
+        group: "running",
+        flag: { kind: "quiet", reason: "Quiet for 30 minutes, worth a look.", at: new Date(clock).toISOString() },
+      },
     ]);
   });
 });
@@ -1007,75 +908,6 @@ describe("quiet asks the session", () => {
   });
 });
 
-describe("the loop and you, for the last slot", () => {
-  /** Holds the first run start inside startRun (after its slot is taken) until released. */
-  function holdFirstStart(fake: ReturnType<typeof fakePaseo>) {
-    const original = fake.paseo.providers.listModels;
-    let entered!: () => void;
-    let release!: () => void;
-    const inside = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const released = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let calls = 0;
-    fake.paseo.providers.listModels = (async (...args: Parameters<typeof original>) => {
-      calls += 1;
-      if (calls === 1) {
-        entered();
-        await released;
-      }
-      return original(...args);
-    }) as typeof original;
-    return { inside, release };
-  }
-
-  test("the loop's start holds the slot: yours is refused at the cap, and exactly one starts", async () => {
-    const { loop, queue, engine, fake } = await setup({ concurrencyCap: 1 });
-    const loops = await queue("For the loop");
-    tickMinutes(1);
-    const yours = await queue("For you");
-    const hold = holdFirstStart(fake);
-    const waking = loop.wake("manual");
-    await hold.inside;
-    const mine = await engine.dispatch(fake.paseo, yours.id).then(
-      () => "started",
-      (error: Error) => error.message,
-    );
-    hold.release();
-    const entry = await waking;
-    expect(mine).toBe("At capacity: 1 running. It stays queued.");
-    expect(entry.dispatched).toEqual([{ id: loops.id, title: loops.title }]);
-    expect(entry.deferred).toEqual([{ id: yours.id, title: yours.title, reason: AT_RUN_CAP }]);
-    expect(fake.created).toHaveLength(1);
-    expect((await engine.get(loops.id)).item.state).toBe("running");
-    expect((await engine.get(yours.id)).item.state).toBe("proposed");
-  });
-
-  test("your start holds the slot: the loop defers at the cap, and exactly one starts", async () => {
-    const { loop, queue, engine, fake } = await setup({ concurrencyCap: 1 });
-    const loops = await queue("For the loop");
-    tickMinutes(1);
-    const yours = await queue("For you");
-    const hold = holdFirstStart(fake);
-    const mine = engine.dispatch(fake.paseo, yours.id);
-    await hold.inside;
-    const waking = loop.wake("manual");
-    // The wake reads, walks and defers while your start is still in flight.
-    const entry = await waking;
-    hold.release();
-    expect((await mine).state).toBe("running");
-    expect(entry.dispatched).toEqual([]);
-    expect(entry.deferred).toEqual([
-      { id: loops.id, title: loops.title, reason: AT_RUN_CAP },
-      { id: yours.id, title: yours.title, reason: AT_RUN_CAP },
-    ]);
-    expect(fake.created).toHaveLength(1);
-    expect((await engine.get(loops.id)).item.state).toBe("proposed");
-  });
-});
-
 describe("Leave it running", () => {
   test("clears a quiet flag as your receipt, a look, and the quiet clock counts from it", async () => {
     const { loop, queue, engine, fake } = await setup();
@@ -1110,6 +942,8 @@ describe("Leave it running", () => {
     const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
     const running = await queue("Running");
     await engine.dispatch(fake.paseo, running.id);
+    // A flag an older Maestro's loop left on queued work: the loop raises none now.
+    expect(await engine.flag(bypass, "yours", "Start it yourself: it runs without permission prompts.")).toBe(true);
     await loop.wake("manual");
     expect((await engine.get(bypass.id)).item.flag?.kind).toBe("yours");
     // A flag you clear by acting (dispatch or cancel) has no dismiss; a run that is not quiet has nothing to dismiss.
@@ -1126,29 +960,27 @@ describe("Leave it running", () => {
   });
 });
 
-describe("dispatch as the loop", () => {
-  test("refuses stuck, prompt-free and moded work, which you may still start", async () => {
-    const { queue, engine, fake } = await setup();
-    const stuck = await queue("Stuck");
-    await engine.dispatch(fake.paseo, stuck.id);
-    await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "boom" } }, []);
-    await expect(engine.dispatch(fake.paseo, stuck.id, LOOP)).rejects.toThrow("The loop starts only queued work.");
+describe("dispatch as Maestro (A8, BRO-2990)", () => {
+  test("is refused for any work, before it takes a slot; the same work is yours to start", async () => {
+    const { queue, engine, fake } = await setup({ concurrencyCap: 1 });
+    const plain = await queue("Plain");
     const bypass = await queue("Bypass", { modeId: "bypassPermissions" });
-    await expect(engine.dispatch(fake.paseo, bypass.id, LOOP)).rejects.toThrow(PROMPT_FREE);
-    const auto = await queue("Auto", { featureValues: { auto_accept: "true" } });
-    await expect(engine.dispatch(fake.paseo, auto.id, LOOP)).rejects.toThrow(PROMPT_FREE);
-    const planned = await queue("Planned", { modeId: "plan" });
-    await expect(engine.dispatch(fake.paseo, planned.id, LOOP)).rejects.toThrow(MODED_BY_YOU);
+    const held = await queue("Held", { hold: "You chose to develop ideas-maestro.yaml I1." });
+    for (const item of [plain, bypass, held]) {
+      await expect(engine.dispatch(fake.paseo, item.id, LOOP)).rejects.toThrow(NEVER_BY_RULE);
+    }
+    expect(fake.created).toEqual([]);
+    // No refused start held the only slot: yours starts.
+    expect((await engine.dispatch(fake.paseo, plain.id)).state).toBe("running");
     expect(fake.created).toHaveLength(1);
-    // The same work is yours to start.
-    expect((await engine.dispatch(fake.paseo, planned.id)).state).toBe("running");
   });
 
-  test("refuses everything while Settings start runs without prompts", async () => {
-    const { queue, engine, fake } = await setup({ modeId: "bypassPermissions" });
-    const plain = await queue("Plain");
-    await expect(engine.dispatch(fake.paseo, plain.id, LOOP)).rejects.toThrow(PROMPT_FREE);
-    expect(fake.created).toEqual([]);
+  test("a session cannot start work held for you; you can", async () => {
+    const { queue, engine, fake } = await setup();
+    const held = await queue("Held", { hold: "You chose to develop ideas-maestro.yaml I1." });
+    expect(held.nextRun?.held).toBe("You chose to develop ideas-maestro.yaml I1.");
+    await expect(engine.dispatch(fake.paseo, held.id, { actor: "agent", by: "a1" })).rejects.toThrow(HELD_FOR_YOU);
+    expect((await engine.dispatch(fake.paseo, held.id)).state).toBe("running");
   });
 });
 

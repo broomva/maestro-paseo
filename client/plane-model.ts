@@ -154,7 +154,7 @@ export function scopeLabel(initiative: Initiative): string {
 
 /**
  * A group's subtitle, in the feed, the list and the board alike. Queued says
- * who starts it: you, or, while the loop is on, the loop at its next wake.
+ * who starts it: you, and while the loop is on, that the loop never does (A8).
  */
 export function groupHint(group: Group, loopOn: boolean): string {
   return group === "queued" && loopOn ? QUEUED_LOOP_HINT : GROUP_COPY[group].hint;

@@ -1,20 +1,13 @@
-// The loop: Maestro waking on a schedule to start queued work. It ports the
-// behaviour of the reference Maestro's tick (apps/maestro, runtime tick/tick.ts
-// and orchestrator/policy.ts), not its code. Each wake:
+// The loop: Maestro waking on a schedule to look after the work, never to
+// start it. It ported the reference Maestro's tick (apps/maestro, runtime
+// tick/tick.ts), and since owner answer A8 (BRO-2990) it starts nothing: the
+// plugin queues, and you (Dispatch), a lane or the conductor start work. In
+// Paseo session 13b97ad9 its start step turned six answers into six sessions
+// nobody watched, so that step is gone, and the loop is typed against an
+// engine with no dispatch (LoopEngine): it cannot start a run. Each wake:
 //   1. reads the work through the engine's list, which reconciles bound work
 //      with Paseo and applies decisions whose undo window has closed;
-//   2. walks the Queued group, triggered first, then the rest, each oldest
-//      first (the longest since its last change);
-//   3. leaves alone, with the reason, work whose next run would skip
-//      permission prompts or carries a mode you gave it (engine leftToYou),
-//      and starts the rest through the engine's dispatch as the loop, so the
-//      run cap, the folder checks and the start refusal are dispatch's own.
-//      The first refusal at the cap defers it and the rest of the queue "at
-//      the run cap", except work the loop would never start whatever the cap
-//      (leftToYou), which keeps its own reason after the cap as before it.
-//      Work whose start the loop tried and that failed is not tried again
-//      while that flag stands: it is yours until something happens to it;
-//   4. counts what needs you, and names running work quiet for 30 minutes:
+//   2. counts what needs you, and names running work quiet for 30 minutes:
 //      Maestro sees only turn boundaries, so work quiet by its events is
 //      quiet only if its session, asked (bounded, ASK_MS), has done nothing
 //      for as long; when the session cannot be asked it is not flagged, and
@@ -22,28 +15,30 @@
 //      too: a session at work again mid-turn sends Maestro no event, so the
 //      loop takes that flag down itself (`cleared`), and leaves it when the
 //      session cannot be asked;
-//   5. lands your answers and acts on them (BRO-2827): the answers batch on
+//   3. lands your answers and acts on them (BRO-2827): the answers batch on
 //      maestro/answers is brought up to origin/main, pushed, and carried by
 //      one PR, gated like any other and never merged by Maestro; once it has
 //      landed the branch is levelled with main (server/answers-landing.ts).
 //      Then each answer where it belongs, landed or in its checkout, is
 //      routed once: to the session that asked when it is idle, else, when
-//      that session is gone, as queued work at your gate (server/answer-
-//      routes.ts). A batch that cannot take main is kept whole and named in
-//      Needs you. It decides no ask: the answers are yours;
-//   6. flags, in Maestro's Needs you, what it leaves to you, what it could
-//      not start, and what has gone quiet (server/flags.ts): one event per
-//      work, and none while the same flag already stands;
-//   7. writes one wake-log entry (server/wake-log.ts) that says all of it.
+//      that session is gone, to another session on its arc or its driver,
+//      else queued for the conductor as a lane.assign candidate, never as
+//      work (server/answer-routes.ts). A batch that cannot take main is kept
+//      whole and named in Needs you. It decides no ask: the answers are yours;
+//   4. flags, in Maestro's Needs you, what has gone quiet, and queued work only
+//      you may start (held for you, as an owner-only answer's act is, or in a
+//      mode you chose: a session's dispatch refuses both), "Start it yourself"
+//      (server/flags.ts): one event per work, none while the same flag stands;
+//   5. writes one wake-log entry (server/wake-log.ts) that says all of it.
 // While the loop is off, a quiet flag stands until the next event on the work.
-// It never stops, sends back or decides anything: those stay yours. Being
-// deferred at the run cap is not flagged: that work starts when a slot frees.
+// It never starts, stops, sends back or decides anything: those stay yours, a
+// lane's or the conductor's. Other queued work waits for one of them, unflagged.
 //
 // Off unless Settings give it a period (loopMinutes). The next wake is due a
 // period after the last one the log records, so a restart keeps the cadence.
 // One wake runs at a time; one asked for meanwhile is recorded as skipped,
 // never queued. With no Paseo client yet (the plugin gets one with its first
-// handler or hook), a wake records that it could not start work, and the
+// handler or hook), a wake records that it could not ask any session, and the
 // first client to arrive runs another, after that wake ends when it arrives
 // while the wake is still running.
 
@@ -52,32 +47,23 @@ import { type AnswersLanding, answersNotice } from "../shared/answers";
 import type { FlagKind, WakeEntry, WorkItem } from "../shared/contracts";
 import { isDispatchable } from "../shared/states";
 import type { RouteOutcome } from "./answer-routes";
-import { AtCapacity, type Engine, leftToYou, realTimer, type Timer, UserError, within } from "./engine";
-import { LOOP } from "./events";
-import {
-  failedReason,
-  minutesWords,
-  QUIET_MS,
-  quietReason,
-  sentence,
-  sessionActiveAt,
-  startError,
-  yoursReason,
-} from "./flags";
-import type { Paseo } from "./runs";
+import { type Engine, realTimer, type Timer, within } from "./engine";
+import { minutesWords, QUIET_MS, quietReason, sentence, sessionActiveAt, yoursReason } from "./flags";
+import { type Paseo, yoursToStart } from "./runs";
 import { WakeLog } from "./wake-log";
 
 export { QUIET_MS };
 
-/** Why queued work was left: the loop tried to start it before and could not, and flagged it for you. */
-export const FAILED_BEFORE = "it could not start before; start it yourself";
+/**
+ * What the loop may do with the engine: read the work and Settings, and raise
+ * and clear its flags. No dispatch, no create, no verb: the loop starts
+ * nothing (A8, BRO-2990), and the type keeps it that way.
+ */
+export type LoopEngine = Pick<Engine, "list" | "settings" | "flag" | "clearQuiet">;
 
-/** Why queued work was left: dispatch refused it at the run cap, so the rest of the queue waits too. */
-export const AT_RUN_CAP = "at the run cap";
-
-/** Why a wake started nothing: the plugin has no Paseo client yet. */
+/** Why a wake asked no session: the plugin has no Paseo client yet. */
 export const NOT_CONNECTED =
-  "Could not start work: Paseo has not connected to Maestro yet. It connects with the first agent event, or when you open Maestro.";
+  "Could not ask any session: Paseo has not connected to Maestro yet. It connects with the first agent event, or when you open Maestro.";
 
 /** Why a wake was skipped. */
 export const ALREADY_WAKING = "another check was already running";
@@ -110,7 +96,7 @@ export interface AnswersStep {
 }
 
 export interface LoopOptions {
-  engine: Engine;
+  engine: LoopEngine;
   /** The daemon client once the plugin has one. */
   client: () => Paseo | null;
   now?: () => Date;
@@ -153,18 +139,12 @@ export function narrate(entry: Omit<WakeEntry, "narrative" | "tickId" | "wokeAt"
       ...entry.unasked.map((run) => `  ${run.title}: ${sentence(run.reason)}`),
     );
   }
+  // The loop starts nothing (A8): `dispatched` and `deferred` stay empty, kept for the wake log's older entries.
   const routed = entry.answers?.routed ?? [];
-  if (entry.dispatched.length > 0 || routed.length > 0) {
-    lines.push(
-      "Did:",
-      ...entry.dispatched.map((work) => `  Started ${work.title}.`),
-      ...routed.map((answer) => `  Your answer to ${answer.id} (${answer.ledger}): ${answer.words}`),
-    );
+  if (routed.length > 0) {
+    lines.push("Did:", ...routed.map((answer) => `  Your answer to ${answer.id} (${answer.ledger}): ${answer.words}`));
   } else {
     lines.push("Did nothing new this tick.");
-  }
-  if (entry.deferred.length > 0) {
-    lines.push("Left alone:", ...entry.deferred.map((work) => `  ${work.title}: ${sentence(work.reason)}`));
   }
   if (entry.flagged.length > 0) {
     lines.push("Flagged for you:", ...entry.flagged.map((work) => `  ${sentence(work.title)}`));
@@ -175,17 +155,8 @@ export function narrate(entry: Omit<WakeEntry, "narrative" | "tickId" | "wokeAt"
   return lines;
 }
 
-/** Triggered work first, then the rest of the Queued group; within each, the longest since its last change first. */
-export function queueOrder(a: WorkItem, b: WorkItem): number {
-  return (
-    Number(b.state === "triggered") - Number(a.state === "triggered") ||
-    a.updatedAt.localeCompare(b.updatedAt) ||
-    a.id.localeCompare(b.id)
-  );
-}
-
 export class Loop {
-  private readonly engine: Engine;
+  private readonly engine: LoopEngine;
   private readonly client: () => Paseo | null;
   private readonly now: () => Date;
   private readonly timer: Timer;
@@ -367,14 +338,23 @@ export class Loop {
       }
     }
     await this.askQuiet(paseo, silent, now, entry, raise, clear);
-    if (!paseo) {
-      this.missedClient = cause === "timer";
-      notes.push(NOT_CONNECTED);
-    } else {
-      this.missedClient = false;
-      await this.startQueued(paseo, items, entry, raise);
-    }
+    // No client: no session could be asked, so the first client to arrive runs another wake.
+    this.missedClient = !paseo && cause === "timer";
+    if (!paseo) notes.push(NOT_CONNECTED);
     await this.landAndRoute(entry);
+    // Routing may have filed held work this wake (an owner-only answer's act): read the queue again so it is yours now.
+    const filed = entry.answers?.routed.some((answer) => answer.route === "work") ?? false;
+    const queue = filed
+      ? await this.engine.list(paseo ?? undefined).then(
+          (list) => list.items,
+          () => items,
+        )
+      : items;
+    for (const item of queue) {
+      // Queued work only you may start (held for you, or in a mode you chose) is yours in Needs you: no lane can.
+      const yours = isDispatchable(item.state) && item.nextRun ? yoursToStart(item.nextRun) : null;
+      if (yours) raise.push({ item, kind: "yours", reason: yoursReason(yours) });
+    }
     await this.raiseFlags(raise, entry);
     await this.clearFlags(clear, entry);
     entry.narrative = narrate(entry, notes);
@@ -477,51 +457,6 @@ export class Loop {
         if (await this.engine.clearQuiet(item, activeAt)) entry.cleared.push(named(item));
       } catch (error) {
         this.log(`the loop could not clear the flag on ${item.id}: ${(error as Error).message}`);
-      }
-    }
-  }
-
-  /**
-   * Walk the queue in order: leave alone what is yours to start, start the
-   * rest until dispatch says the cap is reached, then defer the rest "at the
-   * run cap". What is yours keeps its own reason after the cap too: the loop
-   * never starts it, so the cap is not why it waits. The same holds for work
-   * it could not start before, while that flag stands. What it leaves to you
-   * and what fails to start go on `raise`.
-   */
-  private async startQueued(paseo: Paseo, items: readonly WorkItem[], entry: WakeEntry, raise: Raise[]): Promise<void> {
-    const queue = items.filter((item) => isDispatchable(item.state)).sort(queueOrder);
-    let capped = false;
-    for (const item of queue) {
-      const left = item.nextRun ? leftToYou(item.nextRun) : null;
-      if (left) {
-        entry.deferred.push({ ...named(item), reason: left });
-        raise.push({ item, kind: "yours", reason: yoursReason(left) });
-        continue;
-      }
-      // Tried before and flagged for you: not tried again until something happens to the work.
-      if (item.flag?.kind === "failed") {
-        entry.deferred.push({ ...named(item), reason: FAILED_BEFORE });
-        continue;
-      }
-      if (capped) {
-        entry.deferred.push({ ...named(item), reason: AT_RUN_CAP });
-        continue;
-      }
-      try {
-        await this.engine.dispatch(paseo, item.id, LOOP);
-        entry.dispatched.push(named(item));
-      } catch (error) {
-        if (error instanceof AtCapacity) {
-          capped = true;
-          entry.deferred.push({ ...named(item), reason: AT_RUN_CAP });
-          continue;
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        if (!(error instanceof UserError)) this.log(`the loop could not start ${item.id}: ${message}`);
-        // Dispatch's own "Could not start the run:" is not said twice: "could not start: <why>".
-        entry.deferred.push({ ...named(item), reason: `could not start: ${startError(message)}` });
-        raise.push({ item, kind: "failed", reason: failedReason(message) });
       }
     }
   }
