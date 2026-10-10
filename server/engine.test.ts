@@ -3272,6 +3272,24 @@ describe("the cap through Stop and resume (BRO-2995 mi-1)", () => {
     await expect(engine.dispatch(fake.paseo, third.id)).rejects.toThrow("At capacity: 2 of 1 slot taken (2 running)");
   });
 
+  test("continuing at your gate in the session takes a slot too: over the cap, the work says so", async () => {
+    const { create, engine, fake } = await setup({ concurrencyCap: 1 });
+    const first = await create();
+    const session = fake.agents.get("agent-1");
+    if (session) session.status = "idle";
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, []);
+    expect((await engine.get(first.id)).item.state).toBe("review");
+    // At your gate with nothing pending, it holds no slot: another run starts.
+    expect((await create()).state).toBe("running");
+    // You reply in the first session: it runs again, one over the cap, and says so.
+    await engine.onTurnStarted({ id: "agent-1" });
+    const { item, events } = await engine.get(first.id);
+    expect(item.state).toBe("running");
+    expect(events.map((event) => event.text)).toContain(
+      "Resumed in the session over the cap: 2 of 1 slot taken (2 running). No run starts until one ends.",
+    );
+  });
+
   test("a resume under the cap says nothing more than that it resumed", async () => {
     const { create, engine, fake } = await setup({ concurrencyCap: 2 });
     const first = await create();
@@ -3302,7 +3320,6 @@ describe("the cap through Stop and resume (BRO-2995 mi-1)", () => {
     );
     expect(fake.sent).toEqual([]);
     expect((await engine.get(first.id)).item.state).toBe("blocked");
-    await engine.cancel(second.id, fake.paseo).catch(() => undefined);
     await engine.stopRun(fake.paseo, second.id, DISCARD);
     expect((await engine.unblock(fake.paseo, first.id, "go on")).state).toBe("running");
     expect(fake.sent).toEqual([{ agentId: "agent-1", text: "go on" }]);

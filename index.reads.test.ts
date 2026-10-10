@@ -180,6 +180,8 @@ test("work.list, work.attention and loops.get, polled 50 times, leave the store,
     BROOMVA_HOME: join(root, "home"),
     // The sweep's own timer never fires inside the test: only the wake below runs one after start-up.
     MAESTRO_PASEO_SWEEP_SECONDS: "3600",
+    // Every sweep may fetch, so the start-up sweep's fetch arms no throttle that would hide one a read makes.
+    MAESTRO_PASEO_FETCH_SECONDS: "0",
     GIT_CONFIG_GLOBAL: gitConfig,
     GIT_CONFIG_NOSYSTEM: "1",
     PATH: `${bin}:${process.env.PATH ?? ""}`,
@@ -324,10 +326,14 @@ test("work.list, work.attention and loops.get, polled 50 times, leave the store,
       const recorded = await readFile(drift, "utf8").catch(() => "");
       const locks = await readdir(join(root, "locks")).catch(() => []);
       const landed = fake.created.length > startCounts.created;
+      const pulled = git(control, "rev-parse", "origin/main") !== fetched;
+      const labelled = (await readFile(join(root, "paseo-cli.log"), "utf8").catch(() => "")).includes("agent update");
       if (
-        recorded.includes("loop.drift.detected") &&
+        recorded.includes("103a1850") &&
         !locks.length &&
         landed &&
+        pulled &&
+        labelled &&
         (await state(revised.id)) === "running"
       )
         break;
@@ -344,8 +350,12 @@ test("work.list, work.attention and loops.get, polled 50 times, leave the store,
     expect(await state(revised.id)).toBe("running");
     expect(fake.sent.map((sent) => sent.agentId)).toContain(revised.agentId);
     expect(calls).toContain("agents.ref().send");
-    expect(await readFile(drift, "utf8")).toContain('"type": "loop.drift.detected"');
+    const recorded = (await readFile(drift, "utf8")).split("\n").filter((line) => line.includes("103a1850"));
+    expect(recorded.map((line) => JSON.parse(line).type)).toEqual(["loop.drift.detected"]);
     expect(await readdir(join(root, "locks"))).toEqual([]);
+    // The sweep fetched origin/main (the reads did not), and labelled the sessions through this test's paseo CLI.
+    expect(git(control, "rev-parse", "origin/main")).toBe(git(upstream, "rev-parse", "HEAD"));
+    expect(await readFile(join(root, "paseo-cli.log"), "utf8")).toContain("agent update");
   } finally {
     await cleanup();
     for (const [key, value] of Object.entries(saved)) {

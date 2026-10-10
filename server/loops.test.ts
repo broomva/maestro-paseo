@@ -328,6 +328,36 @@ describe("reads are pure (BRO-2995)", () => {
     ]);
   });
 
+  test("a sweep waits for a read already computing: two computes never run at once", async () => {
+    const { options, ledger, written } = await world(["com.broomva.canary"]);
+    const source = dirLedger(ledger);
+    let running = 0;
+    let most = 0;
+    const loops = new Loops({
+      ...options,
+      ledger: {
+        where: source.where,
+        read: async () => {
+          running += 1;
+          most = Math.max(most, running);
+          try {
+            await Bun.sleep(30);
+            return await source.read();
+          } finally {
+            running -= 1;
+          }
+        },
+      },
+    });
+    const read = loops.get();
+    const swept = loops.sweep();
+    await Promise.all([read, swept]);
+    expect(most).toBe(1);
+    expect(written.map((one) => one.subject)).toEqual(["loop:launchd/com.broomva.canary"]);
+    // The cache holds the sweep's view, the later one.
+    expect(await loops.get()).toBe(await swept);
+  });
+
   test("a read while a sweep runs gets the sweep's view; it starts no compute of its own", async () => {
     const { options, ledger } = await world(["com.broomva.canary"]);
     const source = dirLedger(ledger);

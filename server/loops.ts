@@ -381,9 +381,14 @@ export class Loops {
    * and each drift transition since the last sweep recorded. Never a read's.
    */
   sweep(): Promise<LoopsView> {
-    this.sweeping ??= this.compute(true).finally(() => {
-      this.sweeping = null;
-    });
+    // A read computing now finishes first: two computes never run at once, and a read's view never lands after
+    // the sweep's and replaces it in the cache.
+    this.sweeping ??= (this.computing ?? Promise.resolve(null))
+      .catch(() => null)
+      .then(() => this.compute(true))
+      .finally(() => {
+        this.sweeping = null;
+      });
     return this.sweeping;
   }
 

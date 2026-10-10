@@ -30,7 +30,7 @@ import {
 } from "./server/paths";
 import { Records } from "./server/records";
 import type { Paseo } from "./server/runs";
-import { Sweep, sweepEvery } from "./server/sweep";
+import { fetchEvery, Sweep, sweepEvery } from "./server/sweep";
 import { Timeline } from "./server/timeline";
 import { WAKE_LOG_MAX, WakeLog } from "./server/wake-log";
 import { answersNotice, decideConductor, undoConductor } from "./shared/answers";
@@ -118,6 +118,7 @@ export default function contribute(host: PluginServerContext) {
         answersPath: control.answers,
         lockRoot: askPaths.locks,
         receipts: askPaths.receipts,
+        fetchEveryMs: fetchEvery(),
         log,
       })
     : null;
@@ -279,7 +280,10 @@ export default function contribute(host: PluginServerContext) {
   const loops = new Loops({
     // Plus every repo loop-repos.json names, each at its own ref (BRO-2942): one orchestrator per owning repo.
     ledger: control.repo
-      ? multiLedger(gitLedger(control.repo, { fetch: true, log }), { reposPath: loopReposPath(), log })
+      ? multiLedger(gitLedger(control.repo, { fetch: true, fetchEveryMs: fetchEvery(), log }), {
+          reposPath: loopReposPath(),
+          log,
+        })
       : null,
     timeline,
     schedulesDir: paseoSchedulesDir(),
@@ -507,9 +511,20 @@ export default function contribute(host: PluginServerContext) {
         },
       },
       // In the background (never waited for, one at a time): a fetch or the loops' whole view may take a while.
-      ...(workspace ? [{ name: "the asks' origin/main", background: true, run: () => workspace.fetchDue() }] : []),
-      // The loops' drift is recorded against the control repo's ledger; with none there is nothing to record.
-      ...(control.repo ? [{ name: "the loops' drift", background: true, run: () => loops.sweep() }] : []),
+      // The control repo's two in turn, so their fetches never race for one ref: the asks' origin/main, then the
+      // loops' drift (its ledger fetched first). With no control repo there is nothing to fetch or record.
+      ...(workspace
+        ? [
+            {
+              name: "the control repo's asks and loops",
+              background: true,
+              run: async () => {
+                await workspace.fetchDue();
+                await loops.sweep();
+              },
+            },
+          ]
+        : []),
       { name: "the fleet's leftover locks", background: true, run: () => fleet.sweepLocks() },
     ],
     // A wake that found no client runs again once a sweep has one (Loop.connected).

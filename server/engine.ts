@@ -2061,9 +2061,12 @@ export class Engine {
   }
 
   private async startTurn(store: WorkStore, item: StoredWork, agentId: string): Promise<void> {
-    // Stuck work whose session had gone held no slot, and resuming takes one. The turn is under way, so it is not
-    // Maestro's to refuse: the cap is checked, and a resume that takes it over is said on the work (mi-1).
-    const over = item.contract.state === "blocked" && slotOf(item) === null ? await this.overCap(store, item) : null;
+    // Work that held no slot takes one when its session works again: stuck work whose session had gone, or work
+    // at your gate with nothing pending. The turn is under way, so it is not Maestro's to refuse: the cap is
+    // checked, and a resume that takes it over is said on the work (mi-1).
+    const resumes =
+      item.contract.state === "blocked" || (item.contract.state === "review" && !pendingPermission(item.events));
+    const over = resumes && slotOf(item) === null ? await this.overCap(store, item) : null;
     await store.mutate(
       item.contract.id,
       (fresh) => {
@@ -2071,11 +2074,11 @@ export class Engine {
         const event: WorkEvent = { ts: this.stamp(), type: "turn.started", actor: "agent", agentId };
         const state = fresh.contract.state;
         if (state === "running") return { events: [event] };
+        const said = over && slotOf(fresh) === null ? [this.note(over)] : [];
         if (state === "review" && !pendingPermission(fresh.events)) {
-          return { to: "running", actor: "human", reason: "You continued the session", events: [event] };
+          return { to: "running", actor: "human", reason: "You continued the session", events: [event, ...said] };
         }
         if (state === "blocked") {
-          const said = over && slotOf(fresh) === null ? [this.note(over)] : [];
           return { to: "running", actor: "human", reason: "Resumed in the session", events: [event, ...said] };
         }
         return null;

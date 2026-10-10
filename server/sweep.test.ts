@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Timer } from "./engine";
 import type { Paseo } from "./runs";
-import { SWEEP_MS, Sweep, type SweepStep, sweepEvery } from "./sweep";
+import { fetchEvery, SWEEP_MS, Sweep, type SweepStep, sweepEvery } from "./sweep";
 
 function fakeTimers() {
   const armed: Array<{ run: () => Promise<void>; ms: number; canceled: boolean }> = [];
@@ -141,11 +141,47 @@ describe("the plugin sweep (BRO-2995)", () => {
     expect(runs).toHaveLength(2);
   });
 
+  test("stopped while a sweep runs: that sweep finishes, and no next one is armed", async () => {
+    const timers = fakeTimers();
+    const work = heldStep("the work");
+    const sweep = new Sweep({ steps: [work.step], client: () => null, timer: timers.timer, log: () => undefined });
+    sweep.start();
+    await flush();
+    expect(work.calls).toHaveLength(1);
+    sweep.stop();
+    work.release();
+    await flush();
+    await flush();
+    expect(timers.live()).toEqual([]);
+  });
+
+  test("an after hook that throws is logged; the sweep still answers", async () => {
+    const logged: string[] = [];
+    const sweep = new Sweep({
+      steps: [{ name: "the work", run: async () => undefined }],
+      client: () => null,
+      log: (line) => logged.push(line),
+      after: () => {
+        throw new Error("loop gone");
+      },
+    });
+    expect((await sweep.run()).steps).toEqual([{ name: "the work", outcome: "done", error: null }]);
+    expect(logged).toEqual(["sweep: after a sweep: loop gone"]);
+  });
+
   test("its period: SWEEP_MS, or MAESTRO_PASEO_SWEEP_SECONDS when that is a number of seconds", () => {
     expect(SWEEP_MS).toBe(30_000);
     expect(sweepEvery({})).toBe(SWEEP_MS);
     expect(sweepEvery({ MAESTRO_PASEO_SWEEP_SECONDS: "120" })).toBe(120_000);
     expect(sweepEvery({ MAESTRO_PASEO_SWEEP_SECONDS: "0" })).toBe(SWEEP_MS);
     expect(sweepEvery({ MAESTRO_PASEO_SWEEP_SECONDS: "soon" })).toBe(SWEEP_MS);
+  });
+
+  test("its fetches' period: each fetcher's own unless MAESTRO_PASEO_FETCH_SECONDS says; 0 is every sweep", () => {
+    expect(fetchEvery({})).toBeUndefined();
+    expect(fetchEvery({ MAESTRO_PASEO_FETCH_SECONDS: "0" })).toBe(0);
+    expect(fetchEvery({ MAESTRO_PASEO_FETCH_SECONDS: "90" })).toBe(90_000);
+    expect(fetchEvery({ MAESTRO_PASEO_FETCH_SECONDS: "-1" })).toBeUndefined();
+    expect(fetchEvery({ MAESTRO_PASEO_FETCH_SECONDS: " " })).toBeUndefined();
   });
 });

@@ -278,6 +278,8 @@ export function gitLedger(
     ref?: string;
     /** The scope this repo records intent for. */
     owns?: LoopScope | null;
+    /** How often a read asked to fetch fetches at most; LEDGER_FETCH_MS unless the plugin says. */
+    fetchEveryMs?: number;
   } = {},
 ): LedgerSource {
   const now = options.now ?? Date.now;
@@ -286,7 +288,7 @@ export function gitLedger(
   let fetchedAt = Number.NEGATIVE_INFINITY;
   let fetching: Promise<void> | null = null;
   const fetchMain = async () => {
-    if (!options.fetch || now() - fetchedAt < LEDGER_FETCH_MS) return;
+    if (!options.fetch || now() - fetchedAt < (options.fetchEveryMs ?? LEDGER_FETCH_MS)) return;
     fetchedAt = now();
     if (!branch) return;
     fetching ??= git(repo, ["fetch", "-q", "origin", branch], 60_000)

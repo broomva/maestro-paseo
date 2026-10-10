@@ -515,6 +515,8 @@ export interface WorkspaceAsksOptions {
   receipts: string;
   /** Fetch origin/main (the sweep at most every FETCH_EVERY_MS, an answer first); off for a test that has no remote. */
   fetch?: boolean;
+  /** How often the sweep fetches at most; FETCH_EVERY_MS unless the plugin says (MAESTRO_PASEO_FETCH_SECONDS). */
+  fetchEveryMs?: number;
   now?: () => number;
   log?: (message: string) => void;
   ttlMs?: number;
@@ -600,7 +602,8 @@ export class WorkspaceAsks {
    */
   async fetchDue(): Promise<void> {
     if (this.options.fetch === false) return;
-    if (this.fetching || this.now() - this.lastFetch >= FETCH_EVERY_MS) await this.fetchNow();
+    const every = this.options.fetchEveryMs ?? FETCH_EVERY_MS;
+    if (this.fetching || this.now() - this.lastFetch >= every) await this.fetchNow();
   }
 
   /** Fetches origin/main (one fetch at a time); resolves to why it failed, or null. */

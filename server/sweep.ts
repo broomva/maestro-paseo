@@ -67,6 +67,17 @@ export function sweepEvery(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(seconds) && seconds >= 1 ? Math.round(seconds * 1000) : SWEEP_MS;
 }
 
+/**
+ * How often the sweep may fetch origin/main (the asks', the loops ledger's), from
+ * MAESTRO_PASEO_FETCH_SECONDS (0: every sweep, for a test that must see any fetch
+ * a read makes); undefined keeps each fetcher's own 5 minutes.
+ */
+export function fetchEvery(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const raw = env.MAESTRO_PASEO_FETCH_SECONDS?.trim();
+  const seconds = raw ? Number(raw) : Number.NaN;
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : undefined;
+}
+
 export class Sweep {
   private readonly steps: readonly SweepStep[];
   private readonly client: () => Paseo | null;
