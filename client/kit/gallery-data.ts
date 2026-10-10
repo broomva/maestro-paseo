@@ -79,6 +79,19 @@ export const ASK: InspectorItem = {
   fallback: { line: "Keeps them off in 24 min if you say nothing", elapsed: 0.3 },
 };
 
+export const OWNER_STEP: InspectorItem = {
+  kind: "owner_step",
+  key: "owner_step:P20-credits",
+  kicker: ["sri", "P20"],
+  age: "1 day",
+  title: "Add Codex credits so P20 reviews are cross-vendor again",
+  summary: "Only you can do this: it needs your OpenAI billing login. Two sessions are waiting on it.",
+  where: "platform.openai.com → Billing → workspace credits",
+  check:
+    "Done is checked: codex exec -m gpt-5.5 must answer. Until then P20 runs same-vendor, as you answered on 10-07.",
+  session: { name: "sri-p20-gate", status: "2 sessions are waiting · 1 day", state: "review" },
+};
+
 export const NOTICE: InspectorItem = {
   kind: "notice",
   key: "notice:STI-3593",
@@ -139,7 +152,7 @@ export const REVIEW: InspectorItem = {
   chosen: "keep",
 };
 
-export const INSPECTOR_SAMPLES = [APPROVAL, ASK, NOTICE, WORK, REVIEW] as const;
+export const INSPECTOR_SAMPLES = [APPROVAL, ASK, OWNER_STEP, NOTICE, WORK, REVIEW] as const;
 
 export interface RowSample {
   key: string;

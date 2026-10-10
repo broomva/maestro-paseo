@@ -57,6 +57,11 @@ export function deckOffset(index: number, count: number, dx: number, width: numb
   return base + (atEdge ? dx / 3 : dx);
 }
 
+/** The index the deck shows: within its holds, whatever it was asked for. */
+export function clampIndex(index: number, count: number): number {
+  return Math.min(Math.max(Math.trunc(index) || 0, 0), Math.max(count - 1, 0));
+}
+
 /** "1 of 4": where you are, counted from one. */
 export function place(index: number, total: number): string {
   return `${Math.min(index + 1, total)} of ${total}`;

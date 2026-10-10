@@ -79,7 +79,7 @@ const { createRoot } = require("react-dom/client") as {
 const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
 const { PluginRpcProvider } = await import("@getpaseo/plugin/client/host");
 const { UNDO_MS } = await import("../../shared/undo");
-const { GALLERY_LIGHT, APPROVAL, ASK, NOTICE, WORK, REVIEW } = await import("./gallery-data");
+const { GALLERY_LIGHT, APPROVAL, ASK, OWNER_STEP, NOTICE, WORK, REVIEW } = await import("./gallery-data");
 const { BOTH_WAYS, LEFTWARD } = await import("./assumptions");
 const { PullSheet, PEEK, TAB_BAND } = await import("./pull-sheet");
 const { TabBar } = await import("./tab-bar");
@@ -478,7 +478,7 @@ describe("the Undertow marks Running only", () => {
 
 describe("the inspector", () => {
   it("draws each kind's verbs, never Approve, and reports the verb pressed", async () => {
-    for (const item of [APPROVAL, ASK, NOTICE, WORK, REVIEW]) {
+    for (const item of [APPROVAL, ASK, OWNER_STEP, NOTICE, WORK, REVIEW]) {
       const verbs: string[] = [];
       const view = await mount(
         <InspectorPanel theme={theme} item={item} open onClose={ignore} onVerb={(id) => verbs.push(id)} />,
@@ -515,6 +515,26 @@ describe("the inspector", () => {
       />,
     );
     expect(card.id("inspector-card")).toBeNull();
+  });
+  it("an Answer carries the option chosen", async () => {
+    const pressed: [string, string | undefined][] = [];
+    const view = await mount(
+      <InspectorPanel
+        theme={theme}
+        item={ASK}
+        open
+        onClose={ignore}
+        onVerb={(id, choice) => pressed.push([id, choice])}
+      />,
+    );
+    await view.press(view.label("Install fleet-wide"));
+    await view.press(view.label("Answer"));
+    expect(pressed).toEqual([["answer", "fleet"]]);
+  });
+  it("an owner step says where it is done and offers Done", async () => {
+    const view = await mount(<InspectorPanel theme={theme} item={OWNER_STEP} open onClose={ignore} onVerb={ignore} />);
+    expect(view.text()).toContain("platform.openai.com → Billing → workspace credits");
+    expect(view.label("Done")).toBeTruthy();
   });
   it("Esc sends it back", async () => {
     let closed = 0;

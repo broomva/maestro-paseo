@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { BOTH_WAYS, LEFTWARD } from "./assumptions";
-import { DECK, deckCaptures, deckOffset, deckRelease, indexOfKey, place, placeLabel, segments } from "./deck-model";
+import {
+  clampIndex,
+  DECK,
+  deckCaptures,
+  deckOffset,
+  deckRelease,
+  indexOfKey,
+  place,
+  placeLabel,
+  segments,
+} from "./deck-model";
 
 const W = 340;
 
@@ -48,6 +58,16 @@ describe("on compact native the deck swipes leftward only (BRO-3033 fact 3)", ()
     expect(deckRelease(2, 4, W, 2, W, LEFTWARD)).toBe(2);
     expect(deckOffset(2, 4, 90, W, LEFTWARD)).toBe(-2 * (W + DECK.gap));
     expect(deckRelease(2, 4, -W, -2, W, LEFTWARD)).toBe(3);
+  });
+});
+
+describe("the deck's index stays within its holds", () => {
+  test("above the last, below the first, or not a number: clamped", () => {
+    expect(clampIndex(5, 3)).toBe(2);
+    expect(clampIndex(-1, 3)).toBe(0);
+    expect(clampIndex(Number.NaN, 3)).toBe(0);
+    expect(clampIndex(1, 3)).toBe(1);
+    expect(clampIndex(4, 0)).toBe(0);
   });
 });
 

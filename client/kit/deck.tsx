@@ -14,8 +14,8 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, type LayoutChangeEvent, PanResponder, Platform, Pressable, Text, View } from "react-native";
 import { tint } from "../fleet-color";
 import { useReducedMotion } from "../ui";
-import { BOTH_WAYS as BOTH, type Directions, nativeDriver } from "./assumptions";
-import { DECK, deckCaptures, deckOffset, deckRelease, indexOfKey, place } from "./deck-model";
+import { BOTH_WAYS as BOTH, type Directions, DRAG_NATIVE_DRIVER } from "./assumptions";
+import { clampIndex, DECK, deckCaptures, deckOffset, deckRelease, indexOfKey, place } from "./deck-model";
 import { CLIP, Kicker, Pill, TABULAR } from "./parts";
 import { kitOf } from "./tokens";
 
@@ -55,7 +55,7 @@ export function Deck<T>({
   const reduced = useReducedMotion();
   const ways = directions;
   // The deck never trusts an index past its holds: when the list shrinks under it, it shows the last and says so.
-  const index = Math.min(wanted, Math.max(items.length - 1, 0));
+  const index = clampIndex(wanted, items.length);
   useEffect(() => {
     if (items.length > 0 && wanted !== index) onIndexChange(index);
   }, [wanted, index, items.length, onIndexChange]);
@@ -82,28 +82,41 @@ export function Deck<T>({
         toValue: to,
         damping: 24,
         stiffness: 220,
-        useNativeDriver: nativeDriver(Platform.OS),
+        useNativeDriver: DRAG_NATIVE_DRIVER,
       }).start();
   }, [index, items.length, cardWidth, reduced, x]);
 
+  // Where the strip stood when the finger landed: a grab mid-spring moves on from there, never from the target.
+  const origin = useRef(0);
   const responder = useMemo(() => {
     // Home: the current hold's place. The host terminates rightward drags on compact native, so this runs often.
     const home = (velocity: number) => {
       const { index: at, count, cardWidth: w, reduced: still } = live.current;
       const to = deckOffset(at, count, 0, w, BOTH);
       if (still) x.setValue(to);
-      else Animated.spring(x, { toValue: to, velocity, useNativeDriver: nativeDriver(Platform.OS) }).start();
+      else Animated.spring(x, { toValue: to, velocity, useNativeDriver: DRAG_NATIVE_DRIVER }).start();
     };
+    // The drag measured from the hold's place, so a strip caught mid-spring carries its offset into the drag.
+    const travelled = (dx: number) => {
+      const { index: at, count, cardWidth: w } = live.current;
+      return dx + origin.current - deckOffset(at, count, 0, w, BOTH);
+    };
+    const barred = (dx: number) => (dx > 0 ? !live.current.ways.right : !live.current.ways.left);
     return PanResponder.create({
       onMoveShouldSetPanResponder: (_, g) => deckCaptures(g.dx, g.dy, live.current.ways),
-      onPanResponderGrant: () => x.stopAnimation(),
+      onPanResponderGrant: () => {
+        x.stopAnimation((at) => {
+          origin.current = at;
+        });
+      },
       onPanResponderMove: (_, g) => {
-        const { index: at, count, cardWidth: w, ways: allowed } = live.current;
-        x.setValue(deckOffset(at, count, g.dx, w, allowed));
+        const { index: at, count, cardWidth: w } = live.current;
+        // A barred way holds the strip where it is: no jump, no movement.
+        x.setValue(barred(g.dx) ? origin.current : deckOffset(at, count, travelled(g.dx), w, BOTH));
       },
       onPanResponderRelease: (_, g) => {
         const { index: at, count, cardWidth: w, onIndexChange: change, ways: allowed } = live.current;
-        const next = deckRelease(at, count, g.dx, g.vx, w, allowed);
+        const next = barred(g.dx) ? at : deckRelease(at, count, travelled(g.dx), g.vx, w, allowed);
         if (next !== at) change(next);
         else home(g.vx * 1000);
       },

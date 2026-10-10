@@ -8,10 +8,11 @@
 import type { Directions } from "./assumptions";
 
 /**
- * The kinds that are holds: never swiped (M1: "a hold is always a deliberate tap"). `owner_step` is the
- * contract's spelling (view-models.md NeedKind); `owner-step` is the inventory's, so both count.
+ * The kinds that are holds: never swiped (M1: "a hold is always a deliberate tap"). The three needs
+ * (view-models.md NeedKind; `owner-step` is the inventory's spelling of `owner_step`) and an initiative
+ * review, which is an Ask on its due date (B2). The inspector's own list agrees (inspector-model.ts).
  */
-export const HOLD_KINDS = ["ask", "approval", "owner_step", "owner-step"] as const;
+export const HOLD_KINDS = ["ask", "approval", "owner_step", "owner-step", "review"] as const;
 
 export function isHold(kind: string): boolean {
   return (HOLD_KINDS as readonly string[]).includes(kind);
@@ -42,12 +43,12 @@ export function actionsWidth(count: number): number {
 
 /**
  * Whether a move starts a swipe: a row that swipes, sideways, past the slop,
- * in a direction it may go. A rightward drag on open actions closes them, so
- * it is taken either way (if the host takes it instead, the row springs shut).
+ * in a direction it may go. Where rightward is barred it is never taken, not
+ * even to close open actions: a tap on the row closes them.
  */
-export function swipeCaptures(kind: string, dx: number, dy: number, directions: Directions, open = false): boolean {
+export function swipeCaptures(kind: string, dx: number, dy: number, directions: Directions): boolean {
   if (!canSwipe(kind) || Math.abs(dx) <= SWIPE.slop || Math.abs(dx) <= Math.abs(dy) * 1.5) return false;
-  return dx > 0 ? directions.right || open : directions.left;
+  return dx > 0 ? directions.right : directions.left;
 }
 
 /** The left actions in order: the default verb first when it cannot be a right swipe, then Snooze, then Open. */

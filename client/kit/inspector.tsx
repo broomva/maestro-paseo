@@ -17,7 +17,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, PanResponder, Platform, Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
 import { tint } from "../fleet-color";
 import { useReducedMotion, webAria } from "../ui";
-import { type Directions, type FrostLook, frostLook, keysHint, nativeDriver } from "./assumptions";
+import { type Directions, DRAG_NATIVE_DRIVER, type FrostLook, frostLook, keysHint, nativeDriver } from "./assumptions";
 import { DECK, deckCaptures, deckRelease } from "./deck-model";
 import { DetailHeader } from "./detail-header";
 import { type InspectorKind, inspectorHidden, KIND_LOOK, type VerbSpec, verbsFor } from "./inspector-model";
@@ -82,6 +82,13 @@ export type InspectorItem =
       chosen?: string;
       /** The silent default: what happens if you say nothing, and how far its countdown has run (0 to 1). */
       fallback?: { line: string; elapsed: number };
+    })
+  | (Common & {
+      kind: "owner_step";
+      /** Where the step is done: "platform.openai.com → Billing → workspace credits". */
+      where: string;
+      /** How Maestro knows it is done, and what holds until then. */
+      check?: string;
     })
   | (Common & {
       kind: "notice";
@@ -274,6 +281,7 @@ export function InspectorBody({
   onOpenSession,
   onChoose,
   onClose,
+  choice,
 }: {
   theme: PluginTheme;
   item: InspectorItem;
@@ -282,11 +290,14 @@ export function InspectorBody({
   onChoose?: (id: string) => void;
   /** The desktop's close button, at the kicker's end (the phone closes from its detail header). */
   onClose?: () => void;
+  /** The chosen option when the container holds it (InspectorPanel, InspectorCard); the body's own otherwise. */
+  choice?: string;
 }) {
   const kit = kitOf(theme);
   const look = KIND_LOOK[item.kind];
   const initialChoice = item.kind === "ask" || item.kind === "review" ? item.chosen : undefined;
-  const [chosen, setChosen] = useState(initialChoice);
+  const [own, setChosen] = useState(initialChoice);
+  const chosen = choice ?? own;
   // A new item starts from its own choice, never the last item's (the key changes even when both are unset).
   // biome-ignore lint/correctness/useExhaustiveDependencies: item.key is the reset trigger
   useEffect(() => setChosen(initialChoice), [initialChoice, item.key]);
@@ -347,6 +358,33 @@ export function InspectorBody({
               />
             </View>
             <Text style={{ color: kit.muted, fontSize: 12.5 }}>{item.fallback.line}</Text>
+          </View>,
+        );
+      break;
+    case "owner_step":
+      sections.push(
+        <View
+          key="where"
+          style={{
+            backgroundColor: kit.sunken,
+            borderRadius: 10,
+            paddingVertical: 10,
+            paddingHorizontal: 12,
+            flexDirection: compact ? "column" : "row",
+            gap: compact ? 2 : 8,
+          }}
+        >
+          <Text style={{ color: kit.muted, fontSize: 12.5 }}>Where</Text>
+          <Text selectable style={{ flex: compact ? 0 : 1, color: kit.fg, fontSize: 12.5, fontFamily: MONO }}>
+            {item.where}
+          </Text>
+        </View>,
+      );
+      if (item.check)
+        sections.push(
+          <View key="check" style={{ flexDirection: "row", gap: 8 }}>
+            <Icon name="Info" size={15} color={kit.muted} />
+            <Text style={{ flex: 1, color: kit.fg2, fontSize: 13.5, lineHeight: 19 }}>{item.check}</Text>
           </View>,
         );
       break;
@@ -550,7 +588,25 @@ function Verbs({
  * inspector unmounts, so its verbs are never focusable, scrolled into view or
  * read out while it sits off-screen.
  */
-function useSlide(shown: boolean, value: Animated.Value, hidden: number, reduced: boolean): boolean {
+/**
+ * The option chosen on the item showing, held by the container so a verb carries it (`onVerb("answer",
+ * "fleet")`). It belongs to one item: another item starts from its own default.
+ */
+function useChoice(item: InspectorItem | null): {
+  choice: string | undefined;
+  choose: (id: string) => void;
+} {
+  const [picked, setPicked] = useState<{ key: string; id: string } | null>(null);
+  const fallback = item && (item.kind === "ask" || item.kind === "review") ? item.chosen : undefined;
+  return {
+    choice: item && picked?.key === item.key ? picked.id : fallback,
+    choose: (id) => {
+      if (item) setPicked({ key: item.key, id });
+    },
+  };
+}
+
+function useSlide(shown: boolean, value: Animated.Value, hidden: number, reduced: boolean, native: boolean): boolean {
   const [present, setPresent] = useState(shown);
   useEffect(() => {
     if (shown) setPresent(true);
@@ -564,13 +620,13 @@ function useSlide(shown: boolean, value: Animated.Value, hidden: number, reduced
       toValue: to,
       damping: 26,
       stiffness: 240,
-      useNativeDriver: nativeDriver(Platform.OS),
+      useNativeDriver: native,
     });
     slide.start(({ finished }) => {
       if (finished && !shown) setPresent(false);
     });
     return () => slide.stop();
-  }, [shown, hidden, reduced, value]);
+  }, [shown, hidden, reduced, value, native]);
   return present;
 }
 
@@ -604,7 +660,8 @@ export function InspectorPanel({
   item: InspectorItem | null;
   open: boolean;
   onClose: () => void;
-  onVerb: (id: string) => void;
+  /** A verb pressed, with the option chosen when the item is an ask or a review. */
+  onVerb: (id: string, choice?: string) => void;
   /** "Next hold J": present when the screen can walk to the next item. */
   onNext?: () => void;
   onOpenSession?: () => void;
@@ -619,7 +676,8 @@ export function InspectorPanel({
   const x = useRef(new Animated.Value(shown ? 0 : inspectorHidden(width))).current;
   const [kept, setKept] = useState(item);
   if (item && item !== kept) setKept(item);
-  const present = useSlide(shown, x, inspectorHidden(width), reduced);
+  const present = useSlide(shown, x, inspectorHidden(width), reduced, nativeDriver(Platform.OS));
+  const picked = useChoice(item ?? kept);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
@@ -660,7 +718,14 @@ export function InspectorPanel({
       }}
     >
       <ScrollView contentContainerStyle={{ paddingVertical: 20, paddingHorizontal: 24, paddingBottom: 84 }}>
-        <InspectorBody theme={theme} item={showing} onOpenSession={onOpenSession} onClose={onClose} />
+        <InspectorBody
+          theme={theme}
+          item={showing}
+          onOpenSession={onOpenSession}
+          onClose={onClose}
+          choice={picked.choice}
+          onChoose={picked.choose}
+        />
       </ScrollView>
       <View
         testID="inspector-bar"
@@ -706,7 +771,7 @@ export function InspectorPanel({
         <Verbs
           theme={theme}
           verbs={verbsFor(showing.kind, showing.primaryLabel)}
-          onVerb={onVerb}
+          onVerb={(id) => onVerb(id, picked.choice)}
           height={36}
           grow={false}
           keys
@@ -744,7 +809,8 @@ export function InspectorCard({
   height: number;
   onClose: () => void;
   onMore: () => void;
-  onVerb: (id: string) => void;
+  /** A verb pressed, with the option chosen when the item is an ask or a review. */
+  onVerb: (id: string, choice?: string) => void;
   onIndexChange: (index: number) => void;
   onOpenSession?: () => void;
   /** Which ways it swipes to the next hold: the screen passes swipeDirections(layout) (BRO-3033 fact 3). */
@@ -756,24 +822,36 @@ export function InspectorCard({
   const ways = directions;
   const live = useRef({ index, total, onIndexChange, onClose, height, ways });
   live.current = { index, total, onIndexChange, onClose, height, ways };
-  const present = useSlide(open, y, height, reduced);
+  // The card is dragged, so it springs on the JS thread (A3) and a grab reads where it is.
+  const present = useSlide(open, y, height, reduced, DRAG_NATIVE_DRIVER);
+  const picked = useChoice(item);
+  const origin = useRef(0);
   const responder = useMemo(() => {
     const home = (velocity: number) =>
-      Animated.spring(y, { toValue: 0, velocity, useNativeDriver: nativeDriver(Platform.OS) }).start();
+      Animated.spring(y, { toValue: 0, velocity, useNativeDriver: DRAG_NATIVE_DRIVER }).start();
+    const vertical = (g: { dx: number; dy: number }) => Math.abs(g.dy) >= Math.abs(g.dx);
     return PanResponder.create({
-      // Down to close; sideways for the next hold, only the ways it may go (compact native: leftward).
-      onMoveShouldSetPanResponder: (_, g) => g.dy > 8 || deckCaptures(g.dx, g.dy, live.current.ways),
+      // Down to close, only when mostly down; sideways for the next hold, only the ways it may go
+      // (compact native: leftward), so a mostly-rightward drag is always left to Paseo there.
+      onMoveShouldSetPanResponder: (_, g) =>
+        (g.dy > 8 && g.dy > Math.abs(g.dx)) || deckCaptures(g.dx, g.dy, live.current.ways),
+      onPanResponderGrant: () => {
+        y.stopAnimation((at) => {
+          origin.current = at;
+        });
+      },
       onPanResponderMove: (_, g) => {
-        if (Math.abs(g.dy) >= Math.abs(g.dx)) y.setValue(Math.max(0, g.dy));
+        if (vertical(g)) y.setValue(Math.max(0, origin.current + g.dy));
       },
       onPanResponderRelease: (_, g) => {
         const { index: at, total: count, onIndexChange: change, onClose: close, ways: allowed } = live.current;
-        if (Math.abs(g.dy) >= Math.abs(g.dx)) {
+        if (vertical(g)) {
           // Dismiss past a projected threshold, else spring back (M2–M4 Build note).
-          if (g.dy + g.vy * 180 > 140) close();
+          if (origin.current + g.dy + g.vy * 180 > 140) close();
           else home(g.vy * 1000);
           return;
         }
+        home(0);
         const next = deckRelease(at, count, g.dx, g.vx, CARD_SWIPE_WIDTH, allowed);
         if (next !== at) change(next);
       },
@@ -827,7 +905,14 @@ export function InspectorCard({
           dragHandlers={responder.panHandlers}
         />
         <ScrollView contentContainerStyle={{ paddingVertical: 18, paddingHorizontal: 20, paddingBottom: 32 }}>
-          <InspectorBody theme={theme} item={item} compact onOpenSession={onOpenSession} />
+          <InspectorBody
+            theme={theme}
+            item={item}
+            compact
+            onOpenSession={onOpenSession}
+            choice={picked.choice}
+            onChoose={picked.choose}
+          />
         </ScrollView>
         <View
           testID="inspector-card-bar"
@@ -845,7 +930,7 @@ export function InspectorCard({
           <Verbs
             theme={theme}
             verbs={verbsFor(item.kind, item.primaryLabel)}
-            onVerb={onVerb}
+            onVerb={(id) => onVerb(id, picked.choice)}
             height={DECK.verb}
             grow
             keys={false}

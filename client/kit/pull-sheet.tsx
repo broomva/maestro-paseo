@@ -11,7 +11,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, PanResponder, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { tint } from "../fleet-color";
 import { useReducedMotion } from "../ui";
-import { chromeInset, nativeDriver } from "./assumptions";
+import { chromeInset, DRAG_NATIVE_DRIVER } from "./assumptions";
 import { CLIP, PASS_THROUGH, SafeBottom } from "./parts";
 import {
   dragProgress,
@@ -97,7 +97,7 @@ export function PullSheet({
       velocity,
       damping: 26,
       stiffness: 260,
-      useNativeDriver: nativeDriver(Platform.OS),
+      useNativeDriver: DRAG_NATIVE_DRIVER,
     }).start();
   };
   const origin = useRef<number>(initial);
@@ -113,7 +113,8 @@ export function PullSheet({
     () =>
       PanResponder.create({
         onMoveShouldSetPanResponder: (_, g) => sheetCaptures(g.dx, g.dy),
-        // A drag starts where the sheet is, even mid-spring: the stopped value, not the spring's target.
+        // A drag starts where the sheet is, even mid-spring: the stopped value, not the spring's target. The value
+        // springs on the JS thread (A3), so stopAnimation reports it before the first move.
         onPanResponderGrant: () => {
           origin.current = live.current.position;
           progress.stopAnimation((at) => {

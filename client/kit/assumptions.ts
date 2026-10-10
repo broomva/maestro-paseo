@@ -22,6 +22,8 @@
 //                      the plugin's. Rightward stays on the desktop.
 //   A2 nativeDriver    Transforms and opacity run on the native driver off the
 //                      web. Every Animated output the kit drives is one.
+//   A3 DRAG_NATIVE_DRIVER  Values a finger drags spring on the JS thread, so a
+//                      grab mid-spring reads where they are (fact 3 measured it).
 //   F5 keysHint        Key caps (J, ⌘↵) only where there is a keyboard: the web.
 
 export type KitPlatform = "ios" | "android" | "web" | (string & {});
@@ -69,7 +71,15 @@ export function swipeDirections(layout: { compact: boolean; platform: KitPlatfor
   return layout.compact && native ? LEFTWARD : BOTH_WAYS;
 }
 
-/** A2: whether Animated may hand a transform to the native driver. */
+/**
+ * A3: a value a finger drags (the sheet, the deck, a row, the phone card) springs on the JS thread. A grab
+ * mid-spring must start from where the value is, and stopAnimation reads a JS-driven value at once, where a
+ * native-driven one reports back later. BRO-3033 measured JS-driven springs at 0 frames over 20 ms (fact 3,
+ * simulator; the real iPhone is an owner check).
+ */
+export const DRAG_NATIVE_DRIVER = false;
+
+/** A2: whether Animated may hand a transform to the native driver (values no finger drags). */
 export function nativeDriver(platform: KitPlatform): boolean {
   return platform !== "web";
 }

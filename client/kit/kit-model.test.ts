@@ -17,6 +17,7 @@ import {
 } from "./assumptions";
 import { GALLERY_DARK, GALLERY_LIGHT } from "./gallery-data";
 import { INSPECTOR_KINDS, KIND_LOOK, KIND_VERBS, verbsFor } from "./inspector-model";
+import { canSwipe } from "./swipe-model";
 import { glanceRow, MAX_TILES, tileLook } from "./tile-model";
 import { EXTENSION, kitOf } from "./tokens";
 import { undertowMarks } from "./undertow-model";
@@ -116,8 +117,14 @@ describe("the inspector's verbs", () => {
     expect(verbsFor("approval", "Allow merge").map((verb) => verb.label)).toEqual(["Deny…", "Allow merge"]);
     expect(verbsFor("approval").map((verb) => verb.label)).toEqual(["Deny…", "Allow"]);
   });
-  test("asks, approvals and reviews are holds; notices and work are not", () => {
-    expect(INSPECTOR_KINDS.filter((kind) => KIND_LOOK[kind].hold)).toEqual(["approval", "ask", "review"]);
+  test("asks, approvals, owner steps and reviews are holds; notices and work are not", () => {
+    expect(INSPECTOR_KINDS.filter((kind) => KIND_LOOK[kind].hold)).toEqual(["approval", "ask", "owner_step", "review"]);
+  });
+  test("the inspector and the swipe row agree on what a hold is: every hold kind never swipes", () => {
+    for (const kind of INSPECTOR_KINDS) expect(canSwipe(kind)).toBe(!KIND_LOOK[kind].hold);
+  });
+  test("an owner step offers Not now and Done", () => {
+    expect(KIND_VERBS.owner_step.map((verb) => verb.id)).toEqual(["later", "done"]);
   });
 });
 

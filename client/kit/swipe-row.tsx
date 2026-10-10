@@ -12,7 +12,7 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, type LayoutChangeEvent, PanResponder, Platform, Pressable, Text, View } from "react-native";
 import { useReducedMotion } from "../ui";
-import { BOTH_WAYS, type Directions, nativeDriver } from "./assumptions";
+import { BOTH_WAYS, type Directions, DRAG_NATIVE_DRIVER } from "./assumptions";
 import { CLIP, MONO, TABULAR } from "./parts";
 import { actionsWidth, canSwipe, leftActions, SWIPE, swipeCaptures, swipeOffset, swipeRelease } from "./swipe-model";
 import { kitOf } from "./tokens";
@@ -86,25 +86,31 @@ export function SwipeRow({
         velocity,
         damping: 22,
         stiffness: 240,
-        useNativeDriver: nativeDriver(Platform.OS),
+        useNativeDriver: DRAG_NATIVE_DRIVER,
       }).start(done);
     },
     [x],
   );
 
+  const origin = useRef(start);
   const responder = useMemo(() => {
+    const travelled = (dx: number) => dx + origin.current - (opened.current ? -actionsWidth(live.current.actions) : 0);
     return PanResponder.create({
-      onMoveShouldSetPanResponder: (_, g) =>
-        swipeCaptures(live.current.kind, g.dx, g.dy, live.current.ways, opened.current),
-      onPanResponderGrant: () => x.stopAnimation(),
+      onMoveShouldSetPanResponder: (_, g) => swipeCaptures(live.current.kind, g.dx, g.dy, live.current.ways),
+      // A row caught mid-spring moves on from where it is: the drag is measured from its resting place.
+      onPanResponderGrant: () => {
+        x.stopAnimation((at) => {
+          origin.current = at;
+        });
+      },
       onPanResponderMove: (_, g) => {
-        const at = swipeOffset(g.dx, opened.current, live.current.actions, live.current.ways);
+        const at = swipeOffset(travelled(g.dx), opened.current, live.current.actions, live.current.ways);
         setShown(at > 0 ? "right" : at < 0 ? "left" : null);
         x.setValue(live.current.primary || at <= 0 ? at : 0);
       },
       onPanResponderRelease: (_, g) => {
         const { width: w, actions: count, primary: verb, ways: allowed } = live.current;
-        const end = swipeRelease(g.dx, g.vx, w, opened.current, count, allowed);
+        const end = swipeRelease(travelled(g.dx), g.vx, w, opened.current, count, allowed);
         if (end === "commit" && verb) {
           opened.current = false;
           settle(w, g.vx * 1000, () => {

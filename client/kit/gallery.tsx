@@ -27,7 +27,7 @@ import { DetailHeader } from "./detail-header";
 import { GALLERY_DARK, GALLERY_LIGHT, INSPECTOR_SAMPLES, type RowSample, SHEET_ROWS } from "./gallery-data";
 import { GlanceTile } from "./glance-tile";
 import { InspectorBody, InspectorCard, type InspectorItem, InspectorPanel } from "./inspector";
-import { KIND_LOOK } from "./inspector-model";
+import { KIND_LOOK, verbsFor } from "./inspector-model";
 import { Chip, CLIP, Dot, MONO, Pill } from "./parts";
 import { PullSheet } from "./pull-sheet";
 import { SwipeRow } from "./swipe-row";
@@ -691,7 +691,8 @@ function PhoneShell({
   const [detail, setDetail] = useState(false);
   const [gone, setGone] = useState<string[]>([]);
   const toast = useUndoToast((receipt) => setGone((keys) => keys.filter((key) => `receipt:${key}` !== receipt)));
-  const holds = INSPECTOR_SAMPLES.slice(0, 3).concat(INSPECTOR_SAMPLES[4]);
+  // The Feed deck deals holds only: approvals, asks, owner steps and due reviews (B2).
+  const holds = INSPECTOR_SAMPLES.filter((sample) => KIND_LOOK[sample.kind].hold);
   const act = (done: string, then: string | undefined, key: string) =>
     toast.show(undoEntry(`receipt:${key}`, done, Date.now(), undefined, then));
   const header = (
@@ -737,28 +738,18 @@ function PhoneShell({
               title={item.title}
               summary={item.summary ?? (item.kind === "ask" ? item.why : undefined)}
               onDetails={() => setDetail(true)}
-              verbs={
-                item.kind === "approval"
-                  ? [
-                      { label: "Deny…", onPress: ignore },
-                      {
-                        label: "Allow merge",
-                        primary: true,
-                        onPress: () => act("Allowed #933", "merges in", item.key),
-                      },
-                    ]
-                  : [
-                      {
-                        label: item.kind === "notice" ? "Open session" : "Skip",
-                        onPress: () => setIndex(Math.min(index + 1, holds.length - 1)),
-                      },
-                      {
-                        label: item.kind === "notice" ? "Unblock…" : "Answer",
-                        primary: true,
-                        onPress: () => act(`${KIND_LOOK[item.kind].label} answered`, "applies in", item.key),
-                      },
-                    ]
-              }
+              verbs={verbsFor(item.kind, item.primaryLabel).map((verb) => ({
+                label: verb.label,
+                primary: verb.primary,
+                onPress: verb.primary
+                  ? () =>
+                      act(
+                        item.kind === "approval" ? "Allowed #933" : `${KIND_LOOK[item.kind].label} · ${verb.label}`,
+                        item.kind === "approval" ? "merges in" : "applies in",
+                        item.key,
+                      )
+                  : () => setIndex(Math.min(index + 1, holds.length - 1)),
+              }))}
             >
               {item.kind === "approval" ? (
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>

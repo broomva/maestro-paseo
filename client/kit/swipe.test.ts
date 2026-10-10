@@ -22,9 +22,10 @@ describe("the swipe row never swipes a hold", () => {
     }
     for (const kind of ["work", "notice", "finished", "running"]) expect(canSwipe(kind)).toBe(true);
   });
-  test("the contract's owner_step is a hold, as is the inventory's owner-step", () => {
+  test("the contract's owner_step is a hold, as are the inventory's owner-step and an initiative review", () => {
     expect(canSwipe("owner_step")).toBe(false);
     expect(canSwipe("owner-step")).toBe(false);
+    expect(canSwipe("review")).toBe(false);
   });
   test("a hold never takes the gesture, however far and fast it moves, either way", () => {
     for (const kind of HOLD_KINDS)
@@ -70,11 +71,9 @@ describe("the swipe row's thresholds (desktop: both ways)", () => {
 });
 
 describe("on compact native the row swipes leftward only (BRO-3033 fact 3)", () => {
-  test("a rightward move is not taken from rest, so Paseo's sidebar gesture keeps it", () => {
+  test("a rightward move is never taken, so Paseo's sidebar gesture keeps it (a tap closes open actions)", () => {
     expect(swipeCaptures("finished", 40, 0, LEFTWARD)).toBe(false);
     expect(swipeCaptures("finished", -40, 0, LEFTWARD)).toBe(true);
-    // On open actions a rightward drag closes them; if the host takes it, the row springs shut anyway.
-    expect(swipeCaptures("finished", 40, 0, LEFTWARD, true)).toBe(true);
   });
   test("a rightward release never commits, and a rightward drag never moves the row past rest", () => {
     expect(swipeRelease(W, 3, W, false, 3, LEFTWARD)).toBe("rest");

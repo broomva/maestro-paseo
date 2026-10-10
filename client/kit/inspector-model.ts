@@ -5,7 +5,7 @@
 // it (A0; BRO-2999 retires Approve on work), and a notice is a fact
 // (M4: "Open or Unblock, never Approve"). Pure (client/kit/inspector.test.ts).
 
-export const INSPECTOR_KINDS = ["approval", "ask", "notice", "work", "review"] as const;
+export const INSPECTOR_KINDS = ["approval", "ask", "owner_step", "notice", "work", "review"] as const;
 export type InspectorKind = (typeof INSPECTOR_KINDS)[number];
 
 export interface KindLook {
@@ -20,6 +20,7 @@ export interface KindLook {
 export const KIND_LOOK: Record<InspectorKind, KindLook> = {
   approval: { label: "Approval", icon: "ShieldCheck", hold: true },
   ask: { label: "Ask", icon: "CircleHelp", hold: true },
+  owner_step: { label: "Owner step", icon: "Hand", hold: true },
   notice: { label: "Notice", icon: "CircleAlert", hold: false },
   work: { label: "Work", icon: "LayoutList", hold: false },
   review: { label: "Review", icon: "Target", hold: true },
@@ -43,6 +44,10 @@ export const KIND_VERBS: Record<InspectorKind, readonly VerbSpec[]> = {
   ask: [
     { id: "skip", label: "Skip", primary: false, key: "S" },
     { id: "answer", label: "Answer", primary: true, key: "↵" },
+  ],
+  owner_step: [
+    { id: "later", label: "Not now", primary: false },
+    { id: "done", label: "Done", primary: true },
   ],
   notice: [
     { id: "open", label: "Open session", primary: false },
