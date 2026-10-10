@@ -26,6 +26,8 @@ Everything else on the canvas is reference:
   - **B3:** J6 opens the inspector to the right;
   - **B4:** undo is 8 s everywhere.
 
+**The handoff:** [`handoff-2026-10-10.md`](handoff-2026-10-10.md) covers what was decided, the review record, and what is still open.
+
 **The contracts:**
 - [`view-models.md`](view-models.md): what each screen reads and writes, the two projections (`needs.list`, `handled.list`), the 8 s undo, and the invariants.
 - [`inventory.yaml`](inventory.yaml): every page points at its J frame and its M frame. `scripts/inventory-check.ts` fails a live page that points at a reference export.
