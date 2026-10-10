@@ -1,0 +1,7 @@
+{
+  "id": "maestro-device-probe",
+  "description": "BRO-3033 device probe: openScreen params, host chrome, gradients, keyboard events, PanResponder frames",
+  "requirements": {
+    "paseo": ">=0.11.0"
+  }
+}

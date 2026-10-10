@@ -1,0 +1,11 @@
+{
+  "name": "maestro-device-probe",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A throwaway Paseo plugin that measures what the host does around a plugin screen (BRO-3033)",
+  "files": [
+    "paseo-plugin.json",
+    "index.client.tsx",
+    "client/"
+  ]
+}

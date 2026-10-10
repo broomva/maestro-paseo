@@ -1,0 +1,112 @@
+{
+  "urlFromSidebar": "http://127.0.0.1:62503/h/srv_nyY7NNOzJTCg/plugin/maestro-device-probe/surface/device-probe?pluginId=maestro-device-probe&contributionKind=surface&contributionId=device-probe&param.hold=from-sidebar",
+  "layout": "platform web · compact false · RN web 0.0.0",
+  "frame": "screen top=36 left=320 w=1120 h=864 · window 1440x900 · screen 1440x900 · room below=0",
+  "paramsFromSidebar": "params {\"hold\":\"from-sidebar\"}",
+  "mountFromSidebar": "mount #1 · renders 3",
+  "title": "Paseo",
+  "gradients": [
+    {
+      "id": "swatch-backgroundImage linear",
+      "backgroundImage": "linear-gradient(90deg, rgb(47, 111, 237), rgb(196, 61, 240))",
+      "backgroundColor": "rgb(136, 136, 136)",
+      "boxShadow": "none",
+      "inlineStyle": "height: 56px; border-radius: 12px; background-color: rgb(136, 136, 136); background-image: linear-gradient(90deg, rgb(47, 111, 237), rgb(196, 61, 240));",
+      "className": "css-g5y9jx"
+    },
+    {
+      "id": "swatch-backgroundImage radial",
+      "backgroundImage": "radial-gradient(circle, rgb(196, 61, 240) 0%, rgb(47, 111, 237) 60%, rgba(0, 0, 0, 0) 100%)",
+      "backgroundColor": "rgb(136, 136, 136)",
+      "boxShadow": "none",
+      "inlineStyle": "height: 56px; border-radius: 12px; background-color: rgb(136, 136, 136); background-image: radial-gradient(circle, rgb(196, 61, 240) 0%, rgb(47, 111, 237) 60%, transparent 100%);",
+      "className": "css-g5y9jx"
+    },
+    {
+      "id": "swatch-experimental_backgroundImage linear",
+      "backgroundImage": "none",
+      "backgroundColor": "rgb(136, 136, 136)",
+      "boxShadow": "none",
+      "inlineStyle": "height: 56px; border-radius: 12px; background-color: rgb(136, 136, 136);",
+      "className": "css-g5y9jx"
+    },
+    {
+      "id": "swatch-experimental_backgroundImage radial",
+      "backgroundImage": "none",
+      "backgroundColor": "rgb(136, 136, 136)",
+      "boxShadow": "none",
+      "inlineStyle": "height: 56px; border-radius: 12px; background-color: rgb(136, 136, 136);",
+      "className": "css-g5y9jx"
+    },
+    {
+      "id": "swatch-boxShadow ring",
+      "backgroundImage": "none",
+      "backgroundColor": "rgba(47, 111, 237, 0.2)",
+      "boxShadow": "rgb(196, 61, 240) 0px 0px 0px 6px",
+      "inlineStyle": "height: 56px; border-radius: 12px; background-color: rgba(47, 111, 237, 0.2); box-shadow: rgb(196, 61, 240) 0px 0px 0px 6px;",
+      "className": "css-g5y9jx"
+    }
+  ],
+  "urlAfterOpen": "http://127.0.0.1:62503/h/srv_nyY7NNOzJTCg/plugin/maestro-device-probe/surface/device-probe?param.hold=ask%3A7f3e&param.tab=decisions",
+  "paramsAfterOpen": "params {\"hold\":\"ask:7f3e\",\"tab\":\"decisions\"}",
+  "mountAfterOpen": "mount #2 · renders 3",
+  "titleAfterOpen": "Paseo",
+  "urlAfterUnicode": "http://127.0.0.1:62503/h/srv_nyY7NNOzJTCg/plugin/maestro-device-probe/surface/device-probe?param.hold=caf%C3%A9%20%26%20co%2F%3F%23%3D1%20%E2%9C%93&param.long=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…(600-char param elided)",
+  "paramsAfterUnicode": "params {\"hold\":\"café & co/?#=1 ✓\",\"long\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+  "probeInstances": [
+    {
+      "text": "mount #1 · renders 4",
+      "visible": false
+    },
+    {
+      "text": "mount #2 · renders 4",
+      "visible": false
+    },
+    {
+      "text": "mount #3 · renders 3",
+      "visible": true
+    }
+  ],
+  "mountAfterUnicode": "mount #3 · renders 3",
+  "paramsColdLoad": "params {\"hold\":\"ask:7f3e\",\"tab\":\"decisions\"}",
+  "mountColdLoad": "mount #1 · renders 3",
+  "frames": {
+    "deck": "frames 151 · >20ms 0 · >33ms 0 · max 17ms · released dx=260 dy=0 vx=0.21 vy=0.00",
+    "sheet": "frames 150 · >20ms 0 · >33ms 0 · max 17ms · released dx=0 dy=200 vx=0.00 vy=0.17",
+    "deckBusy": "frames 152 · >20ms 0 · >33ms 0 · max 17ms · released dx=260 dy=0 vx=0.23 vy=0.00",
+    "rowInScroll": "frames 131 · >20ms 0 · >33ms 0 · max 17ms · released dx=200 dy=0 vx=0.25 vy=0.00"
+  },
+  "keyboardWeb": "no keyboard events yet",
+  "phoneLayout": "platform web · compact true · RN web 0.0.0",
+  "phoneFrame": "screen top=64 left=0 w=375 h=748 · window 375x812 · screen 375x812 · room below=0",
+  "logs": [
+    "[probe] mount {\"mountId\":1,\"params\":{\"hold\":\"from-sidebar\"},\"layout\":{\"compact\":false,\"platform\":\"web\"},\"platform\":\"web\",\"version\":\"0.0.0\"}",
+    "[probe] params {\"mountId\":1,\"params\":{\"hold\":\"from-sidebar\"},\"sinceOpenMs\":null}",
+    "[probe] safe-area tab bar content h=49 y=0",
+    "[probe] frame {\"mountId\":1,\"text\":\"screen top=36 left=320 w=1120 h=864 · window 1440x900 · screen 1440x900 · room below=0\"}",
+    "[probe] openScreen {\"hold\":\"ask:7f3e\",\"tab\":\"decisions\"}",
+    "[probe] mount {\"mountId\":2,\"params\":{\"hold\":\"ask:7f3e\",\"tab\":\"decisions\"},\"layout\":{\"compact\":false,\"platform\":\"web\"},\"platform\":\"web\",\"version\":\"0.0.0\"}",
+    "[probe] params {\"mountId\":2,\"params\":{\"hold\":\"ask:7f3e\",\"tab\":\"decisions\"},\"sinceOpenMs\":5}",
+    "[probe] safe-area tab bar content h=0 y=0",
+    "[probe] safe-area tab bar content h=49 y=0",
+    "[probe] frame {\"mountId\":2,\"text\":\"screen top=36 left=320 w=1120 h=864 · window 1440x900 · screen 1440x900 · room below=0\"}",
+    "[probe] openScreen {\"hold\":\"café & co/?#=1 ✓\",\"long\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+    "[probe] mount {\"mountId\":3,\"params\":{\"hold\":\"café & co/?#=1 ✓\",\"long\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+    "[probe] params {\"mountId\":3,\"params\":{\"hold\":\"café & co/?#=1 ✓\",\"long\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+    "[probe] safe-area tab bar content h=0 y=0",
+    "[probe] safe-area tab bar content h=49 y=0",
+    "[probe] frame {\"mountId\":3,\"text\":\"screen top=36 left=320 w=1120 h=864 · window 1440x900 · screen 1440x900 · room below=0\"}",
+    "[probe] mount {\"mountId\":1,\"params\":{\"hold\":\"ask:7f3e\",\"tab\":\"decisions\"},\"layout\":{\"compact\":false,\"platform\":\"web\"},\"platform\":\"web\",\"version\":\"0.0.0\"}",
+    "[probe] params {\"mountId\":1,\"params\":{\"hold\":\"ask:7f3e\",\"tab\":\"decisions\"},\"sinceOpenMs\":null}",
+    "[probe] safe-area tab bar content h=49 y=0",
+    "[probe] frame {\"mountId\":1,\"text\":\"screen top=36 left=320 w=1120 h=864 · window 1440x900 · screen 1440x900 · room below=0\"}",
+    "[probe] release deck {\"vx\":0.21021021051121933,\"vy\":0}",
+    "[probe] frames deck {\"frames\":151,\"over20\":0,\"over33\":0,\"maxMs\":17}",
+    "[probe] release sheet {\"vx\":0,\"vy\":0.16556291397263787}",
+    "[probe] frames sheet {\"frames\":150,\"over20\":0,\"over33\":0,\"maxMs\":17}",
+    "[probe] release deck-busy {\"vx\":0.22801302940449925,\"vy\":0}",
+    "[probe] frames deck-busy {\"frames\":152,\"over20\":0,\"over33\":0,\"maxMs\":17}",
+    "[probe] release row-in-scroll {\"vx\":0.25,\"vy\":0}",
+    "[probe] frames row-in-scroll {\"frames\":131,\"over20\":0,\"over33\":0,\"maxMs\":17}"
+  ]
+}
