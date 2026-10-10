@@ -49,7 +49,8 @@ test("the plugin's handlers and hooks hand the agent socket its daemon client", 
     JSON.stringify({
       workRoot: join(root, "work"),
       provider: "claude/test-model",
-      modeId: null,
+      // A Settings mode that does not ask: a session's run takes it (BRO-2990).
+      modeId: "bypassPermissions",
       isolation: "worktree",
     }),
   );
@@ -90,9 +91,8 @@ test("the plugin's handlers and hooks hand the agent socket its daemon client", 
     await expect(early).rejects.toThrow(NO_HANDLE);
 
     // Any hook the daemon delivers carries the client; the socket can then start runs for a lane,
-    // in the lane's mode (BRO-2990): here a session in bypass.
+    // in Settings' mode, which does not ask (BRO-2990).
     const fake = fakePaseo();
-    fake.addSession("lane-1", { modeId: "bypassPermissions" });
     const created = hooks.get("agent.created");
     if (!created) throw new Error("agent.created is not subscribed");
     await created({ agent: { id: "someone" } }, { paseo: fake.paseo, signal: new AbortController().signal });

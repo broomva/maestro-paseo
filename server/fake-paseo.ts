@@ -24,7 +24,7 @@ export interface FakeAgent {
   labels?: Record<string, string>;
   activeTurn: null;
   lastError?: string;
-  /** The session's mode now, as refresh() reports it: a lane profile's mode (runs.ts callerLane). */
+  /** The session's mode now, as refresh() reports it. */
   currentModeId?: string | null;
   availableModes?: Array<{ id: string; label?: string; isUnattended?: boolean }>;
 }

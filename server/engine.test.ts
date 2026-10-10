@@ -2851,9 +2851,8 @@ describe("the composer's choices", () => {
   });
 
   test("work a session creates carries none of the run choices: how runs start stays yours", async () => {
-    const { engine, fake, repo, config } = await setup();
-    // The session is a lane in bypass: its run takes the lane's mode, never the choices it passed.
-    fake.addSession("session-1", { modeId: "bypassPermissions" });
+    // Settings' mode does not ask, so a session's run may start, in that mode, never the choices it passed.
+    const { engine, fake, repo, config } = await setup({ modeId: "bypassPermissions" });
     const item = await engine.create(
       fake.paseo,
       {
@@ -2915,9 +2914,9 @@ describe("a mode you chose is yours to use", () => {
     expect(receipt?.detail).toStartWith("claude/sonnet (mode bypassPermissions, thinking high, fast_mode on) on run/");
   });
 
-  test("a session still starts queued work that has no mode of its own, in its lane's mode, not Settings'", async () => {
-    const { engine, fake, repo } = await setup({ modeId: "acceptEdits" });
-    fake.addSession("session-1", { modeId: "bypassPermissions" });
+  test("a session still starts queued work that has no mode of its own, in Settings' mode, not its own", async () => {
+    const { engine, fake, repo } = await setup({ modeId: "bypassPermissions" });
+    fake.addSession("session-1", { modeId: "acceptEdits" });
     const item = await engine.create(fake.paseo, { ...moded(repo), modeId: undefined });
     const running = await engine.dispatch(fake.paseo, item.id, session);
     expect(running.worker?.modeId).toBe("bypassPermissions");
@@ -2930,7 +2929,7 @@ describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
     engine.onTurnEnded({ id: agentId }, { kind: "failed", error: { message: "boom" } }, []);
 
   test("3 stuck runs and a 4th dispatch is refused, yours or a lane's; nothing starts", async () => {
-    const { create, engine, fake } = await setup({ concurrencyCap: 3 });
+    const { create, engine, fake } = await setup({ concurrencyCap: 3, modeId: "bypassPermissions" });
     fake.addSession("lane-1", { modeId: "bypassPermissions" });
     for (const n of [1, 2, 3]) {
       await create();
@@ -3032,9 +3031,9 @@ describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
     expect(raw).toMatchObject({ actor: "human" });
   });
 
-  test("a lane's run takes the lane profile's mode, recorded on the run", async () => {
-    const { create, engine, fake } = await setup();
-    fake.addSession("lane-1", { modeId: "bypassPermissions", title: "SRI lane" });
+  test("a session's run takes Settings' mode when it does not ask, whatever mode the session runs in", async () => {
+    const { create, engine, fake } = await setup({ modeId: "bypassPermissions" });
+    fake.addSession("lane-1", { modeId: "default", title: "SRI lane" });
     const item = await create({ dispatch: false });
     const running = await engine.dispatch(fake.paseo, item.id, lane);
     expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({
@@ -3042,6 +3041,18 @@ describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
       modeId: "bypassPermissions",
     });
     expect(running.worker?.modeId).toBe("bypassPermissions");
+  });
+
+  test("a session cannot borrow another session's mode by naming its id (unverified until BRO-2996)", async () => {
+    // Settings ask before acting; a bypass worker's id is in work.list for any session to read.
+    const { create, engine, fake } = await setup({ modeId: "default" });
+    fake.addSession("bypass-worker", { modeId: "bypassPermissions" });
+    const item = await create({ dispatch: false });
+    await expect(engine.dispatch(fake.paseo, item.id, { actor: "agent", by: "bypass-worker" })).rejects.toThrow(
+      "A run nobody watches never starts in Always ask, so this one was not started: the mode in your Settings (default) asks before it acts",
+    );
+    expect(fake.created).toEqual([]);
+    expect((await engine.get(item.id)).item.state).toBe("proposed");
   });
 
   test("a lane profile that cannot be read refuses the start, saying it could not be read", async () => {
@@ -3055,42 +3066,44 @@ describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
     );
     const item = await create({ dispatch: false });
     await expect(engine.dispatch(fake.paseo, item.id, lane)).rejects.toThrow(
-      "Maestro could not read the lane's session (Paseo did not answer within 0.2s)",
+      "Maestro could not read its profile (Paseo did not answer within 0.2s)",
     );
     expect(fake.created).toEqual([]);
   });
 
   test("modeId null never means Always ask for a run nobody watches: refused before any session starts", async () => {
-    // Settings' mode is no lane profile: even one that skips prompts never stands in for it.
-    const { create, engine, fake } = await setup({ modeId: "bypassPermissions" });
+    const { create, engine, fake, config, repo } = await setup({ modeId: null });
+    // Whatever the calling session runs in: the profile is your Settings.
+    fake.addSession("lane-1", { modeId: "bypassPermissions" });
     const item = await create({ dispatch: false });
     const refusals: Array<[string, () => void, RegExp]> = [
-      ["no lane named", () => undefined, /could not tell which lane asked for it/],
-      ["a lane with no mode", () => fake.addSession("lane-1", { modeId: null }), /names no mode for it/],
-      ["a lane that asks", () => fake.addSession("lane-1", { modeId: "default" }), /asks before it acts/],
-      [
-        "a lane on another provider",
-        () => fake.addSession("lane-1", { provider: "codex", modeId: "full-access" }),
-        /a mode is a provider's own/,
-      ],
+      ["no mode in Settings", () => undefined, /your Settings name no mode for it/],
+      ["a Settings mode that asks", () => (config.modeId = "default"), /asks before it acts/],
     ];
     for (const [what, arrange, why] of refusals) {
       arrange();
-      const by = what === "no lane named" ? null : "lane-1";
-      const refused = await engine.dispatch(fake.paseo, item.id, { actor: "agent", by }).then(
-        () => "started",
-        (error: Error) => error.message,
-      );
-      expect([what, refused]).toEqual([what, expect.stringMatching(why)]);
-      expect(refused).toStartWith("A run nobody watches never starts in Always ask");
+      for (const by of ["lane-1", null]) {
+        const refused = await engine.dispatch(fake.paseo, item.id, { actor: "agent", by }).then(
+          () => "started",
+          (error: Error) => error.message,
+        );
+        expect([what, refused]).toEqual([what, expect.stringMatching(why)]);
+        expect(refused).toStartWith("A run nobody watches never starts in Always ask");
+      }
     }
-    // A lane whose session is gone has no profile either.
-    fake.addSession("lane-gone", { modeId: "bypassPermissions" });
-    const gone = fake.agents.get("lane-gone");
-    if (gone) gone.archivedAt = "2026-09-22T08:00:00.000Z";
-    await expect(engine.dispatch(fake.paseo, item.id, { actor: "agent", by: "lane-gone" })).rejects.toThrow(
-      /could not tell which lane asked for it/,
-    );
+    // Work you gave another provider: Settings' mode is the Settings provider's, so it is not this run's.
+    config.modeId = "bypassPermissions";
+    const codex = await engine.create(fake.paseo, {
+      title: "On codex",
+      brief: "",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "",
+      dispatch: false,
+      provider: "codex/gpt-5.5",
+    });
+    await expect(engine.dispatch(fake.paseo, codex.id, lane)).rejects.toThrow("the mode in your Settings is claude's");
     expect(fake.created).toEqual([]);
     expect((await engine.get(item.id)).item.state).toBe("proposed");
     // You may still start it.

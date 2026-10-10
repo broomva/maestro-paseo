@@ -84,12 +84,12 @@ import { briefOf, type RunKeys, workTitle } from "./frontmatter";
 import { type LabelAgent, WORK_LABELS, workLabels } from "./labels";
 import { describePermission, type PermissionLike } from "./permissions";
 import {
-  callerLane,
   HELD_FOR_YOU,
   type LaneProfile,
   MODED_BY_YOU,
   type Paseo,
   runSettings,
+  settingsLane,
   startRun,
   unattendedRefusal,
   WORK_LABEL,
@@ -311,11 +311,12 @@ export interface EngineOptions {
   /** Sets labels on a session: the plugin passes server/labels.ts paseoLabel (the paseo CLI); absent, nothing is labelled. */
   label?: LabelAgent;
   /**
-   * The lane profile a run nobody watches starts with, for the session that
-   * asked for it (runs.ts LaneProfile). Absent: that session's own provider
-   * and mode, as Paseo reports them (callerLane). BRO-2989 reads lanes.yaml.
+   * The profile a run nobody watches starts with, for the session that asked
+   * for it (runs.ts LaneProfile). Absent: your Settings, whoever asked
+   * (settingsLane), since the socket does not verify its caller yet: the seam
+   * BRO-2996 verifies the caller against, and BRO-2989 reads lanes.yaml in.
    */
-  lane?: (agentId: string | null, paseo: Paseo) => Promise<LaneProfile | null>;
+  lane?: (agentId: string | null, paseo: Paseo, config: MaestroConfig) => Promise<LaneProfile | null>;
 }
 
 /** What work.create takes: the work, where it runs, how it is judged, and optionally how its runs start. */
@@ -488,7 +489,7 @@ export class Engine {
     this.merged = options.merged ?? mergedPrs(undefined, undefined, this.log);
     // No label unless one is passed: index.server.ts passes the paseo CLI, so no test can label a real session.
     this.label = options.label ?? (async () => undefined);
-    this.lane = options.lane ?? callerLane;
+    this.lane = options.lane ?? (async (_agentId, _paseo, config) => settingsLane(config));
   }
 
   /**
@@ -844,8 +845,8 @@ export class Engine {
     if (input.gate === "auto" && !input.check.trim()) {
       throw new UserError("Letting checks decide needs a check command.");
     }
-    // How runs start is yours alone: work anyone else creates runs as Settings say, so no
-    // session can file work that dispatches with a mode that skips permissions.
+    // How runs start is yours alone: work anyone else creates carries no run choices, so its runs start as
+    // your Settings say, and a run nobody watches only in a Settings mode that does not ask (unattendedRefusal).
     const run = origin.actor === "human" ? runKeys(input) : undefined;
     const folder = await inspectFolder(input.repo);
     const repo = folder.path;
@@ -908,23 +909,20 @@ export class Engine {
     if (origin.actor === "maestro") throw new UserError(NEVER_BY_RULE);
     if (this.dispatching.has(id)) throw new UserError("This work is already being dispatched.");
     this.dispatching.add(id);
-    // Take a slot before reading anything: every dispatch admitted ahead of this one is
-    // counted from here, whether or not the files say it holds a slot by the time they are read.
-    const ahead = [...this.admitted];
-    this.admitted.add(id);
+    let ahead: string[] = [];
     try {
+      // A session's run is one nobody watches: it takes its profile's mode, and never Always ask (A8). Read
+      // and judged before it takes a slot, so a start that is refused never holds one while the profile is read.
+      const lane = origin.actor === "agent" ? await this.unwatchedLane(paseo, id, origin.by) : null;
+      // Take a slot before reading the files: every dispatch admitted ahead of this one is
+      // counted from here, whether or not the files say it holds a slot by the time they are read.
+      ahead = [...this.admitted];
+      this.admitted.add(id);
       const { store, config } = await this.store();
       const item = await store.findById(id);
       const refusal = startRefusal(item, origin);
       if (refusal) throw new UserError(refusal);
       this.checkCapacity(item, ahead, await this.occupied(store), config.concurrencyCap);
-      // A session's run is one nobody watches: it takes its lane profile's mode, and never Always ask (A8).
-      const read = origin.actor === "agent" ? await this.laneOf(origin.by, paseo) : null;
-      const lane = read?.lane ?? null;
-      if (read) {
-        const unattended = unattendedRefusal(lane, runSettings(config, item).selection, read.error);
-        if (unattended) throw new Unwatched(unattended);
-      }
       let worker: Awaited<ReturnType<typeof startRun>>;
       try {
         worker = await startRun(paseo, config, item, lane);
@@ -992,13 +990,30 @@ export class Engine {
     }
   }
 
-  /** The lane profile of the session that asked for a run, bounded; one that cannot be read is none, and says why. */
+  /**
+   * The profile a session's run starts with, or why it may not start: the
+   * work's own refusal first (a session starts only queued work, never yours
+   * to start), then unattendedRefusal (Unwatched). Read before any slot.
+   */
+  private async unwatchedLane(paseo: Paseo, id: string, agentId: string | null): Promise<LaneProfile> {
+    const { store, config } = await this.store();
+    const item = await store.findById(id);
+    const refusal = startRefusal(item, { actor: "agent", by: agentId });
+    if (refusal) throw new UserError(refusal);
+    const read = await this.laneOf(agentId, paseo, config);
+    const unattended = unattendedRefusal(read.lane, runSettings(config, item).selection, read.error);
+    if (unattended || !read.lane) throw new Unwatched(unattended ?? "A run nobody watches has no profile.");
+    return read.lane;
+  }
+
+  /** The profile of a run a session asked for, bounded; one that cannot be read is none, and says why. */
   private async laneOf(
     agentId: string | null,
     paseo: Paseo,
+    config: MaestroConfig,
   ): Promise<{ lane: LaneProfile | null; error: string | null }> {
     try {
-      return { lane: await within(() => this.lane(agentId, paseo), this.claimWaitMs), error: null };
+      return { lane: await within(() => this.lane(agentId, paseo, config), this.claimWaitMs), error: null };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.log(`reading the lane profile of ${agentId ?? "an unnamed session"}: ${message}`);

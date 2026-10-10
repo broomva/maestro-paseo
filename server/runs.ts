@@ -73,29 +73,34 @@ export function providerFamily(selection: string): string {
 }
 
 /**
- * The lane a run nobody watches starts for, and the mode its profile gives
- * that run (frame D3: workers take the lane's mode, "never Always ask"). Until
- * `.broomva/lanes.yaml` exists (S-lanes, BRO-2989), the lane is the session
- * that asked for the run, and its profile is how that session runs now
- * (callerLane). `modes` is the provider's list, so modeSkipsPrompts can read
+ * The profile a run nobody watches starts with: its provider and the mode it
+ * takes (frame D3: workers run in a mode that never asks). Until the socket
+ * verifies its caller (BRO-2996) and `.broomva/lanes.yaml` exists (S-lanes,
+ * BRO-2989), the caller never chooses it: it is your Settings (settingsLane),
+ * whoever asked. `modes` is the provider's list, so modeSkipsPrompts can read
  * Paseo's own flag.
  */
 export interface LaneProfile {
-  /** The lane in words: its session's title, else its id. */
+  /** Where the profile comes from, in words: "your Settings". */
   name: string;
   provider: string;
   modeId: string | null;
   modes?: readonly ModeFlag[] | null;
 }
 
+/** Your Settings as the profile of every run nobody watches, until callers are verified (BRO-2996). */
+export function settingsLane(config: MaestroConfig): LaneProfile {
+  return { name: "your Settings", provider: config.provider, modeId: config.modeId ?? null, modes: null };
+}
+
 /**
- * Why a run nobody watches may not start with this lane profile, or null
- * (BRO-2990, owner answer A8). Such a run takes the lane profile's mode, and
+ * Why a run nobody watches may not start with this profile, or null
+ * (BRO-2990, owner answer A8). Such a run takes the profile's mode, and
  * `modeId: null` never means Paseo's default, which is Always ask: a run that
  * asks with nobody to answer stops at its first command, as the six in
  * 13b97ad9 did. So there must be a profile, it must name a mode, the mode must
  * be the run's own provider's, and it must not ask. `unreadable`: why the
- * lane's session could not be read (a timeout, an error), said apart. Pure.
+ * profile could not be read (a timeout, an error), said apart. Pure.
  */
 export function unattendedRefusal(
   lane: LaneProfile | null,
@@ -103,43 +108,17 @@ export function unattendedRefusal(
   unreadable: string | null = null,
 ): string | null {
   const start = "A run nobody watches never starts in Always ask, so this one was not started";
-  const yours =
-    "start it yourself in Maestro, or dispatch it from a lane whose session runs in a mode that does not ask.";
-  if (!lane && unreadable) {
-    return `${start}: Maestro could not read the lane's session (${unreadable}), so it has no lane profile. ${capital(yours)}`;
-  }
-  if (!lane)
-    return `${start}: Maestro could not tell which lane asked for it, so it has no lane profile. ${capital(yours)}`;
-  if (!lane.modeId) return `${start}: the lane (${lane.name}) names no mode for it. ${capital(yours)}`;
+  const yours = "Start it yourself in Maestro, or set a mode that does not ask in Settings.";
+  if (!lane && unreadable) return `${start}: Maestro could not read its profile (${unreadable}). ${yours}`;
+  if (!lane) return `${start}: Maestro has no profile for it. ${yours}`;
+  if (!lane.modeId) return `${start}: ${lane.name} name no mode for it. ${yours}`;
   if (providerFamily(lane.provider) !== providerFamily(selection)) {
-    return `${start}: the lane (${lane.name}) runs ${providerFamily(lane.provider)} and this work runs ${providerFamily(selection)}, and a mode is a provider's own. ${capital(yours)}`;
+    return `${start}: the mode in ${lane.name} is ${providerFamily(lane.provider)}'s, and this work runs ${providerFamily(selection)}. ${yours}`;
   }
   if (!modeSkipsPrompts(lane.provider, lane.modeId, lane.modes)) {
-    return `${start}: the lane's mode (${lane.modeId}, ${lane.name}) asks before it acts, so the run would stop at its first command. ${capital(yours)}`;
+    return `${start}: the mode in ${lane.name} (${lane.modeId}) asks before it acts, so the run would stop at its first command. ${yours}`;
   }
   return null;
-}
-
-function capital(words: string): string {
-  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
-}
-
-/**
- * The lane profile of the session that asked for a run (LaneProfile): its
- * provider, its mode now and the provider's modes, as Paseo reports them.
- * Null when no session is named, or Paseo has no record of it, or it is gone.
- */
-export async function callerLane(agentId: string | null, paseo: Paseo): Promise<LaneProfile | null> {
-  if (!agentId) return null;
-  const snapshot = await paseo.agents.ref(agentId).refresh();
-  const agent = snapshot?.agent;
-  if (!agent || agent.archivedAt || agent.status === "closed") return null;
-  return {
-    name: agent.title?.trim() || agentId,
-    provider: agent.provider,
-    modeId: agent.currentModeId ?? null,
-    modes: agent.availableModes ?? null,
-  };
 }
 
 /**
@@ -148,7 +127,7 @@ export async function callerLane(agentId: string | null, paseo: Paseo): Promise<
  * Settings provider; thinking and features are the work's alone. Dispatch
  * starts from this, and the wire shows it as `nextRun`, so the card and the
  * run cannot disagree. A run nobody watches (`lane`, already cleared by
- * unattendedRefusal) takes the lane profile's mode instead of Settings'.
+ * unattendedRefusal) takes its profile's mode.
  */
 export function runSettings(config: MaestroConfig, item: StoredWork, lane?: LaneProfile | null) {
   const contract = item.contract;

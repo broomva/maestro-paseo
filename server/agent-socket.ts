@@ -8,9 +8,10 @@
 // stop, unblock, cancel, settings and the loop are not served, so no session
 // can pass its own gate, take back your decision, loosen how runs start, or
 // drive the loop (which starts nothing anyway, A8). A session starts only
-// queued work, in its lane profile's mode and never in Always ask (server/
-// runs.ts unattendedRefusal), and cannot write a done check: checks run as you
-// with no session in the loop.
+// queued work, and only in a Settings mode that does not ask: the caller it
+// reports is not verified, so it never picks the mode a run takes (server/
+// runs.ts settingsLane, unattendedRefusal; BRO-2996 verifies callers). It
+// cannot write a done check: checks run as you with no session in the loop.
 // Everything done through it is recorded as the agent's, since nothing here
 // can prove a person asked, under the agent id the client reports (unverified).
 // This is the surface a session is offered, not a sandbox. A process running as

@@ -44,13 +44,13 @@ async function setup() {
     ...defaultConfig(),
     workRoot: join(root, "work"),
     provider: "claude/test-model",
-    modeId: null,
+    // A Settings mode that does not ask: a session's run takes it (BRO-2990), whatever mode the session runs in.
+    modeId: "bypassPermissions",
     isolation: "worktree",
   };
   const engine = new Engine({ config: async () => config, log: () => {} });
   const fake = fakePaseo();
-  // The calling session is a lane in bypass: a run it starts takes that mode, never Always ask (BRO-2990).
-  fake.addSession("session-1", { modeId: "bypassPermissions" });
+  fake.addSession("session-1", { modeId: "default" });
   let handle: Paseo | null = fake.paseo;
   const methods = agentMethods(engine, () => handle);
   const ask = async (method: string, input: unknown = {}, caller: string | null = "session-1") => {
@@ -157,7 +157,10 @@ describe("what a session is offered", () => {
       expect(!response.ok && response.error).toContain("yours alone");
     }
     expect((await engine.get(item.id)).item.state).toBe("review");
-    expect((await ok("config.get")) as unknown as MaestroConfig).toMatchObject({ modeId: null });
+    expect((await ok("config.get")) as unknown as MaestroConfig).toMatchObject({
+      provider: "claude/test-model",
+      isolation: "worktree",
+    });
   });
 
   test("undo, stop and settings are refused, and take nothing back", async () => {
@@ -355,7 +358,7 @@ describe("what a session is offered", () => {
     });
     const file = await readFile(join(config.workRoot, item.path, "_work.md"), "utf8");
     for (const key of ["provider:", "isolation:", "mode:", "thinking:", "features:"]) expect(file).not.toContain(key);
-    // The mode is the lane profile's (session-1 runs in bypass), never the one the input named.
+    // The mode is your Settings' (it does not ask), never the one the input named nor the session's own.
     expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({
       provider: "claude/test-model",
       modeId: "bypassPermissions",
@@ -363,9 +366,11 @@ describe("what a session is offered", () => {
     expect(item.worker?.branch).toMatch(/^run\//);
   });
 
-  test("a session in a mode that asks cannot start a run: it would wait on a permission nobody answers", async () => {
-    const { repo, ask, ok, engine, fake } = await setup();
-    fake.addSession("session-2", { modeId: "default" });
+  test("with no Settings mode that does not ask, a session cannot start a run: it would wait on a permission nobody answers", async () => {
+    const { repo, ask, ok, engine, fake, config } = await setup();
+    config.modeId = "default";
+    // Naming a bypass session's id changes nothing: the caller is unverified, so it never picks the mode.
+    fake.addSession("session-2", { modeId: "bypassPermissions" });
     const { item, notice } = (await ok("work.create", { title: "Unwatched", repo, dispatch: true }, "session-2")) as {
       item: WorkItem;
       notice: string | null;
