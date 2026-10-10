@@ -100,6 +100,7 @@ export function PullSheet({
       useNativeDriver: nativeDriver(Platform.OS),
     }).start();
   };
+  const origin = useRef<number>(initial);
   const settleRef = useRef(settle);
   settleRef.current = settle;
 
@@ -112,14 +113,19 @@ export function PullSheet({
     () =>
       PanResponder.create({
         onMoveShouldSetPanResponder: (_, g) => sheetCaptures(g.dx, g.dy),
-        onPanResponderGrant: () => progress.stopAnimation(),
+        // A drag starts where the sheet is, even mid-spring: the stopped value, not the spring's target.
+        onPanResponderGrant: () => {
+          origin.current = live.current.position;
+          progress.stopAnimation((at) => {
+            origin.current = at;
+          });
+        },
         onPanResponderMove: (_, g) => {
-          const { position: from, travel: t } = live.current;
-          progress.setValue(dragProgress(from, g.dy, t));
+          progress.setValue(dragProgress(origin.current, g.dy, live.current.travel));
         },
         onPanResponderRelease: (_, g) => {
-          const { position: from, travel: t } = live.current;
-          settleRef.current(sheetRelease(from, g.dy, g.vy, t), releaseVelocity(g.vy, t));
+          const t = live.current.travel;
+          settleRef.current(sheetRelease(origin.current, g.dy, g.vy, t), releaseVelocity(g.vy, t));
         },
         onPanResponderTerminate: () => settleRef.current(live.current.position),
       }),

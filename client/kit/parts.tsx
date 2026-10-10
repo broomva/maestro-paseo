@@ -85,7 +85,8 @@ export function Pill({
         minWidth: height,
         flexGrow: grow ? 1 : 0,
         flexBasis: grow ? 0 : "auto",
-        paddingHorizontal: height >= 44 ? 20 : 16,
+        // A pill that shares a row grows to its share and centres its word, so it keeps only a small margin.
+        paddingHorizontal: grow ? 10 : height >= 44 ? 20 : 16,
         borderRadius: 9999,
         backgroundColor: primary ? kit.ink : kit.control,
         flexDirection: "row",

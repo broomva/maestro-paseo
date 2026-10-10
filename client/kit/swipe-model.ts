@@ -7,8 +7,11 @@
 
 import type { Directions } from "./assumptions";
 
-/** The kinds that are holds: never swiped (M1: "a hold is always a deliberate tap"). */
-export const HOLD_KINDS = ["ask", "approval", "owner-step"] as const;
+/**
+ * The kinds that are holds: never swiped (M1: "a hold is always a deliberate tap"). `owner_step` is the
+ * contract's spelling (view-models.md NeedKind); `owner-step` is the inventory's, so both count.
+ */
+export const HOLD_KINDS = ["ask", "approval", "owner_step", "owner-step"] as const;
 
 export function isHold(kind: string): boolean {
   return (HOLD_KINDS as readonly string[]).includes(kind);

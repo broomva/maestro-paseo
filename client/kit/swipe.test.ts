@@ -22,6 +22,10 @@ describe("the swipe row never swipes a hold", () => {
     }
     for (const kind of ["work", "notice", "finished", "running"]) expect(canSwipe(kind)).toBe(true);
   });
+  test("the contract's owner_step is a hold, as is the inventory's owner-step", () => {
+    expect(canSwipe("owner_step")).toBe(false);
+    expect(canSwipe("owner-step")).toBe(false);
+  });
   test("a hold never takes the gesture, however far and fast it moves, either way", () => {
     for (const kind of HOLD_KINDS)
       for (const ways of [BOTH_WAYS, LEFTWARD]) {

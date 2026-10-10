@@ -12,7 +12,7 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, type LayoutChangeEvent, PanResponder, Platform, Pressable, Text, View } from "react-native";
 import { useReducedMotion } from "../ui";
-import { BOTH_WAYS, type Directions, nativeDriver, swipeDirections } from "./assumptions";
+import { BOTH_WAYS, type Directions, nativeDriver } from "./assumptions";
 import { CLIP, MONO, TABULAR } from "./parts";
 import { actionsWidth, canSwipe, leftActions, SWIPE, swipeCaptures, swipeOffset, swipeRelease } from "./swipe-model";
 import { kitOf } from "./tokens";
@@ -53,11 +53,11 @@ export function SwipeRow({
   open?: RowAction;
   /** A still state for the gallery: the left actions shown, or the right swipe half way. */
   preview?: "open" | "commit";
-  /** Which ways it swipes: the screen passes swipeDirections(layout); by default, leftward only off the web. */
-  directions?: Directions;
+  /** Which ways it swipes: the screen passes swipeDirections(layout) (BRO-3033 fact 3). */
+  directions: Directions;
 }) {
   const kit = kitOf(theme);
-  const ways = directions ?? swipeDirections({ compact: true, platform: Platform.OS });
+  const ways = directions;
   const swipes = canSwipe(kind);
   const actions = swipes ? leftActions(ways, primary, snooze, open) : [];
   const rightVerb = ways.right ? primary : undefined;

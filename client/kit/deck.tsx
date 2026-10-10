@@ -14,7 +14,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, type LayoutChangeEvent, PanResponder, Platform, Pressable, Text, View } from "react-native";
 import { tint } from "../fleet-color";
 import { useReducedMotion } from "../ui";
-import { BOTH_WAYS as BOTH, type Directions, nativeDriver, swipeDirections } from "./assumptions";
+import { BOTH_WAYS as BOTH, type Directions, nativeDriver } from "./assumptions";
 import { DECK, deckCaptures, deckOffset, deckRelease, indexOfKey, place } from "./deck-model";
 import { CLIP, Kicker, Pill, TABULAR } from "./parts";
 import { kitOf } from "./tokens";
@@ -27,7 +27,7 @@ export function Deck<T>({
   title,
   trailing,
   items,
-  index,
+  index: wanted,
   onIndexChange,
   renderItem,
   keyOf,
@@ -46,14 +46,19 @@ export function Deck<T>({
   keyOf: (item: T) => string;
   /** What the deck says when nothing needs you. */
   empty?: ReactNode;
-  /** Which ways it swipes: the screen passes swipeDirections(layout); by default, leftward only off the web. */
-  directions?: Directions;
+  /** Which ways it swipes: the screen passes swipeDirections(layout) (BRO-3033 fact 3). */
+  directions: Directions;
   /** The hold to open on, by key, once when the deck mounts (the screen's `params.hold`). */
   openOn?: string;
 }) {
   const kit = kitOf(theme);
   const reduced = useReducedMotion();
-  const ways = directions ?? swipeDirections({ compact: true, platform: Platform.OS });
+  const ways = directions;
+  // The deck never trusts an index past its holds: when the list shrinks under it, it shows the last and says so.
+  const index = Math.min(wanted, Math.max(items.length - 1, 0));
+  useEffect(() => {
+    if (items.length > 0 && wanted !== index) onIndexChange(index);
+  }, [wanted, index, items.length, onIndexChange]);
   const [width, setWidth] = useState(0);
   const cardWidth = Math.max(0, width - PEEK - DECK.gap);
   const x = useRef(new Animated.Value(0)).current;

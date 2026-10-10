@@ -163,7 +163,7 @@ export function KitGallery({
               key={pane.colors.surface0}
               theme={pane}
               framed={!compact}
-              directions={directions}
+              directions={directions ?? BOTH_WAYS}
               openOn={hold}
             />
           ))}
@@ -448,6 +448,7 @@ function PhoneParts({ theme }: { theme: PluginTheme }) {
       >
         <View style={{ maxWidth: 393, borderRadius: 14, overflow: "hidden", gap: 1, backgroundColor: kit.hairline }}>
           <SwipeRow
+            directions={BOTH_WAYS}
             theme={theme}
             kind={sample.kind}
             title={sample.title}
@@ -458,6 +459,7 @@ function PhoneParts({ theme }: { theme: PluginTheme }) {
             open={{ label: "Open", icon: "ArrowUpRight", onPress: ignore }}
           />
           <SwipeRow
+            directions={BOTH_WAYS}
             theme={theme}
             kind={sample.kind}
             title={sample.title}
@@ -493,6 +495,7 @@ function PhoneParts({ theme }: { theme: PluginTheme }) {
             directions={LEFTWARD}
           />
           <SwipeRow
+            directions={BOTH_WAYS}
             theme={theme}
             kind="ask"
             title="Install the three headless mods?"
@@ -678,7 +681,7 @@ function PhoneShell({
 }: {
   theme: PluginTheme;
   framed: boolean;
-  directions?: Directions;
+  directions: Directions;
   openOn?: string;
 }) {
   const kit = kitOf(theme);

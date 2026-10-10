@@ -17,7 +17,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, PanResponder, Platform, Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
 import { tint } from "../fleet-color";
 import { useReducedMotion, webAria } from "../ui";
-import { type Directions, type FrostLook, frostLook, keysHint, nativeDriver, swipeDirections } from "./assumptions";
+import { type Directions, type FrostLook, frostLook, keysHint, nativeDriver } from "./assumptions";
 import { DECK, deckCaptures, deckRelease } from "./deck-model";
 import { DetailHeader } from "./detail-header";
 import { type InspectorKind, inspectorHidden, KIND_LOOK, type VerbSpec, verbsFor } from "./inspector-model";
@@ -287,7 +287,9 @@ export function InspectorBody({
   const look = KIND_LOOK[item.kind];
   const initialChoice = item.kind === "ask" || item.kind === "review" ? item.chosen : undefined;
   const [chosen, setChosen] = useState(initialChoice);
-  useEffect(() => setChosen(initialChoice), [initialChoice]);
+  // A new item starts from its own choice, never the last item's (the key changes even when both are unset).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: item.key is the reset trigger
+  useEffect(() => setChosen(initialChoice), [initialChoice, item.key]);
   const choose = (id: string) => {
     setChosen(id);
     onChoose?.(id);
@@ -745,13 +747,13 @@ export function InspectorCard({
   onVerb: (id: string) => void;
   onIndexChange: (index: number) => void;
   onOpenSession?: () => void;
-  /** Which ways its header swipes to the next hold; by default leftward only off the web (BRO-3033 fact 3). */
-  directions?: Directions;
+  /** Which ways it swipes to the next hold: the screen passes swipeDirections(layout) (BRO-3033 fact 3). */
+  directions: Directions;
 }) {
   const kit = kitOf(theme);
   const reduced = useReducedMotion();
   const y = useRef(new Animated.Value(open ? 0 : height)).current;
-  const ways = directions ?? swipeDirections({ compact: true, platform: Platform.OS });
+  const ways = directions;
   const live = useRef({ index, total, onIndexChange, onClose, height, ways });
   live.current = { index, total, onIndexChange, onClose, height, ways };
   const present = useSlide(open, y, height, reduced);

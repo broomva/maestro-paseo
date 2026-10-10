@@ -105,6 +105,12 @@ describe("the sheet's release", () => {
     // Under the flick speed, the velocity still projects: 0.4 of the way plus a push carries it up.
     expect(sheetRelease(0, -travel * 0.4, -0.4, travel)).toBe(1);
   });
+  test("a drag begun mid-spring continues from where the sheet is, not from where it was heading", () => {
+    // Grabbed at 0.4 on its way down: no movement leaves it at 0.4, and a short push up lands it up.
+    expect(dragProgress(0.4, 0, travel)).toBeCloseTo(0.4, 6);
+    expect(sheetRelease(0.4, -travel * 0.15, 0, travel)).toBe(1);
+    expect(sheetRelease(0.4, travel * 0.05, 0, travel)).toBe(0);
+  });
   test("a drag is clamped to the two ends", () => {
     expect(dragProgress(0, 50, travel)).toBe(0);
     expect(dragProgress(1, -50, travel)).toBe(1);

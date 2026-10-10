@@ -80,7 +80,7 @@ const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query
 const { PluginRpcProvider } = await import("@getpaseo/plugin/client/host");
 const { UNDO_MS } = await import("../../shared/undo");
 const { GALLERY_LIGHT, APPROVAL, ASK, NOTICE, WORK, REVIEW } = await import("./gallery-data");
-const { LEFTWARD } = await import("./assumptions");
+const { BOTH_WAYS, LEFTWARD } = await import("./assumptions");
 const { PullSheet, PEEK, TAB_BAND } = await import("./pull-sheet");
 const { TabBar } = await import("./tab-bar");
 const { UndoToast, useUndoToast } = await import("./undo-toast");
@@ -367,7 +367,14 @@ describe("the swipe row", () => {
   };
   it("a hold draws no actions behind it, even asked to show them", async () => {
     const view = await mount(
-      <SwipeRow theme={theme} kind="approval" title="Allow merging workspace#933?" {...actions} preview="open" />,
+      <SwipeRow
+        theme={theme}
+        kind="approval"
+        title="Allow merging workspace#933?"
+        {...actions}
+        preview="open"
+        directions={BOTH_WAYS}
+      />,
     );
     expect(view.label("Open")).toBeNull();
     expect(view.label("Snooze 4h")).toBeNull();
@@ -382,6 +389,7 @@ describe("the swipe row", () => {
         snooze={actions.snooze}
         open={{ ...actions.open, onPress: () => opened.push("open") }}
         preview="open"
+        directions={BOTH_WAYS}
       />,
     );
     expect(view.label("Snooze 4h")).toBeTruthy();
@@ -503,6 +511,7 @@ describe("the inspector", () => {
         onMore={ignore}
         onVerb={ignore}
         onIndexChange={ignore}
+        directions={BOTH_WAYS}
       />,
     );
     expect(card.id("inspector-card")).toBeNull();
@@ -529,11 +538,69 @@ describe("the inspector", () => {
         onMore={ignore}
         onVerb={ignore}
         onIndexChange={ignore}
+        directions={BOTH_WAYS}
       />,
     );
     expect(view.text()).toContain("Ask · 3 of 4");
     const bar = view.id("inspector-card-bar");
     expect(bar?.textContent).toBe("SkipAnswer");
+  });
+});
+
+describe("review fixes (P20 round 1)", () => {
+  it("an ask's choice does not leak into the next ask", async () => {
+    const { InspectorBody } = await import("./inspector");
+    const second = { ...ASK, key: "ask:second", title: "A second ask", chosen: undefined };
+    const first = { ...ASK, chosen: undefined };
+    function Host() {
+      const [item, setItem] = useState(first);
+      return (
+        <>
+          <web.Pressable accessibilityRole="button" accessibilityLabel="Next ask" onPress={() => setItem(second)} />
+          <InspectorBody theme={theme} item={item} />
+        </>
+      );
+    }
+    const view = await mount(<Host />);
+    await view.press(view.label("Install fleet-wide"));
+    expect(view.label("Install fleet-wide")?.getAttribute("aria-checked")).toBe("true");
+    await view.press(view.label("Next ask"));
+    expect(view.text()).toContain("A second ask");
+    expect(view.all('[aria-checked="true"]')).toHaveLength(0);
+  });
+  it("a deck whose holds shrink under it shows the last and says so", async () => {
+    const asked: number[] = [];
+    function Host() {
+      const [items, setItems] = useState([APPROVAL, ASK, NOTICE]);
+      const [index, setIndex] = useState(2);
+      return (
+        <>
+          <web.Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Act"
+            onPress={() => setItems([APPROVAL, ASK])}
+          />
+          <Deck
+            theme={theme}
+            title="Needs you"
+            items={items}
+            index={index}
+            onIndexChange={(at) => {
+              asked.push(at);
+              setIndex(at);
+            }}
+            keyOf={(item) => item.key}
+            directions={BOTH_WAYS}
+            renderItem={(item) => <web.Text>{item.title}</web.Text>}
+          />
+        </>
+      );
+    }
+    const view = await mount(<Host />);
+    expect(view.text()).toContain("3 of 3");
+    await view.press(view.label("Act"));
+    expect(view.text()).toContain("2 of 2");
+    expect(asked).toEqual([1]);
   });
 });
 
@@ -580,6 +647,7 @@ describe("the glance tile and the deck", () => {
           index={index}
           onIndexChange={setIndex}
           keyOf={(item) => item.key}
+          directions={BOTH_WAYS}
           renderItem={(item) => (
             <DeckHold
               theme={theme}
