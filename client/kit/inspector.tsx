@@ -46,6 +46,8 @@ export interface SessionRef {
   status: string;
   /** The session's work state; a running one wears the tidepool dot. */
   state: string;
+  /** Whether it waits on you: only then is its dot Tidepool (Needs you); otherwise it is muted. */
+  waiting?: boolean;
 }
 
 export interface Choice {
@@ -226,7 +228,7 @@ function SessionLine({ theme, session, onOpen }: { theme: PluginTheme; session: 
       }}
     >
       <TidepoolDot theme={theme} state={session.state} />
-      {session.state === "running" ? null : <Dot color={kit.needs} size={8} />}
+      {session.state === "running" ? null : <Dot color={session.waiting ? kit.needs : kit.muted} size={8} />}
       <View style={{ flex: 1, gap: 1 }}>
         <Text style={{ color: kit.fg, fontSize: 13, fontFamily: MONO }}>{session.name}</Text>
         <Text style={{ color: kit.muted, fontSize: 12 }}>{session.status}</Text>
@@ -634,8 +636,8 @@ function useSlide(shown: boolean, value: Animated.Value, hidden: number, reduced
 const CARD_SWIPE_WIDTH = 360;
 
 type KeyTarget = {
-  addEventListener(type: "keydown", listener: (event: { key: string }) => void): void;
-  removeEventListener(type: "keydown", listener: (event: { key: string }) => void): void;
+  addEventListener(type: "keydown", listener: (event: { key: string; target?: unknown }) => void): void;
+  removeEventListener(type: "keydown", listener: (event: { key: string; target?: unknown }) => void): void;
 };
 
 /**
@@ -680,12 +682,20 @@ export function InspectorPanel({
   const picked = useChoice(item ?? kept);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  const panel = useRef<unknown>(null);
   useEffect(() => {
     if (!shown || Platform.OS !== "web") return;
     const doc = (globalThis as { document?: KeyTarget }).document;
     if (!doc) return;
-    const onKey = (event: { key: string }) => {
-      if (event.key === "Escape") closeRef.current();
+    // Esc is the inspector's only while Maestro has focus: inside the panel, or nowhere in particular (the page).
+    // Esc in Paseo's own ⌘K palette or a host field is Paseo's (paseo-plugin-capabilities.md §7).
+    const onKey = (event: { key: string; target?: unknown }) => {
+      if (event.key !== "Escape") return;
+      const target = event.target;
+      const root = panel.current as { contains?: (other: unknown) => boolean } | null;
+      const page = (doc as { body?: unknown; documentElement?: unknown }).body;
+      const unfocused = !target || target === doc || target === page;
+      if (unfocused || root?.contains?.(target)) closeRef.current();
     };
     doc.addEventListener("keydown", onKey);
     return () => doc.removeEventListener("keydown", onKey);
@@ -695,6 +705,7 @@ export function InspectorPanel({
   const hold = KIND_LOOK[showing.kind].hold;
   return (
     <Animated.View
+      ref={panel as never}
       testID="inspector-panel"
       accessibilityElementsHidden={!shown}
       importantForAccessibility={shown ? "auto" : "no-hide-descendants"}

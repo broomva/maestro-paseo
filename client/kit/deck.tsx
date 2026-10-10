@@ -11,7 +11,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, type LayoutChangeEvent, PanResponder, Platform, Pressable, Text, View } from "react-native";
+import { Animated, type LayoutChangeEvent, PanResponder, Pressable, Text, View } from "react-native";
 import { tint } from "../fleet-color";
 import { useReducedMotion } from "../ui";
 import { BOTH_WAYS as BOTH, type Directions, DRAG_NATIVE_DRIVER } from "./assumptions";
@@ -21,6 +21,9 @@ import { kitOf } from "./tokens";
 
 /** How much of the next card shows at the right edge. */
 const PEEK = 14;
+
+/** One spring for paging and for springing home, so the two feel alike. */
+const DECK_SPRING = { damping: 24, stiffness: 220 } as const;
 
 export function Deck<T>({
   theme,
@@ -74,16 +77,21 @@ export function Deck<T>({
     if (at !== index) onIndexChange(at);
   }, [openOn, items, keyOf, index, onIndexChange]);
 
+  // The velocity a fling released with, carried into the page it lands on so the strip does not stop at the finger.
+  const fling = useRef(0);
+  // Whether the strip has been placed once: the first placement (and a hold opened by `openOn`) does not slide in.
+  const placed = useRef(false);
   useEffect(() => {
     const to = deckOffset(index, items.length, 0, cardWidth, BOTH);
-    if (reduced || cardWidth === 0) x.setValue(to);
-    else
-      Animated.spring(x, {
-        toValue: to,
-        damping: 24,
-        stiffness: 220,
-        useNativeDriver: DRAG_NATIVE_DRIVER,
-      }).start();
+    const velocity = fling.current;
+    fling.current = 0;
+    if (cardWidth === 0) return;
+    if (reduced || !placed.current) {
+      placed.current = true;
+      x.setValue(to);
+      return;
+    }
+    Animated.spring(x, { toValue: to, velocity, ...DECK_SPRING, useNativeDriver: DRAG_NATIVE_DRIVER }).start();
   }, [index, items.length, cardWidth, reduced, x]);
 
   // Where the strip stood when the finger landed: a grab mid-spring moves on from there, never from the target.
@@ -94,7 +102,7 @@ export function Deck<T>({
       const { index: at, count, cardWidth: w, reduced: still } = live.current;
       const to = deckOffset(at, count, 0, w, BOTH);
       if (still) x.setValue(to);
-      else Animated.spring(x, { toValue: to, velocity, useNativeDriver: DRAG_NATIVE_DRIVER }).start();
+      else Animated.spring(x, { toValue: to, velocity, ...DECK_SPRING, useNativeDriver: DRAG_NATIVE_DRIVER }).start();
     };
     // The drag measured from the hold's place, so a strip caught mid-spring carries its offset into the drag.
     const travelled = (dx: number) => {
@@ -117,8 +125,10 @@ export function Deck<T>({
       onPanResponderRelease: (_, g) => {
         const { index: at, count, cardWidth: w, onIndexChange: change, ways: allowed } = live.current;
         const next = barred(g.dx) ? at : deckRelease(at, count, travelled(g.dx), g.vx, w, allowed);
-        if (next !== at) change(next);
-        else home(g.vx * 1000);
+        if (next !== at) {
+          fling.current = g.vx * 1000;
+          change(next);
+        } else home(g.vx * 1000);
       },
       onPanResponderTerminate: () => home(0),
     });

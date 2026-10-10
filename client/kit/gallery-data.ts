@@ -54,7 +54,7 @@ export const APPROVAL: InspectorItem = {
     "The merge gate squashes at ce73104; if the head moved, it stops and asks again",
     "Session bro-2917-ledger is told and continues its turn",
   ],
-  session: { name: "bro-2917-ledger", status: "waiting on you · 35 min", state: "review" },
+  session: { name: "bro-2917-ledger", status: "waiting on you · 35 min", state: "review", waiting: true },
   history: [
     { age: "35m", verb: "held", detail: "require_human: policy file", tone: "needs" },
     { age: "38m", verb: "checks", detail: "7 of 7 green at ce73104", tone: "ok" },
@@ -89,7 +89,7 @@ export const OWNER_STEP: InspectorItem = {
   where: "platform.openai.com → Billing → workspace credits",
   check:
     "Done is checked: codex exec -m gpt-5.5 must answer. Until then P20 runs same-vendor, as you answered on 10-07.",
-  session: { name: "sri-p20-gate", status: "2 sessions are waiting · 1 day", state: "review" },
+  session: { name: "sri-p20-gate", status: "2 sessions are waiting · 1 day", state: "review", waiting: true },
 };
 
 export const NOTICE: InspectorItem = {

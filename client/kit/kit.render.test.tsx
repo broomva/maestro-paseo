@@ -398,6 +398,38 @@ describe("the swipe row", () => {
   });
 });
 
+/** A mouse drag over an element, as react-native-web's responder system reads one. */
+async function drag(target: El | null, dx: number, dy = 0) {
+  if (!target) throw new Error("nothing to drag");
+  const at = { x: 200, y: 100 };
+  let clock = 1000;
+  const mouse = (type: string, x: number, y: number, on: unknown) => {
+    const event = new win.MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      clientX: x,
+      clientY: y,
+      button: 0,
+      buttons: 1,
+    });
+    // happy-dom leaves pageX/pageY and a moving timeStamp out; react-native-web's responder reads them.
+    clock += 16;
+    for (const [key, value] of [
+      ["pageX", x],
+      ["pageY", y],
+      ["timeStamp", clock],
+    ] as const)
+      Object.defineProperty(event, key, { value });
+    (on as { dispatchEvent(e: unknown): boolean }).dispatchEvent(event);
+  };
+  await act(async () => {
+    mouse("mousedown", at.x, at.y, target);
+    for (let step = 1; step <= 8; step += 1) mouse("mousemove", at.x + (dx * step) / 8, at.y + (dy * step) / 8, target);
+    mouse("mouseup", at.x + dx, at.y + dy, target);
+  });
+  await settle(60);
+}
+
 describe("on compact native (BRO-3033 fact 3)", () => {
   it("a row's default verb is a left action, and it acts", async () => {
     const done: string[] = [];
@@ -414,6 +446,28 @@ describe("on compact native (BRO-3033 fact 3)", () => {
     );
     await view.press(view.label("Continue"));
     expect(done).toEqual(["continue"]);
+  });
+  it("a row whose actions a swipe revealed closes on a tap, and does not open the item", async () => {
+    const pressed: string[] = [];
+    const view = await mount(
+      <SwipeRow
+        theme={theme}
+        kind="finished"
+        title="GitHub identity: PR #12 merged"
+        onPress={() => pressed.push("item")}
+        primary={{ label: "Continue", icon: "Play", onPress: () => pressed.push("continue") }}
+        open={{ label: "Open", icon: "ArrowUpRight", onPress: () => pressed.push("open") }}
+        directions={LEFTWARD}
+      />,
+    );
+    const row = view.label("GitHub identity: PR #12 merged");
+    await drag(row, -160);
+    expect(view.label("Continue")).toBeTruthy();
+    await view.press(view.label("GitHub identity: PR #12 merged"));
+    expect(pressed).toEqual([]);
+    expect(view.label("Continue")).toBeNull();
+    await view.press(view.label("GitHub identity: PR #12 merged"));
+    expect(pressed).toEqual(["item"]);
   });
   it("the deck pages by its segments, and opens on the hold it was given", async () => {
     function Host() {
@@ -515,6 +569,31 @@ describe("the inspector", () => {
       />,
     );
     expect(card.id("inspector-card")).toBeNull();
+  });
+  it("Esc from a field outside Maestro is not the inspector's", async () => {
+    let closed = 0;
+    const view = await mount(
+      <InspectorPanel theme={theme} item={APPROVAL} open onClose={() => (closed += 1)} onVerb={ignore} />,
+    );
+    const field = win.document.createElement("input");
+    win.document.body.appendChild(field);
+    await act(async () => {
+      field.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await settle();
+    field.remove();
+    expect(closed).toBe(0);
+    expect(view.id("inspector-panel")).toBeTruthy();
+  });
+  it("only a session that waits on you wears the Needs you dot", async () => {
+    const { InspectorBody } = await import("./inspector");
+    // Tidepool in the light theme: #0072A3, however the style spells it.
+    const tidepool = (el: El) => /0072a3|0,\s*114,\s*163/i.test(el.getAttribute("style") ?? "");
+    const waiting = await mount(<InspectorBody theme={theme} item={APPROVAL} />);
+    expect(waiting.all("div").filter(tidepool).length).toBeGreaterThan(0);
+    const idle = { ...NOTICE, session: { name: "s", status: "idle", state: "queued" } };
+    const view = await mount(<InspectorBody theme={theme} item={idle} />);
+    expect(view.all("div").filter(tidepool)).toHaveLength(0);
   });
   it("an Answer carries the option chosen", async () => {
     const pressed: [string, string | undefined][] = [];

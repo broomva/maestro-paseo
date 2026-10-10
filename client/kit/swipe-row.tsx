@@ -10,7 +10,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, type LayoutChangeEvent, PanResponder, Platform, Pressable, Text, View } from "react-native";
+import { Animated, type LayoutChangeEvent, PanResponder, Pressable, Text, View } from "react-native";
 import { useReducedMotion } from "../ui";
 import { BOTH_WAYS, type Directions, DRAG_NATIVE_DRIVER } from "./assumptions";
 import { CLIP, MONO, TABULAR } from "./parts";
@@ -64,7 +64,14 @@ export function SwipeRow({
   const [width, setWidth] = useState(0);
   const start = preview === "open" ? -actionsWidth(actions.length) : 0;
   const x = useRef(new Animated.Value(start)).current;
+  // Whether the left actions show: a ref for the gesture handlers, and state so a render knows it too (a tap on
+  // an open row closes it instead of opening the item; on compact native that tap is the only way to close it).
   const opened = useRef(preview === "open");
+  const [isOpen, setIsOpen] = useState(preview === "open");
+  const markOpen = useRef((open: boolean) => {
+    opened.current = open;
+    setIsOpen(open);
+  }).current;
   const [shown, setShown] = useState<"left" | "right" | null>(preview === "open" ? "left" : preview ? "right" : null);
   const reduced = useReducedMotion();
   const live = useRef({ width, actions: actions.length, primary: rightVerb, kind, reduced, ways });
@@ -112,30 +119,30 @@ export function SwipeRow({
         const { width: w, actions: count, primary: verb, ways: allowed } = live.current;
         const end = swipeRelease(travelled(g.dx), g.vx, w, opened.current, count, allowed);
         if (end === "commit" && verb) {
-          opened.current = false;
+          markOpen(false);
           settle(w, g.vx * 1000, () => {
             verb.onPress();
             x.setValue(0);
             setShown(null);
           });
         } else if (end === "reveal") {
-          opened.current = true;
+          markOpen(true);
           settle(-actionsWidth(count), g.vx * 1000);
         } else {
-          opened.current = false;
+          markOpen(false);
           settle(0, g.vx * 1000, () => setShown(null));
         }
       },
       // The host took the gesture (on compact native, any rightward drag): spring home, shut.
       onPanResponderTerminate: () => {
-        opened.current = false;
+        markOpen(false);
         settle(0, 0, () => setShown(null));
       },
     });
   }, [x, settle]);
 
   const close = () => {
-    opened.current = false;
+    markOpen(false);
     settle(0, 0, () => setShown(null));
   };
 
@@ -206,7 +213,7 @@ export function SwipeRow({
           onAccessibilityAction={(event) =>
             [primary, ...actions].find((a) => a?.label === event.nativeEvent.actionName)?.onPress()
           }
-          onPress={opened.current ? close : onPress}
+          onPress={isOpen ? close : onPress}
           style={({ pressed }) => ({
             flexDirection: "row",
             alignItems: "center",
