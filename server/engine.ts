@@ -71,7 +71,9 @@ import {
   pendingPermission,
   phaseOf,
   reasonOf,
+  SESSION_ENDED_NOTE,
   scoreboard,
+  sessionGoneSince,
   toWireEvents,
   type WorkEvent,
   workerOf,
@@ -239,7 +241,9 @@ export const NO_SESSION = "No session is recorded for this run";
  * (it archives the session): such a run holds no slot of the cap (BRO-2990).
  * Any other Stuck run (a failed or canceled turn, an error, a send that did
  * not land) still has its session, and holds one until you unblock or cancel
- * it. A reason not listed here counts, so a renamed one errs toward the cap.
+ * it, or its session goes later (sessionGoneSince: the archive hook, or the
+ * reconcile that finds it closed or unknown). A reason not listed here
+ * counts, so a renamed one errs toward the cap.
  */
 export const SESSION_GONE: ReadonlySet<string> = new Set([
   STOPPED,
@@ -1017,7 +1021,8 @@ export class Engine {
       const state = other.contract.state;
       if (state === "running") held.set(other.contract.id, "running");
       else if (state === "blocked") {
-        if (!SESSION_GONE.has(reasonOf(state, other.events) ?? "")) held.set(other.contract.id, "stuck");
+        const gone = SESSION_GONE.has(reasonOf(state, other.events) ?? "") || sessionGoneSince(other.events);
+        if (!gone) held.set(other.contract.id, "stuck");
       } else if (phaseOf(state, other.events) === "asking") held.set(other.contract.id, "asking");
     }
     return held;
@@ -2200,6 +2205,30 @@ export class Engine {
     });
   }
 
+  /**
+   * A stuck run's session that has gone since it got stuck (closed, or unknown
+   * to the daemon; the archive hook notes an archive itself): noted once, so
+   * the run frees its slot of the cap (occupied, BRO-2990). A session that
+   * cannot be asked is left as it is: it keeps the slot.
+   */
+  private async noteSessionGone(
+    paseo: Paseo,
+    item: StoredWork,
+    guarded: (change: Mutation) => Promise<boolean>,
+  ): Promise<boolean> {
+    const worker = workerOf(item.events);
+    if (!worker || sessionGoneSince(item.events)) return false;
+    if (SESSION_GONE.has(reasonOf("blocked", item.events) ?? "")) return false;
+    const snapshot = await paseo.agents
+      .ref(worker.agentId)
+      .refresh()
+      .catch(() => undefined);
+    if (snapshot === undefined) return false;
+    const agent = snapshot?.agent;
+    if (agent && !agent.archivedAt && agent.status !== "closed") return false;
+    return guarded({ events: [this.note(agent?.archivedAt ? ARCHIVED_NOTE : SESSION_ENDED_NOTE)] });
+  }
+
   private async reconcileOne(paseo: Paseo, store: WorkStore, item: StoredWork): Promise<boolean> {
     const state = item.contract.state;
     if (state !== "running" && state !== "review" && state !== "blocked") return false;
@@ -2222,7 +2251,7 @@ export class Engine {
       if (await this.closeIfBranchMerged(item, guarded)) return true;
       // Archived between turns (BRO-2928): an orchestrator's arc that ended, not stuck. Canceled, never done.
       const now = this.now().getTime();
-      if (!archivedBetweenTurns(item.events, now)) return false;
+      if (!archivedBetweenTurns(item.events, now)) return this.noteSessionGone(paseo, item, guarded);
       // One whose branch is watched stays with branchMerged, which closes it Done if the branch merges within
       // WATCH_STUCK_MS: a pushed branch may still land, and a canceled card is never looked at again.
       if (watchedBranch(item.events, now)) return false;

@@ -182,14 +182,16 @@ test("the same burst, owner-only: six held items in Needs you as yours to start,
   expect(fake.created).toEqual([]);
   expect(entry.dispatched).toEqual([]);
   expect(await router.candidates()).toEqual([]);
-  // Held for you (BRO-2910): no lane or conductor may start an owner-only act, so Needs you shows each as yours.
+  // Held for you (BRO-2910): no lane or conductor may start an owner-only act, so the same wake puts each in
+  // Needs you as yours, not the next one.
   const held = (await engine.list()).items.filter((item) => item.nextRun?.held);
   expect(held).toHaveLength(6);
-  const next = await loop.wake("timer");
-  for (const item of (await engine.list()).items.filter((listed) => listed.nextRun?.held)) {
+  for (const item of held) {
     expect(item.state).toBe("proposed");
     expect(item.flag).toMatchObject({ kind: "yours", reason: "Start it yourself: it was filed to wait for you." });
   }
-  expect(next.flagged.map((flag) => flag.kind)).toEqual(IDS.map(() => "yours"));
+  expect(entry.flagged.map((flag) => flag.kind)).toEqual(IDS.map(() => "yours"));
+  // The next wake adds no flag and starts nothing.
+  expect((await loop.wake("timer")).flagged).toEqual([]);
   expect(fake.created).toEqual([]);
 });

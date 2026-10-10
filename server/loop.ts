@@ -325,9 +325,6 @@ export class Loop {
     const clear: Clear[] = [];
     const silent: Silent[] = [];
     for (const item of items) {
-      // Queued work only you may start (held for you, or in a mode you chose) is yours in Needs you: no lane can.
-      const yours = isDispatchable(item.state) && item.nextRun ? yoursToStart(item.nextRun) : null;
-      if (yours) raise.push({ item, kind: "yours", reason: yoursReason(yours) });
       if (item.state === "review") {
         if (item.phase === "asking") entry.needsYou.asking += 1;
         else entry.needsYou.gate += 1;
@@ -345,6 +342,19 @@ export class Loop {
     this.missedClient = !paseo && cause === "timer";
     if (!paseo) notes.push(NOT_CONNECTED);
     await this.landAndRoute(entry);
+    // Routing may have filed held work this wake (an owner-only answer's act): read the queue again so it is yours now.
+    const filed = entry.answers?.routed.some((answer) => answer.route === "work") ?? false;
+    const queue = filed
+      ? await this.engine.list(paseo ?? undefined).then(
+          (list) => list.items,
+          () => items,
+        )
+      : items;
+    for (const item of queue) {
+      // Queued work only you may start (held for you, or in a mode you chose) is yours in Needs you: no lane can.
+      const yours = isDispatchable(item.state) && item.nextRun ? yoursToStart(item.nextRun) : null;
+      if (yours) raise.push({ item, kind: "yours", reason: yoursReason(yours) });
+    }
     await this.raiseFlags(raise, entry);
     await this.clearFlags(clear, entry);
     entry.narrative = narrate(entry, notes);

@@ -452,6 +452,7 @@ describe("flags in Needs you", () => {
     const entry = await loop.wake("manual");
     expect(entry.dispatched).toEqual([]);
     expect(entry.flagged).toEqual([
+      { id: running.id, title: running.title, kind: "quiet", reason: "Quiet for 34 minutes, worth a look." },
       {
         id: bypass.id,
         title: bypass.title,
@@ -465,14 +466,13 @@ describe("flags in Needs you", () => {
         reason: "Start it yourself: it runs in a mode you chose.",
       },
       { id: held.id, title: held.title, kind: "yours", reason: "Start it yourself: it was filed to wait for you." },
-      { id: running.id, title: running.title, kind: "quiet", reason: "Quiet for 34 minutes, worth a look." },
     ]);
     expect(entry.narrative.slice(-5)).toEqual([
       "Flagged for you:",
+      "  Long one.",
       "  Bypass.",
       "  Planned.",
       "  Held.",
-      "  Long one.",
     ]);
     const { item: wire, events } = await engine.get(running.id);
     expect(wire.flag).toEqual({ kind: "quiet", reason: "Quiet for 34 minutes, worth a look.", at: entry.wokeAt });
@@ -523,7 +523,7 @@ describe("flags in Needs you", () => {
       tickMinutes(1);
     }
     expect(await flags(store, running.id)).toHaveLength(1);
-    expect(entries.map((entry) => entry.flagged.map((flag) => flag.kind))).toEqual([["yours", "quiet"], [], []]);
+    expect(entries.map((entry) => entry.flagged.map((flag) => flag.kind))).toEqual([["quiet", "yours"], [], []]);
     expect(fake.created).toHaveLength(1);
   });
 

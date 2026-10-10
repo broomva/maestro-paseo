@@ -2971,6 +2971,29 @@ describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
     expect(after.state).toBe("running");
   });
 
+  test("a run stuck on a failed turn frees its slot once its session goes later: archived, or closed", async () => {
+    const { create, engine, fake } = await setup({ concurrencyCap: 1 });
+    const next = await create({ dispatch: false });
+    const full = "At capacity: 1 of 1 slot taken (1 stuck). It stays queued.";
+    // Archived in Paseo after the turn failed: the archive hook notes it, and the slot frees.
+    await create();
+    await fail(engine, "agent-1");
+    await expect(engine.dispatch(fake.paseo, next.id)).rejects.toThrow(full);
+    const archived = fake.agents.get("agent-1");
+    if (archived) archived.archivedAt = "2026-09-22T09:05:00.000Z";
+    await engine.onArchived({ id: "agent-1" });
+    expect((await engine.dispatch(fake.paseo, next.id)).state).toBe("running");
+    // `next` runs as agent-2 and fails too; then its session closes with no archive. The next look notes it.
+    await fail(engine, "agent-2");
+    const third = await create({ dispatch: false });
+    await expect(engine.dispatch(fake.paseo, third.id)).rejects.toThrow(full);
+    const closed = fake.agents.get("agent-2");
+    if (closed) closed.status = "closed";
+    await engine.list(fake.paseo);
+    expect((await engine.get(next.id)).events.some((event) => event.text === "The session has ended")).toBe(true);
+    expect((await engine.dispatch(fake.paseo, third.id)).state).toBe("running");
+  });
+
   test("a run waiting on a permission holds its slot; one landed at your gate frees it", async () => {
     const { create, engine, fake } = await setup({ concurrencyCap: 1 });
     await create();

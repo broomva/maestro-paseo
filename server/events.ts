@@ -392,6 +392,9 @@ export function bullets(text: string): string[] {
 /** The note a session's archiving leaves on its work (engine.ts onArchived). */
 export const ARCHIVED_NOTE = "The session was archived";
 
+/** The note reconcile leaves on stuck work whose session is gone otherwise: closed, or unknown to the daemon. */
+export const SESSION_ENDED_NOTE = "The session has ended";
+
 const ARC_LINE = /^ARC-STATUS: ([A-Z]+)/;
 // Markdown's own limits: a heading or a rule is indented at most 3 spaces; deeper, it is code.
 const HEADING = /^ {0,3}#{1,6}\s/;
@@ -485,6 +488,14 @@ function arcAsk(status: string, line: string): string {
 export function archivedSince(events: readonly WorkEvent[]): boolean {
   const since = events.findLastIndex((e) => e.type === "turn.ended" || e.type === "dispatched" || e.type === "adopted");
   return events.slice(since + 1).some((e) => e.type === "note" && e.text === ARCHIVED_NOTE);
+}
+
+/** Whether the run's session is gone since its last turn (archived, closed, or unknown): either note says so. */
+export function sessionGoneSince(events: readonly WorkEvent[]): boolean {
+  const since = events.findLastIndex((e) => e.type === "turn.ended" || e.type === "dispatched" || e.type === "adopted");
+  return events
+    .slice(since + 1)
+    .some((e) => e.type === "note" && (e.text === ARCHIVED_NOTE || e.text === SESSION_ENDED_NOTE));
 }
 
 /** The arc verdicts that say an arc is finished and leaves nothing to you. */
