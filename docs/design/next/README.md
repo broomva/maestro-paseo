@@ -47,12 +47,13 @@ Everything else on the canvas is reference:
 
 The cards in sessions are BRO-3008.
 
-**Not verified yet** (BRO-3033):
-- what Paseo's iOS app draws around a plugin screen;
-- whether `openScreen` params can carry a hold key;
-- how gestures and the keyboard behave inside a plugin;
-- gradients on iOS for the Undertow (`experimental_backgroundImage`; on the desktop they pass through as `backgroundImage`);
-- how a push body renders.
+**Device checks** (BRO-3033, [`device-checks.md`](device-checks.md)): what Paseo 0.11.1 does around a plugin screen on the desktop and on iOS.
+- **The iPhone header:** Paseo draws the title and an X only, and nothing at the bottom. The tab bar pads itself with RN `SafeAreaView`.
+- **`openScreen` params:** they carry a hold key. Each call mounts a new screen.
+- **Rightward swipes on the phone open Paseo's sidebar.** Deck and row swipes are leftward only there (BRO-3062).
+- **The keyboard:** the composer lifts itself from RN `Keyboard` events.
+- **Gradients:** they render with `backgroundImage` on the desktop and `experimental_backgroundImage` on iOS.
+- **The push:** it reads `Agent finished` over about 80 visible characters (BRO-3063).
 
 | Frame | PNG | What it is |
 | --- | --- | --- |
