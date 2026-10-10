@@ -8,7 +8,7 @@ import type { RouteOutcome } from "./answer-routes";
 import { attentionOf } from "./attention";
 import { defaultConfig } from "./config";
 import { type CreateInput, Engine, NEVER_BY_RULE, NOT_QUIET, type Timer } from "./engine";
-import { LOOP } from "./events";
+import { LOOP, type Origin } from "./events";
 import { fakePaseo } from "./fake-paseo";
 import { ACTIVE_AGAIN, quietCleared, sessionActiveAt } from "./flags";
 import { ALREADY_WAKING, ASK_NOT_CONNECTED, Loop, NOT_CONNECTED, QUIET_MS } from "./loop";
@@ -87,18 +87,22 @@ async function setup(overrides: Partial<MaestroConfig> = {}) {
       log: (message) => logs.push(message),
       askMs: 100,
     });
-  /** Queued work, created as you create it in Maestro. */
-  const queue = (title: string, extra: Partial<CreateInput> = {}) =>
-    engine.create(fake.paseo, {
-      title,
-      brief: "",
-      repo,
-      gate: "human",
-      check: "",
-      initiative: "",
-      dispatch: false,
-      ...extra,
-    });
+  /** Queued work, created as you create it in Maestro (or, with `origin`, as someone else does). */
+  const queue = (title: string, extra: Partial<CreateInput> = {}, origin?: Origin) =>
+    engine.create(
+      fake.paseo,
+      {
+        title,
+        brief: "",
+        repo,
+        gate: "human",
+        check: "",
+        initiative: "",
+        dispatch: false,
+        ...extra,
+      },
+      origin,
+    );
   return {
     engine,
     fake,
@@ -499,6 +503,27 @@ describe("flags in Needs you", () => {
     expect((await engine.get(plain.id)).item.flag).toBeNull();
     expect((await engine.get(held.id)).item.flag?.kind).toBe("yours");
     expect(fake.created).toHaveLength(1);
+  });
+
+  test("queued work the routing before A8 filed from an answer is yours in Needs you, once; never started", async () => {
+    const { loop, queue, engine, fake, store } = await setup();
+    // As the old routing filed it: Maestro's, for an answer, no hold, queued at your gate.
+    const stranded = await queue("Act on your answer: Ship it?", { answer: "l.yaml#A1@2026-10-06T12:00:01Z" }, LOOP);
+    // Work you filed from an answer yourself (File as work) is not stranded: it is plain queued work.
+    const yours = await queue("Filed by you", { answer: "l.yaml#A2@2026-10-06T12:00:02Z" });
+    const entry = await loop.wake("manual");
+    expect(entry.flagged).toEqual([
+      {
+        id: stranded.id,
+        title: stranded.title,
+        kind: "yours",
+        reason: "Filed from your answer before A8: start it yourself, or cancel it.",
+      },
+    ]);
+    expect((await engine.get(yours.id)).item.flag).toBeNull();
+    expect((await loop.wake("manual")).flagged).toEqual([]);
+    expect(await flags(store, stranded.id)).toHaveLength(1);
+    expect(fake.created).toEqual([]);
   });
 
   test("Settings' own mode makes nothing yours: a lane's run takes its lane's mode instead", async () => {

@@ -158,8 +158,23 @@ export function nextRun(config: MaestroConfig, item: StoredWork): NextRun {
     thinkingOptionId: run.thinkingOptionId ?? null,
     featureValues: run.featureValues ? { ...run.featureValues } : null,
     fromSettings: run.fromSettings,
-    held: item.contract.hold,
+    held: item.contract.hold ?? (filedBeforeA8(item) ? FILED_BEFORE_A8 : undefined),
   };
+}
+
+/**
+ * Why queued work the old routing filed from an answer waits for you: before
+ * A8 (BRO-2990) an answer whose asker was gone became unheld queued work, and
+ * the loop started it. The loop starts nothing now, so it would sit in Queued
+ * unseen; it is yours, in Needs you, until you start or cancel it.
+ */
+export const FILED_BEFORE_A8 = "Filed from your answer before A8: start it yourself, or cancel it.";
+
+/** Queued work Maestro filed for an answer, with no hold: only the routing before A8 filed that. Pure. */
+function filedBeforeA8(item: StoredWork): boolean {
+  if (!item.contract.answer || item.contract.hold) return false;
+  const created = item.events.find((event) => event.type === "created");
+  return created?.type === "created" && created.actor === "maestro";
 }
 
 /** Why a session or the loop leaves work to you: it carries a mode you chose for it. */
@@ -173,13 +188,14 @@ export const HELD_FOR_YOU = "This work waits for you to start it.";
 
 /**
  * Why only you may start this queued work, or null (BRO-2990): it is held for
- * you, or carries a mode (or an auto-approving feature) you chose for it,
+ * you (or was filed from your answer before A8: FILED_BEFORE_A8), or carries
+ * a mode (or an auto-approving feature) you chose for it,
  * which a session's dispatch refuses (engine.ts startRefusal), so no lane and
  * no conductor can start it either. The loop flags it in Needs you as yours.
  * Settings' own mode is not a reason: a lane's run takes its lane's mode.
  */
 export function yoursToStart(next: NextRun): string | null {
-  if (next.held) return HELD_FOR_YOU;
+  if (next.held) return next.held === FILED_BEFORE_A8 ? FILED_BEFORE_A8 : HELD_FOR_YOU;
   const own = next.fromSettings.includes("modeId") ? null : next.modeId;
   if (skipsPrompts({ provider: next.provider, modeId: own, featureValues: next.featureValues })) return PROMPT_FREE;
   return own ? MODED_BY_YOU : null;

@@ -16,7 +16,7 @@
 import type { Flag, FlagKind, MaestroConfig, NextRun } from "../shared/contracts";
 import { isDispatchable, type OrchState } from "../shared/states";
 import { type FlaggedEvent, flagOf, lastActivityOf, type WorkEvent } from "./events";
-import { HELD_FOR_YOU, MODED_BY_YOU, nextRun, PROMPT_FREE, yoursToStart } from "./runs";
+import { FILED_BEFORE_A8, HELD_FOR_YOU, MODED_BY_YOU, nextRun, PROMPT_FREE, yoursToStart } from "./runs";
 import type { StoredWork } from "./store";
 
 /** Running work with nothing new for this long is flagged as worth a look. */
@@ -36,6 +36,7 @@ const WHY_YOURS: Record<string, string> = {
 
 /** The `yours` reason, from what yoursToStart said. */
 export function yoursReason(left: string): string {
+  if (left === FILED_BEFORE_A8) return FILED_BEFORE_A8;
   return `Start it yourself: ${sentence(WHY_YOURS[left] ?? left)}`;
 }
 

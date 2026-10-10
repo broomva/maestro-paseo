@@ -102,7 +102,10 @@ export const NextRunSchema = z.object({
   featureValues: FeatureValuesSchema.nullable(),
   /** The fields above that came from Settings because the work left them unset. */
   fromSettings: z.array(z.enum(SETTINGS_FIELDS)),
-  /** Why only you start this work (`hold` in _work.md), or null: absent from an older daemon. */
+  /**
+   * Why only you start this work (`hold` in _work.md, or, for queued work the
+   * routing before A8 filed from an answer, that), or null: absent from an older daemon.
+   */
   held: z.string().nullable().optional(),
 });
 export type NextRun = z.infer<typeof NextRunSchema>;
