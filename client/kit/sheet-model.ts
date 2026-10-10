@@ -17,8 +17,10 @@ export interface SheetGeometry {
   tabBar: number;
   /** How much of the sheet shows when it is down: grabber, title and counts. */
   peek: number;
-  /** Space Paseo's own chrome keeps at the bottom (client/kit/assumptions.ts A3). */
+  /** Space Paseo's own chrome keeps at the bottom: none on 0.11.1 (client/kit/assumptions.ts F3). */
   inset: number;
+  /** The home indicator: the sheet runs under it, and its peek and the toast sit above it. */
+  safe: number;
 }
 
 /** Gap between the toast and what it sits on. */
@@ -26,19 +28,19 @@ export const TOAST_GAP = 10;
 
 /** The rider's translateY at each end, and the distance between them. */
 export function sheetRange(g: SheetGeometry): { down: number; up: number; travel: number } {
-  const down = g.height - g.inset - g.peek - g.tabBar;
+  const down = g.height - g.inset - g.safe - g.peek - g.tabBar;
   const up = Math.min(g.top, down);
   return { down, up, travel: Math.max(1, down - up) };
 }
 
 /** The rider's height: the tab bar's band plus the sheet, from `top` to the inset. */
 export function riderHeight(g: SheetGeometry): number {
-  return Math.max(g.tabBar + g.peek, g.height - g.inset - Math.min(g.top, sheetRange(g).down));
+  return Math.max(g.tabBar + g.peek + g.safe, g.height - g.inset - Math.min(g.top, sheetRange(g).down));
 }
 
 /** The toast's distance from the bottom edge, down and up. */
 export function toastBottoms(g: SheetGeometry): { down: number; up: number } {
-  return { down: g.inset + g.peek + g.tabBar + TOAST_GAP, up: g.inset + TOAST_GAP };
+  return { down: g.inset + g.safe + g.peek + g.tabBar + TOAST_GAP, up: g.inset + g.safe + TOAST_GAP };
 }
 
 interface Interpolation {

@@ -8,7 +8,10 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
-/** The gallery's screen id: its route is /h/<server>/plugin/maestro/screen/kit (the host's screen route). */
+/**
+ * The gallery's screen id. Paseo 0.11.1 routes it at /h/<server>/plugin/maestro/surface/kit, and its params
+ * travel as ?param.<name>=: `section` (desktop, phone, undertow, m1) and `scheme` (both, light, dark).
+ */
 export const KIT_SCREEN = "kit";
 
 /** The daemon's environment variable that turns the gallery on (exactly "1"). */

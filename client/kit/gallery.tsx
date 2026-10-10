@@ -21,14 +21,14 @@ import { kitGallery } from "../../shared/kit";
 import { UNDO_MS } from "../../shared/undo";
 import { isDarkSurface } from "../fleet-color";
 import { Segmented } from "../ui";
-import type { FrostLook } from "./assumptions";
+import { BOTH_WAYS, type Directions, type FrostLook, LEFTWARD, swipeDirections } from "./assumptions";
 import { Deck, DeckHold } from "./deck";
 import { DetailHeader } from "./detail-header";
 import { GALLERY_DARK, GALLERY_LIGHT, INSPECTOR_SAMPLES, type RowSample, SHEET_ROWS } from "./gallery-data";
 import { GlanceTile } from "./glance-tile";
 import { InspectorBody, InspectorCard, type InspectorItem, InspectorPanel } from "./inspector";
 import { KIND_LOOK } from "./inspector-model";
-import { Chip, Dot, MONO, Pill } from "./parts";
+import { Chip, CLIP, Dot, MONO, Pill } from "./parts";
 import { PullSheet } from "./pull-sheet";
 import { SwipeRow } from "./swipe-row";
 import { type Tab, TabBar } from "./tab-bar";
@@ -66,7 +66,10 @@ const frozenNow = () => FROZEN + 3_000;
 const ignore = () => undefined;
 
 /** The screen: the gallery when the daemon's flag is on, else a line saying how to turn it on. */
-export function KitGalleryScreen({ theme, layout }: PluginScreenProps) {
+const pick = <T extends string>(options: readonly { id: T }[], value: string | undefined): T | undefined =>
+  options.find((option) => option.id === value)?.id;
+
+export function KitGalleryScreen({ theme, layout, params }: PluginScreenProps) {
   const read = useRpc(kitGallery);
   const flag = useQuery({ queryKey: ["maestro", "kit", "gallery"], queryFn: () => read({}) });
   const kit = kitOf(theme);
@@ -79,19 +82,50 @@ export function KitGalleryScreen({ theme, layout }: PluginScreenProps) {
         </Text>
       </View>
     );
-  return <KitGallery theme={theme} compact={layout.compact} />;
+  return (
+    <KitGallery
+      theme={theme}
+      compact={layout.compact}
+      section={pick(SECTIONS, params?.section)}
+      scheme={pick(SCHEMES, params?.scheme)}
+      directions={swipeDirections(layout)}
+      hold={params?.hold}
+    />
+  );
 }
 
-export function KitGallery({ theme, compact }: { theme: PluginTheme; compact: boolean }) {
+export function KitGallery({
+  theme,
+  compact,
+  section: initialSection,
+  scheme: initialScheme,
+  directions,
+  hold,
+}: {
+  theme: PluginTheme;
+  compact: boolean;
+  section?: Section;
+  scheme?: Scheme;
+  /** The ways the phone parts swipe here: swipeDirections(layout) (BRO-3033 fact 3). */
+  directions?: Directions;
+  /** The hold the M1 shell opens on (the screen's `params.hold`, BRO-3033 fact 2). */
+  hold?: string;
+}) {
   const kit = kitOf(theme);
-  const [section, setSection] = useState<Section>(compact ? "m1" : "desktop");
-  const [scheme, setScheme] = useState<Scheme>(compact ? (kit.dark ? "dark" : "light") : "both");
+  const [section, setSection] = useState<Section>(initialSection ?? (compact ? "m1" : "desktop"));
+  const [scheme, setScheme] = useState<Scheme>(initialScheme ?? (compact ? (kit.dark ? "dark" : "light") : "both"));
   const activeDark = isDarkSurface(theme.colors.surface0);
   // The active Paseo theme stands for its own appearance; broomva's palette for the other.
   const light = activeDark ? GALLERY_LIGHT : theme;
   const dark = activeDark ? theme : GALLERY_DARK;
   const panes = scheme === "both" ? [light, dark] : scheme === "light" ? [light] : [dark];
-  const controls = (
+  // On the phone the M1 shell gets the screen: one thin row to leave it, so the deck sits where M1 draws it.
+  const thin = compact && section === "m1";
+  const controls = thin ? (
+    <View style={{ paddingHorizontal: 12, paddingVertical: 6 }}>
+      <Segmented theme={theme} label="Section" options={SECTIONS} value={section} onChange={setSection} compact />
+    </View>
+  ) : (
     <View style={{ gap: 10, padding: compact ? 12 : 20, paddingBottom: 8 }}>
       <Text accessibilityRole="header" style={{ color: kit.fg, fontSize: 18, fontWeight: "600" }}>
         Component kit
@@ -125,7 +159,13 @@ export function KitGallery({ theme, compact }: { theme: PluginTheme; compact: bo
         {controls}
         <View style={{ flex: 1, flexDirection: "row", gap: 16, padding: compact ? 0 : 16, justifyContent: "center" }}>
           {panes.map((pane) => (
-            <PhoneShell key={pane.colors.surface0} theme={pane} framed={!compact} />
+            <PhoneShell
+              key={pane.colors.surface0}
+              theme={pane}
+              framed={!compact}
+              directions={directions}
+              openOn={hold}
+            />
           ))}
         </View>
       </View>
@@ -154,7 +194,7 @@ function Pane({ theme, children }: { theme: PluginTheme; children: ReactNode }) 
       style={{
         flex: 1,
         minWidth: 0,
-        backgroundColor: kit.dark ? kit.bg : "#f3f4f6",
+        backgroundColor: kit.bg,
         borderRadius: 16,
         borderWidth: 1,
         borderColor: kit.border,
@@ -404,7 +444,7 @@ function PhoneParts({ theme }: { theme: PluginTheme }) {
       <Group
         theme={theme}
         title="Swipe row"
-        note="At rest · left swipe open (Snooze, Open) · right swipe committing · a hold (never swipes)"
+        note="At rest · left swipe open (Snooze, Open) · right swipe committing (desktop) · compact native: the default verb joins the left actions (BRO-3033) · a hold (never swipes)"
       >
         <View style={{ maxWidth: 393, borderRadius: 14, overflow: "hidden", gap: 1, backgroundColor: kit.hairline }}>
           <SwipeRow
@@ -438,6 +478,19 @@ function PhoneParts({ theme }: { theme: PluginTheme }) {
             primary={{ label: "Continue", icon: "Play", onPress: ignore }}
             open={{ label: "Open", icon: "ArrowUpRight", onPress: ignore }}
             preview="commit"
+            directions={BOTH_WAYS}
+          />
+          <SwipeRow
+            theme={theme}
+            kind="finished"
+            title="GitHub identity: PR #12 merged"
+            meta="holon · on the phone: Continue is a left action"
+            age="18m"
+            lead={<Dot color={kit.ok} size={9} />}
+            primary={{ label: "Continue", icon: "Play", onPress: ignore }}
+            open={{ label: "Open", icon: "ArrowUpRight", onPress: ignore }}
+            preview="open"
+            directions={LEFTWARD}
           />
           <SwipeRow
             theme={theme}
@@ -521,7 +574,7 @@ function UndertowParts({ theme }: { theme: PluginTheme }) {
       <Group
         theme={theme}
         title="Halo — running"
-        note="This platform's look (gradient on the web; reduced motion holds it still)"
+        note="This platform's look: the gradient moves on the web and holds still on iOS; reduced motion holds it still"
       >
         <View style={{ maxWidth: 320 }}>
           <Undertow theme={theme} state="running">
@@ -531,8 +584,19 @@ function UndertowParts({ theme }: { theme: PluginTheme }) {
       </Group>
       <Group
         theme={theme}
+        title="Halo — iOS"
+        note="The same gradients under experimental_backgroundImage, held still: animating them on iOS is untested (BRO-3033 fact 5)"
+      >
+        <View style={{ maxWidth: 320 }}>
+          <Undertow theme={theme} state="running" look="gradient" still>
+            {card}
+          </Undertow>
+        </View>
+      </Group>
+      <Group
+        theme={theme}
         title="Halo — still ring"
-        note="The iOS fallback until BRO-3033 confirms gradients (assumption A1)"
+        note="The fallback: Android (unchecked) and any host without gradients"
       >
         <View style={{ maxWidth: 320 }}>
           <Undertow theme={theme} state="running" look="ring">
@@ -587,7 +651,10 @@ function UndertowParts({ theme }: { theme: PluginTheme }) {
         <View style={{ gap: 10 }}>
           {[
             { label: "Running row", mark: <TidepoolDot theme={theme} state="running" /> },
-            { label: "Running row, still ring (A1)", mark: <TidepoolDot theme={theme} state="running" look="ring" /> },
+            {
+              label: "Running row, still ring (fallback)",
+              mark: <TidepoolDot theme={theme} state="running" look="ring" />,
+            },
             { label: "Standing", mark: <StandingPulse theme={theme} state="standing" /> },
             { label: "Queued (nothing)", mark: <TidepoolDot theme={theme} state="queued" /> },
           ].map((row) => (
@@ -603,7 +670,17 @@ function UndertowParts({ theme }: { theme: PluginTheme }) {
 }
 
 /** M1, live: the deck, the sheet carrying the tab bar, swipe rows, the toast, and the card that rises. */
-function PhoneShell({ theme, framed }: { theme: PluginTheme; framed: boolean }) {
+function PhoneShell({
+  theme,
+  framed,
+  directions,
+  openOn,
+}: {
+  theme: PluginTheme;
+  framed: boolean;
+  directions?: Directions;
+  openOn?: string;
+}) {
   const kit = kitOf(theme);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [index, setIndex] = useState(0);
@@ -625,14 +702,15 @@ function PhoneShell({ theme, framed }: { theme: PluginTheme; framed: boolean }) 
       testID="phone-shell"
       onLayout={(event: LayoutChangeEvent) => setSize(event.nativeEvent.layout)}
       style={{
-        flex: framed ? 0 : 1,
+        flex: framed ? undefined : 1,
+        flexShrink: 0,
         width: framed ? 393 : undefined,
         height: framed ? 760 : undefined,
         alignSelf: framed ? "flex-start" : "stretch",
         borderRadius: framed ? 28 : 0,
         borderWidth: framed ? 1 : 0,
         borderColor: kit.border,
-        overflow: "hidden",
+        ...CLIP,
         backgroundColor: kit.bg,
       }}
     >
@@ -645,6 +723,8 @@ function PhoneShell({ theme, framed }: { theme: PluginTheme; framed: boolean }) 
           index={index}
           onIndexChange={setIndex}
           keyOf={(item) => item.key}
+          directions={directions}
+          openOn={openOn}
           renderItem={(item) => (
             <DeckHold
               theme={theme}
@@ -735,6 +815,7 @@ function PhoneShell({ theme, framed }: { theme: PluginTheme; framed: boolean }) 
                     <SwipeRow
                       key={row.key}
                       theme={theme}
+                      directions={directions}
                       kind={row.kind}
                       title={row.title}
                       meta={row.meta}
@@ -777,6 +858,7 @@ function PhoneShell({ theme, framed }: { theme: PluginTheme; framed: boolean }) 
       {size.height > 0 ? (
         <InspectorCard
           theme={theme}
+          directions={directions}
           item={holds[index]}
           index={index}
           total={holds.length}

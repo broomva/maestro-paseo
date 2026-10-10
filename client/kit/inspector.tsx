@@ -6,7 +6,7 @@
 // Desktop: InspectorPanel, a View inside Maestro's screen that slides in from
 // the right with Animated.spring (J1: over the rail; J6b: over the right-hand
 // lanes, B3) and goes back on Esc or its close button. Its action bar is
-// frosted with backdropFilter on the web and solid elsewhere (assumption A2).
+// frosted with backdropFilter on the web and solid elsewhere (assumptions.ts F2).
 // Phone: InspectorCard, a card that rises from the deck under the detail
 // header; swipe it down to close and sideways for the next hold, its verbs
 // 52 pt and pinned at the bottom, its bar solid (no blur on iOS).
@@ -17,11 +17,11 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, PanResponder, Platform, Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
 import { tint } from "../fleet-color";
 import { useReducedMotion, webAria } from "../ui";
-import { type FrostLook, frostLook, keysHint, nativeDriver } from "./assumptions";
-import { DECK, deckRelease } from "./deck-model";
+import { type Directions, type FrostLook, frostLook, keysHint, nativeDriver, swipeDirections } from "./assumptions";
+import { DECK, deckCaptures, deckRelease } from "./deck-model";
 import { DetailHeader } from "./detail-header";
 import { type InspectorKind, inspectorHidden, KIND_LOOK, type VerbSpec, verbsFor } from "./inspector-model";
-import { Dot, Kicker, MONO, Pill, SectionLabel, TABULAR } from "./parts";
+import { Dot, Kicker, MONO, PASS_THROUGH, Pill, SectionLabel, TABULAR } from "./parts";
 import { type Kit, kitOf } from "./tokens";
 import { TidepoolDot } from "./undertow";
 
@@ -273,12 +273,15 @@ export function InspectorBody({
   compact = false,
   onOpenSession,
   onChoose,
+  onClose,
 }: {
   theme: PluginTheme;
   item: InspectorItem;
   compact?: boolean;
   onOpenSession?: () => void;
   onChoose?: (id: string) => void;
+  /** The desktop's close button, at the kicker's end (the phone closes from its detail header). */
+  onClose?: () => void;
 }) {
   const kit = kitOf(theme);
   const look = KIND_LOOK[item.kind];
@@ -463,6 +466,19 @@ export function InspectorBody({
         iconColor={iconColor}
         parts={compact ? item.kicker : [look.label, ...item.kicker]}
         age={item.age}
+        trailing={
+          onClose ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close the inspector"
+              onPress={onClose}
+              hitSlop={8}
+              style={{ marginLeft: 6 }}
+            >
+              <Icon name="X" size={16} color={kit.muted} />
+            </Pressable>
+          ) : null
+        }
       />
       <Text
         accessibilityRole="header"
@@ -526,6 +542,36 @@ function Verbs({
   );
 }
 
+/**
+ * Slides `value` to 0 while `shown` and to `hidden` when not, and says whether
+ * the view should stay mounted: while it shows and until it has left. A closed
+ * inspector unmounts, so its verbs are never focusable, scrolled into view or
+ * read out while it sits off-screen.
+ */
+function useSlide(shown: boolean, value: Animated.Value, hidden: number, reduced: boolean): boolean {
+  const [present, setPresent] = useState(shown);
+  useEffect(() => {
+    if (shown) setPresent(true);
+    const to = shown ? 0 : hidden;
+    if (reduced) {
+      value.setValue(to);
+      if (!shown) setPresent(false);
+      return;
+    }
+    const slide = Animated.spring(value, {
+      toValue: to,
+      damping: 26,
+      stiffness: 240,
+      useNativeDriver: nativeDriver(Platform.OS),
+    });
+    slide.start(({ finished }) => {
+      if (finished && !shown) setPresent(false);
+    });
+    return () => slide.stop();
+  }, [shown, hidden, reduced, value]);
+  return present;
+}
+
 /** The width a sideways swipe on the phone card is measured against: the 393 pt column less its margins. */
 const CARD_SWIPE_WIDTH = 360;
 
@@ -571,17 +617,7 @@ export function InspectorPanel({
   const x = useRef(new Animated.Value(shown ? 0 : inspectorHidden(width))).current;
   const [kept, setKept] = useState(item);
   if (item && item !== kept) setKept(item);
-  useEffect(() => {
-    const to = shown ? 0 : inspectorHidden(width);
-    if (reduced) x.setValue(to);
-    else
-      Animated.spring(x, {
-        toValue: to,
-        damping: 26,
-        stiffness: 240,
-        useNativeDriver: nativeDriver(Platform.OS),
-      }).start();
-  }, [shown, width, reduced, x]);
+  const present = useSlide(shown, x, inspectorHidden(width), reduced);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
@@ -595,7 +631,7 @@ export function InspectorPanel({
     return () => doc.removeEventListener("keydown", onKey);
   }, [shown]);
   const showing = item ?? kept;
-  if (!showing) return null;
+  if (!showing || !present) return null;
   const hold = KIND_LOOK[showing.kind].hold;
   return (
     <Animated.View
@@ -622,12 +658,7 @@ export function InspectorPanel({
       }}
     >
       <ScrollView contentContainerStyle={{ paddingVertical: 20, paddingHorizontal: 24, paddingBottom: 84 }}>
-        <View style={{ position: "absolute", top: 14, right: 14, zIndex: 1 }}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Close the inspector" onPress={onClose} hitSlop={8}>
-            <Icon name="X" size={16} color={kit.muted} />
-          </Pressable>
-        </View>
-        <InspectorBody theme={theme} item={showing} onOpenSession={onOpenSession} />
+        <InspectorBody theme={theme} item={showing} onOpenSession={onOpenSession} onClose={onClose} />
       </ScrollView>
       <View
         testID="inspector-bar"
@@ -700,6 +731,7 @@ export function InspectorCard({
   onVerb,
   onIndexChange,
   onOpenSession,
+  directions,
 }: {
   theme: PluginTheme;
   item: InspectorItem;
@@ -713,52 +745,48 @@ export function InspectorCard({
   onVerb: (id: string) => void;
   onIndexChange: (index: number) => void;
   onOpenSession?: () => void;
+  /** Which ways its header swipes to the next hold; by default leftward only off the web (BRO-3033 fact 3). */
+  directions?: Directions;
 }) {
   const kit = kitOf(theme);
   const reduced = useReducedMotion();
   const y = useRef(new Animated.Value(open ? 0 : height)).current;
-  const live = useRef({ index, total, onIndexChange, onClose, height });
-  live.current = { index, total, onIndexChange, onClose, height };
-  useEffect(() => {
-    const to = open ? 0 : height;
-    if (reduced) y.setValue(to);
-    else
-      Animated.spring(y, {
-        toValue: to,
-        damping: 26,
-        stiffness: 240,
-        useNativeDriver: nativeDriver(Platform.OS),
-      }).start();
-  }, [open, height, reduced, y]);
-  const responder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 8 || Math.abs(g.dx) > 10,
-        onPanResponderMove: (_, g) => {
-          if (Math.abs(g.dy) >= Math.abs(g.dx)) y.setValue(Math.max(0, g.dy));
-        },
-        onPanResponderRelease: (_, g) => {
-          const { index: at, total: count, onIndexChange: change, onClose: close } = live.current;
-          if (Math.abs(g.dy) >= Math.abs(g.dx)) {
-            // Dismiss past a projected threshold, else spring back (M2–M4 Build note).
-            if (g.dy + g.vy * 180 > 140) close();
-            else
-              Animated.spring(y, {
-                toValue: 0,
-                velocity: g.vy * 1000,
-                useNativeDriver: nativeDriver(Platform.OS),
-              }).start();
-            return;
-          }
-          const next = deckRelease(at, count, g.dx, g.vx, CARD_SWIPE_WIDTH);
-          if (next !== at) change(next);
-        },
-      }),
-    [y],
-  );
+  const ways = directions ?? swipeDirections({ compact: true, platform: Platform.OS });
+  const live = useRef({ index, total, onIndexChange, onClose, height, ways });
+  live.current = { index, total, onIndexChange, onClose, height, ways };
+  const present = useSlide(open, y, height, reduced);
+  const responder = useMemo(() => {
+    const home = (velocity: number) =>
+      Animated.spring(y, { toValue: 0, velocity, useNativeDriver: nativeDriver(Platform.OS) }).start();
+    return PanResponder.create({
+      // Down to close; sideways for the next hold, only the ways it may go (compact native: leftward).
+      onMoveShouldSetPanResponder: (_, g) => g.dy > 8 || deckCaptures(g.dx, g.dy, live.current.ways),
+      onPanResponderMove: (_, g) => {
+        if (Math.abs(g.dy) >= Math.abs(g.dx)) y.setValue(Math.max(0, g.dy));
+      },
+      onPanResponderRelease: (_, g) => {
+        const { index: at, total: count, onIndexChange: change, onClose: close, ways: allowed } = live.current;
+        if (Math.abs(g.dy) >= Math.abs(g.dx)) {
+          // Dismiss past a projected threshold, else spring back (M2–M4 Build note).
+          if (g.dy + g.vy * 180 > 140) close();
+          else home(g.vy * 1000);
+          return;
+        }
+        const next = deckRelease(at, count, g.dx, g.vx, CARD_SWIPE_WIDTH, allowed);
+        if (next !== at) change(next);
+      },
+      // The host took the gesture: the card springs back into place.
+      onPanResponderTerminate: () => home(0),
+    });
+  }, [y]);
+  if (!present) return null;
   return (
     <View
-      style={{ position: "absolute", top: 0, left: 0, right: 0, height, pointerEvents: open ? "box-none" : "none" }}
+      testID="inspector-card-root"
+      style={[
+        open ? PASS_THROUGH : { pointerEvents: "none" },
+        { position: "absolute", top: 0, left: 0, right: 0, height },
+      ]}
     >
       <Animated.View
         style={{

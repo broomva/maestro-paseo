@@ -1,7 +1,11 @@
 // The phone's swipe row (M1d, on M1's sheet rows only): swipe right for the
 // row's default verb (Continue, Done), left to show Snooze and Open. A hold
 // (an ask, an approval, an owner step) never swipes: acting on one is always a
-// deliberate tap. Pure (client/kit/swipe.test.ts).
+// deliberate tap. On compact native Paseo takes every rightward drag (BRO-3033
+// fact 3), so there the row swipes left only and its default verb joins the
+// left actions (client/kit/assumptions.ts F4). Pure (client/kit/swipe.test.ts).
+
+import type { Directions } from "./assumptions";
 
 /** The kinds that are holds: never swiped (M1: "a hold is always a deliberate tap"). */
 export const HOLD_KINDS = ["ask", "approval", "owner-step"] as const;
@@ -33,9 +37,24 @@ export function actionsWidth(count: number): number {
   return SWIPE.action * count;
 }
 
-/** Whether a move starts a swipe: a row that swipes, sideways, past the slop. */
-export function swipeCaptures(kind: string, dx: number, dy: number): boolean {
-  return canSwipe(kind) && Math.abs(dx) > SWIPE.slop && Math.abs(dx) > Math.abs(dy) * 1.5;
+/**
+ * Whether a move starts a swipe: a row that swipes, sideways, past the slop,
+ * in a direction it may go. A rightward drag on open actions closes them, so
+ * it is taken either way (if the host takes it instead, the row springs shut).
+ */
+export function swipeCaptures(kind: string, dx: number, dy: number, directions: Directions, open = false): boolean {
+  if (!canSwipe(kind) || Math.abs(dx) <= SWIPE.slop || Math.abs(dx) <= Math.abs(dy) * 1.5) return false;
+  return dx > 0 ? directions.right || open : directions.left;
+}
+
+/** The left actions in order: the default verb first when it cannot be a right swipe, then Snooze, then Open. */
+export function leftActions<T>(
+  directions: Directions,
+  primary: T | undefined,
+  snooze: T | undefined,
+  open: T | undefined,
+): T[] {
+  return [directions.right ? undefined : primary, snooze, open].filter((action): action is T => action !== undefined);
 }
 
 export type SwipeEnd = "commit" | "reveal" | "rest";
@@ -44,8 +63,16 @@ export type SwipeEnd = "commit" | "reveal" | "rest";
  * Where a release ends. `open` says the left actions were showing when the
  * drag began, so a further left drag keeps them and a right one closes them.
  */
-export function swipeRelease(dx: number, vx: number, width: number, open: boolean, actions: number): SwipeEnd {
+export function swipeRelease(
+  dx: number,
+  vx: number,
+  width: number,
+  open: boolean,
+  actions: number,
+  directions: Directions,
+): SwipeEnd {
   if (!open && dx > 0) {
+    if (!directions.right) return "rest";
     const far = dx >= width * SWIPE.commit;
     const flung = vx >= SWIPE.flick && dx >= SWIPE.flickMin;
     return far || flung ? "commit" : "rest";
@@ -55,10 +82,14 @@ export function swipeRelease(dx: number, vx: number, width: number, open: boolea
   return at <= -SWIPE.reveal && vx <= SWIPE.flick ? "reveal" : "rest";
 }
 
-/** The row's offset while dragging: free to the right, and to the left no further than its actions plus a stretch. */
-export function swipeOffset(dx: number, open: boolean, actions: number): number {
+/**
+ * The row's offset while dragging: to the right only where a right swipe is
+ * allowed (and never past rest when it is not), to the left no further than
+ * its actions plus a stretch.
+ */
+export function swipeOffset(dx: number, open: boolean, actions: number, directions: Directions): number {
   const base = open ? -actionsWidth(actions) : 0;
-  const at = base + dx;
+  const at = directions.right ? base + dx : Math.min(0, base + dx);
   const floor = -actionsWidth(actions);
   if (at >= floor) return at;
   return floor + (at - floor) / 3;

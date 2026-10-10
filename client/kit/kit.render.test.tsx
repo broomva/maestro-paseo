@@ -80,6 +80,7 @@ const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query
 const { PluginRpcProvider } = await import("@getpaseo/plugin/client/host");
 const { UNDO_MS } = await import("../../shared/undo");
 const { GALLERY_LIGHT, APPROVAL, ASK, NOTICE, WORK, REVIEW } = await import("./gallery-data");
+const { LEFTWARD } = await import("./assumptions");
 const { PullSheet, PEEK, TAB_BAND } = await import("./pull-sheet");
 const { TabBar } = await import("./tab-bar");
 const { UndoToast, useUndoToast } = await import("./undo-toast");
@@ -213,6 +214,24 @@ describe("the pull-up sheet carries the tab bar on one Animated value", () => {
     expect(band?.contains(view.id("tab-bar") as El)).toBe(true);
   });
 
+  it("its full-height root lets touches through to the deck (box-none as a class, never inline)", async () => {
+    const view = await mount(sheet());
+    const root = view.id("pull-sheet-root");
+    expect(root).toBeTruthy();
+    // Inline, "box-none" is not CSS and the root would swallow every press over the deck.
+    expect(root?.getAttribute("style") ?? "").not.toContain("pointer-events");
+    expect(root?.getAttribute("class") ?? "").toContain("pointerEvents");
+  });
+
+  it("it clears the home indicator: the peek sits above it, the sheet still reaches the edge", async () => {
+    const view = await mount(
+      <PullSheet theme={theme} height={H} top={TOP} inset={0} safeBottom={34} tabBar={null} title="Everything else">
+        {null}
+      </PullSheet>,
+    );
+    expect(translateY(view.id("pull-sheet-rider"))).toBe(H - 34 - PEEK - TAB_BAND);
+  });
+
   it("down, the tab bar sits on the peek; raised, it rides up to the top with the sheet", async () => {
     const seen: number[] = [];
     const view = await mount(sheet((position) => seen.push(position)));
@@ -223,6 +242,53 @@ describe("the pull-up sheet carries the tab bar on one Animated value", () => {
     expect(seen).toEqual([1]);
     await view.press(view.label("Lower the sheet"));
     expect(translateY(view.id("pull-sheet-rider"))).toBe(H - PEEK - TAB_BAND);
+  });
+});
+
+function SheetToastHost({ clock }: { clock: UndoClock }) {
+  const toast = useUndoToast(ignore, clock);
+  return (
+    <PullSheet
+      theme={theme}
+      height={760}
+      top={64}
+      inset={0}
+      tabBar={
+        <web.Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Continue"
+          onPress={() => toast.show(undoEntry("receipt-f1", "Continued", clock.now()))}
+        />
+      }
+      title="Everything else"
+      toast={(place) => (
+        <UndoToast
+          theme={theme}
+          entry={toast.entry}
+          onUndo={toast.undo}
+          bottom={place.bottom}
+          lift={place.lift}
+          now={clock.now}
+        />
+      )}
+    >
+      {null}
+    </PullSheet>
+  );
+}
+
+describe("the toast rides the sheet's value", () => {
+  it("above the tab bar when the sheet is down, at the bottom edge when it is up", async () => {
+    const fake = fakeClock();
+    const view = await mount(<SheetToastHost clock={fake.clock} />);
+    await view.press(view.label("Continue"));
+    const toast = () => view.id("undo-toast");
+    expect(toast()).toBeTruthy();
+    const style = () => toast()?.getAttribute("style") ?? "";
+    expect(style()).toContain("bottom: 10px");
+    expect(translateY(toast())).toBe(-(PEEK + TAB_BAND));
+    await view.press(view.label("Raise the sheet"));
+    expect(translateY(toast())).toBe(0);
   });
 });
 
@@ -324,6 +390,47 @@ describe("the swipe row", () => {
   });
 });
 
+describe("on compact native (BRO-3033 fact 3)", () => {
+  it("a row's default verb is a left action, and it acts", async () => {
+    const done: string[] = [];
+    const view = await mount(
+      <SwipeRow
+        theme={theme}
+        kind="finished"
+        title="GitHub identity: PR #12 merged"
+        primary={{ label: "Continue", icon: "Play", onPress: () => done.push("continue") }}
+        open={{ label: "Open", icon: "ArrowUpRight", onPress: ignore }}
+        preview="open"
+        directions={LEFTWARD}
+      />,
+    );
+    await view.press(view.label("Continue"));
+    expect(done).toEqual(["continue"]);
+  });
+  it("the deck pages by its segments, and opens on the hold it was given", async () => {
+    function Host() {
+      const [index, setIndex] = useState(0);
+      return (
+        <Deck
+          theme={theme}
+          title="Needs you"
+          items={[APPROVAL, ASK, NOTICE]}
+          index={index}
+          onIndexChange={setIndex}
+          keyOf={(item) => item.key}
+          directions={LEFTWARD}
+          openOn={NOTICE.key}
+          renderItem={(item) => <web.Text>{item.title}</web.Text>}
+        />
+      );
+    }
+    const view = await mount(<Host />);
+    expect(view.text()).toContain("3 of 3");
+    await view.press(view.label("Hold 1 of 3"));
+    expect(view.text()).toContain("1 of 3");
+  });
+});
+
 describe("the Undertow marks Running only", () => {
   it("a running card wears the halo, the ring look on request; other states wear nothing", async () => {
     const card = <web.Text>card</web.Text>;
@@ -377,6 +484,28 @@ describe("the inspector", () => {
       expect(verbs).toHaveLength(1);
       for (const unmount of mounted.splice(0)) unmount();
     }
+  });
+  it("closed, it leaves nothing behind: no verbs to focus or scroll into view", async () => {
+    const view = await mount(
+      <InspectorPanel theme={theme} item={APPROVAL} open={false} onClose={ignore} onVerb={ignore} />,
+    );
+    expect(view.id("inspector-panel")).toBeNull();
+    expect(view.label("Allow merge")).toBeNull();
+    const card = await mount(
+      <InspectorCard
+        theme={theme}
+        item={APPROVAL}
+        index={0}
+        total={4}
+        open={false}
+        height={760}
+        onClose={ignore}
+        onMore={ignore}
+        onVerb={ignore}
+        onIndexChange={ignore}
+      />,
+    );
+    expect(card.id("inspector-card")).toBeNull();
   });
   it("Esc sends it back", async () => {
     let closed = 0;

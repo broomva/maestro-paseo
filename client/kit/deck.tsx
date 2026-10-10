@@ -2,8 +2,11 @@
 // time. A large title with the workspace and presence beside it, one segment
 // per hold with "1 of 4", then the hold as a card whose verbs are 52 pt
 // pills. Swipe sideways for the next hold; the next card's edge shows at the
-// right so the swipe is discoverable. PanResponder and Animated only; the
-// thresholds are client/kit/deck-model.ts.
+// right so the swipe is discoverable. Each segment is a tap target too: on
+// compact native a rightward swipe is Paseo's (BRO-3033 fact 3), so `directions`
+// bars it there, and the segments are the way back. The deck opens on `openOn`
+// (a hold key, from the screen's `params.hold`). PanResponder and Animated
+// only; the thresholds are client/kit/deck-model.ts.
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
@@ -11,9 +14,9 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, type LayoutChangeEvent, PanResponder, Platform, Pressable, Text, View } from "react-native";
 import { tint } from "../fleet-color";
 import { useReducedMotion } from "../ui";
-import { nativeDriver } from "./assumptions";
-import { DECK, deckCaptures, deckOffset, deckRelease, place } from "./deck-model";
-import { Kicker, Pill, TABULAR } from "./parts";
+import { BOTH_WAYS as BOTH, type Directions, nativeDriver, swipeDirections } from "./assumptions";
+import { DECK, deckCaptures, deckOffset, deckRelease, indexOfKey, place } from "./deck-model";
+import { CLIP, Kicker, Pill, TABULAR } from "./parts";
 import { kitOf } from "./tokens";
 
 /** How much of the next card shows at the right edge. */
@@ -29,6 +32,8 @@ export function Deck<T>({
   renderItem,
   keyOf,
   empty,
+  directions,
+  openOn,
 }: {
   theme: PluginTheme;
   title: string;
@@ -41,17 +46,31 @@ export function Deck<T>({
   keyOf: (item: T) => string;
   /** What the deck says when nothing needs you. */
   empty?: ReactNode;
+  /** Which ways it swipes: the screen passes swipeDirections(layout); by default, leftward only off the web. */
+  directions?: Directions;
+  /** The hold to open on, by key, once when the deck mounts (the screen's `params.hold`). */
+  openOn?: string;
 }) {
   const kit = kitOf(theme);
   const reduced = useReducedMotion();
+  const ways = directions ?? swipeDirections({ compact: true, platform: Platform.OS });
   const [width, setWidth] = useState(0);
   const cardWidth = Math.max(0, width - PEEK - DECK.gap);
   const x = useRef(new Animated.Value(0)).current;
-  const live = useRef({ index, count: items.length, cardWidth, onIndexChange });
-  live.current = { index, count: items.length, cardWidth, onIndexChange };
+  const live = useRef({ index, count: items.length, cardWidth, onIndexChange, ways, reduced });
+  live.current = { index, count: items.length, cardWidth, onIndexChange, ways, reduced };
+
+  // Open on the hold the screen was opened with, once: later moves are the deck's own state.
+  const opened = useRef(false);
+  useEffect(() => {
+    if (opened.current || openOn === undefined || items.length === 0) return;
+    opened.current = true;
+    const at = indexOfKey(items.map(keyOf), openOn);
+    if (at !== index) onIndexChange(at);
+  }, [openOn, items, keyOf, index, onIndexChange]);
 
   useEffect(() => {
-    const to = deckOffset(index, items.length, 0, cardWidth);
+    const to = deckOffset(index, items.length, 0, cardWidth, BOTH);
     if (reduced || cardWidth === 0) x.setValue(to);
     else
       Animated.spring(x, {
@@ -62,33 +81,30 @@ export function Deck<T>({
       }).start();
   }, [index, items.length, cardWidth, reduced, x]);
 
-  const responder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_, g) => deckCaptures(g.dx, g.dy),
-        onPanResponderGrant: () => x.stopAnimation(),
-        onPanResponderMove: (_, g) => {
-          const { index: at, count, cardWidth: w } = live.current;
-          x.setValue(deckOffset(at, count, g.dx, w));
-        },
-        onPanResponderRelease: (_, g) => {
-          const { index: at, count, cardWidth: w, onIndexChange: change } = live.current;
-          const next = deckRelease(at, count, g.dx, g.vx, w);
-          if (next !== at) change(next);
-          else
-            Animated.spring(x, {
-              toValue: deckOffset(at, count, 0, w),
-              velocity: g.vx * 1000,
-              useNativeDriver: nativeDriver(Platform.OS),
-            }).start();
-        },
-        onPanResponderTerminate: () => {
-          const { index: at, count, cardWidth: w } = live.current;
-          x.setValue(deckOffset(at, count, 0, w));
-        },
-      }),
-    [x],
-  );
+  const responder = useMemo(() => {
+    // Home: the current hold's place. The host terminates rightward drags on compact native, so this runs often.
+    const home = (velocity: number) => {
+      const { index: at, count, cardWidth: w, reduced: still } = live.current;
+      const to = deckOffset(at, count, 0, w, BOTH);
+      if (still) x.setValue(to);
+      else Animated.spring(x, { toValue: to, velocity, useNativeDriver: nativeDriver(Platform.OS) }).start();
+    };
+    return PanResponder.create({
+      onMoveShouldSetPanResponder: (_, g) => deckCaptures(g.dx, g.dy, live.current.ways),
+      onPanResponderGrant: () => x.stopAnimation(),
+      onPanResponderMove: (_, g) => {
+        const { index: at, count, cardWidth: w, ways: allowed } = live.current;
+        x.setValue(deckOffset(at, count, g.dx, w, allowed));
+      },
+      onPanResponderRelease: (_, g) => {
+        const { index: at, count, cardWidth: w, onIndexChange: change, ways: allowed } = live.current;
+        const next = deckRelease(at, count, g.dx, g.vx, w, allowed);
+        if (next !== at) change(next);
+        else home(g.vx * 1000);
+      },
+      onPanResponderTerminate: () => home(0),
+    });
+  }, [x]);
 
   return (
     <View testID="deck" style={{ gap: 10 }}>
@@ -100,32 +116,37 @@ export function Deck<T>({
       </View>
       {items.length > 0 ? (
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <View style={{ flex: 1, flexDirection: "row", gap: 6 }} accessible={false}>
+          <View style={{ flex: 1, flexDirection: "row", gap: 6 }}>
             {items.map((item, at) => (
-              <View
+              <Pressable
                 key={keyOf(item)}
-                style={{
-                  flex: 1,
-                  height: 4,
-                  borderRadius: 2,
-                  backgroundColor: at === index ? kit.needs : tint(kit.fg, 0.12),
-                }}
-              />
+                accessibilityRole="button"
+                accessibilityLabel={`Hold ${place(at, items.length)}`}
+                accessibilityState={{ selected: at === index }}
+                onPress={() => onIndexChange(at)}
+                hitSlop={{ top: 14, bottom: 14 }}
+                style={{ flex: 1, paddingVertical: 6 }}
+              >
+                <View
+                  style={{
+                    height: 4,
+                    borderRadius: 2,
+                    backgroundColor: at === index ? kit.needs : tint(kit.fg, 0.12),
+                  }}
+                />
+              </Pressable>
             ))}
           </View>
           <Text style={{ color: kit.muted, fontSize: 12, ...TABULAR }}>{place(index, items.length)}</Text>
         </View>
       ) : null}
-      <View
-        onLayout={(event: LayoutChangeEvent) => setWidth(event.nativeEvent.layout.width)}
-        style={{ overflow: "hidden" }}
-      >
+      <View onLayout={(event: LayoutChangeEvent) => setWidth(event.nativeEvent.layout.width)} style={CLIP}>
         {items.length === 0 ? (
           empty
         ) : (
           <Animated.View
             {...responder.panHandlers}
-            accessibilityHint="Swipe sideways for the next hold"
+            accessibilityHint={ways.right ? "Swipe sideways for the next hold" : "Swipe left for the next hold"}
             style={{ flexDirection: "row", gap: DECK.gap, transform: [{ translateX: x }] }}
           >
             {items.map((item, at) => (

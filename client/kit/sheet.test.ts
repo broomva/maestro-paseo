@@ -14,7 +14,7 @@ import {
   toastBottoms,
 } from "./sheet-model";
 
-const G: SheetGeometry = { height: 760, top: 64, tabBar: 72, peek: 104, inset: 0 };
+const G: SheetGeometry = { height: 760, top: 64, tabBar: 72, peek: 104, inset: 0, safe: 0 };
 
 /** A stand-in for one Animated.Value: every interpolation reads the same `at`, as Animated's do. */
 function oneValue(start: number) {
@@ -78,6 +78,15 @@ describe("the pull-up sheet: one Animated value drives the sheet, the tab bar an
     const inset: SheetGeometry = { ...G, inset: 34 };
     expect(sheetRange(inset).down + inset.tabBar + inset.peek).toBe(inset.height - 34);
     expect(inset.top + riderHeight(inset)).toBe(inset.height - 34);
+  });
+
+  test("the sheet runs under the home indicator; its peek and the toast sit above it (BRO-3033 fact 1)", () => {
+    const phone: SheetGeometry = { ...G, height: 748, safe: 34 };
+    // The sheet still reaches the physical edge, so nothing shows under it.
+    expect(phone.top + riderHeight(phone)).toBe(phone.height);
+    // Down, the peek's content ends where the home indicator begins.
+    expect(sheetRange(phone).down + phone.tabBar + phone.peek).toBe(phone.height - 34);
+    expect(toastBottoms(phone)).toEqual({ down: 34 + 104 + 72 + TOAST_GAP, up: 34 + TOAST_GAP });
   });
 });
 

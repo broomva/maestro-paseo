@@ -1,17 +1,20 @@
 // The swipe row (M/Row, Pen xqZXY; M1d's swipes, on M1's sheet rows only):
 // lead mark, title, mono meta, age. Swipe right for the row's default verb
-// (Continue, Done); swipe left to show Snooze and Open. A hold never swipes
-// (client/kit/swipe-model.ts): its PanResponder never takes the gesture, and it
-// draws no actions behind it. PanResponder and Animated only.
+// (Continue, Done); swipe left to show Snooze and Open. On compact native a
+// rightward drag is Paseo's (BRO-3033 fact 3), so `directions` bars it there and
+// the default verb becomes the first left action; a drag the host takes springs
+// the row home. A hold never swipes (client/kit/swipe-model.ts): its
+// PanResponder never takes the gesture, and it draws no actions behind it.
+// Every action is also an accessibility action. PanResponder and Animated only.
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, type LayoutChangeEvent, PanResponder, Platform, Pressable, Text, View } from "react-native";
 import { useReducedMotion } from "../ui";
-import { nativeDriver } from "./assumptions";
-import { MONO, TABULAR } from "./parts";
-import { actionsWidth, canSwipe, SWIPE, swipeCaptures, swipeOffset, swipeRelease } from "./swipe-model";
+import { BOTH_WAYS, type Directions, nativeDriver, swipeDirections } from "./assumptions";
+import { CLIP, MONO, TABULAR } from "./parts";
+import { actionsWidth, canSwipe, leftActions, SWIPE, swipeCaptures, swipeOffset, swipeRelease } from "./swipe-model";
 import { kitOf } from "./tokens";
 
 export interface RowAction {
@@ -32,6 +35,7 @@ export function SwipeRow({
   snooze,
   open,
   preview,
+  directions,
 }: {
   theme: PluginTheme;
   /** The row's kind; a hold (ask, approval, owner-step) never swipes. */
@@ -41,7 +45,7 @@ export function SwipeRow({
   age?: string;
   lead?: ReactNode;
   onPress?: () => void;
-  /** The right swipe's verb: Continue, Done. */
+  /** The default verb: Continue, Done. A right swipe where one is allowed, else the first left action. */
   primary?: RowAction;
   /** The left swipe's first action, when the row can be snoozed. */
   snooze?: RowAction;
@@ -49,21 +53,25 @@ export function SwipeRow({
   open?: RowAction;
   /** A still state for the gallery: the left actions shown, or the right swipe half way. */
   preview?: "open" | "commit";
+  /** Which ways it swipes: the screen passes swipeDirections(layout); by default, leftward only off the web. */
+  directions?: Directions;
 }) {
   const kit = kitOf(theme);
+  const ways = directions ?? swipeDirections({ compact: true, platform: Platform.OS });
   const swipes = canSwipe(kind);
-  const actions = swipes ? [snooze, open].filter((a): a is RowAction => Boolean(a)) : [];
+  const actions = swipes ? leftActions(ways, primary, snooze, open) : [];
+  const rightVerb = ways.right ? primary : undefined;
   const [width, setWidth] = useState(0);
   const start = preview === "open" ? -actionsWidth(actions.length) : 0;
   const x = useRef(new Animated.Value(start)).current;
   const opened = useRef(preview === "open");
   const [shown, setShown] = useState<"left" | "right" | null>(preview === "open" ? "left" : preview ? "right" : null);
   const reduced = useReducedMotion();
-  const live = useRef({ width, actions: actions.length, primary, kind, reduced });
-  live.current = { width, actions: actions.length, primary, kind, reduced };
+  const live = useRef({ width, actions: actions.length, primary: rightVerb, kind, reduced, ways });
+  live.current = { width, actions: actions.length, primary: rightVerb, kind, reduced, ways };
   useEffect(() => {
-    if (preview === "commit" && width > 0) x.setValue(width * 0.3);
-  }, [preview, width, x]);
+    if (preview === "commit" && width > 0 && ways.right) x.setValue(width * 0.3);
+  }, [preview, width, x, ways.right]);
 
   // Springs carry the release's velocity; under reduced motion the row snaps.
   const settle = useMemo(
@@ -86,16 +94,17 @@ export function SwipeRow({
 
   const responder = useMemo(() => {
     return PanResponder.create({
-      onMoveShouldSetPanResponder: (_, g) => swipeCaptures(live.current.kind, g.dx, g.dy),
+      onMoveShouldSetPanResponder: (_, g) =>
+        swipeCaptures(live.current.kind, g.dx, g.dy, live.current.ways, opened.current),
       onPanResponderGrant: () => x.stopAnimation(),
       onPanResponderMove: (_, g) => {
-        const at = swipeOffset(g.dx, opened.current, live.current.actions);
+        const at = swipeOffset(g.dx, opened.current, live.current.actions, live.current.ways);
         setShown(at > 0 ? "right" : at < 0 ? "left" : null);
         x.setValue(live.current.primary || at <= 0 ? at : 0);
       },
       onPanResponderRelease: (_, g) => {
-        const { width: w, actions: count, primary: verb } = live.current;
-        const end = swipeRelease(g.dx, g.vx, w, opened.current, count);
+        const { width: w, actions: count, primary: verb, ways: allowed } = live.current;
+        const end = swipeRelease(g.dx, g.vx, w, opened.current, count, allowed);
         if (end === "commit" && verb) {
           opened.current = false;
           settle(w, g.vx * 1000, () => {
@@ -111,6 +120,7 @@ export function SwipeRow({
           settle(0, g.vx * 1000, () => setShown(null));
         }
       },
+      // The host took the gesture (on compact native, any rightward drag): spring home, shut.
       onPanResponderTerminate: () => {
         opened.current = false;
         settle(0, 0, () => setShown(null));
@@ -127,9 +137,9 @@ export function SwipeRow({
     <View
       testID={`swipe-row-${kind}`}
       onLayout={(event: LayoutChangeEvent) => setWidth(event.nativeEvent.layout.width)}
-      style={{ overflow: "hidden", backgroundColor: kit.bg }}
+      style={{ ...CLIP, backgroundColor: kit.bg }}
     >
-      {swipes && shown === "right" && primary ? (
+      {swipes && shown === "right" && rightVerb ? (
         <View
           style={{
             position: "absolute",
@@ -144,8 +154,8 @@ export function SwipeRow({
             gap: 8,
           }}
         >
-          <Icon name={primary.icon} size={17} color="#ffffff" />
-          <Text style={{ color: "#ffffff", fontSize: 13, fontWeight: "600" }}>{primary.label}</Text>
+          <Icon name={rightVerb.icon} size={17} color="#ffffff" />
+          <Text style={{ color: "#ffffff", fontSize: 13, fontWeight: "600" }}>{rightVerb.label}</Text>
         </View>
       ) : null}
       {swipes && shown === "left" ? (
@@ -164,7 +174,7 @@ export function SwipeRow({
                 alignItems: "center",
                 justifyContent: "center",
                 gap: 4,
-                backgroundColor: action === snooze ? kit.warn : kit.blue,
+                backgroundColor: action === primary ? kit.ok : action === snooze ? kit.warn : kit.blue,
               }}
             >
               <Icon name={action.icon} size={17} color="#ffffff" />
@@ -182,13 +192,15 @@ export function SwipeRow({
           accessibilityLabel={[title, meta, age].filter(Boolean).join(", ")}
           accessibilityActions={
             swipes
-              ? actions.concat(primary ? [primary] : []).map((a) => ({ name: a.label, label: a.label }))
+              ? leftActions(BOTH_WAYS, primary, snooze, open)
+                  .concat(primary ? [primary] : [])
+                  .map((a) => ({ name: a.label, label: a.label }))
               : undefined
           }
           onAccessibilityAction={(event) =>
             [primary, ...actions].find((a) => a?.label === event.nativeEvent.actionName)?.onPress()
           }
-          onPress={onPress}
+          onPress={opened.current ? close : onPress}
           style={({ pressed }) => ({
             flexDirection: "row",
             alignItems: "center",

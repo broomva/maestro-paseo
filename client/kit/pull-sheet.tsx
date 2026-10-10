@@ -12,6 +12,7 @@ import { Animated, PanResponder, Platform, Pressable, ScrollView, Text, View } f
 import { tint } from "../fleet-color";
 import { useReducedMotion } from "../ui";
 import { chromeInset, nativeDriver } from "./assumptions";
+import { CLIP, PASS_THROUGH, SafeBottom } from "./parts";
 import {
   dragProgress,
   releaseVelocity,
@@ -31,8 +32,8 @@ export const TAB_BAND = TAB_BAR_HEIGHT + 10;
 /** What shows of the sheet when it is down: the grabber, the title and one line of counts. */
 export const PEEK = 104;
 
-export function sheetGeometry(height: number, top: number, inset = chromeInset(Platform.OS)): SheetGeometry {
-  return { height, top, tabBar: TAB_BAND, peek: PEEK, inset };
+export function sheetGeometry(height: number, top: number, inset = chromeInset(Platform.OS), safe = 0): SheetGeometry {
+  return { height, top, tabBar: TAB_BAND, peek: PEEK, inset, safe };
 }
 
 export function PullSheet({
@@ -40,6 +41,7 @@ export function PullSheet({
   height,
   top,
   inset,
+  safeBottom,
   tabBar,
   title,
   counts,
@@ -53,8 +55,10 @@ export function PullSheet({
   height: number;
   /** Where the tab bar stops when the sheet is up. */
   top: number;
-  /** Paseo's bottom chrome (assumption A3); defaults to the platform's. */
+  /** Paseo's bottom chrome: none on 0.11.1 (F3). */
   inset?: number;
+  /** The home indicator's height; measured with RN SafeAreaView when not given. */
+  safeBottom?: number;
   tabBar: ReactNode;
   title: string;
   /** The line of counts under the title. */
@@ -68,13 +72,15 @@ export function PullSheet({
   const kit = kitOf(theme);
   const reduced = useReducedMotion();
   const bottomChrome = inset ?? chromeInset(Platform.OS);
-  const geometry = sheetGeometry(height, top, bottomChrome);
+  const [measured, setMeasured] = useState(0);
+  const safe = safeBottom ?? measured;
+  const geometry = sheetGeometry(height, top, bottomChrome, safe);
   const { travel } = sheetRange(geometry);
   const progress = useRef(new Animated.Value(initial)).current;
   const [position, setPosition] = useState<0 | 1>(initial);
   const drive = useMemo(
-    () => sheetDrive(progress, sheetGeometry(height, top, bottomChrome)),
-    [progress, height, top, bottomChrome],
+    () => sheetDrive(progress, sheetGeometry(height, top, bottomChrome, safe)),
+    [progress, height, top, bottomChrome, safe],
   );
   const live = useRef({ position, travel, onPosition, reduced });
   live.current = { position, travel, onPosition, reduced };
@@ -122,7 +128,11 @@ export function PullSheet({
 
   const up = position === 1;
   return (
-    <View style={{ position: "absolute", top: 0, left: 0, right: 0, height, pointerEvents: "box-none" }}>
+    <View
+      testID="pull-sheet-root"
+      style={[PASS_THROUGH, { position: "absolute", top: 0, left: 0, right: 0, height, ...CLIP }]}
+    >
+      {safeBottom === undefined ? <SafeBottom onBottom={setMeasured} /> : null}
       <Animated.View
         style={{
           pointerEvents: up ? "auto" : "none",
@@ -135,7 +145,7 @@ export function PullSheet({
           opacity: drive.scrim,
         }}
       >
-        <Pressable accessibilityLabel="Lower the sheet" style={{ flex: 1 }} onPress={() => settle(0)} />
+        <Pressable accessibilityLabel="Back to the deck" style={{ flex: 1 }} onPress={() => settle(0)} />
       </Animated.View>
       <Animated.View
         testID="pull-sheet-rider"
@@ -179,7 +189,10 @@ export function PullSheet({
             </Text>
             {counts}
           </View>
-          <ScrollView scrollEnabled={up} contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 80, gap: 14 }}>
+          <ScrollView
+            scrollEnabled={up}
+            contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 80 + safe, gap: 14 }}
+          >
             {children}
           </ScrollView>
         </View>

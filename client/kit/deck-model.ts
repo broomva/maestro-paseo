@@ -1,7 +1,17 @@
 // The phone's deck (M1c, in M1): one hold at a time, its verbs 52 pt tall,
-// swipe sideways for the next. The detail card that rises from it (M2–M4) says
+// swipe sideways for the next. On compact native a rightward swipe is Paseo's
+// (BRO-3033 fact 3), so there the deck pages forward by a leftward swipe and
+// to any hold by a tap on its segment. The detail card that rises from it (M2–M4) says
 // where you are, "Approval · 1 of 4", with a segment per hold. Pure
 // (client/kit/deck.test.ts).
+
+import type { Directions } from "./assumptions";
+
+/** The hold to open on: the index of `key` among the keys, else the first (BRO-3033 fact 2: `params.hold`). */
+export function indexOfKey(keys: readonly string[], key: string | undefined): number {
+  const at = key === undefined ? -1 : keys.indexOf(key);
+  return at < 0 ? 0 : at;
+}
 
 export const DECK = {
   /** A sideways swipe past this share of the width moves one hold. */
@@ -16,13 +26,22 @@ export const DECK = {
   gap: 12,
 } as const;
 
-/** Whether a move starts the deck's swipe: sideways, past the slop. */
-export function deckCaptures(dx: number, dy: number): boolean {
-  return Math.abs(dx) > DECK.slop && Math.abs(dx) > Math.abs(dy) * 1.5;
+/** Whether a move starts the deck's swipe: sideways, past the slop, in a direction it may go. */
+export function deckCaptures(dx: number, dy: number, directions: Directions): boolean {
+  if (Math.abs(dx) <= DECK.slop || Math.abs(dx) <= Math.abs(dy) * 1.5) return false;
+  return dx > 0 ? directions.right : directions.left;
 }
 
-/** The hold a sideways release lands on: one step at most, never past either end. */
-export function deckRelease(index: number, count: number, dx: number, vx: number, width: number): number {
+/** The hold a sideways release lands on: one step at most, never past either end, never a way it may not go. */
+export function deckRelease(
+  index: number,
+  count: number,
+  dx: number,
+  vx: number,
+  width: number,
+  directions: Directions,
+): number {
+  if (dx > 0 ? !directions.right : !directions.left) return index;
   const far = Math.abs(dx) >= width * DECK.advance;
   const flung = Math.abs(vx) >= DECK.flick && Math.abs(dx) >= DECK.flickMin;
   if (!far && !flung) return index;
@@ -30,9 +49,10 @@ export function deckRelease(index: number, count: number, dx: number, vx: number
   return Math.min(Math.max(next, 0), Math.max(count - 1, 0));
 }
 
-/** The strip's offset while dragging: the edges resist, so the first and last holds stay put. */
-export function deckOffset(index: number, count: number, dx: number, width: number): number {
+/** The strip's offset while dragging: the edges resist, so the first and last holds stay put; a barred way does not move. */
+export function deckOffset(index: number, count: number, dx: number, width: number, directions: Directions): number {
   const base = -index * (width + DECK.gap);
+  if (dx > 0 ? !directions.right : !directions.left) return base;
   const atEdge = (index === 0 && dx > 0) || (index >= count - 1 && dx < 0);
   return base + (atEdge ? dx / 3 : dx);
 }

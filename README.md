@@ -937,6 +937,10 @@ npm run check      # tsc, Biome, bun test
 `@getpaseo/plugin` is a development dependency for types only; the host supplies it at runtime.
 It is pinned to 0.11.1, the host it is built against; the screen API (`addScreen`, `openScreen`) needs a 0.11 host.
 
+The J/M component kit (inspector, glance tile, deck, pull-up sheet with its tab bar, detail header, swipe row,
+undo toast, Undertow) lives in `client/kit/`, with a gallery screen behind `MAESTRO_KIT_GALLERY=1`; see
+[client/kit/README.md](client/kit/README.md).
+
 ## Limits
 
 - Hook events are live and best effort. Every list reconciles bound work against the agent's real

@@ -4,20 +4,24 @@
 // row gets the 15 px tidepool dot; standing work a quiet pulse. Running only:
 // the components read the state and decide nothing else
 // (client/kit/undertow-model.ts). Reduced motion stops every layer and the halo
-// holds still. Gradients pass through react-native-web as backgroundImage; on
-// iOS the halo is a still ring of tinted Views (client/kit/assumptions.ts A1).
+// holds still. Every gradient sets both keys (BRO-3033 fact 5): react-native-web
+// renders `backgroundImage`, iOS `experimental_backgroundImage`. The halo moves
+// on the web; on iOS it holds still, since animating a gradient there is
+// untested (client/kit/assumptions.ts F1, A1). The orbit is a conic gradient,
+// which React Native does not draw, so it is the web's alone. Android keeps the
+// still ring of tinted Views.
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Animated, Easing, type LayoutChangeEvent, Platform, View, type ViewStyle } from "react-native";
 import { tint } from "../fleet-color";
 import { useReducedMotion } from "../ui";
-import { nativeDriver, type UndertowLook, undertowLook } from "./assumptions";
+import { gradientStyle, nativeDriver, type UndertowLook, undertowLook, undertowMotion } from "./assumptions";
 import { kitOf } from "./tokens";
 import { UNDERTOW_MS, undertowMarks } from "./undertow-model";
 
-/** A style key react-native-web passes to the DOM and React Native's types omit. */
-const image = (backgroundImage: string) => ({ backgroundImage }) as unknown as ViewStyle;
+/** A gradient under both keys (assumptions.ts F1); React Native's types know neither. */
+const image = (gradient: string) => gradientStyle(gradient) as unknown as ViewStyle;
 
 /** A 0→1 value that loops over `ms` while `on`, and rests at `rest` when not. */
 function useLoop(ms: number, on: boolean, rest = 0.5, alternate = false): Animated.Value {
@@ -44,26 +48,29 @@ function useLoop(ms: number, on: boolean, rest = 0.5, alternate = false): Animat
 
 /**
  * A card's halo, only while `state` is running; any other state renders the
- * children as they are. `look` overrides the platform's (A1).
+ * children as they are. `look` overrides the platform's (F1), `still` its motion (A1).
  */
 export function Undertow({
   theme,
   state,
   children,
   look,
+  still,
   radius = 16,
 }: {
   theme: PluginTheme;
   state: string;
   children: ReactNode;
   look?: UndertowLook;
+  /** Hold the gradient still (A1's override); by default it moves on the web only. */
+  still?: boolean;
   radius?: number;
 }) {
   const kit = kitOf(theme);
   const reduced = useReducedMotion();
   const halo = undertowMarks(state).halo;
   const chosen = look ?? undertowLook(Platform.OS);
-  const moving = halo && chosen === "gradient" && !reduced;
+  const moving = halo && chosen === "gradient" && !reduced && !(still ?? !undertowMotion(Platform.OS));
   const pools = useLoop(UNDERTOW_MS.pools, moving, 0.5, true);
   const tide = useLoop(UNDERTOW_MS.tide, moving, 0.5, true);
   const orbit = useLoop(UNDERTOW_MS.orbit, moving, 0.15);
@@ -120,7 +127,7 @@ export function Undertow({
           { transform: [{ translateX: tide.interpolate({ inputRange: [0, 1], outputRange: [0, -box.width] }) }] },
         ]}
       />
-      {side > 0 ? (
+      {side > 0 && Platform.OS === "web" ? (
         <Animated.View
           style={[
             {
@@ -149,18 +156,21 @@ export function TidepoolDot({
   theme,
   state,
   look,
+  still,
   size = 15,
 }: {
   theme: PluginTheme;
   state: string;
   look?: UndertowLook;
+  still?: boolean;
   size?: number;
 }) {
   const kit = kitOf(theme);
   const reduced = useReducedMotion();
   const chosen = look ?? undertowLook(Platform.OS);
   const on = undertowMarks(state).dot;
-  const turn = useLoop(UNDERTOW_MS.tide, on && chosen === "gradient" && !reduced, 0);
+  const moves = !(still ?? !undertowMotion(Platform.OS));
+  const turn = useLoop(UNDERTOW_MS.tide, on && chosen === "gradient" && !reduced && moves, 0);
   if (!on) return null;
   const round = { width: size, height: size, borderRadius: size } as const;
   if (chosen === "ring") {
