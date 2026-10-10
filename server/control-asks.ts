@@ -508,7 +508,8 @@ export async function acquireLock(
 
 /**
  * Drops every lock in the root that this process left behind: its own pid and
- * start, not held now. Run at each scan (§5.5), so another writer is never kept
+ * start, not held now. Run by each plugin sweep (§5.5's "at each scan"; server/sweep.ts), so another
+ * writer is never kept
  * waiting on a lock of Maestro's that only Maestro's next answer would clear.
  * It runs between this process's answers, never during one (exclusive): a lock
  * released and taken again meanwhile would otherwise read as left behind.

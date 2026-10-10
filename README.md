@@ -254,9 +254,10 @@ even with the loop off. Each sweep:
   adopted child whose branch merged closes; then the decisions at your gate whose 8-second undo
   window closed are applied (a send back prompts the session);
 - in the background, without holding up the work: fetches the control repo's origin/main for the
-  asks and then records the loops' drift (its ledger fetched first), one after the other so the two
-  fetches never race for one ref, each fetch at most every 5 minutes (`MAESTRO_PASEO_FETCH_SECONDS`
-  overrides that; 0 fetches every sweep); and clears the ledger locks this process left behind.
+  asks and then records the loops' drift (its ledger fetched first), one after the other so the
+  sweep's two fetches never race each other, each at most every 5 minutes (`MAESTRO_PASEO_FETCH_SECONDS`
+  overrides that for the control repo; 0 fetches every sweep); and clears the ledger locks this
+  process left behind.
 
 One sweep runs at a time (its lease): a sweep asked for while one runs is the next one, shared by
 everyone who asked meanwhile. A step that fails is logged and keeps no other from running. The first
@@ -1005,8 +1006,9 @@ undo toast, Undertow) lives in `client/kit/`, with a gallery screen behind `MAES
 ## Limits
 
 - Hook events are live and best effort. The plugin sweep reconciles bound work against the agent's
-  real status every 30 seconds, so a turn end missed while the plugin was stopped is recovered within
-  a sweep of the plugin's return, whether or not anyone looks. A
+  real status every 30 seconds once the plugin has its daemon client, so a turn end missed while the
+  plugin was stopped is recovered whether or not anyone looks. The first hook after a restart brings
+  the client and sweeps at once; a client a read brings is used by the next sweep, within 30 seconds. A
   recovered end reads the session's timeline for its real outcome, is stamped when the agent
   actually stopped, and lands at your gate under the same rule as a live one (an adopted arc only
   with something to decide): work never closes itself on an end Maestro did not see. A correction is dropped if anything was recorded after reconcile looked.

@@ -141,7 +141,7 @@ describe("the plugin sweep (BRO-2995)", () => {
     expect(runs).toHaveLength(2);
   });
 
-  test("stopped while a sweep runs: that sweep finishes, and no next one is armed", async () => {
+  test("stopped while a sweep runs: no next one is armed", async () => {
     const timers = fakeTimers();
     const work = heldStep("the work");
     const sweep = new Sweep({ steps: [work.step], client: () => null, timer: timers.timer, log: () => undefined });
