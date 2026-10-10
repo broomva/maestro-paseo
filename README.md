@@ -27,27 +27,30 @@ those, and nothing Paseo already does.
 
 ## What you get in Paseo
 
-- **Maestro** in the sidebar: all work, attention first (Needs you, Running, Queued, Done; Needs you
-  holds work at your gate, stuck work and work the loop flagged, the same set the header count counts),
-  the unsupervised-hours scoreboard, and a detail pane with the verb each item needs. The chips
-  follow the sections: each counts exactly what it shows, Stuck narrows Needs you to its stuck
-  work, and Needs you, Running, Queued and Done add up to All.
+- **Maestro** in the sidebar: all work, attention first (Needs you, Stuck, Running, Queued, Done;
+  Needs you holds work at your gate and queued work only you may start, the work the header count
+  counts; stuck work and a quiet run are watched, under Stuck and Running: see
+  [What needs you](#what-needs-you)), the unsupervised-hours scoreboard, and a detail pane with the
+  verb each item needs. The chips follow the sections: each counts exactly what it shows, and Needs
+  you, Stuck, Running, Queued and Done add up to All.
 - **Two groups of views.** *Work*: Feed, Board, List, History. *System*: Fleet, Decisions, Timeline,
-  Initiatives, Loops. A wide window shows them as tabs under their group's label; Decisions carries its open
-  count, in the warning color (and the words "wait on you" for a screen reader) when an ask waits on
-  you. A phone shows one button naming the view you are on, which opens every view, grouped, as a
-  menu of 44 pt rows.
+  Initiatives, Loops. A wide window shows them as tabs under their group's label. The Feed carries
+  what needs you (needs.list's total), Decisions the asks that wait on you and the answers batch,
+  Initiatives its due reviews, each in the warning color and in words for a screen reader. A phone
+  shows one button naming the view you are on, which opens every view, grouped, as a menu of 44 pt
+  rows.
 - **Decisions**: your workspace's decision asks one at a time, with keys on the web (see
   [Decisions](#decisions)).
 - **Fleet**, a system view: fleet-reconcile's hourly runs per scope, with your verdict on
   what its dry run would do (see [The Fleet](#the-fleet)).
 - **Timeline**, a view beside the Fleet: every scheduled session and loop on one time axis, the past
-  24 hours and the next 24, with a failed or missed run in Needs you (see [The Timeline](#the-timeline)).
+  24 hours and the next 24, with a failed or missed run shown above the other views (see
+  [The Timeline](#the-timeline)).
 - **Initiatives**, a view beside the Timeline: your workspace's initiatives, one card each, and the
   ideas agent sessions left for them, each answered develop / park / kill (see
   [Initiatives](#initiatives)).
 - **Loops**, every loop on this machine beside its intent in the loop ledger, with a badge per drift
-  and the drift that needs you in Needs you (see [Loops](#loops)).
+  and drift that needs its pinned fix shown above the other views (see [Loops](#loops)).
 - **Work** panel beside any agent: the work it is running, or a button to track it.
 - **Command Center**: *Open Maestro*, and *Track this session in Maestro* on an agent.
 - **`/maestro [title]`** in the composer: track the current session as work.
@@ -58,6 +61,26 @@ those, and nothing Paseo already does.
 | Broomva light | Broomva dark |
 |---|---|
 | ![Receipts](docs/receipts-broomva-light.png) | ![Checks](docs/checks-broomva-dark.png) |
+
+## What needs you
+
+Needs you is only a hold (owner answer A1): something stops until you give it. The daemon computes it
+once, `needs.list` (server/needs.ts, BRO-3001), and every count reads it: the header in every workspace,
+the subtitle, the tab badges, the Feed's *Needs you* section, the Fleet band and the push. So they cannot
+disagree, and a test holds them equal (server/needs-invariant.test.ts).
+
+| Kind | What holds on you | Opens |
+|---|---|---|
+| Approval | Work at your gate: a permission prompt the session is paused on, or a landing Maestro's human gate holds | The work |
+| Ask | A decision ask that waits on you (blocking, or recommending what cannot be undone), the workspace's and each fleet root's; an initiative whose review is due | Decisions, at that ask; Initiatives |
+| Owner step | Queued work only you may start ("Start it yourself"); the answers batch while it waits to land or has stopped | The work; Decisions |
+
+What you watch is shown, never counted: stuck work (under Stuck), a quiet run (under Running), a missed or
+failing fleet tick, a failed or missed scheduled run, loop drift, an open ask that does not wait on you,
+and an answer that waits for the conductor. The push from a landing says the same number as the header
+(*3 need you · the work's title*). `handled.list` is its counterpart: what closed in the last week and
+who closed it (the gates, an orchestrator, Maestro, or you), with today's counts. The Feed's *Handled for
+you* reads it. Both are pure reads: they reconcile no session and write nothing.
 
 ## Install
 
@@ -296,12 +319,13 @@ you, flags quiet runs, and lands and routes your answers.
     already under way, so Maestro records it running and says on the work when that is over the cap:
     "Resumed in the session over the cap: 2 of 1 slot taken (2 running). No run starts until one
     ends."
-- **What needs you lands in Needs you.** A wake flags two things on the work itself, so they show in
-  Maestro's Needs you (the feed's and the list's section, the chip, the board's column, the header
-  count, `maestro ls`; one definition, `shared/needs-you.ts`) with the reason on the card and in the
-  detail: a run quiet for 30 minutes or more ("Quiet for N minutes, worth a look"), and queued work
-  only you may start ("Start it yourself: ..."): held for you (an owner-only answer's act, an idea
-  you chose to develop), or carrying a mode you chose for it. A session's dispatch refuses both, so
+- **What only you may start lands in Needs you.** A wake flags two things on the work itself, with
+  the reason on the card and in the detail. Queued work only you may start ("Start it yourself:
+  ...") is an owner step in Needs you (the feed's and the list's section, the chip, the board's
+  column, the header count, `maestro ls`; one definition, `shared/needs-you.ts`): held for you (an
+  owner-only answer's act, an idea you chose to develop), or carrying a mode you chose for it. A run
+  quiet for 30 minutes or more ("Quiet for N minutes, worth a look") is watched: it stays under
+  Running, flagged, and never counts. A session's dispatch refuses both, so
   no lane or conductor can start them. Each flag is one `loop.flagged` receipt, written only when
   the work's current flag is not already of that kind, so a wake every minute adds nothing. Anything
   else that happens to the work (your dispatch or cancel, a turn, a state change, a note) clears it.
@@ -474,8 +498,8 @@ the control repo (`~/broomva`, or `MAESTRO_PASEO_CONTROL_REPO`), each ask read w
   none is offered. *Recently answered* lists the latest answered asks, folded, each with where it
   was written.
 - **Getting there.** A decision that waits on you shows above every other view with *Open
-  Decisions*, which opens the tab at that ask. When only workspace asks wait, the header count opens
-  the tab, blocking first. An initiative's *Open in Decisions* opens it at that ledger and ask.
+  Decisions*, which opens the tab at that ask. When only asks wait, the header count opens the tab,
+  blocking first. An initiative's *Open in Decisions* opens it at that ledger and ask.
 
 ## The Fleet
 
@@ -512,17 +536,16 @@ Top to bottom:
   badge (*Dry run · report only*) and the cadence (*Hourly · next tick in 29 min*, from the
   LaunchAgent's interval and the last tick's start; *By hand only* when nothing schedules it).
   There is no *Run tick now* and no *Pause*: the view stays read-only toward the fleet.
-- **What needs you, one number.** One selector (`fleetNeedsYou`, client/fleet-cockpit-model.ts) says
-  what the fleet needs from you, and the health band, the *Needs you* tile, the *Needs you* section
-  and the fleet's share of the header's *N need you* all read it. It counts what the header counts,
-  each once: a scope whose missed or failing tick needs you, an alert the fleet raised as work that
-  needs you, an ask batch raised as work that needs you (one per item, however many asks it
-  carries), and a decision ask in the fleet's own root that waits on you (`waiting`: blocking, or
-  recommending what cannot be undone). Sessions that want a look are named beside it (*6 sessions
-  want a look*), never in it: the header does not count them. The band says how it relates to the
-  header's own count (the subtitle under Maestro's title reads the same Maestro-wide number; until
-  that read is in, it says "N work items need you", never a bare number), from the header's pieces (needsYouCount over work.attention): *2 need you here
-  · 5 in all (3 in Work)*, each other surface pressable to its view.
+- **The fleet's health, and what needs you.** One selector (`fleetNeedsYou`,
+  client/fleet-cockpit-model.ts) says the fleet's health: a scope whose missed or failing tick wants
+  you, which the health band, the *Health* tile and section read. Health is watched (owner answer
+  A1): the header never counts it. What the fleet holds on you is counted where it lives, once, by
+  needs.list: an ask batch raised as work at your gate (an approval, Work's), and a decision ask in
+  the fleet's own root that waits on you (an ask, Decisions'); the Fleet view shows them under
+  *Counted where they live*. Sessions that want a look are named beside it (*6 sessions want a
+  look*), never counted. The band ends with Maestro's own number, needs.list's total, which the
+  header and the subtitle under Maestro's title say too: *5 need you in Maestro (3 in Work, 2 in
+  Decisions)*, each tab pressable to its view.
 - **The health band.** A verdict that leads with the problem and never overclaims. It is *healthy*
   only when every scope was read, ticks on time, nothing needs you and no session wants a look.
   Otherwise it names, worst first: a scope that cannot be read (no data at all; a refetch that
@@ -663,8 +686,8 @@ The parts, in detail:
   report's `activity_age_s` dates *last active*; nothing is estimated where the report says
   nothing.
 
-A missed or failing tick also shows above every other view and in the header count, so it reaches
-the phone. A failing tick counts only on a scheduled scope; one run by hand was seen by whoever ran
+A missed or failing tick also shows above every other view; it is watched, and never counts in the
+header (owner answer A1). A failing tick counts only on a scheduled scope; one run by hand was seen by whoever ran
 it. When the fleet raised its own alert for the condition, it is counted there, once. That alert
 is `tick-<step>` for a failed step, or `lock`, `config`, `statedir` or `tick` for ticks that never
 start. The rule depends on the alert's state:
@@ -860,9 +883,10 @@ now and the next 24 to its right. It reads four kinds of source:
   the job was proven loaded. A due time after the newest run that falls before judging could start
   (the plugin's first read, a reload, a gap) is never called missed and never read as on time: the
   row says it is not known until the next one.
-- **In Needs you.** A failed or missed source shows above every other view, with *Open Timeline*,
-  and counts in the header count, so it reaches the phone. Fleet scopes are counted once, by the
-  Fleet view's notice or the fleet's own alert work, and never again by the Timeline. The launchd
+- **Above every view.** A failed or missed source shows above every other view, with *Open
+  Timeline*. It is watched (owner answer A1): the header count never counts it. A fleet scope is
+  shown once, by the Fleet view's notice or the fleet's own alert work, and never again by the
+  Timeline. The launchd
   job that runs a fleet scope's ticks is shown as that scope. If the Fleet view cannot be read (or
   does not know that scope), it is shown as a plain launchd job and counted like one, so a failure
   is never hidden for want of the Fleet view.
@@ -879,8 +903,8 @@ It only reads. Every command goes through a guard that runs `launchctl list`, `l
 never load, unload, kickstart or kill a job. It never starts, pauses or edits a schedule.
 
 The unified log costs a few seconds to search, so launchd is read in full once (a day back), then
-only from where the last read ended. The view reads it at most once a minute and the header count
-once every five, and the header count never waits on it more than two seconds.
+only from where the last read ended. The view reads it at most once a minute and the notices above
+the views (work.attention) once every five, and those never wait on it more than two seconds.
 
 For a second daemon or a test:
 

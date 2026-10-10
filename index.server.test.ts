@@ -724,3 +724,110 @@ test("the archive hook hands the engine the daemon's client, so a finished arc c
     }
   }
 });
+
+/** Every file under a folder, with its bytes and its mtime: what a pure read must leave as it found it. */
+async function snapshot(root: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const visit = async (dir: string) => {
+    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await visit(path);
+      else if (entry.isFile()) out.set(path, `${(await stat(path)).mtimeMs}:${await readFile(path, "utf8")}`);
+    }
+  };
+  await visit(root);
+  return out;
+}
+
+test("needs.list and handled.list are wired, and pure: their reads change no file, send nothing, start nothing (BRO-3001)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
+  roots.push(root);
+  const repo = join(root, "repo");
+  await mkdir(join(repo, ".git"), { recursive: true });
+  const config = join(root, "config.json");
+  await writeFile(
+    config,
+    JSON.stringify({
+      workRoot: join(root, "work"),
+      provider: "claude/test-model",
+      modeId: null,
+      isolation: "worktree",
+    }),
+  );
+  const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
+  const isolated = [
+    "MAESTRO_PASEO_FLEET_CONFIG",
+    "MAESTRO_PASEO_FLEET_STATE",
+    "MAESTRO_PASEO_FLEET_AGENTS",
+    "MAESTRO_PASEO_CONTROL_REPO",
+    "MAESTRO_PASEO_CONTROL_ANSWERS",
+    "MAESTRO_PASEO_ASK_RECEIPTS",
+    "MAESTRO_PASEO_ASK_LOCKS",
+  ] as const;
+  const savedIsolated = isolated.map((key) => [key, process.env[key]] as const);
+  for (const key of isolated) process.env[key] = join(root, "no-fleet", key);
+  process.env.MAESTRO_PASEO_CONFIG = config;
+  process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
+  const { host, handlers, hooks } = fakeHost();
+  const cleanup = contribute(host);
+  const fake = fakePaseo();
+  const context = { paseo: fake.paseo, signal: new AbortController().signal };
+  const run = async (name: string, input: unknown) => {
+    const handler = handlers.get(name);
+    if (!handler) throw new Error(`${name} is not handled`);
+    return (await handler(input, context)) as Record<string, unknown> & { item: { id: string; state: string } };
+  };
+  try {
+    // Work in three states: queued, at your gate, and stuck.
+    const base = { brief: "", repo, initiative: "", dispatch: false, check: "", gate: "human" };
+    const { item: queued } = await run("work.create", { ...base, title: "Queued" });
+    const { item: gated } = await run("work.create", { ...base, title: "At your gate" });
+    await run("work.dispatch", { id: gated.id });
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    const ended = hooks.get("agent.turn_ended");
+    if (!ended) throw new Error("agent.turn_ended is not subscribed");
+    await ended({ agent: { id: "agent-1" }, outcome: { kind: "completed" }, timeline: [], turnId: "t1" }, context);
+    const { item: stuck } = await run("work.create", { ...base, title: "Stuck" });
+    await run("work.dispatch", { id: stuck.id });
+    await run("work.stop", { id: stuck.id, discard: true });
+    // Its session went back to work: a reconcile would move the work off your gate and write it. No read here may.
+    if (agent) agent.status = "running";
+
+    // The one hold is the work at your gate: an approval. Queued and stuck work hold nothing of yours (A1).
+    const needs = (await run("needs.list", {})) as unknown as {
+      rows: { key: string; kind: string }[];
+      summary: { total: number; byKind: Record<string, number> };
+    };
+    expect(needs.rows.map((row) => [row.key, row.kind])).toEqual([[`work:${gated.id}`, "approval"]]);
+    expect(needs.summary).toMatchObject({ total: 1, byKind: { ask: 0, approval: 1, owner_step: 0 } });
+    expect(((await run("needs.list", { kind: "ask" })) as unknown as { rows: unknown[] }).rows).toEqual([]);
+    expect(queued.state).toBe("proposed");
+    const handled = (await run("handled.list", {})) as unknown as { rows: unknown[]; today: Record<string, number> };
+    expect(handled).toEqual({ rows: [], today: { closedForYou: 0, byYou: 0, asksAnswered: 0 } });
+
+    // Pure: read both 25 times; no file under the work root or beside the config changes, nothing is sent or started.
+    const before = await snapshot(root);
+    const counts = () => [fake.sent.length, fake.created.length, fake.archived.length];
+    const sentBefore = counts();
+    for (let read = 0; read < 25; read += 1) {
+      await run("needs.list", {});
+      await run("handled.list", {});
+    }
+    expect(counts()).toEqual(sentBefore);
+    expect(await snapshot(root)).toEqual(before);
+    // Still the one hold it was: what needs you moves when the sweep or an event moves it, never on a read.
+    const again = (await run("needs.list", {})) as unknown as { rows: { key: string }[] };
+    expect(again.rows.map((row) => row.key)).toEqual([`work:${gated.id}`]);
+  } finally {
+    await cleanup();
+    process.env.MAESTRO_PASEO_CONFIG = saved.config;
+    process.env.MAESTRO_PASEO_SOCKET = saved.socket;
+    if (saved.config === undefined) delete process.env.MAESTRO_PASEO_CONFIG;
+    if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
+    for (const [key, value] of savedIsolated) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});

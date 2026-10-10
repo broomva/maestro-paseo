@@ -51,16 +51,6 @@ export function groupedViews(views: readonly ViewOption[]): { group: ViewGroup; 
   })).filter((entry) => entry.views.length > 0);
 }
 
-/** The Decisions tab's badge: the open count, warn when any waits on you; none when nothing is open. */
-export function decisionsBadge(open: number, waiting: number): { count: number; warn: boolean; label: string } | null {
-  if (open <= 0) return null;
-  return {
-    count: open,
-    warn: waiting > 0,
-    label: `${open} open${waiting > 0 ? `, ${waiting} ${waiting === 1 ? "waits" : "wait"} on you` : ""}`,
-  };
-}
-
 export type Filter = "all" | Group;
 export const FILTERS: readonly Filter[] = ["all", ...GROUP_ORDER];
 
@@ -70,14 +60,15 @@ export function filterLabel(filter: Filter): string {
 
 /**
  * Whether an item is under a chip. The chips follow the sections (sectionOf):
- * Needs you, Running, Queued and Done each hold exactly what their section
- * lists, so flagged or stuck work is under Needs you and under no state chip.
- * Stuck narrows Needs you to its stuck work. All holds everything, which is
- * the four sections together, since each item is in exactly one.
+ * Needs you, Stuck, Running, Queued and Done each hold exactly what their
+ * section lists, so work only you may start is under Needs you and under no
+ * state chip, and stuck work is under Stuck (owner answer A1: watched, not a
+ * hold). All holds everything, which is the five sections together, since
+ * each item is in exactly one.
  */
 export function inFilter(item: Pick<WorkItem, "group" | "flag">, filter: Filter): boolean {
   if (filter === "all") return true;
-  return filter === "blocked" ? item.group === "blocked" : sectionOf(item) === filter;
+  return sectionOf(item) === filter;
 }
 
 export function applyFilter(items: readonly WorkItem[], filter: Filter): WorkItem[] {
@@ -162,9 +153,9 @@ export function groupHint(group: Group, loopOn: boolean): string {
 
 /**
  * The feed's and the list's sections, non-empty, in attention order. Needs
- * you holds what needs you (at your gate, stuck, then flagged), as the board's
- * column and the header count do, so stuck and flagged work is listed there
- * and not again under its own group.
+ * you holds the work that needs you (at your gate, then what only you may
+ * start), as the board's column and needs.list do, so work only you may start
+ * is listed there and not again under Queued; stuck work is under Stuck.
  */
 export function groupsOf(items: readonly WorkItem[]): { group: Group; items: WorkItem[] }[] {
   return GROUP_ORDER.map((group) => ({
@@ -174,7 +165,7 @@ export function groupsOf(items: readonly WorkItem[]): { group: Group; items: Wor
 }
 
 export interface Column {
-  id: "queued" | "running" | "needs-you" | "done";
+  id: "queued" | "running" | "stuck" | "needs-you" | "done";
   title: string;
   hint: string;
   items: WorkItem[];
@@ -184,15 +175,16 @@ export interface Column {
 const COLUMNS: readonly { id: Column["id"]; group: Group }[] = [
   { id: "queued", group: "queued" },
   { id: "running", group: "running" },
+  { id: "stuck", group: "blocked" },
   { id: "needs-you", group: "review" },
   { id: "done", group: "done" },
 ];
 
 /**
- * Four columns, always present so work moves across a fixed frame. Needs you
- * lists review, then stuck, then work the loop flagged, which it takes from
- * its own column: each item shows once, in the section the feed puts it in
- * (sectionOf). `loopOn` words the Queued hint.
+ * Five columns, always present so work moves across a fixed frame. Needs you
+ * lists review, then work only you may start, which it takes from Queued;
+ * Stuck lists stuck work: each item shows once, in the section the feed puts
+ * it in (sectionOf). `loopOn` words the Queued hint.
  */
 export function boardColumns(items: readonly WorkItem[], loopOn = false): Column[] {
   return COLUMNS.map(({ id, group }) => ({
@@ -254,17 +246,11 @@ export function cardLabel(item: WorkItem, now = Date.now()): string {
 }
 
 /**
- * The header line: what needs a person, then what is moving, each counted as
- * its section lists it. Stuck and flagged work is in "need you" (as in the
- * header count), and a flagged run is not counted again as running.
- */
-/**
- * The subtitle: what needs you and what runs. `needsYou` is the header's own
- * Maestro-wide count (header-count.ts needsYouCount over work.attention), so
- * the subtitle, the Paseo header badge and the Fleet band's "in all" are one
- * number. Without it (its read not in yet, or failed) the subtitle never
- * shows a bare number that could disagree: it says what it counts, the work
- * items alone ("3 work items need you").
+ * The subtitle: what needs you and what runs. `needsYou` is needs.list's
+ * total (BRO-3001), so the subtitle, the Paseo header badge, the tabs and the
+ * Fleet band's "in all" are one number. Without it (its read not in yet, or
+ * failed) the subtitle never shows a bare number that could disagree: it says
+ * what it counts, the work items alone ("3 work items need you").
  */
 export function summaryText(items: readonly WorkItem[], needsYou: number | null = null): string {
   const work = needsYouOf(items).length;

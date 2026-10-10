@@ -89,7 +89,7 @@ features:
     kind: watch
     pages: [P-header]
     interfaces: [I-needs-list]
-    code: [client/header-count.ts, client/integrations.ts]
+    code: [client/header-count.ts, client/integrations.ts, server/needs.ts]
   F-briefing:
     name: Briefing — an item opened beside the Feed, with its evidence and its verbs
     status: change
@@ -540,8 +540,8 @@ interfaces:
     status: new
     handler: plugin
     callers: [ui, conductor]
-    code: [server/attention.ts]
-  I-handled-list: { name: "handled.list", status: new, handler: plugin, callers: [ui] }
+    code: [server/needs.ts, shared/needs.ts, index.server.ts]
+  I-handled-list: { name: "handled.list", status: new, handler: plugin, callers: [ui], code: [server/needs.ts, shared/needs.ts, index.server.ts] }
   I-work-list: { name: "work.list", status: change, handler: plugin, callers: [ui, worker], code: [server/engine.ts, shared/contracts.ts] }
   I-work-get: { name: "work.get", status: keep, handler: plugin, callers: [ui, worker], code: [server/engine.ts] }
   I-work-history: { name: "work.history", status: keep, handler: plugin, callers: [ui], code: [server/records.ts] }
@@ -645,7 +645,7 @@ interfaces:
   # Retired.
   I-work-dispatch: { name: "work.dispatch (the plugin starts a session)", status: retire, handler: plugin, callers: [ui, worker, lane], launches: true, stores: [S-work], code: [server/engine.ts, server/runs.ts] }
   I-work-verdict: { name: "work.verdict approve, revise, block", status: retire, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
-  I-work-attention: { name: "work.attention (lists the client sums)", status: retire, handler: plugin, callers: [ui], code: [server/attention.ts] }
+  I-work-attention: { name: "work.attention (the watched notices and the pills' sessions; no count reads it since BRO-3001)", status: retire, handler: plugin, callers: [ui], code: [server/attention.ts] }
 
 stores:
   S-config: { name: "~/.config/maestro-paseo/config.json", status: change, owner: plugin, modules: [server/config.ts], code: [server/config.ts] }
@@ -836,10 +836,11 @@ findings:
   FND-client-counts:
     name: The client sums six lists into the count, and three surfaces disagree (Fleet band omits loops)
     severity: major
-    state: open
+    state: fixed
     ticket: BRO-3001
     about: [I-needs-list, F-header-counts, P-header]
-    code: [client/header-count.ts:36, client/fleet-cockpit-model.ts:318, client/plane-model.ts:55]
+    code: [server/needs.ts, client/header-count.ts, client/hooks.ts]
+    note: "needs.list is computed once on the server; the header, the tabs, the Feed's Needs you, the Fleet band and the push read it, and server/needs-invariant.test.ts holds them equal."
   FND-permission-bypass:
     name: Allow and Deny call Paseo straight from the client in two copied handlers; the engine learns late
     severity: major
@@ -908,9 +909,10 @@ findings:
     name: Four pollers on work.attention at three rates, one outside React Query
     severity: minor
     state: open
-    ticket: BRO-3001
+    ticket: BRO-3069
     about: [L-client-query, I-work-attention]
-    code: [client/hooks.ts:114, client/timeline.tsx:563, client/loops.tsx:224, client/integrations.ts:176]
+    code: [client/hooks.ts, client/integrations.ts]
+    note: "BRO-3001: no count reads work.attention. Two readers remain until notices.list and a pure session list replace them (BRO-3069): the watched bands, through one React Query hook (useWatched), and the composer pills' refresh."
   FND-inbox-echo:
     name: A push needs an echo session from a fake provider; waits on Paseo's notify API (A5)
     severity: minor

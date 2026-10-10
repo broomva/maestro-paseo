@@ -119,12 +119,12 @@ export function fateLine(ask: DecisionAsk): { words: string; tone: "done" | "wai
  * else the first. The line's words and its "Open Decisions" both use this, so
  * the button never opens a different ask than the one named.
  */
-export function noticeAsk(asks: readonly AskNotice[]): AskNotice | null {
+export function noticeAsk<T extends Pick<AskNotice, "headline" | "blocking">>(asks: readonly T[]): T | null {
   return asks.find((ask) => ask.blocking) ?? asks[0] ?? null;
 }
 
 /** The Needs you line for decision asks that wait on you. */
-export function askNoticeText(asks: readonly AskNotice[]): string {
+export function askNoticeText(asks: readonly Pick<AskNotice, "headline" | "blocking">[]): string {
   const first = noticeAsk(asks);
   if (!first) return "";
   if (asks.length === 1) return `A decision waits on you: ${first.headline}`;

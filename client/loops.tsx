@@ -11,9 +11,9 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
-import { attentionWork } from "../shared/contracts";
 import { getLoops, type LoopDrift, type LoopRow } from "../shared/loops";
 import { errorText } from "./format";
+import { useWatched } from "./hooks";
 import { keyedLines } from "./loop-model";
 import {
   DRIFT_WORDS,
@@ -221,13 +221,9 @@ export function LoopsView({ theme }: { theme: PluginTheme }) {
 
 /** A loop drift that needs you, above the other views, with a way to the tab. */
 export function LoopsNotices({ theme, compact, onOpen }: { theme: PluginTheme; compact: boolean; onOpen: () => void }) {
-  const read = useRpc(attentionWork);
-  const attention = useQuery({
-    queryKey: ["maestro", "attention"],
-    queryFn: () => read({}),
-    refetchInterval: LOOPS_POLL_MS,
-  });
-  const notices = attention.data?.loops ?? [];
+  // The one watched read (client/hooks.ts useWatched), at its one pace: nothing counts from it.
+  const watched = useWatched();
+  const notices = watched.data?.loops ?? [];
   if (notices.length === 0) return null;
   return (
     <View style={{ gap: space[2] }}>

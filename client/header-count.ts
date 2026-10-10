@@ -1,95 +1,68 @@
-// The header count: in every workspace, "N need you" while work waits at your
-// gate, is stuck, or was flagged by the loop, or a fleet scope's tick is
-// missed or failing and not already there as the fleet's own work, or another
-// scheduled run failed or was missed (the Timeline's notices), or a decision
-// ask waits on you (blocking, or recommending what cannot be undone), or your
-// answers wait to land through a PR Maestro never merges (shared/answers.ts),
-// and nothing at all while none does. Pure.
+// The header count and the tab badges: in every workspace, "N need you" while
+// anything holds on you, and nothing while none does. The number is needs.list's
+// summary.total (server/needs.ts, BRO-3001): the same rows the Feed's Needs
+// you section lists, the tabs count and the push says. Nothing here adds lists
+// from several reads; each number is the projection's total or the length of
+// the rows a tab lists. Pure.
 
 import type { PluginButton } from "@getpaseo/plugin/client";
-import type { AnswersNotice } from "../shared/answers";
-import type { WorkItem } from "../shared/contracts";
-import type { AskNotice, FleetNotice } from "../shared/fleet";
-import type { InitiativeNotice } from "../shared/initiatives";
-import type { LoopNotice } from "../shared/loops";
-import { needsHand } from "../shared/needs-you";
-import type { TimelineNotice } from "../shared/timeline";
+import { holdOf, type NeedRow, type Needs } from "../shared/needs";
 import type { MaestroIntent } from "./intent";
-
-type Listed = Pick<WorkItem, "id" | "group" | "flag">;
-
-/** Work that needs you: waiting at your gate, stuck, or flagged by the loop (plane-model needsHand). */
-export function needsYou<T extends Listed>(items: readonly T[]): T[] {
-  return items.filter(needsHand);
-}
 
 export function needsYouLabel(count: number): string {
   return `${count} ${count === 1 ? "needs" : "need"} you`;
 }
 
-/**
- * What the count counts: the work that needs you, each fleet notice
- * (server/fleet.ts), each timeline notice (server/timeline.ts), each
- * decision ask that waits on you (shared/fleet.ts isWaiting), and the answers
- * batch while it waits on you (shared/answers.ts answersNotice).
- */
-export function needsYouCount(
-  items: readonly Listed[],
-  fleet: readonly Pick<FleetNotice, "scope">[] = [],
-  timeline: readonly Pick<TimelineNotice, "id">[] = [],
-  asks: readonly Pick<AskNotice, "scope">[] = [],
-  initiatives: readonly Pick<InitiativeNotice, "id">[] = [],
-  answers: readonly Pick<AnswersNotice, "kind">[] = [],
-  loops: readonly Pick<LoopNotice, "id">[] = [],
-): number {
-  return (
-    needsYou(items).length +
-    fleet.length +
-    timeline.length +
-    asks.length +
-    initiatives.length +
-    answers.length +
-    loops.length
-  );
+/** The tab a hold opens in: work in the Feed, an ask and the answers batch in Decisions, a review in Initiatives. */
+export type HoldTab = "feed" | "decisions" | "initiatives";
+
+export function tabOf(row: Pick<NeedRow, "key">): HoldTab {
+  const hold = holdOf(row.key);
+  if (hold?.kind === "ask" || hold?.kind === "answers") return "decisions";
+  if (hold?.kind === "review") return "initiatives";
+  return "feed";
+}
+
+/** The ask's id inside its key (Decisions focuses by its full identity, and by the id beside it). */
+function askId(askKey: string): string | null {
+  try {
+    const parts = JSON.parse(askKey) as unknown;
+    return Array.isArray(parts) && typeof parts[3] === "string" ? parts[3] : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where one hold opens: its work item, its ask in Decisions, its initiative, or Decisions for the answers batch. */
+export function holdTarget(row: Pick<NeedRow, "key">): MaestroIntent {
+  const hold = holdOf(row.key);
+  switch (hold?.kind) {
+    case "work":
+      return { kind: "select", id: hold.id };
+    case "ask": {
+      const id = askId(hold.askKey);
+      return id ? { kind: "decisions", ledger: null, id, key: hold.askKey } : { kind: "decisions" };
+    }
+    case "review":
+      return { kind: "initiatives" };
+    case "answers":
+      return { kind: "decisions" };
+    default:
+      return { kind: "filter", group: "review" };
+  }
 }
 
 /**
- * Where the count opens Maestro: the one item that waits, else Needs you
- * (Stuck when only stuck work waits). The Needs you chip and section hold
- * exactly what needsHand holds (shared/needs-you.ts), stuck and flagged work
- * included, so the filter it opens lists everything the count counted; the
- * fleet's notices sit above every view but the Fleet view, and the
- * timeline's above every view but the Timeline, and the asks' above every
- * view but Decisions, which holds them all. With only fleet notices,
- * it opens the Fleet view at the first; with only asks, or an answers batch
- * that waits, Decisions (blocking first), which lists the workspace's and
- * each fleet root's;
- * with only timeline notices, the Timeline;
- * with only stale or overdue initiatives, Initiatives, whose notices sit above
- * every other view; with only loop drift, Loops (BRO-2911).
+ * Where the count opens Maestro: the one hold, when one is all; Decisions or
+ * Initiatives when every hold opens there; else the Feed, whose Needs you
+ * section lists every hold the count counts.
  */
-export function needsYouTarget(
-  items: readonly Listed[],
-  fleet: readonly Pick<FleetNotice, "scope">[] = [],
-  timeline: readonly Pick<TimelineNotice, "id">[] = [],
-  asks: readonly Pick<AskNotice, "scope">[] = [],
-  initiatives: readonly Pick<InitiativeNotice, "id">[] = [],
-  answers: readonly Pick<AnswersNotice, "kind">[] = [],
-  loops: readonly Pick<LoopNotice, "id">[] = [],
-): MaestroIntent {
-  const waiting = needsYou(items);
-  const [only] = waiting;
-  const [notice] = fleet;
-  const [ask] = asks;
-  const notices = fleet.length + timeline.length + asks.length + initiatives.length + answers.length + loops.length;
-  if (waiting.length === 0 && notice) return { kind: "fleet", scope: notice.scope };
-  if (waiting.length === 0 && (ask || answers.length > 0)) return { kind: "decisions" };
-  if (waiting.length === 0 && timeline.length > 0) return { kind: "timeline" };
-  if (waiting.length === 0 && initiatives.length > 0) return { kind: "initiatives" };
-  if (waiting.length === 0 && loops.length > 0) return { kind: "loops" };
-  if (waiting.length === 1 && only && notices === 0) return { kind: "select", id: only.id };
-  if (waiting.length > 0 && notices === 0 && waiting.every((item) => item.group === "blocked"))
-    return { kind: "filter", group: "blocked" };
+export function needsTarget(needs: Pick<Needs, "rows">): MaestroIntent {
+  const [only] = needs.rows;
+  if (needs.rows.length === 1 && only) return holdTarget(only);
+  const tabs = new Set(needs.rows.map(tabOf));
+  if (tabs.size === 1 && tabs.has("decisions")) return { kind: "decisions" };
+  if (tabs.size === 1 && tabs.has("initiatives")) return { kind: "initiatives" };
   return { kind: "filter", group: "review" };
 }
 
@@ -104,4 +77,32 @@ export function headerSpecs(workspaceIds: readonly string[], count: number): Map
 export function headerFace(count: number): Pick<PluginButton, "title" | "label" | "icon" | "visible"> {
   const label = needsYouLabel(count);
   return { title: `${label} in Maestro`, label, icon: "Inbox", visible: count > 0 };
+}
+
+/** How many holds open in each tab: the lengths of needs.list's rows by where they open (tabOf). */
+export function holdsByTab(rows: readonly Pick<NeedRow, "key">[]): Record<HoldTab, number> {
+  const out: Record<HoldTab, number> = { feed: 0, decisions: 0, initiatives: 0 };
+  for (const row of rows) out[tabOf(row)] += 1;
+  return out;
+}
+
+/** A view's badge on the switch (client/plane-controls.tsx ViewBadge). */
+export type TabBadge = { count: number; warn: boolean; label: string };
+
+const badge = (count: number, words: string): TabBadge | null =>
+  count > 0 ? { count, warn: true, label: `${count} ${words}` } : null;
+
+/**
+ * The tabs' badges, from needs.list alone: the Feed carries the total (its
+ * Needs you section lists every hold), Decisions the holds it lists (asks that
+ * wait on you and the answers batch), Initiatives its due reviews. A tab with
+ * none carries no badge.
+ */
+export function tabBadges(needs: Pick<Needs, "rows" | "summary">): Record<HoldTab, TabBadge | null> {
+  const { decisions, initiatives: reviews } = holdsByTab(needs.rows);
+  return {
+    feed: badge(needs.summary.total, needs.summary.total === 1 ? "needs you" : "need you"),
+    decisions: badge(decisions, decisions === 1 ? "waits on you" : "wait on you"),
+    initiatives: badge(reviews, reviews === 1 ? "review is due" : "reviews are due"),
+  };
 }

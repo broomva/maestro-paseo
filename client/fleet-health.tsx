@@ -168,11 +168,10 @@ export function HealthBand({
   meta?: string | null;
   onOpenTick: (scope: string, tick: number) => void;
   /**
-   * The header's count beside the fleet's part of it: `2 need you here · 5 in all (3 in Work)`, each other
-   * surface pressable to its view. Null until the header's read is in.
+   * The header's count (needs.list's total, BRO-3001) beside the fleet's health, which it does not count (A1):
+   * `5 need you in Maestro (3 in Work, 2 in Decisions)`, each tab pressable to its view. Null until needs.list is in.
    */
   relation?: {
-    here: number;
     all: number;
     elsewhere: readonly { label: string; count: number; onPress?: () => void }[];
   } | null;
@@ -181,9 +180,8 @@ export function HealthBand({
   const ink = toneInk(theme, verdict.tone as Tone);
   const relationLine =
     relation && relation.all > 0 ? (
-      <Text style={[t.muted, t.tabular]} accessibilityLabel={`${needYou(relation.here)} here, ${relation.all} in all`}>
-        <Text style={[t.body, { fontWeight: "600" }]}>{`${needYou(relation.here)} here`}</Text>
-        {` · ${relation.all} in all`}
+      <Text style={[t.muted, t.tabular]} accessibilityLabel={`${needYou(relation.all)} in Maestro`}>
+        <Text style={[t.body, { fontWeight: "600" }]}>{`${needYou(relation.all)} in Maestro`}</Text>
         {relation.elsewhere.length > 0 ? " (" : ""}
         {relation.elsewhere.map((entry, index) => (
           <Text key={entry.label}>

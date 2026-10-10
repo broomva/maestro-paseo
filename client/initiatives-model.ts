@@ -3,7 +3,8 @@
 // notice for initiatives that need you. No React here, so every rule is tested.
 
 import type { DecisionAsk } from "../shared/fleet";
-import type { Initiative, InitiativeNotice, InitiativeStatus, WaitingOn } from "../shared/initiatives";
+import type { Initiative, InitiativeStatus, WaitingOn } from "../shared/initiatives";
+import type { NeedRow } from "../shared/needs";
 
 export const STATUS_TEXT: Record<InitiativeStatus, string> = {
   active: "Active",
@@ -146,12 +147,16 @@ export function initiativesMeta(list: readonly Initiative[], ideas: readonly Dec
 }
 
 /** The notice above the other views, for initiatives past their date. */
-export function initiativeNoticeText(notices: readonly InitiativeNotice[]): string {
-  const [first] = notices;
+/**
+ * The line for initiatives whose review is due: needs.list's review asks (B2,
+ * server/needs.ts reviewNeed), each titled with its initiative and saying why.
+ */
+export function reviewNoticeText(rows: readonly Pick<NeedRow, "title" | "body">[]): string {
+  const [first] = rows;
   if (!first) return "";
-  const what = first.kind === "overdue" ? `was due for review on ${first.date}` : `was parked until ${first.date}`;
-  if (notices.length === 1) return `The initiative ${first.title} ${what}.`;
-  return `${notices.length} initiatives need a look: ${first.title} ${what}, and ${notices.length - 1} more.`;
+  const why = "why" in first.body ? first.body.why : "";
+  if (rows.length === 1) return [first.title, why].filter(Boolean).join(" ");
+  return `${rows.length} initiative reviews are due: ${first.title} (+${rows.length - 1} more)`;
 }
 
 /** The ideas for one initiative, open first. */

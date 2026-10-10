@@ -3,17 +3,18 @@
 // steps. Each count is read off the wire, so each is checked against it here.
 
 import { describe, expect, test } from "bun:test";
-import {
-  askNotice,
-  type DecisionAsk,
-  type FleetDetail,
-  type FleetHealth,
-  type FleetProposal,
-  type FleetScope,
-  type FleetSession,
-  type FleetTick,
-  type ProposalGroup,
+import { needsOf } from "../server/needs";
+import type {
+  DecisionAsk,
+  FleetDetail,
+  FleetHealth,
+  FleetProposal,
+  FleetScope,
+  FleetSession,
+  FleetTick,
+  ProposalGroup,
 } from "../shared/fleet";
+import { fakeWork } from "./fake-work";
 import {
   activeWords,
   adoptTitle,
@@ -33,7 +34,6 @@ import {
   featuredScope,
   filterRoster,
   fleetNeedsYou,
-  headerShares,
   healthCells,
   historyKind,
   historyText,
@@ -63,7 +63,6 @@ import {
   wantsAttention,
   wouldText,
 } from "./fleet-cockpit-model";
-import { needsYouCount } from "./header-count";
 
 const NOW = new Date(2026, 9, 5, 19, 0).getTime();
 const H = 3_600_000;
@@ -852,23 +851,21 @@ describe("one number for what needs you", () => {
       { scope: scope("broomva"), detail: detail("broomva") },
     ];
     const needs = fleetNeedsYou(reads);
-    // What the header counts for the fleet, built the way the server builds work.attention.
-    const fleetWork = [item("w-alert", true), item("w-quiet", false), raised].map(({ id, group }) => ({
-      id,
-      group,
-      flag: null,
-    }));
-    const notices = reads.filter((read) => read.scope.health.needsYou).map((read) => ({ scope: read.scope.id }));
-    const asks = reads.flatMap((read) =>
-      (read.detail?.decisions ?? []).filter((ask) => ask.waiting).map((ask) => askNotice(ask, read.scope.id)),
+    // What the header counts for the fleet, built the way the server builds needs.list (server/needs.ts).
+    const fleetWork = [item("w-alert", true), item("w-quiet", false), raised].map(({ id, state }) =>
+      fakeWork(id, state),
     );
-    const header = needsYouCount(fleetWork, notices, [], asks);
-    // Counted here: health only. Everything else the header counts for the fleet is shown once, where it lives.
+    const decisions = reads.flatMap((read) =>
+      (read.detail?.decisions ?? []).map((ask) => ({ ...ask, scope: read.scope.id })),
+    );
+    const header = needsOf({ items: fleetWork, asks: decisions, reviews: [], landing: null, workspace: "broomva" }, NOW)
+      .summary.total;
+    // Counted here: health only, which is watched (A1). What holds on you is counted once, where it lives.
     expect(needs).toMatchObject({ ticks: 1, alerts: 1, asks: 1, decisions: 1, total: 1 });
     expect(needs.cards).toHaveLength(needs.total);
-    expect(needs.total).toBe(needsYouCount([], notices));
     expect(needs.elsewhere.map((card) => card.kind)).toEqual(["alert", "ask", "decision"]);
-    expect(header).toBe(needs.total + needs.elsewhere.length);
+    // The header counts the fleet's work at your gate and its ask that waits, never a tick's health.
+    expect(header).toBe(needs.elsewhere.length);
     const cells = new Map(
       reads.map((read) => [read.scope.id, healthCells(read.detail?.ticks ?? [], read.scope.health, 24, NOW)]),
     );
@@ -930,51 +927,6 @@ describe("round 3 words", () => {
     expect(evidenceSentence(null)).toBe("The report gives no evidence for it.");
     expect(placedWords("cwd")).toBe("by its folder");
     expect(placedWords("worktree-parent")).toBe("by its worktree's parent");
-  });
-});
-
-describe("the header's count, split", () => {
-  test("the fleet's share and each other surface's, from the header's own pieces, add up to its total", () => {
-    const attention = {
-      waiting: [
-        { id: "w-ask", group: "review" as const, flag: null },
-        { id: "w-alert", group: "review" as const, flag: null },
-        { id: "mine", group: "review" as const, flag: null },
-        { id: "stuck", group: "blocked" as const, flag: null },
-      ],
-      fleet: [{ scope: "sri", status: "missed" as const, reason: "", since: null }],
-      timeline: [{ id: "launchd:x", name: "x", status: "failed" as const, reason: "", since: null }],
-      asks: [
-        { scope: "sri", ledger: "a.yaml", uid: null, id: "D1", headline: "D1", blocking: true, askedAt: null },
-        { scope: null, ledger: "b.yaml", uid: null, id: "W1", headline: "W1", blocking: true, askedAt: null },
-      ],
-      initiatives: [],
-    };
-    const shares = headerShares(attention as unknown as Parameters<typeof headerShares>[0]);
-    // The fleet's share is its health (the notice); its work items are work, its root's ask is Decisions' (BRO-2908).
-    expect(shares).toEqual({ total: 8, fleet: 1, work: 4, decisions: 2, timeline: 1, initiatives: 0 });
-    expect(shares.fleet + shares.work + shares.decisions + shares.timeline + shares.initiatives).toBe(shares.total);
-  });
-
-  test("an answers batch that waits on you counts once, as Decisions' share, and the shares still add up", () => {
-    const attention = {
-      waiting: [],
-      fleet: [],
-      timeline: [],
-      asks: [],
-      initiatives: [],
-      answers: [
-        {
-          kind: "waiting" as const,
-          pending: 3,
-          pr: { number: 915, url: "u" },
-          words: "3 answers wait to land: PR #915",
-        },
-      ],
-    };
-    const shares = headerShares(attention);
-    expect([shares.total, shares.decisions]).toEqual([1, 1]);
-    expect(shares.fleet + shares.work + shares.decisions + shares.timeline + shares.initiatives).toBe(shares.total);
   });
 });
 

@@ -45,18 +45,15 @@ describe("work.attention", () => {
     expect(attentionOf([], now).asks).toEqual([]);
   });
 
-  test("waiting is the work at your gate or stuck, in list order", () => {
+  test("waiting is the work at your gate, in list order; stuck work is watched, not waiting (A1)", () => {
     const { waiting } = attentionOf(
       [fakeWork("r", "review"), fakeWork("b", "blocked"), fakeWork("x", "running"), fakeWork("d", "done")],
       now,
     );
-    expect(waiting).toEqual([
-      { id: "r", group: "review", flag: null },
-      { id: "b", group: "blocked", flag: null },
-    ]);
+    expect(waiting).toEqual([{ id: "r", group: "review", flag: null }]);
   });
 
-  test("waiting lists work the loop flagged too, after the work at your gate or stuck", () => {
+  test("waiting lists work only you may start after the work at your gate; a quiet run is watched (A1)", () => {
     const flag = { kind: "yours" as const, reason: "Start it yourself: x.", at: ago(60_000) };
     const quiet = { kind: "quiet" as const, reason: "Quiet for 31 minutes, worth a look.", at: ago(60_000) };
     const { waiting } = attentionOf(
@@ -71,9 +68,7 @@ describe("work.attention", () => {
     );
     expect(waiting).toEqual([
       { id: "r", group: "review", flag: null },
-      { id: "b", group: "blocked", flag: null },
       { id: "q", group: "queued", flag },
-      { id: "x", group: "running", flag: quiet },
     ]);
   });
 

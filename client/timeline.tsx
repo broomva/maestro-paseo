@@ -14,9 +14,9 @@ import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
-import { attentionWork } from "../shared/contracts";
 import { getTimeline, getTimelineLog, TIMELINE_RUNS, type TimelineRun, type TimelineSource } from "../shared/timeline";
 import { errorText } from "./format";
+import { useWatched } from "./hooks";
 import { keyedLines } from "./loop-model";
 import {
   type Axis,
@@ -560,14 +560,9 @@ export function TimelineNotices({
   compact: boolean;
   onOpen: () => void;
 }) {
-  const read = useRpc(attentionWork);
-  const attention = useQuery({
-    queryKey: ["maestro", "attention"],
-    queryFn: () => read({}),
-    // One query with FleetNotices, at its pace.
-    refetchInterval: TIMELINE_POLL_MS,
-  });
-  const notices = attention.data?.timeline ?? [];
+  // The one watched read (client/hooks.ts useWatched), at its one pace: nothing counts from it.
+  const watched = useWatched();
+  const notices = watched.data?.timeline ?? [];
   if (notices.length === 0) return null;
   return (
     <View style={{ gap: space[2] }}>

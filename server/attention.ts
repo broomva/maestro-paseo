@@ -1,6 +1,9 @@
-// What the header count and the composer pills read (work.attention). It is
-// computed from the work files alone, with no session reconcile, so every
-// open client can poll it without costing an agent round trip per item. Pure.
+// work.attention: the composer pills' sessions and the notices you watch (the
+// fleet's, the Timeline's, loop drift). It no longer feeds any count: the
+// header, the tabs and Needs you read needs.list (server/needs.ts, BRO-3001),
+// and notices.list replaces the rest (BRO-3036). It is computed from the work
+// files alone, with no session reconcile, so every open client can poll it
+// without costing an agent round trip per item. Pure.
 
 import type { AnswersNotice } from "../shared/answers";
 import type { Attention, WorkItem } from "../shared/contracts";
