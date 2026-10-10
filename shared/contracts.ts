@@ -126,9 +126,11 @@ export type Pending = z.infer<typeof PendingSchema>;
 
 /**
  * Why the loop put work in Needs you, raised by a wake: a run quiet for 30
- * minutes or more (`quiet`). Since the loop stopped starting work (A8,
- * BRO-2990) it raises no other kind; `yours` (queued work it left to you) and
- * `failed` (a start it tried that failed) stay so older flags still read.
+ * minutes or more (`quiet`), and queued work only you may start (`yours`:
+ * held for you, carrying a mode you chose, or filed from your answer before
+ * A8; server/runs.ts yoursToStart). The loop starts nothing (A8, BRO-2990), so
+ * it raises no `failed` (a start it tried that failed) any more; that kind
+ * stays so older flags still read.
  */
 export const FLAG_KINDS = ["yours", "failed", "quiet"] as const;
 export type FlagKind = (typeof FLAG_KINDS)[number];

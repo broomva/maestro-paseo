@@ -215,12 +215,12 @@ features:
     pages: []
     interfaces: [I-session-prompt]
   F-answer-routing:
-    name: An answer goes home to the session that asked; owner-only answers wait for the owner; one no session can take waits for the conductor (A8)
+    name: An answer goes home to the session that asked; owner-only answers wait for the owner; one no session can take waits for the conductor, or for you to file it as work or dismiss it (A8)
     status: change
     kind: orchestrate
-    answers: [A9]
+    answers: [A8, A9]
     pages: [P-decisions]
-    interfaces: [I-answer-route, I-answers-land]
+    interfaces: [I-answer-route, I-answers-land, I-conductor-decide]
     code: [server/answer-routes.ts, server/answers-landing.ts]
   F-phone-push:
     name: The push and the same list on the phone
@@ -303,8 +303,8 @@ pages:
     phone_frame: z4FVF
     components: [C-decision-card, C-progress, C-segmented, C-kbd, C-button, C-glance-tile, C-inspector, C-deck]
     reads: [I-asks-workspace, I-needs-list, I-answers-status]
-    writes: [I-ask-answer, I-fleet-ask-answer, I-undo]
-    code: [client/decision-triage.tsx, client/decision-card.tsx]
+    writes: [I-ask-answer, I-fleet-ask-answer, I-conductor-decide, I-undo]
+    code: [client/decision-triage.tsx, client/decision-card.tsx, client/conductor-answers.tsx]
   P-work:
     name: J6 Work — five lanes as trays, Undertow on running cards, who closed Done; J6b the inspector over the right-hand lanes (B3). M6 on the phone
     status: change
@@ -595,6 +595,7 @@ interfaces:
   # The conductor's hands (D1).
   I-approval-apply: { name: "approval.apply (runs the allowed exact action)", status: new, handler: plugin, callers: [conductor] }
   I-answer-route: { name: "answer.route (to the asker, a sibling, the driver; else a lane.assign candidate for the conductor)", status: change, handler: plugin, callers: [conductor], stores: [S-ask-receipts], code: [server/answer-routes.ts] }
+  I-conductor-decide: { name: "conductor.decide and conductor.undo (file an answer that waits for the conductor as queued work, or dismiss it; 8 s undo)", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-ask-receipts, S-work], code: [server/answer-routes.ts, client/conductor-answers.tsx] }
   I-answers-land: { name: "answers.land (one PR for maestro/answers)", status: change, handler: plugin, callers: [conductor], stores: [S-answers-branch], code: [server/answers-landing.ts] }
   I-ask-default: { name: "ask.default (a reversible ask takes its default after 30 min, A4)", status: new, handler: plugin, callers: [conductor], stores: [S-ask-receipts] }
   I-inbox-push: { name: "the inbox echo session that makes a push", status: change, handler: plugin, callers: [plugin], stores: [S-inbox], code: [server/inbox.ts] }

@@ -54,6 +54,8 @@ export const GATE_METHODS: ReadonlySet<string> = new Set([
   "loop.wake",
   "fleet.review",
   "ask.answer",
+  "conductor.decide",
+  "conductor.undo",
 ]);
 
 function method<S extends z.ZodType>(

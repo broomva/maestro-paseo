@@ -13,6 +13,7 @@ import { useIsMutating, useMutationState, useQuery, useQueryClient } from "@tans
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Easing, Platform, Pressable, Text, View } from "react-native";
 import type { DecisionAsk } from "../shared/fleet";
+import { ConductorAnswers } from "./conductor-answers";
 import {
   ANSWER_KEY,
   answeredColor,
@@ -824,36 +825,6 @@ export function DecisionsView({
       </View>
     ) : null;
 
-  // Never folded away: an answer that would once have started work waits here, visibly, for the conductor (A8).
-  const conductorView =
-    conductorList.length > 0 ? (
-      <View style={{ gap: space[2] }} accessibilityLabel={`For the conductor · ${conductorList.length}`}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: space[1] }}>
-          <Icon name="Clock" size={14} color={theme.colors.statusWarning} />
-          <Text style={[text.small, text.tabular, { fontWeight: "600" }]}>
-            {`For the conductor · ${conductorList.length}`}
-          </Text>
-        </View>
-        <Text style={text.small}>
-          Their askers are gone and no session on their arcs could take them. Nothing was started: each waits for the
-          conductor to give it to a lane.
-        </Text>
-        {conductorList.map((ask) => (
-          <View key={askKey(ask)} style={{ gap: 2, paddingLeft: space[4] }}>
-            <Text style={[text.body, { fontSize: 13 }]}>{headlineOf(ask).headline}</Text>
-            <Text style={[text.small, { color: theme.colors.statusWarning }]}>
-              {`${answeredLine(ask)} · ${ledgerName(ledgerOf(ask))}`}
-            </Text>
-            {ask.answer ? (
-              <Text style={text.small} selectable>
-                {ask.answer}
-              </Text>
-            ) : null}
-          </View>
-        ))}
-      </View>
-    ) : null;
-
   const answeredView =
     answeredList.length > 0 ? (
       <View style={{ gap: space[2] }}>
@@ -945,7 +916,8 @@ export function DecisionsView({
         </Card>
       )}
       {upNextView}
-      {conductorView}
+      {/* Never folded away: an answer that would once have started work waits here, visibly, for the conductor (A8). */}
+      <ConductorAnswers theme={theme} asks={conductorList} compact={compact} />
       {answeredView}
     </View>
   );

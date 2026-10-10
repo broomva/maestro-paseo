@@ -158,7 +158,7 @@ export function nextRun(config: MaestroConfig, item: StoredWork): NextRun {
     thinkingOptionId: run.thinkingOptionId ?? null,
     featureValues: run.featureValues ? { ...run.featureValues } : null,
     fromSettings: run.fromSettings,
-    held: item.contract.hold ?? (filedBeforeA8(item) ? FILED_BEFORE_A8 : undefined),
+    held: filedBeforeA8(item) ? FILED_BEFORE_A8 : item.contract.hold,
   };
 }
 

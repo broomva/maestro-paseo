@@ -505,10 +505,10 @@ export function forTheConductor(asks: readonly DecisionAsk[]): DecisionAsk[] {
     .sort((a, b) => (a.answeredAt ?? "").localeCompare(b.answeredAt ?? ""));
 }
 
-/** The answered asks the tab lists, newest first. */
+/** The answered asks the tab lists, newest first; those for the conductor are listed apart (forTheConductor). */
 export function recentlyAnswered(asks: readonly DecisionAsk[]): DecisionAsk[] {
   return asks
-    .filter((ask) => ask.state !== "open" && !ask.idea)
+    .filter((ask) => ask.state !== "open" && !ask.idea && ask.fate?.stage !== "conductor")
     .sort((a, b) => (b.answeredAt ?? "").localeCompare(a.answeredAt ?? ""));
 }
 

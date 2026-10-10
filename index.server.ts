@@ -32,7 +32,7 @@ import { Records } from "./server/records";
 import type { Paseo } from "./server/runs";
 import { Timeline } from "./server/timeline";
 import { WAKE_LOG_MAX, WakeLog } from "./server/wake-log";
-import { answersNotice } from "./shared/answers";
+import { answersNotice, decideConductor, undoConductor } from "./shared/answers";
 import {
   adoptAgent,
   attentionWork,
@@ -148,6 +148,8 @@ export default function contribute(host: PluginServerContext) {
       : null;
   // Where routing begins: an answer given before this is never routed (it was acted on, or not, by hand).
   void router?.begin().catch((error) => log(`answers: marking where routing begins: ${(error as Error).message}`));
+  // Your decisions on answers for the conductor survive a restart: the due are applied, the rest armed again.
+  void router?.resume().catch((error) => log(`answers: resuming your decisions: ${(error as Error).message}`));
   // The loop wakes on its own timer, outside any handler, so it reads the same client (server/loop.ts).
   const loop = new Loop({
     engine,
@@ -455,6 +457,15 @@ export default function contribute(host: PluginServerContext) {
   // The loop's state and a wake now: yours, never on the agent socket.
   server.handle(getLoop, () => loop.get());
   server.handle(wakeLoop, () => loop.wake("manual"));
+  // Your decision on an answer that waits for the conductor, and its undo: yours, never on the agent socket.
+  server.handle(decideConductor, ({ key, verb }) => {
+    if (!router) throw new UserError("Maestro reads no control repo here (MAESTRO_PASEO_CONTROL_REPO is off).");
+    return router.decide(key, verb);
+  });
+  server.handle(undoConductor, ({ receipt }) => {
+    if (!router) throw new UserError("Maestro reads no control repo here (MAESTRO_PASEO_CONTROL_REPO is off).");
+    return router.undo(receipt);
+  });
 
   server.on("agent.turn_started", (event) => engine.onTurnStarted(event.agent));
   // A session's turn ended: Maestro's own bookkeeping first, then any answer that waited for it to go idle.

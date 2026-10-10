@@ -1082,6 +1082,24 @@ const invoke = async (method: string, input: unknown) => {
       },
     };
   }
+  // Your decision on an answer for the conductor: pending in its undo window until undone (BRO-2990).
+  if (method === "conductor.decide") {
+    const { key, verb } = input as { key: string; verb: "file" | "dismiss" };
+    const appliesAt = new Date(Date.now() + 8_000).toISOString();
+    workspaceNow = workspaceNow.map((ask) =>
+      ask.fate?.key === key
+        ? { ...ask, fate: { ...ask.fate, pending: { verb, receipt: `r-${verb}`, appliesAt } } }
+        : ask,
+    );
+    return { verb, receipt: `r-${verb}`, appliesAt };
+  }
+  if (method === "conductor.undo") {
+    const { receipt } = input as { receipt: string };
+    workspaceNow = workspaceNow.map((ask) =>
+      ask.fate?.pending?.receipt === receipt ? { ...ask, fate: { ...ask.fate, pending: null } } : ask,
+    );
+    return { undone: true };
+  }
   if (method === "ask.answer") {
     if (answerHeld) await answerHeld;
     if (answerFail) throw new Error(answerFail);
@@ -3424,7 +3442,7 @@ describe("the Decisions tab", () => {
     expect(text).not.toContain("In the answers batch on maestro/answers");
   });
 
-  test("an answer whose asker is gone waits in view, for the conductor, never folded and never done (A8)", async () => {
+  test("an answer whose asker is gone waits in view for the conductor; File as work and Dismiss, each with Undo (A8)", async () => {
     workspaceNow = [
       canvas("product-name"),
       canvas("orphaned", {
@@ -3439,20 +3457,34 @@ describe("the Decisions tab", () => {
           pr: null,
           work: null,
           agentId: "asker-1",
+          key: "k-1",
+          pending: null,
         },
       }),
     ];
     const view = await open();
     await until(view, "For the conductor · 1");
-    // Shown without opening anything: its headline, your answer, and that nothing was started.
+    // Shown without opening anything: its headline, your answer, and that nothing was started; listed once.
     const text = view.text();
     expect(view.byLabel("For the conductor · 1")).not.toBeNull();
-    expect(text).toContain("Nothing was started: each waits for the conductor to give it to a lane.");
+    expect(text).toContain("Nothing was started: each waits for the conductor to give it to a lane");
     expect(text).toContain("Canvas ask orphaned");
     expect(text).toContain("Change it.");
-    // It is also in the answered list, where its fate reads as waiting.
-    await view.press(view.byLabel("Recently answered · 1"));
-    expect(view.text()).toContain("Change it.For the conductor: no session on its arc could take your answer");
+    expect(view.byLabel("Recently answered · 1")).toBeNull();
+    // File as work: your decision, pending in its undo window, with Undo.
+    await view.press(view.byLabel("File as work, Canvas ask orphaned"));
+    expect(sent("conductor.decide")).toEqual([{ key: "k-1", verb: "file" }]);
+    await until(view, "Filing it as work: it is queued, never started");
+    await view.press(view.byLabel("Undo, Canvas ask orphaned"));
+    expect(sent("conductor.undo")).toEqual([{ receipt: "r-file" }]);
+    for (let tries = 0; tries < 100 && !view.byLabel("Dismiss, Canvas ask orphaned"); tries += 1) await settle(20);
+    // Undone, it waits again; Dismiss is the other verb.
+    await view.press(view.byLabel("Dismiss, Canvas ask orphaned"));
+    expect(sent("conductor.decide")).toEqual([
+      { key: "k-1", verb: "file" },
+      { key: "k-1", verb: "dismiss" },
+    ]);
+    await until(view, "Dismissing it: nothing follows from it");
   });
 
   test("one decision at a time, blocking first: its count and bar, the card's layers, the rail, up next", async () => {

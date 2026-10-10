@@ -96,18 +96,21 @@ maestro mine                   # the work this session is running
   `gate: human`.
 - **A session cannot write a done check.** Checks run as you, with no session and no permission
   prompt in the loop, so they come from you: add one to the work's `_work.md` (`done.check`).
-- **A session's run takes its lane's mode, and never starts in Always ask.** A run a session starts
-  is one nobody watches, so it takes the lane profile's mode (owner answer A8, BRO-2990): until
-  `.broomva/lanes.yaml` exists, the lane is the calling session itself, and its profile is the
-  provider and mode that session runs in now. `modeId: null` never falls through to Paseo's default
-  (Always ask) for such a run: with no lane named (no `PASEO_AGENT_ID`), a lane with no mode, a
-  lane on another provider, or a lane whose mode asks before it acts, the start is refused with the
-  reason, nothing starts, and `maestro new --dispatch` still files the work, queued, with its id and
-  why. Work a session creates carries none of the run choices the composer offers you (provider,
+- **A session's run takes your Settings' mode, and never starts in Always ask.** A run a session
+  starts is one nobody watches (owner answer A8, BRO-2990). Until the socket verifies its caller
+  (BRO-2996), the caller never picks the mode: the run takes your Settings' mode, and only when
+  that mode does not ask before it acts (for Claude, `bypassPermissions`). `modeId: null` never falls
+  through to Paseo's default (Always ask) for such a run: with no mode in Settings, a mode that
+  asks, or work whose provider is not the Settings provider, the start is refused with the reason,
+  nothing starts, and `maestro new --dispatch` still files the work, queued, with its id and why.
+  The same holds for `maestro dispatch` from a plain terminal with no `PASEO_AGENT_ID`: it is a
+  run nobody watches too, so start such work with Dispatch in Maestro. Lanes that dispatch (SRI's
+  tick) need a Settings mode that does not ask; until then they fall back to starting the session
+  in Paseo and `maestro track`. Work a session creates carries none of the run choices the composer offers you (provider,
   isolation, mode, thinking, features). That is no more than a session can already do: Paseo's own
-  `create_agent` tool, which every session holds, starts an agent in any mode. Until the socket
-  verifies its caller (BRO-2996), the session a client claims to be (`PASEO_AGENT_ID`) is the lane
-  whose mode the run takes, so a shell that names another session's id borrows that session's mode.
+  `create_agent` tool, which every session holds, starts an agent in any mode. The session a client
+  claims to be (`PASEO_AGENT_ID`) is recorded on the receipts but chooses nothing: naming another
+  session's id borrows nothing from it.
 - **A mode you chose for one work is yours to use.** A session cannot start work that carries its
   own mode: it is told "This work runs in a mode you chose; start it yourself."
 - **Receipts say which session it said it was.** Everything done through the socket is recorded as
@@ -317,7 +320,12 @@ and routes your answers.
     `lane.assign` candidate carrying the ask, your answer verbatim, and pointers (the ledger at its
     home, the session that asked, the folder a lane would work in, the initiative), written once on
     the answer's `ask.routed` line, which is the queue the conductor (BRO-2989) reads. Decisions
-    shows it under **For the conductor**, never folded away and never as done. An answer whose
+    shows it under **For the conductor**, never folded away and never as done, each with two verbs of
+    yours while no conductor takes them: **File as work** queues it (gate human, never dispatched:
+    you or a lane start it), carrying the ask, the answer and the pointers; **Dismiss** closes it.
+    Either takes effect after the 8 s undo window, with **Undo** until then, as a `conductor.decided`
+    receipt and then `conductor.undone` or `conductor.closed`; a restart keeps a decision and applies
+    it once its window has closed. After it, the answer no longer waits for the conductor. An answer whose
     option the ledger marks `status_quo: true` needs nothing, nor does an idea's (develop files its
     own held work). Only that key says an option changes nothing, never its words. An ask that by
     then records another outcome where it lives (main's wins) is *superseded*: never acted on, your
@@ -970,7 +978,9 @@ It is pinned to 0.11.1, the host it is built against; the screen API (`addScreen
 - Answers land and are routed only while the loop is on: with `loopMinutes` empty the batch waits,
   and Decisions says it waits to land. An answer in its checkout is routed at once either way.
 - An answer queued for the conductor waits until the conductor (BRO-2989) exists and takes it: until
-  then nothing reads the queue but Decisions, so start what it needs yourself, or hand it to a lane.
+  then nothing reads the queue but Decisions, where you file it as work or dismiss it.
+- Queued work that the routing before A8 filed from an answer (Maestro's, with an answer, no hold)
+  is flagged in Needs you: "Filed from your answer before A8: start it yourself, or cancel it."
 - Why a delivery still waits (the session at work) is kept in memory: after a restart the card says
   only that Maestro acts on it at its next check, until a wake or the session's turn end routes it.
 - The Timeline sees what the Mac and the daemon keep, nothing more:

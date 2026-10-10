@@ -584,6 +584,8 @@ describe("what became of your answer (BRO-2827)", () => {
     const sooner = waits("C", "2026-10-09T14:29:02Z");
     expect(forTheConductor([later, acted, open, sooner]).map((entry) => entry.id)).toEqual(["C", "B"]);
     expect(forTheConductor([acted, open])).toEqual([]);
+    // Listed once: the recently answered leave them to the conductor's block.
+    expect(recentlyAnswered([later, acted, open, sooner]).map((entry) => entry.id)).toEqual(["D"]);
   });
   test("an older daemon sends no fate: an answer in the batch still never reads as done", () => {
     expect(fateLine(ask("l", "A", { state: "answered", batched: true }))?.tone).toBe("waiting");

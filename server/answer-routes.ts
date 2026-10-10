@@ -34,6 +34,7 @@
 // Routing never decides and never starts work: the delivery is your answer
 // verbatim, held work waits for you, and a candidate waits for the conductor.
 
+import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
@@ -42,13 +43,16 @@ import {
   answersWord,
   type ConductorCandidate,
   ConductorCandidateSchema,
+  type ConductorPending,
+  type ConductorVerb,
   type Route,
 } from "../shared/answers";
 import type { DecisionAsk } from "../shared/fleet";
+import { UNDO_MS } from "../shared/undo";
 import { isRow, text } from "./control-asks";
 import { homeWords, type WorkspaceRead } from "./control-home";
-import { type Engine, within } from "./engine";
-import { LOOP } from "./events";
+import { type Engine, realTimer, type Timer, UserError, within } from "./engine";
+import { BY_HUMAN, LOOP } from "./events";
 import { inspectFolder } from "./folders";
 import type { Paseo } from "./runs";
 
@@ -110,6 +114,37 @@ export interface Log {
    * a restart keeps both the patience clock and who the answer waits on.
    */
   waiting: Map<string, { since: Map<string, string>; on: string }>;
+  /** Your decisions on answers that wait for the conductor, by receipt (`conductor.*` lines, BRO-2990). */
+  decisions: Map<string, ConductorDecision>;
+}
+
+/**
+ * One decision of yours on an answer that waits for the conductor: decided
+ * (`conductor.decided`), taken back in its undo window (`conductor.undone`),
+ * or applied once it closed (`conductor.closed`, with the work it filed).
+ */
+export interface ConductorDecision {
+  key: string;
+  verb: ConductorVerb;
+  receipt: string;
+  at: string;
+  appliesAt: string;
+  undone: boolean;
+  closed: { at: string; work: { id: string; title: string } | null } | null;
+}
+
+/** The decision on this answer that waits to take effect: decided, not undone, not applied. Pure. */
+export function pendingDecision(log: Log, key: string): ConductorDecision | null {
+  for (const decision of log.decisions.values()) {
+    if (decision.key === key && !decision.undone && !decision.closed) return decision;
+  }
+  return null;
+}
+
+/** The decision that closed this answer for the conductor (filed or dismissed), or null. Pure. */
+export function closedDecision(log: Log, key: string): ConductorDecision | null {
+  for (const decision of log.decisions.values()) if (decision.key === key && decision.closed) return decision;
+  return null;
 }
 
 /**
@@ -141,7 +176,7 @@ export function records(
 
 /** The receipt log's lines, read. A line that is not a receipt is skipped. Pure. */
 export function readLog(source: string): Log {
-  const log: Log = { answered: [], routed: new Map(), began: null, waiting: new Map() };
+  const log: Log = { answered: [], routed: new Map(), began: null, waiting: new Map(), decisions: new Map() };
   for (const line of source.split("\n")) {
     if (!line.trim()) continue;
     let row: unknown;
@@ -164,6 +199,25 @@ export function readLog(source: string): Log {
       log.waiting.set(row.key, entry);
     } else if (row.kind === "ask.routed" && typeof row.key === "string") {
       if (!log.routed.has(row.key)) log.routed.set(row.key, row as unknown as RoutedReceipt);
+    } else if (row.kind === "conductor.decided") {
+      const key = text(row.key);
+      const receipt = text(row.receipt);
+      const at = text(row.at);
+      const appliesAt = text(row.appliesAt);
+      const verb = row.verb === "file" || row.verb === "dismiss" ? row.verb : null;
+      if (!key || !receipt || !at || !appliesAt || !verb || log.decisions.has(receipt)) continue;
+      log.decisions.set(receipt, { key, verb, receipt, at, appliesAt, undone: false, closed: null });
+    } else if (row.kind === "conductor.undone" || row.kind === "conductor.closed") {
+      const decision = log.decisions.get(text(row.receipt) ?? "");
+      if (!decision || decision.closed || decision.undone) continue;
+      if (row.kind === "conductor.undone") decision.undone = true;
+      else {
+        const work =
+          isRow(row.work) && text(row.work.id)
+            ? { id: text(row.work.id) ?? "", title: text(row.work.title) ?? "" }
+            : null;
+        decision.closed = { at: text(row.at) ?? "", work };
+      }
     } else if (row.kind === "ask.answered" && (row.homeKind === "main" || row.homeKind === "checkout")) {
       const id = text(row.id);
       const ledger = text(row.ledger);
@@ -374,6 +428,44 @@ export function conductorCandidate(
   };
 }
 
+/** A work item's title and brief, from an answer that waited for the conductor and you filed (BRO-2990). Pure. */
+export function candidateWork(candidate: ConductorCandidate): { title: string; brief: string } {
+  const { ask, answer, pointers } = candidate;
+  const title = clip(`Act on your answer: ${ask.headline}`, TITLE_MAX);
+  const lines = [
+    `You answered an ask in Maestro (${ask.ledger} ${ask.id}). No session on its arc could take your answer, so it waited for the conductor, and you filed it as work. Do what the answer decided.`,
+    "",
+    "## The ask",
+    "",
+    ask.question ?? ask.headline,
+  ];
+  if (ask.stakes) lines.push("", `What waiting costs: ${ask.stakes}`);
+  if (ask.options.length > 0) {
+    lines.push("", "Its options:");
+    for (const option of ask.options) {
+      const chosen = option.id === answer.option ? " (your answer)" : "";
+      lines.push(`- ${option.label}${option.consequence ? `: ${option.consequence}` : ""}${chosen}`);
+    }
+  }
+  lines.push(
+    "",
+    "## Your answer, verbatim",
+    "",
+    ...(answer.words ?? "(no words)").split("\n").map((line) => `> ${line}`),
+    "",
+    "## Where to look",
+    "",
+    `- The ledger: ${ask.ledger}, at ${pointers.homeKind === "main" ? "origin/main" : pointers.home}`,
+    `- The session that asked: ${pointers.askedBy ?? "none named"} (gone)`,
+    ...(pointers.initiative ? [`- The initiative: ${pointers.initiative}`] : []),
+    "",
+    "## How",
+    "",
+    `The answer is recorded in ${ask.ledger}; do not edit the ask. Do the smallest complete thing the answer asks for. If it turns out to need nothing done, say so and stop.`,
+  );
+  return { title, brief: lines.join("\n") };
+}
+
 function clip(words: string, max: number): string {
   if (words.length <= max) return words;
   const cut = words.slice(0, max - 1);
@@ -396,6 +488,8 @@ export interface RouterOptions {
   now?: () => number;
   log?: (message: string) => void;
   sessionMs?: number;
+  /** Arms a decision's undo window (conductor.decide); tests pass their own, driven by the same clock as `now`. */
+  timer?: Timer;
 }
 
 /** What one answer's route came to on this pass. */
@@ -416,6 +510,8 @@ export class AnswerRouter {
   private cached: { stamp: string; log: Log } | null = null;
   /** Why an answer still waits, as the last pass found it: Decisions says it. */
   private readonly waits = new Map<string, { status: "unlanded" | "queued" | "failed"; words: string }>();
+  /** Your decisions whose undo window is armed, by receipt, to the timer's cancel. */
+  private readonly armed = new Map<string, () => void>();
 
   constructor(options: RouterOptions) {
     this.options = options;
@@ -429,6 +525,150 @@ export class AnswerRouter {
     await this.append({ kind: "routing.began", actor: "maestro", at: new Date(this.now()).toISOString() });
   }
 
+  /** Runs `work` after every pass and decision before it: one writer to the receipt log at a time. */
+  private serial<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.running.catch(() => undefined).then(work);
+    this.running = next;
+    return next;
+  }
+
+  /**
+   * Your decision on an answer that waits for the conductor (shared/answers.ts
+   * decideConductor): written now as a `conductor.decided` receipt, applied
+   * UNDO_MS later unless undone. Refused when the answer does not wait for the
+   * conductor, was already filed or dismissed, or already has a decision in
+   * its undo window.
+   */
+  decide(key: string, verb: ConductorVerb): Promise<ConductorPending> {
+    return this.serial(async () => {
+      const log = await this.log();
+      if (log.routed.get(key)?.route !== "conductor")
+        throw new UserError("That answer does not wait for the conductor.");
+      if (closedDecision(log, key)) throw new UserError("That answer was already filed as work or dismissed.");
+      if (pendingDecision(log, key)) {
+        throw new UserError("A decision on that answer already waits to take effect. Undo it first to change it.");
+      }
+      const now = this.now();
+      const receipt = randomUUID();
+      const appliesAt = new Date(now + UNDO_MS).toISOString();
+      await this.append({
+        kind: "conductor.decided",
+        actor: "human",
+        at: new Date(now).toISOString(),
+        key,
+        verb,
+        receipt,
+        appliesAt,
+      });
+      this.arm(receipt, appliesAt);
+      return { verb, receipt, appliesAt };
+    });
+  }
+
+  /** Take back a decision while its undo window runs (shared/answers.ts undoConductor). */
+  undo(receipt: string): Promise<{ undone: boolean }> {
+    return this.serial(async () => {
+      const decision = (await this.log()).decisions.get(receipt);
+      if (!decision) throw new UserError("No such decision.");
+      if (decision.undone) return { undone: true };
+      if (decision.closed || this.now() >= Date.parse(decision.appliesAt)) {
+        throw new UserError("Its undo window has closed: it took effect.");
+      }
+      this.armed.get(receipt)?.();
+      this.armed.delete(receipt);
+      await this.append({
+        kind: "conductor.undone",
+        actor: "human",
+        at: new Date(this.now()).toISOString(),
+        key: decision.key,
+        receipt,
+      });
+      return { undone: true };
+    });
+  }
+
+  /**
+   * Apply every decision whose undo window has closed, and arm the rest: at
+   * start (a restart keeps your decisions) and on each pass. Never throws: one
+   * that cannot be applied yet is tried again at the next pass.
+   */
+  async resume(): Promise<void> {
+    await this.serial(async () => {
+      const log = await this.log();
+      for (const decision of log.decisions.values()) {
+        if (decision.undone || decision.closed) continue;
+        if (this.now() >= Date.parse(decision.appliesAt)) await this.applyDue(decision.receipt);
+        else if (!this.armed.has(decision.receipt)) this.arm(decision.receipt, decision.appliesAt);
+      }
+    });
+  }
+
+  private arm(receipt: string, appliesAt: string): void {
+    const timer = this.options.timer ?? realTimer;
+    const cancel = timer(
+      () => {
+        this.armed.delete(receipt);
+        return this.serial(() => this.applyDue(receipt));
+      },
+      Math.max(0, Date.parse(appliesAt) - this.now()),
+    );
+    this.armed.set(receipt, cancel);
+  }
+
+  /** Apply one decision if it is still due (not undone, not applied, its window closed); never throws. */
+  private async applyDue(receipt: string): Promise<void> {
+    try {
+      const log = await this.log();
+      const decision = log.decisions.get(receipt);
+      if (!decision || decision.undone || decision.closed) return;
+      if (this.now() < Date.parse(decision.appliesAt)) return this.arm(receipt, decision.appliesAt);
+      const work = decision.verb === "file" ? await this.file(log, decision.key) : null;
+      await this.append({
+        kind: "conductor.closed",
+        actor: "human",
+        at: new Date(this.now()).toISOString(),
+        key: decision.key,
+        receipt,
+        verb: decision.verb,
+        work,
+      });
+    } catch (error) {
+      this.options.log?.(`answers: applying your decision ${receipt}: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * File an answer that waited for the conductor as queued work: gate human,
+   * never dispatched (you or a lane start it), briefed from its candidate, in
+   * the folder it points at when that is still a repository, else the control
+   * repo. Filed once (Contract.answer): one filed before stands.
+   */
+  private async file(log: Log, key: string): Promise<{ id: string; title: string }> {
+    const existing = (await this.options.engine.answered()).get(key);
+    if (existing) return { id: existing.id, title: existing.title };
+    const parsed = ConductorCandidateSchema.safeParse(log.routed.get(key)?.candidate);
+    if (!parsed.success) throw new Error("its candidate does not read");
+    const candidate = parsed.data;
+    const folder = await inspectFolder(candidate.pointers.repo).catch(() => null);
+    const repo = folder?.directory && folder.git ? folder.path : this.options.controlRepo;
+    const { title, brief } = candidateWork(candidate);
+    const item = await this.options.engine.create(
+      this.options.client(),
+      {
+        title,
+        brief,
+        repo,
+        gate: "human",
+        check: "",
+        initiative: candidate.pointers.initiative ?? "",
+        dispatch: false,
+        answer: key,
+      },
+      BY_HUMAN,
+    );
+    return { id: item.id, title: item.title };
+  }
+
   /**
    * Routes every answer that is due (the header above), one pass at a time;
    * `agentId` limits it to the answers that session asked, as when its turn
@@ -436,9 +676,10 @@ export class AnswerRouter {
    * pass, and says why.
    */
   route(only: { agentId?: string } = {}): Promise<RouteOutcome[]> {
-    const next = this.running.catch(() => undefined).then(() => this.pass(only));
-    this.running = next;
-    return next;
+    const outcomes = this.serial(() => this.pass(only));
+    // A decision whose undo window closed while nothing was armed (a restart) is applied after the pass.
+    void outcomes.then(() => this.resume()).catch(() => undefined);
+    return outcomes;
   }
 
   private async pass(only: { agentId?: string }): Promise<RouteOutcome[]> {
@@ -621,8 +862,9 @@ export class AnswerRouter {
   }
 
   /**
-   * The answers queued for the conductor (route `conductor`), oldest first:
-   * the `lane.assign` candidates the conductor (BRO-2989) reads. Pure: a read
+   * The answers queued for the conductor (route `conductor`), oldest first,
+   * that you have not filed or dismissed and hold no decision of yours in its
+   * undo window: the `lane.assign` candidates the conductor (BRO-2989) reads. Pure: a read
    * of the receipt log, which is the queue. A line whose candidate does not
    * parse is skipped, never guessed at.
    */
@@ -631,6 +873,8 @@ export class AnswerRouter {
     const out: ConductorCandidate[] = [];
     for (const routed of log.routed.values()) {
       if (routed.route !== "conductor") continue;
+      // Filed or dismissed by you, or with your decision in its undo window: not the conductor's.
+      if (closedDecision(log, routed.key) || pendingDecision(log, routed.key)) continue;
       const parsed = ConductorCandidateSchema.safeParse(routed.candidate);
       if (parsed.success) out.push(parsed.data);
     }
@@ -812,7 +1056,7 @@ export class AnswerRouter {
 
   private async log(): Promise<Log> {
     const info = await stat(this.options.receipts).catch(() => null);
-    if (!info) return { answered: [], routed: new Map(), began: null, waiting: new Map() };
+    if (!info) return { answered: [], routed: new Map(), began: null, waiting: new Map(), decisions: new Map() };
     const stamp = `${info.mtimeMs}:${info.size}`;
     if (this.cached?.stamp === stamp) return this.cached.log;
     const log = readLog(await readFile(this.options.receipts, "utf8"));
@@ -853,9 +1097,37 @@ export class AnswerRouter {
     const key = answerKey(receipt);
     const routed = log.routed.get(key);
     const blank = { route: null, pr: null, work: null, agentId: null };
+    if (routed?.route === "conductor") {
+      const closed = closedDecision(log, key);
+      if (closed) {
+        return {
+          stage: "acted",
+          words: closed.closed?.work
+            ? `Acted on: you filed it as work, "${closed.closed.work.title}".`
+            : closed.verb === "file"
+              ? "Acted on: you filed it as work."
+              : "Dismissed by you: nothing follows from it, and the conductor will not get it.",
+          route: "conductor",
+          pr: null,
+          work: closed.closed?.work ?? null,
+          agentId: routed.agentId,
+        };
+      }
+      const pending = pendingDecision(log, key);
+      return {
+        stage: "conductor",
+        words: fateWords(routed),
+        route: "conductor",
+        pr: null,
+        work: null,
+        agentId: routed.agentId,
+        key,
+        pending: pending ? { verb: pending.verb, receipt: pending.receipt, appliesAt: pending.appliesAt } : null,
+      };
+    }
     if (routed) {
       return {
-        stage: routed.route === "superseded" ? "superseded" : routed.route === "conductor" ? "conductor" : "acted",
+        stage: routed.route === "superseded" ? "superseded" : "acted",
         words: fateWords(routed),
         route: routed.route,
         pr: null,

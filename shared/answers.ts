@@ -5,6 +5,7 @@
 // gated like any other, and Maestro never merges it. Neither starts work
 // either (A8): an answer no session can take waits for the conductor.
 
+import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
 export const PrRefSchema = z.object({ number: z.number().int(), url: z.string() });
@@ -100,6 +101,18 @@ export const ConductorCandidateSchema = z.object({
 });
 export type ConductorCandidate = z.infer<typeof ConductorCandidateSchema>;
 
+/** What you may do with an answer that waits for the conductor (BRO-2990): file it as queued work, or dismiss it. */
+export const CONDUCTOR_VERBS = ["file", "dismiss"] as const;
+export type ConductorVerb = (typeof CONDUCTOR_VERBS)[number];
+
+/** Your decision on such an answer while its undo window runs: what, its receipt, and when it takes effect. */
+export const ConductorPendingSchema = z.object({
+  verb: z.enum(CONDUCTOR_VERBS),
+  receipt: z.string(),
+  appliesAt: z.string(),
+});
+export type ConductorPending = z.infer<typeof ConductorPendingSchema>;
+
 export const AnswerFateSchema = z.object({
   stage: z.enum(ANSWER_STAGES),
   /** The fate in a sentence, as the card says it. */
@@ -108,8 +121,33 @@ export const AnswerFateSchema = z.object({
   pr: PrRefSchema.nullable(),
   work: z.object({ id: z.string(), title: z.string() }).nullable(),
   agentId: z.string().nullable(),
+  /** The answer's receipt key (server/answer-routes.ts answerKey): what conductor.decide names. Stage `conductor` only. */
+  key: z.string().optional(),
+  /** Your decision on it while its undo window runs (conductor.decide); null when none. Stage `conductor` only. */
+  pending: ConductorPendingSchema.nullable().optional(),
 });
 export type AnswerFate = z.infer<typeof AnswerFateSchema>;
+
+/**
+ * Your decision on an answer that waits for the conductor (BRO-2990): `file`
+ * files it as queued work (gate human, never dispatched: you or a lane start
+ * it), carrying the ask, the answer and the pointers; `dismiss` closes it.
+ * Either takes effect UNDO_MS later, unless undone (conductor.undo), and
+ * leaves a receipt in the asks' receipt log; after it the answer no longer
+ * waits for the conductor. Yours alone: never on the agent socket.
+ */
+export const decideConductor = defineRpc({
+  name: "conductor.decide",
+  input: z.object({ key: z.string().min(1), verb: z.enum(CONDUCTOR_VERBS) }),
+  output: z.object({ receipt: z.string(), appliesAt: z.string() }),
+});
+
+/** Take back a conductor.decide while its undo window runs. Yours alone: never on the agent socket. */
+export const undoConductor = defineRpc({
+  name: "conductor.undo",
+  input: z.object({ receipt: z.string().min(1) }),
+  output: z.object({ undone: z.boolean() }),
+});
 
 /** The batch in Needs you: answers that wait to land, or a batch that cannot take main. */
 export const AnswersNoticeSchema = z.object({

@@ -3055,6 +3055,39 @@ describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
     expect((await engine.get(item.id)).item.state).toBe("proposed");
   });
 
+  test("a session's start that will be refused holds no slot while its profile is read: yours starts meanwhile", async () => {
+    let release!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const { create, engine, fake } = await setup(
+      { concurrencyCap: 1, modeId: null },
+      {
+        lane: async (_agentId, _paseo, config) => {
+          entered();
+          await reading;
+          return { name: "your Settings", provider: config.provider, modeId: config.modeId };
+        },
+      },
+    );
+    const theirs = await create({ dispatch: false });
+    const mine = await create({ dispatch: false });
+    const refused = engine.dispatch(fake.paseo, theirs.id, lane).then(
+      () => "started",
+      (error: Error) => error.message,
+    );
+    await inside;
+    // The session's start is still reading its profile: it has taken no slot, so your Dispatch at cap 1 starts.
+    expect((await engine.dispatch(fake.paseo, mine.id)).state).toBe("running");
+    release();
+    expect(await refused).toContain("your Settings name no mode for it");
+    expect(fake.created).toHaveLength(1);
+  });
+
   test("a lane profile that cannot be read refuses the start, saying it could not be read", async () => {
     const { create, engine, fake } = await setup(
       {},
