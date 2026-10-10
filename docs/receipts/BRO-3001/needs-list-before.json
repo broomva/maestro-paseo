@@ -1,0 +1,202 @@
+{
+  "rows": [
+    {
+      "key": "ask:[\"origin/main\",\"dogfood-needs.yaml\",null,\"Q1\"]",
+      "title": "Rotate the bucket's signing key before Friday's release?",
+      "scope": "broomva",
+      "since": "2026-10-10T12:00:00Z",
+      "blocksWork": true,
+      "kind": "ask",
+      "verbs": ["answer", "skip"],
+      "body": {
+        "why": "It flushes the edge cache during business hours.",
+        "cost": "The release waits until the key is rotated.",
+        "options": [
+          {
+            "id": "rotate",
+            "label": "Rotate now",
+            "consequence": "A 2-minute cache flush at noon."
+          },
+          {
+            "id": "later",
+            "label": "Rotate after the release",
+            "consequence": "The release ships on the old key."
+          }
+        ],
+        "recommended": "rotate",
+        "goesTo": "origin/main, through Maestro's answers batch"
+      }
+    },
+    {
+      "key": "work:02fbc589-f172-49bd-a058-863d6b18bc42",
+      "title": "Retry failed card charges with backoff",
+      "scope": "payments",
+      "session": {
+        "agentId": "f33e8140-c329-40fe-a0da-467fd45e4c9d",
+        "name": "f33e8140",
+        "waiting": true
+      },
+      "since": "2026-10-10T14:52:13.411Z",
+      "blocksWork": true,
+      "kind": "approval",
+      "verbs": ["allow", "deny"],
+      "body": {
+        "action": "Close it as done",
+        "heldBy": "gate",
+        "evidence": [
+          {
+            "label": "Asks",
+            "value": "Confirm that 30 seconds is an acceptable upper bound before a customer sees an error.",
+            "tone": "warn"
+          },
+          {
+            "label": "Ran",
+            "value": "48m unsupervised · 1 turn · ran to the gate",
+            "tone": "muted"
+          },
+          {
+            "label": "Checks",
+            "value": "Check passed",
+            "tone": "ok"
+          }
+        ],
+        "after": [
+          "Maestro records your decision and shows Undo for 8 s",
+          "Allow closes it as done; Deny sends it back to its session with your note"
+        ]
+      }
+    },
+    {
+      "key": "work:cfb927e3-97cd-4085-b000-61da4a67d55b",
+      "title": "Publish the build cache to the shared bucket",
+      "scope": "ci",
+      "session": {
+        "agentId": "0789a6f0-bcb0-4c7d-b186-68b64291225d",
+        "name": "0789a6f0",
+        "waiting": true
+      },
+      "since": "2026-10-10T17:04:21.922Z",
+      "blocksWork": true,
+      "kind": "approval",
+      "verbs": ["allow", "deny"],
+      "body": {
+        "action": "git push origin HEAD",
+        "heldBy": "permission",
+        "evidence": [
+          {
+            "label": "Ran",
+            "value": "under a minute unsupervised · 0 turns · paused on a question",
+            "tone": "muted"
+          }
+        ],
+        "after": ["Your answer goes to the session's permission prompt", "The session goes on with its turn"]
+      }
+    },
+    {
+      "key": "work:618fa7dc-e72a-48c9-aaad-7f0ddbf80a68",
+      "title": "Start it yourself: Cache the Rust build in CI",
+      "scope": "ci",
+      "since": "2026-10-10T17:31:50.000Z",
+      "blocksWork": true,
+      "kind": "owner_step",
+      "verbs": ["done", "later"],
+      "body": {
+        "where": "Maestro: the work's Dispatch (yours alone)",
+        "doneCheck": "Done when it runs. Start it yourself: it was filed to wait for you.",
+        "waitingSessions": 0
+      }
+    },
+    {
+      "key": "answers:batch",
+      "title": "2 answers wait to land: PR #915",
+      "scope": "broomva",
+      "since": "2026-10-10T17:32:02.238Z",
+      "blocksWork": true,
+      "kind": "owner_step",
+      "verbs": ["done", "later"],
+      "body": {
+        "where": "https://github.com/broomva/workspace/pull/915",
+        "doneCheck": "Done when its PR merges and the answers are on origin/main; Maestro never merges it, and checks on each wake.",
+        "waitingSessions": 0
+      }
+    },
+    {
+      "key": "review:skene",
+      "title": "Review Skene: the agent stage: keep, park or close?",
+      "scope": "broomva",
+      "since": "2026-10-08T05:00:00.000Z",
+      "blocksWork": false,
+      "kind": "ask",
+      "verbs": ["answer", "skip"],
+      "body": {
+        "why": "Its review date, 2026-10-08, has passed.",
+        "cost": "0 open work and 0 open asks wait on its direction.",
+        "options": [
+          {
+            "id": "keep",
+            "label": "Keep",
+            "consequence": "It stays active; its next review date moves on."
+          },
+          {
+            "id": "park",
+            "label": "Park",
+            "consequence": "No reviews until its wake date or until you resume it."
+          },
+          {
+            "id": "close",
+            "label": "Close",
+            "consequence": "It is closed, with its outcome recorded."
+          }
+        ],
+        "goesTo": "skene.yaml in the control repo",
+        "initiative": "skene",
+        "intent": "Ship the agent stage so sessions can be watched live.",
+        "since": ["Next action: Land the stage renderer PR."],
+        "hanging": {
+          "work": 0,
+          "asks": 0,
+          "driver": "owner"
+        }
+      }
+    },
+    {
+      "key": "ask:[\"origin/main\",\"dogfood-needs.yaml\",null,\"Q2\"]",
+      "title": "Delete the 2024 build artifacts (412 GB)?",
+      "scope": "broomva",
+      "since": "2026-10-10T09:30:00Z",
+      "blocksWork": false,
+      "kind": "ask",
+      "verbs": ["answer", "skip"],
+      "body": {
+        "why": "Deleting cannot be undone.",
+        "cost": "Builds start failing at 100%.",
+        "options": [
+          {
+            "id": "delete",
+            "label": "Delete them",
+            "consequence": "412 GB freed, for good."
+          },
+          {
+            "id": "keep",
+            "label": "Keep them",
+            "consequence": "Raise the quota instead."
+          }
+        ],
+        "recommended": "delete",
+        "goesTo": "origin/main, through Maestro's answers batch"
+      }
+    }
+  ],
+  "summary": {
+    "total": 7,
+    "byKind": {
+      "ask": 3,
+      "approval": 2,
+      "owner_step": 2
+    },
+    "oldest": {
+      "key": "review:skene",
+      "since": "2026-10-08T05:00:00.000Z"
+    }
+  }
+}
