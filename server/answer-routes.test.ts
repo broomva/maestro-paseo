@@ -1112,6 +1112,23 @@ describe("your decision on an answer for the conductor (BRO-2990)", () => {
     await expect(router.decide("nope", "file")).rejects.toThrow("does not wait for the conductor");
   });
 
+  test("a stopped router never applies a pending decision; the router that resumes after it applies it once", async () => {
+    const { router, routerOf, key, clock, created, armed } = await conductorAnswer();
+    await router.decide(key, "file");
+    // A reload inside the undo window: the old router is stopped, and its timer is cleared.
+    router.stop();
+    expect(armed.every((entry) => entry.canceled)).toBe(true);
+    later(clock, UNDO_MS + 1);
+    // Even a timer that fires anyway applies nothing on a stopped router.
+    for (const entry of armed) await entry.run();
+    expect(created).toEqual([]);
+    // The new router resumes and applies it, once; the old one, fired again, still applies nothing.
+    await routerOf().resume();
+    for (const entry of armed) await entry.run();
+    await routerOf().resume();
+    expect(created).toHaveLength(1);
+  });
+
   test("a restart keeps your decision: a fresh router applies the due one when it resumes", async () => {
     const { router, routerOf, key, clock, created } = await conductorAnswer();
     await router.decide(key, "file");

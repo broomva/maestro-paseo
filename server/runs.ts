@@ -170,8 +170,12 @@ export function nextRun(config: MaestroConfig, item: StoredWork): NextRun {
  */
 export const FILED_BEFORE_A8 = "Filed from your answer before A8: start it yourself, or cancel it.";
 
-/** Queued work Maestro filed for an answer, with no hold: only the routing before A8 filed that. Pure. */
-function filedBeforeA8(item: StoredWork): boolean {
+/**
+ * Queued work Maestro filed for an answer, with no hold: only the routing
+ * before A8 filed that. Yours to start or cancel: a session's dispatch
+ * refuses it as it refuses held work (engine.ts startRefusal). Pure.
+ */
+export function filedBeforeA8(item: StoredWork): boolean {
   if (!item.contract.answer || item.contract.hold) return false;
   const created = item.events.find((event) => event.type === "created");
   return created?.type === "created" && created.actor === "maestro";

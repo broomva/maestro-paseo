@@ -512,6 +512,8 @@ export class AnswerRouter {
   private readonly waits = new Map<string, { status: "unlanded" | "queued" | "failed"; words: string }>();
   /** Your decisions whose undo window is armed, by receipt, to the timer's cancel. */
   private readonly armed = new Map<string, () => void>();
+  /** Stopped (the plugin is shutting down or reloading): no window is armed, and none applies here any more. */
+  private stopped = false;
 
   constructor(options: RouterOptions) {
     this.options = options;
@@ -523,6 +525,17 @@ export class AnswerRouter {
     const log = await this.log();
     if (log.began !== null) return;
     await this.append({ kind: "routing.began", actor: "maestro", at: new Date(this.now()).toISOString() });
+  }
+
+  /**
+   * The plugin is shutting down or reloading: every armed undo window is
+   * cleared and none is armed again, so a decision is applied once, by the
+   * router that resumes after it (resume), never by both.
+   */
+  stop(): void {
+    this.stopped = true;
+    for (const cancel of this.armed.values()) cancel();
+    this.armed.clear();
   }
 
   /** Runs `work` after every pass and decision before it: one writer to the receipt log at a time. */
@@ -604,6 +617,7 @@ export class AnswerRouter {
   }
 
   private arm(receipt: string, appliesAt: string): void {
+    if (this.stopped) return;
     const timer = this.options.timer ?? realTimer;
     const cancel = timer(
       () => {
@@ -617,6 +631,7 @@ export class AnswerRouter {
 
   /** Apply one decision if it is still due (not undone, not applied, its window closed); never throws. */
   private async applyDue(receipt: string): Promise<void> {
+    if (this.stopped) return;
     try {
       const log = await this.log();
       const decision = log.decisions.get(receipt);
@@ -753,7 +768,7 @@ export class AnswerRouter {
       }
       // No ledger holds the ask by its name now (moved, renamed, removed: Maestro does not guess which): a stop for
       // you, as held work in Needs you, never a discard.
-      return this.stop(receipt, agentId);
+      return this.holdMissing(receipt, agentId);
     }
     if (receipt.homeKind === "main" && ask?.batched) {
       return this.wait(receipt, "unlanded", "It waits to land on origin/main.");
@@ -809,7 +824,7 @@ export class AnswerRouter {
     }
     const why = agentId ? "The session that asked is gone." : "No session is named as the one that asked.";
     // An ask no read holds (a checkout's, moved or unreadable): whether it is owner-only cannot be known, so it is held.
-    if (!ask) return this.stop(receipt, agentId);
+    if (!ask) return this.holdMissing(receipt, agentId);
     if (ask.idea) {
       return this.routed(receipt, {
         route: "none",
@@ -947,7 +962,7 @@ export class AnswerRouter {
    * gate, which the loop flags in Needs you as yours to start, briefed from
    * the receipt alone. Filed once (Contract.answer).
    */
-  private async stop(receipt: AnsweredReceipt, agentId: string | null): Promise<RouteOutcome> {
+  private async holdMissing(receipt: AnsweredReceipt, agentId: string | null): Promise<RouteOutcome> {
     const why = `No ledger holds the ask ${receipt.id} in ${receipt.ledger} now (moved, renamed or removed: Maestro does not guess which).`;
     return this.held(
       receipt,

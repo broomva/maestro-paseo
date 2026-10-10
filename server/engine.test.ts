@@ -3031,6 +3031,32 @@ describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
     expect(raw).toMatchObject({ actor: "human" });
   });
 
+  test("a session cannot start work filed from your answer before A8; your Dispatch starts it", async () => {
+    // Settings' mode does not ask, so only the work itself can make a session's start refused.
+    const { engine, fake, repo } = await setup({ modeId: "bypassPermissions" });
+    fake.addSession("lane-1", { modeId: "default" });
+    // As the routing before A8 filed it: Maestro's, for an answer, no hold.
+    const legacy = await engine.create(
+      fake.paseo,
+      {
+        title: "Act on your answer: Ship it?",
+        brief: "",
+        repo,
+        gate: "human",
+        check: "",
+        initiative: "",
+        dispatch: false,
+        answer: "l.yaml#A1@2026-10-06T12:00:01Z",
+      },
+      { actor: "maestro", via: "loop" },
+    );
+    await expect(engine.dispatch(fake.paseo, legacy.id, lane)).rejects.toThrow(
+      "Filed from your answer before A8: start it yourself, or cancel it.",
+    );
+    expect(fake.created).toEqual([]);
+    expect((await engine.dispatch(fake.paseo, legacy.id)).state).toBe("running");
+  });
+
   test("a session's run takes Settings' mode when it does not ask, whatever mode the session runs in", async () => {
     const { create, engine, fake } = await setup({ modeId: "bypassPermissions" });
     fake.addSession("lane-1", { modeId: "default", title: "SRI lane" });

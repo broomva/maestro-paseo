@@ -84,6 +84,8 @@ import { briefOf, type RunKeys, workTitle } from "./frontmatter";
 import { type LabelAgent, WORK_LABELS, workLabels } from "./labels";
 import { describePermission, type PermissionLike } from "./permissions";
 import {
+  FILED_BEFORE_A8,
+  filedBeforeA8,
   HELD_FOR_YOU,
   type LaneProfile,
   MODED_BY_YOU,
@@ -419,6 +421,8 @@ function startRefusal(item: StoredWork, origin: Origin): string | null {
     case "agent":
       if (!isDispatchable(state)) return "A session can start only queued work. Stuck work is unblocked in Maestro.";
       if (item.contract.hold) return HELD_FOR_YOU;
+      // Filed from your answer before A8 (runs.ts filedBeforeA8): yours, as held work is.
+      if (filedBeforeA8(item)) return FILED_BEFORE_A8;
       // auto_accept is a mode by another name: it skips the prompts too (shared/run.ts).
       return item.contract.modeId || skipsPrompts({ featureValues: item.contract.featureValues }) ? MODED_BY_YOU : null;
     case "maestro":

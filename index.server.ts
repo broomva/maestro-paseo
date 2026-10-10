@@ -490,6 +490,8 @@ export default function contribute(host: PluginServerContext) {
 
   return async () => {
     loop.stop();
+    // Before a reload's new router resumes your decisions: this one applies none of them any more.
+    router?.stop();
     fleet.stop();
     awakeClock?.stop();
     engine.stop();
