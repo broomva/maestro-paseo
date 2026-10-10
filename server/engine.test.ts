@@ -1222,7 +1222,7 @@ test("a read while a change is in flight returns the finished change, never half
 });
 
 describe("the undo window", () => {
-  test("a decision is recorded when you make it and takes effect 10s later", async () => {
+  test("a decision is recorded when you make it and takes effect 8s later", async () => {
     const { create, engine, fake, timers } = await setup();
     const item = await create();
     await endTurn(engine, fake);

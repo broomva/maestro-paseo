@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { UNDO_MS } from "../shared/undo";
 import {
   ARCHIVED_NOTE,
   adoptedByOf,
@@ -414,7 +415,7 @@ describe("a decision inside its undo window", () => {
     verdict: "approve",
     note: "",
     token: "d1",
-    effectiveAt: new Date(T0 + 10 * 60_000 + 10_000).toISOString(),
+    effectiveAt: new Date(T0 + 10 * 60_000 + UNDO_MS).toISOString(),
   };
 
   test("is pending until it is applied, undone or dropped, by its own token", async () => {
@@ -478,7 +479,7 @@ describe("a decision inside its undo window", () => {
       ["Approve did not take effect", "The agent is waiting on a question. Answer it first."],
       ["You stopped the run", null],
     ]);
-    expect(toWireEvents([{ ...made, token: "open" }]).map((event) => event.text)).toEqual(["Approving in 10s"]);
+    expect(toWireEvents([{ ...made, token: "open" }]).map((event) => event.text)).toEqual(["Approving in 8s"]);
     // Applied: the decision reads as made, then when it took effect, with the state change folded in.
     const applied: WorkEvent[] = [
       made,
