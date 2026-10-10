@@ -53,7 +53,7 @@ The cards in sessions are BRO-3008.
 - **Rightward swipes on the phone open Paseo's sidebar.** Deck and row swipes are leftward only there (BRO-3062).
 - **The keyboard:** RN `Keyboard` events reach the plugin and the host gives no inset (source), so the composer lifts itself. The software keyboard itself is an owner check on the phone.
 - **Gradients:** they render with `backgroundImage` on the desktop and `experimental_backgroundImage` on iOS.
-- **The push:** the home-screen banner reads `Agent finished` over about 80 visible characters (BRO-3063).
+- **The push:** on an iPhone 16 Pro, the home-screen banner reads `Agent finished` over about 80 visible characters (BRO-3063).
 
 | Frame | PNG | What it is |
 | --- | --- | --- |
