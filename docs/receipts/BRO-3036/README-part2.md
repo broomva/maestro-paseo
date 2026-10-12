@@ -14,7 +14,7 @@ Part 1 (J2–J5) is in `README.md`.
 | `j8-initiatives-{light,dark}.png` | Initiatives: the four tiles, chips with counts, rows with lateness loudest (late first, longest first) |
 | `j8-review-inspector-{light,dark}.png` | a due review opened in the inspector: why it is due, since the last review, work / open asks / driver session, Keep / Park / Close, where the answer goes |
 | `j8-review-answered-{light,dark}.png` | the review answered (Park): "applies in 7 s" with one Undo (B4) |
-| `j9-new-work-{light,dark}.png` | New work: the five promises (Deliverable, Checks, Gate, If it lands nothing, **Who starts it**), the defaults line, Save to queue / Dispatch |
+| `j9-new-work-{light,dark}.png` | New work: the five promises (Deliverable, Checks, Gate, If it lands nothing, **Who starts it**: you do), the defaults line, Save to queue / Dispatch |
 
 ## What changed since part 1
 
@@ -33,8 +33,10 @@ Part 1 (J2–J5) is in `README.md`.
 - **One plan adapter.** `client/verbs.ts` gained `snooze` and `review` plans and `useVerbs().answer` (Decisions' card and
   the ideas' cards use it); the keyboard (J/K, ⌘↵, S, 1–4) lives in `client/use-inspector.ts`, shared by Feed, Work
   and Initiatives: only from inside the screen, never on a held key, one in flight per item.
-- **J9.** The composer says, before you send, what the work must land to reach you; the last row says the lane starts
-  it (A8). `contractPromises` in `client/composer.ts` is pure.
+- **J9.** The composer says, before you send, what the work must land to reach you; the last row says who starts
+  it: you do. Dispatch starts a session now (engine.dispatch → runs.ts), Save to queue starts nothing, and Maestro never
+  starts work on its own (A8). `contractPromises` in `client/composer.ts` is pure; `server/engine.test.ts` holds the row
+  against both paths. The frame's "the Broomva lane … next tick (≤ 15 min)" is not said: no lane starts work yet.
 
 ## Found by a pre-review and fixed
 
@@ -44,11 +46,20 @@ Part 1 (J2–J5) is in `README.md`.
   the snooze is checked again when its window closes, and Health says how many are snoozed.
 - Every verb still inside its 8 s keeps its Undo on Work, Health and Initiatives (the ledger strip, not only the one toast).
 - Each session is in one sessions-bar segment (an idle session that is not adopted is Unmanaged, not Idle too).
+- `notices.list` names unread work (`the work`), and Health surfaces a failed `work.list`.
+- `notice.snooze` only snoozes a notice that offers Snooze (a quiet run), when sent and when its window closes; the
+  review answer is likewise checked again.
 - An answered review no longer reads "N d late"; "work items in scope" counts work items, each once.
 
 ## Differences from the frames
 
 Left, and why:
+
+- **"Who starts it" names you, not the Broomva lane** (the frame's wording), and Queued says "waits for Dispatch": lanes
+  do not exist yet (`lanes.get` is absent). Tied to the lanes work; the row changes when a lane can start queued work.
+- **"If it lands nothing"** says what happens (Finished for you to read, Stuck in Health on a failed check), not "it
+  stays Standing": Standing is running work flagged quiet.
+- **The Sessions tile** counts runs (work items) and fleet sessions in two named units, not one "seen" sum.
 
 - **Run tick now and Pause fleet** (J7) are not drawn: there is no server verb for either.
 - **The Conductor tile has no lanes**: `lanes.get` does not exist; the tile says so.
