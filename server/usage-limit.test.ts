@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isPaused, pausedBy, pausedReason, resetOf } from "./usage-limit";
+import { isPaused, LOGIN_EXPIRED, ORG_DISABLED, pausedBy, pausedReason, resetOf } from "./usage-limit";
 
 describe("a turn that ended on a usage limit (BRO-3073)", () => {
   test("the messages Claude Code ends a turn with, read as the live store has them", () => {
@@ -47,5 +47,28 @@ describe("a turn that ended on a usage limit (BRO-3073)", () => {
     expect(isPaused("Paused: hit a usage limit; resumes after 3pm")).toBe(true);
     expect(isPaused("Stopped before finishing")).toBe(false);
     expect(isPaused(null)).toBe(false);
+  });
+
+  test("a login that expired reads as it does in real transcripts: Stuck and counted, never finished", () => {
+    for (const said of [
+      "Failed to authenticate: OAuth session expired and could not be refreshed",
+      "Not logged in · Please run /login",
+      "Failed to authenticate: OAuth session expired and could not be refreshedYou've hit your weekly limit · resets 5pm (America/Bogota)",
+    ]) {
+      expect(pausedBy("completed", said, null)).toBe(LOGIN_EXPIRED);
+    }
+    expect(
+      pausedBy(
+        "completed",
+        "Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key",
+        null,
+      ),
+    ).toBe(ORG_DISABLED);
+    expect(pausedBy("failed", "", "authentication_error: invalid x-api-key")).toBe(LOGIN_EXPIRED);
+    expect(pausedBy("failed", "", "Failed to authenticate: OAuth session expired")).toBe(LOGIN_EXPIRED);
+    // Prose about logging in is a finished run.
+    expect(pausedBy("completed", "Fixed the login redirect. Not logged in users now see the form.", null)).toBeNull();
+    expect(isPaused(LOGIN_EXPIRED)).toBe(true);
+    expect(isPaused(ORG_DISABLED)).toBe(true);
   });
 });

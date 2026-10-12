@@ -357,6 +357,89 @@ describe("a turn that ends on a usage limit (BRO-3073)", () => {
     expect(fake.sent.at(-1)?.text).toContain("Continue where you stopped");
   });
 
+  test("a login that expired is a pause too, counted and Stuck, not work that finished (BRO-2999 review)", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await endTurn(
+      engine,
+      fake,
+      said("Failed to authenticate: OAuth session expired and could not be refreshed") as never,
+    );
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "blocked",
+      reason: "Paused: the session's login expired; sign in again, then Resume",
+    });
+    const other = await create();
+    await endTurn(engine, fake, said("Not logged in · Please run /login") as never, "agent-2");
+    expect((await engine.get(other.id)).item.reason).toContain("login expired");
+    const third = await create();
+    await endTurn(
+      engine,
+      fake,
+      said(
+        "Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key",
+      ) as never,
+      "agent-3",
+    );
+    expect((await engine.get(third.id)).item.reason).toBe(
+      "Paused: your organization has disabled subscription access for Claude Code",
+    );
+  });
+
+  test("a limit turn at work that holds a permission prompt keeps its approval: the prompt is still yours", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await engine.onPermissionRequested({ id: "agent-1" }, { id: "p1", name: "Bash", input: { command: "git push" } });
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "review", permission: { requestId: "p1" } });
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    // A late turn end that says the limit was hit, while the prompt is still pending: nothing is moved off the gate.
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, said(LIMIT) as never);
+    const { item: after } = await engine.get(item.id);
+    expect(after.state).toBe("review");
+    expect(after.reason ?? "").not.toContain("Paused");
+  });
+
+  test("a paused run whose session is gone says Resume starts a fresh run, not that the session resumes", async () => {
+    const { create, engine, fake, store } = await setup();
+    const item = await create();
+    for (const agent of fake.agents.values()) agent.status = "idle";
+    const current = await store.findById(item.id);
+    await store.mutate(
+      item.id,
+      () => ({
+        to: "review",
+        actor: "agent",
+        events: [
+          {
+            ts: new Date(clock).toISOString(),
+            type: "turn.ended",
+            actor: "agent",
+            agentId: "agent-1",
+            outcome: "completed",
+            error: null,
+            summary: LIMIT,
+            turnId: null,
+          },
+        ],
+      }),
+      current.dir,
+    );
+    // The session was archived after the limit turn, before the sweep got to the work.
+    await store.mutate(
+      item.id,
+      () => ({
+        events: [{ ts: new Date(clock + 1000).toISOString(), type: "note", actor: "maestro", text: ARCHIVED_NOTE }],
+      }),
+      current.dir,
+    );
+    await engine.upkeep(null);
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "blocked",
+      reason: `${PAUSED_AT}; its session was archived, so Resume starts a fresh run`,
+    });
+  });
+
   test("work already at your gate on a limit message moves to Stuck once; one that went on since stays", async () => {
     const { create, engine, fake, store } = await setup();
     const stale = await create();

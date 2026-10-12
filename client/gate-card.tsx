@@ -262,7 +262,10 @@ function Asking({
   const action = permissionAction(permission);
   const decided = pendingFor(ledger.data?.pending ?? [], [key]).some((verb) => verb.verb === "approval.decide");
   const decide = (allow: boolean) =>
-    verbs.approval.mutate({ key, allow, action }, { onError: (error) => toast.error(errorText(error)) });
+    verbs.approval.mutate(
+      { key, allow, action, requestId: permission.requestId },
+      { onError: (error) => toast.error(errorText(error)) },
+    );
   return (
     <View style={{ gap: space[3] }}>
       <View style={{ gap: space[1] }}>

@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UNDO_MS } from "../shared/undo";
@@ -213,5 +213,130 @@ describe("the owner-verb ledger", () => {
     tickMs(25 * 60 * 60 * 1000);
     expect((await verbs.list()).recent).toEqual([]);
     expect(await readFile(path, "utf8")).toContain("verb.applied");
+  });
+
+  test("the window's timer and the sweep reaching a due verb together apply it exactly once, at any offset", async () => {
+    for (let offset = 0; offset < 12; offset += 1) {
+      for (const first of ["timer", "sweep"] as const) {
+        const { verbs, timers, path } = await setup();
+        let runs = 0;
+        verbs.register<{ n: number }>("loop.wake", {
+          apply: async () => {
+            runs += 1;
+            // A slow apply keeps the race open for whoever comes second.
+            await new Promise((resolve) => setTimeout(resolve, 2));
+            return "Woke";
+          },
+        });
+        await verbs.schedule("loop.wake", { key: "loop", label: "Woke", args: { n: 1 } });
+        tickMs(UNDO_MS);
+        const lag = async () => {
+          for (let tick = 0; tick < offset; tick += 1) await Promise.resolve();
+        };
+        const timer = async () => timers.fire();
+        const sweep = async () => verbs.resume();
+        const [one, two] = first === "timer" ? [timer, sweep] : [sweep, timer];
+        const later = async () => {
+          await lag();
+          return two();
+        };
+        await Promise.all([one(), later()]);
+        expect({ offset, first, runs }).toEqual({ offset, first, runs: 1 });
+        const lines = (await readFile(path, "utf8")).trim().split("\n");
+        expect(lines.filter((line) => line.includes("verb.applied"))).toHaveLength(1);
+      }
+    }
+  });
+
+  test("an undo that arrives while the verb is taking effect is too late, and the verb is applied once", async () => {
+    const { verbs, timers } = await setup();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let runs = 0;
+    verbs.register<{ n: number }>("loop.wake", {
+      apply: async () => {
+        runs += 1;
+        entered();
+        await held;
+        return "Woke";
+      },
+    });
+    const made = await verbs.schedule("loop.wake", { key: "loop", label: "Woke", args: { n: 1 } });
+    tickMs(UNDO_MS);
+    const firing = timers.fire();
+    await inside;
+    await expect(verbs.undo(made.receipt)).rejects.toThrow("it is taking effect");
+    release();
+    await firing;
+    expect(runs).toBe(1);
+    expect((await verbs.list()).recent).toMatchObject([{ outcome: "applied" }]);
+  });
+
+  test("an undo written by another process after this one read the verb, before it applied, stops it", async () => {
+    const { verbs, timers, build } = await setup();
+    // This daemon's ledger reads the verb as due, then waits; a second daemon undoes it meanwhile.
+    class Slow extends OwnerVerbs {
+      gate: Promise<void> | null = null;
+      reads = 0;
+      protected override async read() {
+        const entries = await super.read();
+        this.reads += 1;
+        if (this.reads === 1 && this.gate) await this.gate;
+        return entries;
+      }
+    }
+    const slow = new Slow({
+      path: (verbs as unknown as { path: string }).path,
+      now: () => new Date(clock),
+      timer: timers.timer,
+    });
+    let runs = 0;
+    slow.register<{ n: number }>("loop.wake", {
+      apply: async () => {
+        runs += 1;
+        return "Woke";
+      },
+    });
+    const made = await slow.schedule("loop.wake", { key: "loop", label: "Woke", args: { n: 1 } });
+    tickMs(UNDO_MS);
+    let open!: () => void;
+    slow.gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    slow.reads = 0;
+    const firing = timers.fire();
+    // The other daemon (a reload that overlapped this one) takes the verb back while the first read is held.
+    await build().undo(made.receipt);
+    open();
+    await firing;
+    expect(runs).toBe(0);
+    expect((await verbs.list()).recent).toMatchObject([{ outcome: "undone" }]);
+  });
+
+  test("a line torn by a crash stays a line of its own: the next record is not lost with it", async () => {
+    const { verbs, path, build } = await setup();
+    const made = await verbs.schedule("work.cancel", { key: "work:a", label: "Canceled a", args: { what: "a" } });
+    // The process died mid-append: a fragment with no newline ends the file.
+    await appendFile(path, '{"kind":"verb.undo');
+    expect(await verbs.undo(made.receipt)).toEqual({ undone: true });
+    // A restart reads the undo, so the verb is not applied behind your back.
+    const restarted = build();
+    let runs = 0;
+    restarted.register<{ what: string }>("work.cancel", {
+      apply: async () => {
+        runs += 1;
+        return "Canceled";
+      },
+    });
+    tickMs(UNDO_MS);
+    expect(await restarted.resume()).toBe(false);
+    expect(runs).toBe(0);
+    expect((await restarted.list()).recent).toMatchObject([{ receipt: made.receipt, outcome: "undone" }]);
   });
 });

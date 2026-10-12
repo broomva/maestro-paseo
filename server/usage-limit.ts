@@ -29,10 +29,24 @@ export function pausedReason(text: string): string {
   return reset ? `${PAUSED}; resumes after ${reset}` : PAUSED;
 }
 
+/** What a turn ends with when the session cannot sign in: Claude Code's own words, as real transcripts hold them. */
+const LOGIN_MESSAGE = /^\s*(?:failed to authenticate|not logged in|invalid api key|please run \/login)/i;
+/** A failed turn's error for a sign-in the provider refused. */
+const LOGIN_ERROR =
+  /\b(?:failed to authenticate|authentication_error|not logged in|invalid api key|401 unauthorized|oauth (?:token|session) (?:has )?expired)\b/i;
+/** The account's own refusal: its organization turned the subscription off for Claude Code. */
+const ORG_MESSAGE = /^\s*your organization has (?:been )?disabled\b/i;
+
+/** The Stuck reasons for a session that cannot sign in. */
+export const LOGIN_EXPIRED = "Paused: the session's login expired; sign in again, then Resume";
+export const ORG_DISABLED = "Paused: your organization has disabled subscription access for Claude Code";
+
 /**
- * Whether a turn ended on a usage limit, and if so the reason it is Stuck for. A completed turn is one only when
- * its last words are the limit message itself (short, and starting with it): a run that mentions limits in a
- * report is not paused. A failed turn is one when its error says the provider refused for rate or credit.
+ * Whether a turn ended on something that is not the run finishing, and if so the reason it is Stuck for: a usage
+ * limit (with its reset), or a login that expired (BRO-2999 review: a fleet-wide login expiry used to land as work
+ * at your gate, and now it would have gone quiet). A completed turn is one only when its last words are the message
+ * itself (short, and starting with it): a run that mentions limits in a report is not paused. A failed turn is one
+ * when its error says the provider refused for rate, credit or sign-in.
  */
 export function pausedBy(
   outcome: "completed" | "failed" | "canceled",
@@ -40,7 +54,14 @@ export function pausedBy(
   error: string | null,
 ): string | null {
   const text = summary.trim();
-  if (outcome === "completed" && text.length <= 400 && LIMIT_MESSAGE.test(text)) return pausedReason(text);
-  if (outcome === "failed" && error && LIMIT_ERROR.test(error)) return pausedReason(error);
+  if (outcome === "completed" && text.length <= 400) {
+    if (LOGIN_MESSAGE.test(text)) return LOGIN_EXPIRED;
+    if (ORG_MESSAGE.test(text)) return ORG_DISABLED;
+    if (LIMIT_MESSAGE.test(text)) return pausedReason(text);
+  }
+  if (outcome === "failed" && error) {
+    if (LOGIN_ERROR.test(error)) return LOGIN_EXPIRED;
+    if (LIMIT_ERROR.test(error)) return pausedReason(error);
+  }
   return null;
 }

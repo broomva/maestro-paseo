@@ -25,6 +25,7 @@ import { isAbsolute, join } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { type FlagKind, type MaestroConfig, NOT_STOPPED, type RunChoices, type WorkItem } from "../shared/contracts";
 import { permissionAction } from "../shared/needs";
+import { ARCHIVED_RESUME } from "../shared/paused";
 import { skipsPrompts } from "../shared/run";
 import {
   GROUP_ORDER,
@@ -496,7 +497,11 @@ function pausedAtGate(item: StoredWork): string | null {
   if (!after.every((event) => AFTER_A_LIMIT.has(event.type) && (event.type !== "state" || event.to === "review"))) {
     return null;
   }
-  return pausedBy(ended.outcome, ended.summary, ended.error);
+  const reason = pausedBy(ended.outcome, ended.summary, ended.error);
+  if (!reason) return null;
+  // Its session is gone (archived, ended) since the turn: Resume cannot send it on, so it starts a fresh run, and the
+  // reason says so rather than promise the session.
+  return sessionGoneSince(item.events) ? `${reason}; ${ARCHIVED_RESUME}` : reason;
 }
 
 export class Engine {

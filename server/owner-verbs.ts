@@ -16,11 +16,11 @@
 // with a receipt that says why, never applied to something else.
 
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { UNDO_MS } from "../shared/undo";
 import { ALREADY_PENDING, type OwnerVerb, type PendingVerb, RECENT_VERBS_MS, type SettledVerb } from "../shared/verbs";
 import { CLIENT_WAIT_MS, realTimer, type Timer, UserError } from "./engine";
+import { appendJsonLine } from "./jsonl";
 import type { Paseo } from "./runs";
 
 /** What a verb's apply needs, and says. */
@@ -125,7 +125,8 @@ export class OwnerVerbs {
     return run;
   }
 
-  private async read(): Promise<Map<string, Entry>> {
+  /** Protected so a test can hold a read open: the race with another process's write is its to stage. */
+  protected async read(): Promise<Map<string, Entry>> {
     const entries = new Map<string, Entry>();
     let text = "";
     try {
@@ -159,8 +160,7 @@ export class OwnerVerbs {
   }
 
   private async write(line: Line): Promise<void> {
-    await mkdir(dirname(this.path), { recursive: true });
-    await appendFile(this.path, `${JSON.stringify(line)}\n`);
+    await appendJsonLine(this.path, line);
   }
 
   /**
@@ -181,6 +181,8 @@ export class OwnerVerbs {
       for (const entry of entries.values()) {
         if (entry.settled || entry.verb !== verb || entry.key !== request.key) continue;
         if (!spec.supersedes) throw new UserError(ALREADY_PENDING);
+        // One taking effect this moment cannot be replaced: it applies, and the newer one waits its own window.
+        if (this.applying.has(entry.receipt)) continue;
         await this.write({
           kind: "verb.undone",
           receipt: entry.receipt,
@@ -298,18 +300,20 @@ export class OwnerVerbs {
 
   /** Apply one verb once it is due, re-checking every guard, and record how it ended. */
   private async applyDue(receipt: string): Promise<"applied" | "dropped" | "early" | "waiting" | "settled"> {
+    // Claimed first, before any await: the window's timer and the sweep both reach a due verb, and only one of them
+    // may take it. An undo that finds it claimed is too late, and a replacement leaves it alone.
     if (this.applying.has(receipt)) return "settled";
-    const entry = (await this.read()).get(receipt);
-    if (!entry || entry.settled) return "settled";
-    if (Date.parse(entry.appliesAt) > this.now().getTime()) return "early";
-    const spec = this.specs.get(entry.verb) as unknown as VerbSpec<unknown> | undefined;
-    if (!spec) return "settled";
-    // Read the client now, not when the timer was armed: one may have arrived since.
-    const paseo = this.client();
-    if (spec.client && !paseo) return "waiting";
-    // Claimed before the first await after the read, so an undo past this point is too late, and a second apply is none.
     this.applying.add(receipt);
     try {
+      const entry = (await this.read()).get(receipt);
+      if (!entry || entry.settled) return "settled";
+      if (Date.parse(entry.appliesAt) > this.now().getTime()) return "early";
+      const spec = this.specs.get(entry.verb) as unknown as VerbSpec<unknown> | undefined;
+      if (!spec) return "settled";
+      // Read the client now, not when the timer was armed: one may have arrived since.
+      const paseo = this.client();
+      if (spec.client && !paseo) return "waiting";
+      // Read again in line with the writers: an undo, or a write of another process, may have settled it since.
       const confirmed = await this.serial(async () => !(await this.read()).get(receipt)?.settled);
       if (!confirmed) return "settled";
       let detail: string;

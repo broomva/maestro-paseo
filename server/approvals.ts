@@ -9,12 +9,12 @@
 // (BRO-2996), so a request is only ever a question put to you: the decision is yours, and never on the agent socket.
 
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { EvidenceSchema } from "../shared/needs";
 import { TICKET } from "../shared/text";
 import { UserError } from "./engine";
+import { appendJsonLine } from "./jsonl";
 import type { OpenApproval } from "./needs";
 
 /** What an agent sends with `approval.request`. */
@@ -110,8 +110,7 @@ export class Approvals {
   }
 
   private async write(line: Line): Promise<void> {
-    await mkdir(dirname(this.path), { recursive: true });
-    await appendFile(this.path, `${JSON.stringify(line)}\n`);
+    await appendJsonLine(this.path, line);
   }
 
   /**

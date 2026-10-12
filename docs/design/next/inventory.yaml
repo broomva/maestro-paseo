@@ -882,7 +882,7 @@ findings:
     ticket: BRO-3073
     about: [I-work-unblock, F-health-notices]
     code: [server/usage-limit.ts, server/engine.ts, shared/paused.ts, server/usage-limit.test.ts]
-    note: "Such a turn (the message, or a provider's rate-limit or credit error) records the work Stuck, 'Paused: hit a usage limit; resumes after <reset>', its session alive and holding its slot; its card offers Resume (Unblock). The sweep moves work already at the gate on one, once. Nothing closes it by itself."
+    note: "Such a turn (the message, or a provider's rate-limit or credit error) records the work Stuck, 'Paused: hit a usage limit; resumes after <reset>', its session alive and holding its slot; its card offers Resume (Unblock). The sweep moves work already at the gate on one, once. Nothing closes it by itself. A login that expired (Failed to authenticate, Not logged in) or an organization that disabled the subscription is a pause too, so a fleet-wide login expiry is counted, not quiet. A paused run whose session is gone says Resume starts a fresh run. The reset stays text (BRO-3081)."
   FND-multi-writer-stores:
     name: asks.jsonl, the answers branch, the ask ledgers and the fleet's ledgers each have two writer modules
     severity: major

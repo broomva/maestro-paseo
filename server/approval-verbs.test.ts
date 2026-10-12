@@ -2,7 +2,7 @@
 // decide, applied after the 8 s undo window, with a receipt, bound to the action you saw.
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MaestroConfig } from "../shared/contracts";
@@ -360,6 +360,16 @@ describe("approval.request: an agent asks leave for one exact action", () => {
     await call(methods, "approval.request", { action: "gh pr merge 3" }, "agent-9");
     await call(methods, "approval.request", { action: "gh pr merge 99" }, "agent-8");
     expect(await approvals.open()).toHaveLength(21);
+  });
+
+  test("a request file torn by a crash keeps the next request and the decision readable", async () => {
+    const { approvals, root } = await setup();
+    await approvals.request("agent-9", { action: "gh pr merge 1" });
+    await appendFile(join(root, "approvals.jsonl"), '{"kind":"approval.requ');
+    const made = await approvals.request("agent-9", { action: "gh pr merge 2" });
+    expect((await approvals.open()).map((entry) => entry.action)).toEqual(["gh pr merge 1", "gh pr merge 2"]);
+    await approvals.decided(made.id, { allow: true, note: "", receipt: "r" });
+    expect((await approvals.open()).map((entry) => entry.action)).toEqual(["gh pr merge 1"]);
   });
 
   test("a session may ask and withdraw, never decide; only the asker may withdraw", async () => {

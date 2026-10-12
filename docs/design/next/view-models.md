@@ -236,7 +236,7 @@ A decision at the gate (`work.verdict` revise, cancel at review) keeps its windo
 (`gate.pending`, `gate`, `gate.dropped`); its receipt is the decision's token, and `verbs.list` lists it beside the
 ledger's, so one Undo serves them all. **`verbs.list`** → `{ pending[{receipt, verb, key, label, at, appliesAt,
 remainingMs}], recent[{…, outcome, detail, settledAt}] }` is the read behind every countdown (`client/pending-verbs.tsx`).
-The window is 8 s; `MAESTRO_PASEO_VERB_WINDOW_MS` shortens it for a test or a dogfood only.
+The window is 8 s. `MAESTRO_PASEO_VERB_WINDOW_MS` shortens it under `bun test` only; a daemon never honours it.
 
 ### An agent asks (C1)
 

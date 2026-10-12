@@ -28,10 +28,12 @@ function scratch(kind: string): string {
 }
 
 /**
- * How long the owner-verb ledger holds a verb before it takes effect: MAESTRO_PASEO_VERB_WINDOW_MS when a test
- * or a dogfood sets it (0 or more), else the owner's 8 s (shared/undo.ts, B4).
+ * How long the owner-verb ledger holds a verb before it takes effect: the owner's 8 s (shared/undo.ts, B4), always,
+ * outside a test. Under `bun test` (NODE_ENV=test), MAESTRO_PASEO_VERB_WINDOW_MS may shorten it (0 or more), so a
+ * test can wait it out; a daemon never honours it, so the variable cannot take the undo away.
  */
 export function verbWindowMs(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  if (!underTest(env)) return undefined;
   const raw = env.MAESTRO_PASEO_VERB_WINDOW_MS?.trim();
   const ms = raw ? Number(raw) : Number.NaN;
   return Number.isFinite(ms) && ms >= 0 ? Math.round(ms) : undefined;

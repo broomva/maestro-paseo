@@ -5216,7 +5216,7 @@ describe("Allow and Deny, and Change course: approval.decide and its undo (BRO-2
       const view = await open();
       for (let tries = 0; tries < 100 && !view.byLabel("Allow"); tries += 1) await settle(20);
       await view.press(view.byLabel("Allow"));
-      expect(sent("approval.decide")).toEqual([{ key: "work:k", allow: true, action: ACTION }]);
+      expect(sent("approval.decide")).toEqual([{ key: "work:k", allow: true, action: ACTION, requestId: "r1" }]);
       for (let tries = 0; tries < 100 && !view.text().includes("takes effect in"); tries += 1) await settle(20);
       expect(view.text()).toContain(`Allowed ${ACTION} · takes effect in`);
       // One decision at a time: both verbs wait while it does, so a second press sends nothing.
@@ -5234,7 +5234,7 @@ describe("Allow and Deny, and Change course: approval.decide and its undo (BRO-2
       const view = await open();
       for (let tries = 0; tries < 100 && !view.byLabel("Deny"); tries += 1) await settle(20);
       await view.press(view.byLabel("Deny"));
-      expect(sent("approval.decide")).toEqual([{ key: "work:k", allow: false, action: ACTION }]);
+      expect(sent("approval.decide")).toEqual([{ key: "work:k", allow: false, action: ACTION, requestId: "r1" }]);
     });
   }
 

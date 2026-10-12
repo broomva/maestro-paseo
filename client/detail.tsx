@@ -327,7 +327,9 @@ function Verbs({
   if (item.state === "review" && item.permission) {
     // One exact action, held: your decision binds to these words, and takes effect 8 s later unless undone.
     const action = permissionAction(item.permission);
-    const decide = (allow: boolean) => verbs.approval.mutate({ key, allow, action }, { onError: fail });
+    // The prompt answered is the one whose text is shown: its request id comes from the same item.
+    const { requestId } = item.permission;
+    const decide = (allow: boolean) => verbs.approval.mutate({ key, allow, action, requestId }, { onError: fail });
     return withTop(
       <Card theme={theme}>
         <Text style={text.label}>The agent is asking</Text>
