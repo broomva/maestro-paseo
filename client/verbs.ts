@@ -16,7 +16,7 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { useQueryClient } from "@tanstack/react-query";
 import { decideConductor, undoConductor } from "../shared/answers";
 import { cancelWork, dispatchWork, unblockWork, undoWork, type WorkItem } from "../shared/contracts";
-import { answerAsk, type DecisionAsk } from "../shared/fleet";
+import { type AnswerInput, answerAsk, type DecisionAsk } from "../shared/fleet";
 import { holdOf, type NeedRow } from "../shared/needs";
 import { decideApproval as decideApprovalRpc, promptSession as promptSessionRpc, undoVerb } from "../shared/verbs";
 import { whereOf } from "./decisions-model";
@@ -319,6 +319,12 @@ export function useVerbs() {
     }
   };
   return {
+    /**
+     * Your answer to a decision ask, as the Decisions tab sends it (the card keeps its own in-flight, confirm and
+     * draft): the one place the call is made, so every answer is the adapter's. Its reply is the ask as it stands
+     * and, with a receipt, when it is written (B4).
+     */
+    answer: (input: AnswerInput) => rpc.answer(input),
     /**
      * Make the plan's call. Rejects with the call's error; `unavailable` rejects with its reason. The outcome's
      * `settled` resolves once everything has been read again, so a screen can hold a hold still until then.

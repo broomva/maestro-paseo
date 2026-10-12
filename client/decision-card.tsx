@@ -3,15 +3,15 @@
 // view's per-scope ledgers (DecisionGroups in client/decisions.tsx).
 
 import type { PluginTheme } from "@getpaseo/plugin";
-import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
+import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { Icon, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { type QueryClient, useIsMutating, useMutation, useMutationState, useQueryClient } from "@tanstack/react-query";
 import { type MutableRefObject, type ReactNode, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Platform, Pressable, Text, View } from "react-native";
 import {
   ANSWER_NOTE_CHARS,
+  type AnswerInput,
   type AnswerWhere,
-  answerAsk,
   type DecisionAsk,
   type WorkspaceAsksView,
 } from "../shared/fleet";
@@ -34,6 +34,7 @@ import { useRefresh, useVerbLedger } from "./hooks";
 import { pendingFor } from "./pending-model";
 import { PendingVerbs } from "./pending-verbs";
 import { Card, focusRing, Kbd, Notice, radius, size, space, usePressScale, useText } from "./ui";
+import { useVerbs } from "./verbs";
 
 type Navigation = PluginSurfaceProps["navigation"];
 
@@ -298,13 +299,14 @@ export function useDecisionCard({
 }) {
   const toast = useToast();
   const refresh = useRefresh();
-  const send = useRpc(answerAsk);
+  // The call itself is the verb adapter's (client/verbs.ts): the one place an answer is sent from.
+  const verbs = useVerbs();
   const client = useQueryClient();
   // These run from the mutation cache, whether or not this card is still on screen when the reply lands:
   // the list learns the answer, and a failure is said.
   const answer = useMutation({
     mutationKey: answerKeyOf(ask),
-    mutationFn: (input: Parameters<typeof send>[0]) => withinTimeout(send(input)),
+    mutationFn: (input: AnswerInput) => withinTimeout(verbs.answer(input)),
     onSuccess: ({ ask: answered, warning }) => {
       // The draft is spent, whether or not this card is still on screen.
       client.setQueryData<Drafts>(DRAFTS_KEY, (now) => {

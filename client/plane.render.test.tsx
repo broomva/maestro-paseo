@@ -2979,6 +2979,21 @@ describe("J2–J4 in the Feed's inspector (BRO-3036)", () => {
     ]);
   });
 
+  test("words typed without picking an option are sent alone: the recommendation the inspector starts on is not sent with them", async () => {
+    workspaceNow = [
+      { ...decisionFixture(), headline: "File or drop the follow-ups?", blocking: true, waiting: true, fallback: null },
+    ];
+    const view = await mount(surface(false));
+    await until(() => view.byLabel("Ask: File or drop the follow-ups?") !== null);
+    await view.press(view.byLabel("Ask: File or drop the follow-ups?"));
+    await until(() => panel(view) !== undefined);
+    await view.type(view.byLabel("Your words for File or drop the follow-ups?"), "Hold off until CI is green.");
+    calls.length = 0;
+    await view.press(bar(view, "Answer in your words"));
+    await until(() => sent("ask.answer").length > 0);
+    expect(sent("ask.answer")).toMatchObject([{ option: null, note: "Hold off until CI is green." }]);
+  });
+
   test("your words alone answer an ask in your own words; an option that cannot be undone opens Decisions to confirm", async () => {
     workspaceNow = [{ ...decisionFixture(), headline: "File or drop?", blocking: true, waiting: true }];
     const view = await mount(surface(false));
