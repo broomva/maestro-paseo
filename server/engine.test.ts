@@ -4231,6 +4231,120 @@ describe("an orchestrator's child whose branch merged after its session ended (B
     ]);
   });
 
+  test("the receipt names the PR and its merge commit, so who closed it can be audited (BRO-2996)", async () => {
+    const sha = "9fceb02d0ae598e95dc970b74767f19372d61af8";
+    const env = await setup({}, { ...recorded, merged: async () => ({ number: 7, mergedAt: AFTER, sha }) });
+    const item = await adoptAndArchive(env, ORCHESTRATOR);
+    await env.engine.upkeep(env.fake.paseo);
+    const { item: after, events } = await env.engine.get(item.id);
+    expect([after.state, after.verdict]).toEqual([
+      "done",
+      "Its branch feature/x merged as acme/app#7 (merge commit 9fceb02) after it was adopted",
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      type: "state",
+      actor: "maestro",
+      text: "Done",
+      detail: expect.stringContaining("9fceb02"),
+    });
+    expect(after.closed?.by).toBe("maestro");
+  });
+
+  test("work reaches done by a merge, and by nothing a session says or does to itself (BRO-2996)", async () => {
+    const sha = "9fceb02d0ae598e95dc970b74767f19372d61af8";
+    let answer: { number: number; mergedAt: string; sha: string } | null = null;
+    const env = await setup({}, { ...recorded, merged: async () => answer });
+    const { engine, fake, repo } = env;
+    const self = "c0d4e8a2-6f13-4b7a-9d52-1a3e5f70b894";
+    fake.agents.set(self, {
+      id: self,
+      cwd: repo,
+      status: "idle",
+      workspaceId: null,
+      provider: "claude",
+      title: "Its own arc",
+      archivedAt: null,
+      pendingPermissions: [],
+      activeTurn: null,
+    } as never);
+    fake.timelines.set(self, [{ type: "assistant_message", text: "Opened the PR." }]);
+    // A session that tracked itself: its handback, its ARC-STATUS and its archive close nothing, however long.
+    const item = await engine.adopt(fake.paseo, self, "", { actor: "agent", by: self });
+    await engine.onTurnEnded(
+      { id: self },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "Merged.\n\nARC-STATUS: DONE" }] as never,
+      "t1",
+    );
+    const agent = fake.agents.get(self);
+    if (agent) agent.archivedAt = new Date(clock).toISOString();
+    await engine.onArchived({ id: self }, fake.paseo);
+    for (const minutes of [3, 60, 24 * 60]) {
+      tick(minutes);
+      await engine.upkeep(fake.paseo);
+      expect([minutes, (await engine.get(item.id)).item.state]).toEqual([minutes, "review"]);
+    }
+    // The PR merges through the repo's gates: now it is done, by the merge, named on the receipt. (At your gate it
+    // is yours; a merge closes only what stopped Stuck, so send it Stuck first, as a session ending mid-run does.)
+    const stuck = await env.store.mutate(item.id, () => ({
+      to: "blocked",
+      reason: "The session was archived before it finished",
+    }));
+    expect(stuck.contract.state).toBe("blocked");
+    expect((await engine.get(item.id)).item.state).toBe("blocked");
+    answer = { number: 7, mergedAt: new Date(clock).toISOString(), sha };
+    tick(1);
+    await engine.upkeep(fake.paseo);
+    await engine.upkeep(fake.paseo);
+    const { item: done } = await engine.get(item.id);
+    expect([done.state, done.verdict]).toEqual([
+      "done",
+      "Its branch feature/x merged as acme/app#7 (merge commit 9fceb02) after it was adopted",
+    ]);
+  });
+
+  test("a session that tracked itself and archives itself after a clean turn stays Stuck, not canceled (BRO-2996)", async () => {
+    const env = await setup(
+      {},
+      { git: async () => ({ branch: null, githubRepo: "acme/app" }), merged: async () => null },
+    );
+    const { engine, fake, repo } = env;
+    const idle = (id: string) =>
+      ({
+        id,
+        cwd: repo,
+        status: "idle",
+        workspaceId: null,
+        provider: "claude",
+        title: `Arc ${id.slice(0, 4)}`,
+        archivedAt: null,
+        pendingPermissions: [],
+        activeTurn: null,
+      }) as never;
+    const own = "c0d4e8a2-6f13-4b7a-9d52-1a3e5f70b894";
+    const theirs = "e7a19c53-08bd-4f26-b1d4-3c6a82f5d907";
+    const orchestrator = "5b0c3f64-2d7e-4a19-8c35-9e41a7d02b16";
+    // The two differ only in who tracked them. Without a recorded branch neither is watched, so they reach the
+    // archived-between-turns rule: an orchestrator's arc is canceled; a session's own is left for you.
+    for (const id of [own, theirs]) {
+      fake.agents.set(id, idle(id));
+      fake.timelines.set(id, [{ type: "assistant_message", text: "Pushed; the PR is open." }]);
+    }
+    const mine = await engine.adopt(fake.paseo, own, "", { actor: "agent", by: own });
+    const adopted = await engine.adopt(fake.paseo, theirs, "", { actor: "agent", by: orchestrator });
+    for (const id of [own, theirs]) {
+      const agent = fake.agents.get(id);
+      if (agent) agent.archivedAt = new Date(clock).toISOString();
+      await engine.onArchived({ id }, fake.paseo);
+    }
+    tick(3);
+    await engine.upkeep(fake.paseo);
+    expect([(await engine.get(mine.id)).item.state, (await engine.get(adopted.id)).item.state]).toEqual([
+      "blocked",
+      "canceled",
+    ]);
+  });
+
   test("a child you sent back before its session died is yours: it stays Stuck though its branch merged", async () => {
     const asked: string[][] = [];
     const env = await setup({}, { ...recorded, merged: merged(AFTER, asked) });

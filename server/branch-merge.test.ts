@@ -38,6 +38,7 @@ const stopped = (reason: string, ts = STOPPED): WorkEvent =>
 const ENDED = "The session was archived before it finished";
 const PR = { number: 9, mergedAt: "2026-10-08T00:30:00Z" };
 const ROW = { ...PR, isCrossRepository: false };
+const MERGE_COMMIT = "9fceb02d0ae598e95dc970b74767f19372d61af8";
 
 const roots: string[] = [];
 afterAll(async () => {
@@ -89,7 +90,14 @@ describe("the evidence a branch merged", () => {
 
   test("it closes only on a PR merged after the adoption, never at the same instant or before", () => {
     const base = [bind(), stopped(ENDED)];
-    expect(branchMerged(base, PR, NOW)).toEqual({ branch: "feature/x", repo: "acme/app", number: 9 });
+    expect(branchMerged(base, PR, NOW)).toEqual({ branch: "feature/x", repo: "acme/app", number: 9, sha: null });
+    // The merge commit, when gh said it, is on the receipt too.
+    expect(branchMerged(base, { ...PR, sha: "9fceb02d0ae598e95dc970b74767f19372d61af8" }, NOW)).toEqual({
+      branch: "feature/x",
+      repo: "acme/app",
+      number: 9,
+      sha: "9fceb02d0ae598e95dc970b74767f19372d61af8",
+    });
     expect(branchMerged(base, { number: 9, mergedAt: ADOPTED }, NOW)).toBeNull();
     expect(branchMerged(base, { number: 9, mergedAt: "2026-10-07T23:00:00Z" }, NOW)).toBeNull();
     expect(branchMerged(base, null, NOW)).toBeNull();
@@ -166,7 +174,7 @@ describe("asking gh", () => {
     const lookup = mergedPrs(run, () => at);
     expect(await lookup("acme/app", "feature/x")).toBeNull();
     await lookup.settled();
-    expect([await lookup("acme/app", "feature/x"), calls.length]).toEqual([PR, 2]);
+    expect([await lookup("acme/app", "feature/x"), calls.length]).toEqual([{ ...PR, sha: null }, 2]);
     at = MERGED_EVERY_MS;
     await lookup("acme/app", "feature/x");
     await lookup.settled();
@@ -196,7 +204,24 @@ describe("asking gh", () => {
     await lookup("acme/app", "dev");
     await lookup("acme/app", "feature/x");
     await lookup.settled();
-    expect([await lookup("acme/app", "dev"), await lookup("acme/app", "feature/x")]).toEqual([null, PR]);
+    expect([await lookup("acme/app", "dev"), await lookup("acme/app", "feature/x")]).toEqual([
+      null,
+      { ...PR, sha: null },
+    ]);
+  });
+
+  test("it asks gh for the merge commit and keeps its oid; one gh did not give is null", async () => {
+    const withCommit = gh({ "feature/x": [{ ...ROW, mergeCommit: { oid: MERGE_COMMIT } }] }, []);
+    const lookup = mergedPrs(withCommit.run, () => 0);
+    await lookup("acme/app", "feature/x");
+    await lookup.settled();
+    expect(await lookup("acme/app", "feature/x")).toEqual({ ...PR, sha: MERGE_COMMIT });
+    expect(withCommit.calls[0]?.join(" ")).toContain("number,mergedAt,isCrossRepository,mergeCommit");
+    const without = gh({ "feature/x": [{ ...ROW, mergeCommit: null }] }, []);
+    const other = mergedPrs(without.run, () => 0);
+    await other("acme/app", "feature/x");
+    await other.settled();
+    expect(await other("acme/app", "feature/x")).toEqual({ ...PR, sha: null });
   });
 });
 
@@ -213,7 +238,7 @@ test("a fork's PR with the same branch name is someone else's: only one from the
   const lookup = mergedPrs(run, () => 0);
   await lookup("acme/app", "feature/x");
   await lookup.settled();
-  expect(await lookup("acme/app", "feature/x")).toEqual(PR);
+  expect(await lookup("acme/app", "feature/x")).toEqual({ ...PR, sha: null });
 });
 
 test("a cached answer is dropped once WATCH_STUCK_MS old: it is asked again, not served", async () => {
@@ -310,6 +335,12 @@ describe("an orchestrator's child archived between turns (BRO-2928)", () => {
     expect(archivedBetweenTurns([bind(), stopped(ENDED)], NOW)).toBe(false);
     const before = turn("turn.ended", "2026-10-07T23:00:00Z");
     expect(archivedBetweenTurns([before, bind(), stopped(ENDED)], NOW)).toBe(false);
+  });
+
+  test("never a session that tracked itself: it has no orchestrator whose arc ended (BRO-2996)", () => {
+    // Its own archive after a clean turn leaves it Stuck; the same events with another session's adoption close it.
+    expect(archivedBetweenTurns([bind({ by: "a" }), started, ended, stopped(ENDED)], NOW)).toBe(false);
+    expect(archivedBetweenTurns([bind({ by: "orchestrator" }), started, ended, stopped(ENDED)], NOW)).toBe(true);
   });
 
   test("never your own work, never once you touched it, never a session that merely ended, never a stale card", () => {

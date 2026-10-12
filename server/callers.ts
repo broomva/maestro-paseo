@@ -13,8 +13,9 @@
 // What it does not stop: a process of this user that reads the registry (`~/.paseo/agents/*/<id>.json`) and sends a
 // live session's id together with that session's folder is taken for that session. A child that does this to its
 // parent is tracked as the parent's, files approvals in the parent's name and burns the parent's cap. It is the
-// same trust as editing the work folders directly (agent-socket.ts). What no session can do on this socket, spoofed
-// or not, is close gated work: that is yours alone (engine.ts reconcileOne). Peer credentials would close the rest
+// same trust as editing the work folders directly (agent-socket.ts). What nothing a session says or does to itself
+// can do, spoofed or not, is close its work: work reaches done only by a gate (a PR merged through the repo's merge
+// gates, or gate:auto checks) or your verdict (shared/states.ts). Peer credentials would close the rest
 // (LOCAL_PEERPID on a unix socket), but reading them needs a native getsockopt call: Node has none, and the plugin
 // runs under the Paseo host's Node, where bun:ffi does not exist. A per-session secret would need Paseo to put one
 // in each session's environment, which a plugin cannot do. BRO-3086 tracks it.

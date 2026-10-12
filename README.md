@@ -136,7 +136,8 @@ maestro mine                   # the work this session is running
   the registry is readable by every process of yours. A process that reads it and sends a live
   session's id with that session's folder is taken for that session: a child can be tracked as its
   parent's, file approvals in its name and spend its cap. That is the same trust as editing the work
-  folders directly. What it cannot do, spoofed or not, is close gated work or start anything (below).
+  folders directly. What nothing a session says or does to itself can do, spoofed or not, is close its work
+  or start anything (below).
   Peer credentials (the pid on the other end of the socket) would close the rest, but reading them
   needs a native `getsockopt` call that Node does not have, and the plugin runs under Paseo's Node,
   where `bun:ffi` does not exist; a per-session secret would need Paseo to put one in each session's
@@ -146,10 +147,16 @@ maestro mine                   # the work this session is running
   session, unverified", held for you in Needs you ("Start it yourself"); it has no run, no auto gate,
   no done check, no lineage, and cannot track, look up or ask leave for anything. A stale or invented
   id is not "no session": it is refused.
-- **Nothing a session does closes its work.** Its own `ARC-STATUS: DONE|CLOSED|MERGED`, its archive,
-  and the archive of the orchestrator that tracked it all leave the work at your gate with a note
-  that its session is gone: Paseo does not say who archived, and a session's lifecycle is not an
-  owner's verdict. Only a gate or your verdict closes it.
+- **Work reaches done only by a gate or your verdict** (A1: work never asks to be approved; gates merge it).
+  A gate is a PR merged through the repo's merge gates, or `gate: auto` checks that passed. Nothing a
+  session says or does to itself closes its work: not its `ARC-STATUS: DONE|CLOSED|MERGED`, not its
+  handback, not its archive, and not the archive of the orchestrator that tracked it. Those leave the
+  work at your gate with a note that its session is gone, because Paseo does not say who archived.
+  The one close that is not your verdict is a merge: a tracked arc left Stuck because its session
+  ended, whose branch's PR merged after it was adopted, is closed Done, and the receipt names the PR
+  and its merge commit (`Its branch … merged as owner/repo#7 (merge commit abc1234) after it was
+  adopted`), so "who closed it" can be audited. A session that archives itself after a clean turn,
+  having tracked itself, stays Stuck rather than being canceled.
 - **A session cannot write a done check.** Checks run as you, with no session and no permission
   prompt in the loop, so they come from you: add one to the work's `_work.md` (`done.check`).
 - **Work a session creates carries none of the run choices the composer offers you** (provider,

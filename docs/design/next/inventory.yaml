@@ -829,7 +829,7 @@ findings:
     ticket: BRO-2996
     about: [I-work-list, F-agent-cli]
     code: [server/engine.ts, server/events.ts]
-    note: "finishedArc and adopterClosed are gone: a session's own ARC-STATUS DONE, CLOSED or MERGED, its archive, and the archive of the orchestrator that tracked it close nothing, so its work waits at your gate with a note that its session is gone (engine.test.ts 'what a session says of itself never closes its gated work'; agent-socket.test.ts 'a child cannot close its own work ... spoofed or not'). Paseo's archive hook does not say who archived, so no archive can be an owner's verdict. Only a gate or your verdict closes gated work."
+    note: "finishedArc and adopterClosed are gone: a session's own ARC-STATUS DONE, CLOSED or MERGED, its archive, and the archive of the orchestrator that tracked it close nothing, so its work waits at your gate with a note that its session is gone (engine.test.ts 'what a session says of itself never closes its gated work'; agent-socket.test.ts 'a child cannot close its own work ... spoofed or not'). Paseo's archive hook does not say who archived, so no archive can be an owner's verdict. Work reaches done only by a gate (a PR merged through the repo's merge gates, or gate:auto checks) or the owner's verdict; a merged branch closes a Stuck adopted arc as Done with the PR and merge commit on the receipt (branch-merge.test.ts, engine.test.ts), and a session that tracked itself and archives itself stays Stuck rather than canceled."
   FND-socket-caller:
     name: The socket trusts a self-reported caller; adopt any session, dispatch any queued item
     severity: major

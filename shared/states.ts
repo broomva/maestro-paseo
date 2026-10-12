@@ -21,11 +21,15 @@
 //      it; and with no question pending, when a turn whose start was missed
 //      ends failed or canceled after the work landed (server/engine.ts
 //      endTurn): the gate then shows the turn that stopped, as Stuck.
-// The invariant that matters is kept exactly: under gate:human nothing reaches
-// done without an approve verdict. Nothing a session does closes its own gated
-// work: not its ARC-STATUS line, not its archive, and not the archive of an
-// orchestrator that tracked it, which Paseo does not tell apart from the session
-// archiving itself (BRO-2996). Work whose session ends stays at your gate.
+// The invariant that matters (A1: work never asks to be approved; gates merge it):
+// work reaches done only by a gate or by the owner's verdict. A gate is a PR
+// merged through the repo's merge gates (a blocked adopted arc whose branch
+// merged: server/branch-merge.ts, closed with the PR and its merge commit on
+// the receipt) or gate:auto checks that passed. It never reaches done by
+// anything a session says or does to itself: its transcript, its ARC-STATUS
+// line, its handback, its archive, or the archive of the orchestrator that
+// tracked it, which Paseo does not tell apart from the session archiving itself
+// (BRO-2996). Work whose session ends stays at your gate.
 
 export const ORCH_STATES = [
   "proposed",
@@ -152,7 +156,11 @@ export function transition(from: OrchState, to: OrchState, ctx: TransitionContex
     throw new IllegalTransitionError(from, to);
   }
   if (from === "review" && to === "done" && ctx.verdict !== "approve") {
-    throw new IllegalTransitionError(from, to, "only an approve verdict closes gated work");
+    throw new IllegalTransitionError(
+      from,
+      to,
+      "only the owner's verdict closes work at the gate; a merged PR closes stuck work (server/branch-merge.ts)",
+    );
   }
   if (from === "blocked" && to === "done" && ctx.branchMerged !== true) {
     throw new IllegalTransitionError(

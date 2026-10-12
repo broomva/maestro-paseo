@@ -2477,7 +2477,7 @@ export class Engine {
       to: "done",
       actor: "maestro",
       ctx: { branchMerged: true },
-      reason: `Its branch ${close.branch} merged as ${close.repo}#${close.number} after it was adopted`,
+      reason: `Its branch ${close.branch} merged as ${close.repo}#${close.number}${close.sha ? ` (merge commit ${close.sha.slice(0, 7)})` : ""} after it was adopted`,
     });
   }
 
