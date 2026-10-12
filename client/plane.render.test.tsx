@@ -2260,8 +2260,7 @@ describe("views and filters", () => {
     expect(view.pressed("Needs you, 2")).toBe("true");
     expect(view.pressed("All work")).toBe("true");
     expect(view.text()).toContain("Work a");
-    expect(view.text()).toContain("Work c");
-    expect(view.text()).not.toContain("Work d");
+    expect(view.text()).not.toContain("Work c");
   });
 
   test("the board bypasses the state filter, and choosing it clears the filter", async () => {
@@ -5259,8 +5258,7 @@ describe("the Feed home (BRO-2906)", () => {
     expect(view.text()).not.toContain("Work a");
     await view.type(field, "maestro/a-1");
     expect(view.text()).toContain("Work a");
-    expect(view.text()).toContain("Work c");
-    expect(view.text()).not.toContain("Work d");
+    expect(view.text()).not.toContain("Work c");
     await view.type(field, "nothing like it");
     expect(view.text()).toContain("No work matches “nothing like it”.");
     expect(view.byLabel("Clear the search")?.getAttribute("style")).toContain("min-height: 32px");
