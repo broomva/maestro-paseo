@@ -1138,39 +1138,31 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
     expect(unread.summary.total).toBe(beforeBreak.rows.filter((row) => !row.key.startsWith("work:")).length);
     expect(unread.summary.total).toBeGreaterThan(0);
 
-    // An answer batched after the landing's last check (which says nothing waits): the hold in Needs you and J5's
-    // tile both count it, as one number, and neither says everything landed (landingNow, server/answers-status.ts).
-    await writeFile(
-      join(state, "answers-landing.json"),
-      JSON.stringify({
-        stage: "none",
-        pending: 0,
-        asks: [],
-        pr: null,
-        conflict: null,
-        error: null,
-        landed: null,
-        checkedAt: "2026-10-10T14:00:00.000Z",
-      }),
-    );
+    // Answers batched after the landing's last check (it says 1 waits, and is as old as its last wake): the hold in
+    // Needs you and J5's tile both count the two now batched, as one number (landingNow, server/answers-status.ts).
     type AskRead = { ledger: string; id: string; hash: string };
-    const calm = (await run("asks.workspace", {})) as unknown as { decisions: AskRead[] };
-    const q3 = calm.decisions.find((ask) => ask.id === "Q3");
-    await run("ask.answer", {
-      where: { kind: "workspace", home: "origin/main" },
-      ledger: q3?.ledger ?? "",
-      uid: null,
-      id: "Q3",
-      hash: q3?.hash ?? "",
-      option: "name",
-      note: "",
-    });
+    const open = (await run("asks.workspace", {})) as unknown as { decisions: AskRead[] };
+    for (const [id, option] of [
+      ["Q3", "name"],
+      ["Q1", "go"],
+    ] as const) {
+      const ask = open.decisions.find((one) => one.id === id);
+      await run("ask.answer", {
+        where: { kind: "workspace", home: "origin/main" },
+        ledger: ask?.ledger ?? "",
+        uid: null,
+        id,
+        hash: ask?.hash ?? "",
+        option,
+        note: "",
+      });
+    }
     await settled(run);
     const afterAnswer = await needsNow();
-    expect(afterAnswer.rows.find((row) => row.key === "answers:batch")?.title).toStartWith("1 answer waits to land");
+    expect(afterAnswer.rows.find((row) => row.key === "answers:batch")?.title).toStartWith("2 answers wait to land");
     expect(
       ((await run("answers.status", {})) as unknown as import("./shared/answers").AnswersStatus).waitingToLand,
-    ).toBe(1);
+    ).toBe(2);
     // And the notices say so: unread work is named, so Health never says "All clear" over a missing stuck run.
     expect((await noticesNow()).summary.unread).toContain("the work");
   } finally {
