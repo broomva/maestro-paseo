@@ -238,7 +238,7 @@ export function InitiativesBoard({
           tone="plain"
         />
       </View>
-      <View style={{ position: "relative", minHeight: 420 }}>
+      <View style={{ position: "relative", minHeight: 640 }}>
         {filter === "proposed" ? (
           <IdeaList
             theme={theme}

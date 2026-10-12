@@ -104,28 +104,36 @@ asks:
     asked_at: ${hoursAgo(9)}
 `;
 
-const initiative = (id: string, extra: string) => `id: ${id}\ntitle: "${id}"\nstated: ${day(-30)}\n${extra}\n`;
+// A readable file (server/initiatives.ts rules): the intent says it was not stated verbatim, a driver is owner,
+// fleet, none, coordinator:<8 hex> or session:<id>, and every file has a link and an exit.
+const initiative = (id: string, extra: string) =>
+  `id: ${id}\ntitle: "${id}"\nstated: ${day(-30)}\n${extra}\n${extra.includes("links:") ? "" : "links:\n  linear: [BRO-2980]\n"}exit: "the work lands, or the initiative is killed"\n`;
 
 const INITIATIVES: Record<string, string> = {
   skene: initiative(
     "skene",
-    `intent: "an agentic multimedia workspace on GPUI, built until it can edit a real project end to end"\nsummary: "parity merged: #16, #17 (P20 round 7); the S1 CLI is open (#15)"\nstatus: active\nnext_action: "Land S1 CLI (#15); follow-ups BRO-2963"\ndriver: skene-driver\nreview_by: ${day(-2)}\nlinks:\n  linear: [BRO-2963]`,
+    `intent: "(not stated verbatim)"
+summary: "parity merged: #16, #17 (P20 round 7); the S1 CLI is open (#15)"\nstatus: active\nnext_action: "Land S1 CLI (#15); follow-ups BRO-2963"\ndriver: session:skene-driver\nreview_by: ${day(-2)}\nlinks:\n  linear: [BRO-2963]`,
   ),
   "local-first-canvas": initiative(
     "local-first-canvas",
-    `intent: "the canvas spec (BRO-2795)"\nsummary: "spec drafted; no driver session"\nstatus: active\nnext_action: "Pick a driver"\ndriver: none\nreview_by: ${day(-2)}`,
+    `intent: "(not stated verbatim)"
+summary: "spec drafted; no driver session"\nstatus: active\nnext_action: "Pick a driver"\ndriver: fleet\nreview_by: ${day(-2)}`,
   ),
   holon: initiative(
     "holon",
-    `intent: "Rust agentic perceptron, speaking ACP to Paseo"\nsummary: "holon#17-#19 merged"\nstatus: active\nnext_action: "session/load (BRO-2748)"\ndriver: holon-coordinator\nreview_by: ${day(-1)}`,
+    `intent: "(not stated verbatim)"
+summary: "holon#17-#19 merged"\nstatus: active\nnext_action: "session/load (BRO-2748)"\ndriver: coordinator:1a2b3c4d\nreview_by: ${day(-1)}`,
   ),
   kinetic: initiative(
     "kinetic",
-    `intent: "world-model engine (draft)"\nsummary: "parked until the owner picks it up"\nstatus: parked\nnext_action: "Review today"\ndriver: none\nreview_by: ${day(10)}\nwake: ${day(0)}`,
+    `intent: "(not stated verbatim)"
+summary: "parked until the owner picks it up"\nstatus: parked\nnext_action: "Review today"\ndriver: none\nreview_by: ${day(10)}\nwake: ${day(0)}`,
   ),
   "maestro-next": initiative(
     "maestro-next",
-    `intent: "this design (BRO-2980)"\nsummary: "J1 merged, J2-J9 in review"\nstatus: active\nnext_action: "Review J2-J9"\ndriver: you\nreview_by: ${day(4)}`,
+    `intent: "(not stated verbatim)"
+summary: "J1 merged, J2-J9 in review"\nstatus: active\nnext_action: "Review J2-J9"\ndriver: owner\nreview_by: ${day(4)}`,
   ),
 };
 

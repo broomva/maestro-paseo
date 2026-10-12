@@ -331,7 +331,7 @@ export function reviewNeed(
           : `It was parked until ${stale.date}, and that day came.`,
       cost: `${work} open work and ${open} open asks wait on its direction.`,
       options: REVIEW_OPTIONS.map((option) => ({ ...option })),
-      goesTo: `${initiative.file} in the control repo`,
+      goesTo: `a receipt in Maestro's answers log; ${initiative.file} is never edited`,
       initiative: initiative.id,
       date: stale.date,
       intent: initiative.quote ?? initiative.summary ?? name,

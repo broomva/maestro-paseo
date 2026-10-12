@@ -153,7 +153,7 @@ class Page {
 
   /**
    * Click the visible element whose accessible name starts with `name`, by real
-   * mouse events at its centre. Paseo's own sidebar also lists sessions by
+   * mouse events at its centre; a label that is exactly `name` wins. Paseo's own sidebar also lists sessions by
    * title, so a Maestro row ("<title>, Needs you") is preferred over a bare
    * text match.
    */
@@ -167,7 +167,7 @@ class Page {
       };
       const labelled = [...document.querySelectorAll('[aria-label]')]
         .filter((el) => el.getAttribute('aria-label').startsWith(name) && visible(el))
-        .sort((a, b) => b.getAttribute('aria-label').length - a.getAttribute('aria-label').length);
+        .sort((a, b) => (b.getAttribute('aria-label') === name) - (a.getAttribute('aria-label') === name) || b.getAttribute('aria-label').length - a.getAttribute('aria-label').length);
       const byText = [...document.querySelectorAll('[role="button"], button, a, [tabindex]')]
         .filter((el) => el.innerText && el.innerText.includes(name) && visible(el))
         .sort((a, b) => a.innerText.length - b.innerText.length);

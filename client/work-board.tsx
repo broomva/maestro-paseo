@@ -28,6 +28,7 @@ import { type Lane, type LaneCard, NO_FILTERS, scopeLine, type WorkFilters, work
 /** A lane's narrowest width: below five of these the board scrolls sideways. */
 const LANE_MIN = 250;
 const INSPECTOR_WIDTH = 480;
+const TRAY_GAP = 12;
 
 function Card({
   theme,
@@ -120,10 +121,12 @@ function Tray({
   theme,
   lane,
   selectedKey,
+  width,
   onSelect,
 }: {
   theme: PluginTheme;
   lane: Lane;
+  width: number;
   selectedKey: string | null;
   onSelect: (card: LaneCard) => void;
 }) {
@@ -133,8 +136,7 @@ function Tray({
     <View
       testID={`lane-${lane.id}`}
       style={{
-        flex: 1,
-        minWidth: LANE_MIN,
+        width,
         borderRadius: 18,
         padding: 12,
         gap: 10,
@@ -213,8 +215,8 @@ export function WorkBoard({
       : `work:${inspector.selection.id}`
     : null;
   // The inspector covers the last two trays: as wide as they are, never wider than the design's 480.
-  const lane = width > 0 ? Math.max(width / 5, LANE_MIN) : LANE_MIN;
-  const panelWidth = Math.min(INSPECTOR_WIDTH, Math.round(lane * 2) - 8);
+  const trayWidth = width > 0 ? Math.max(Math.floor((width - TRAY_GAP * 4) / 5), LANE_MIN) : LANE_MIN;
+  const panelWidth = Math.min(INSPECTOR_WIDTH, trayWidth * 2 + TRAY_GAP - 8);
 
   if (list.isPending || needs.isPending) return <ActivityIndicator color={kit.muted} />;
   return (
@@ -251,12 +253,13 @@ export function WorkBoard({
         <Text style={{ color: kit.muted, fontSize: 12.5, ...TABULAR }}>{scopeLine(board)}</Text>
       </View>
       <View style={{ position: "relative", minHeight: 600 }}>
-        <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={{ gap: 12, flexGrow: 1 }}>
+        <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={{ gap: TRAY_GAP }}>
           {board.lanes.map((one) => (
             <Tray
               key={one.id}
               theme={theme}
               lane={one}
+              width={trayWidth}
               selectedKey={selectedKey}
               onSelect={(card) =>
                 card.select.kind === "hold"
