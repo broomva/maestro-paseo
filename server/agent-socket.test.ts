@@ -170,11 +170,11 @@ describe("what a session is offered", () => {
     if (agent) agent.status = "idle";
     await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, []);
     // Your decision is waiting out its window: a session cannot take it back.
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await engine.verdict(fake.paseo, item.id, "revise", "Again");
     const undo = await ask("work.undo", { id: item.id });
     expect(undo.ok).toBe(false);
     expect(!undo.ok && undo.error).toContain("work.undo is yours alone");
-    expect((await engine.get(item.id)).item.pending?.verdict).toBe("approve");
+    expect((await engine.get(item.id)).item.pending?.verdict).toBe("revise");
 
     // Running work: a session cannot stop another run, or its own.
     const { item: running } = await ok("work.create", { title: "Second", repo, dispatch: true });
@@ -304,14 +304,14 @@ describe("what a session is offered", () => {
       log: () => {},
       timer: () => () => undefined,
     });
-    await earlier.verdict(fake.paseo, item.id, "approve", "");
+    await earlier.verdict(fake.paseo, item.id, "revise", "Again");
     const listed = (await ok("work.list")) as unknown as { items: WorkItem[] };
-    expect(listed.items[0]).toMatchObject({ state: "review", pending: { verdict: "approve", remainingMs: 0 } });
+    expect(listed.items[0]).toMatchObject({ state: "review", pending: { verdict: "revise", remainingMs: 0 } });
     // Nor does your own read (BRO-2995): the plugin sweep applies it.
     expect((await engine.list(fake.paseo)).items[0]).toMatchObject({ state: "review" });
     await engine.upkeep(fake.paseo);
     const mine = await engine.list(fake.paseo);
-    expect(mine.items[0]).toMatchObject({ state: "done", pending: null });
+    expect(mine.items[0]).toMatchObject({ state: "running", pending: null });
   });
 
   test("work a session creates is human-gated even when new work defaults to checks deciding", async () => {

@@ -509,9 +509,17 @@ export const answerAsk = defineRpc({
     ask: DecisionAskSchema,
     warning: z.string().nullable(),
     work: z.object({ id: z.string(), title: z.string(), path: z.string() }).nullable().optional(),
+    /**
+     * Your answer is written when its undo window closes (B4): `ask` is the ask as it stands now, still open,
+     * and `receipt` is what verb.undo takes back until `appliesAt`. Absent from an older daemon, whose answer
+     * was written at once (then `ask` is the answered ask).
+     */
+    receipt: z.string().optional(),
+    appliesAt: z.string().optional(),
   }),
 });
-export type AnswerWhere = z.infer<typeof answerAsk.input>["where"];
+export type AnswerInput = z.infer<typeof answerAsk.input>;
+export type AnswerWhere = AnswerInput["where"];
 
 /**
  * The workspace's own asks: every `.control/asks` ledger in the control repo
@@ -553,7 +561,12 @@ export const reviewProposal = defineRpc({
     verdict: z.enum(REVIEW_VERDICTS),
     note: z.string().max(REVIEW_NOTE_CHARS).default(""),
   }),
-  output: z.object({ proposals: z.array(FleetProposalSchema) }),
+  /** The proposals as they stand now, and your verdict's receipt: it is written when its undo window closes (B4). */
+  output: z.object({
+    proposals: z.array(FleetProposalSchema),
+    receipt: z.string().optional(),
+    appliesAt: z.string().optional(),
+  }),
 });
 
 /**

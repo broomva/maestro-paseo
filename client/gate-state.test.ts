@@ -10,7 +10,7 @@ const inSessionB = { agentId: "b1", workspaceId: "ws1" };
 
 describe("the gate card", () => {
   test("the current card offers the verdict while the work waits, the answer while it asks, nothing after", () => {
-    expect(cardView(card, fakeWork("w", "review", inSessionA, { landing: 4 }))).toBe("deciding");
+    expect(cardView(card, fakeWork("w", "review", inSessionA, { landing: 4, permission: null }))).toBe("finished");
     expect(cardView(card, fakeWork("w", "review", inSessionA, { landing: 4, permission }))).toBe("asking");
     for (const state of ["running", "blocked", "done", "canceled"] as const) {
       expect(cardView(card, fakeWork("w", state, inSessionA, { landing: 4 }))).toBe("resolved");
@@ -33,7 +33,7 @@ describe("the gate card", () => {
     expect(answerTarget(card, fakeWork("w", "review", inSessionA, { landing: 4, permission }))).toBe("a1");
     expect(answerTarget(card, fakeWork("w", "review", inSessionB, { landing: 4, permission }))).toBeNull();
     expect(answerTarget(card, fakeWork("w", "review", inSessionA, { landing: 9, permission }))).toBeNull();
-    expect(answerTarget(card, fakeWork("w", "review", inSessionA, { landing: 4 }))).toBeNull();
+    expect(answerTarget(card, fakeWork("w", "review", inSessionA, { landing: 4, permission: null }))).toBeNull();
   });
 
   test("a card stops changing once superseded or once its work is finished, and only then", () => {

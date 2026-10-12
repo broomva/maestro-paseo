@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -9,6 +10,7 @@ import type { Verdict } from "../shared/states";
 import { NAME_RETRY_MS } from "./adopter-names";
 import { defaultConfig } from "./config";
 import {
+  APPROVE_RETIRED,
   CHECKING,
   CLIENT_WAIT_MS,
   Engine,
@@ -21,7 +23,7 @@ import {
   type Timer,
   UNDO_MS,
 } from "./engine";
-import { ARCHIVED_NOTE } from "./events";
+import { ARCHIVED_NOTE, type WorkEvent } from "./events";
 import { fakePaseo } from "./fake-paseo";
 import type { Paseo } from "./runs";
 import { EVENTS_FILE, WORK_FILE, WorkStore } from "./store";
@@ -127,9 +129,42 @@ async function setup(overrides: Partial<MaestroConfig> = {}, options: Partial<En
     ...options,
   });
   const fake = fakePaseo();
+  const store = new WorkStore(config.workRoot);
+  /**
+   * An approval as an older Maestro recorded it: a decision pending at the gate with its undo window. Approve is
+   * retired (BRO-2999), so it is written to the store as an old store holds it, and armed as a restart arms it;
+   * it still reads and still applies.
+   */
+  const recordApprove = async (id: string, note = "") => {
+    const current = await store.findById(id);
+    const decided = new Date(clock);
+    await store.mutate(
+      id,
+      () => ({
+        events: [
+          {
+            ts: decided.toISOString(),
+            type: "gate.pending",
+            actor: "human",
+            verdict: "approve",
+            note,
+            token: randomUUID(),
+            effectiveAt: new Date(decided.getTime() + UNDO_MS).toISOString(),
+          },
+        ],
+      }),
+      current.dir,
+    );
+  };
+  const legacyApprove = async (id: string, note = "") => {
+    await recordApprove(id, note);
+    await engine.sweep(fake.paseo);
+    return (await engine.get(id)).item;
+  };
   /** Decide at the gate and let the undo window run out. */
   const decide = async (id: string, verdict: Verdict, note = "", paseo: Paseo | null = fake.paseo) => {
-    await engine.verdict(paseo, id, verdict, note);
+    if (verdict === "approve") await legacyApprove(id, note);
+    else await engine.verdict(paseo, id, verdict, note);
     tickMs(UNDO_MS);
     await timers.fire();
     return (await engine.get(id)).item;
@@ -144,7 +179,7 @@ async function setup(overrides: Partial<MaestroConfig> = {}, options: Partial<En
       initiative: "hawthorne",
       dispatch: extra.dispatch ?? true,
     });
-  return { engine, fake, repo, config, create, store: new WorkStore(config.workRoot), timers, decide };
+  return { engine, fake, repo, config, create, store, timers, decide, legacyApprove, recordApprove };
 }
 
 beforeEach(() => {
@@ -246,6 +281,208 @@ describe("dispatch", () => {
   });
 });
 
+describe("a turn that ends on a usage limit (BRO-3073)", () => {
+  const LIMIT = "You've hit your session limit · resets 11:50pm (America/Bogota)";
+  const PAUSED_AT = "Paused: hit a usage limit; resumes after 11:50pm (America/Bogota)";
+  const said = (text: string) => [
+    { type: "user_message", text: "go" },
+    { type: "assistant_message", text },
+  ];
+
+  test("the work ends Stuck with the reason and its reset, not at your gate", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await endTurn(engine, fake, said(LIMIT) as never);
+    const { item: after } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "blocked", reason: PAUSED_AT, permission: null });
+    expect(after.state).not.toBe("review");
+    // Nothing was offered to approve: it holds nothing of yours, and its session is not archived.
+    expect(fake.archived).toEqual([]);
+  });
+
+  test("a weekly limit with a date reads as the reset it names; the message twice is still one pause", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    const weekly = "You've hit your weekly limit · resets Oct 15 at 5pm (America/Bogota)";
+    await endTurn(engine, fake, said(`${weekly}${weekly}`) as never);
+    expect((await engine.get(item.id)).item.reason).toBe(
+      "Paused: hit a usage limit; resumes after Oct 15 at 5pm (America/Bogota)",
+    );
+  });
+
+  test("a provider's rate-limit or credit error is a pause too, and any other error is not", async () => {
+    const { create, engine, fake } = await setup();
+    const limited = await create();
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "failed", error: { message: "429 Too Many Requests: rate limit" } } as never,
+      [],
+    );
+    expect((await engine.get(limited.id)).item.reason).toBe("Paused: hit a usage limit");
+    const broken = await create();
+    const other = fake.agents.get("agent-2");
+    if (other) other.status = "idle";
+    await engine.onTurnEnded({ id: "agent-2" }, { kind: "failed", error: { message: "segfault" } } as never, []);
+    expect((await engine.get(broken.id)).item.reason).toBe("segfault");
+  });
+
+  test("a run that merely talks about a limit finishes as it always did", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await endTurn(
+      engine,
+      fake,
+      said(
+        "Done. The retry handles when you've hit your session limit · resets later.\n## Decided\n- kept it small\n## Ask\nShip it?",
+      ) as never,
+    );
+    expect((await engine.get(item.id)).item.state).toBe("review");
+  });
+
+  test("the paused run keeps its slot of the cap, and Resume sends continue: it never closes by itself", async () => {
+    const { create, engine, fake } = await setup({ concurrencyCap: 1 });
+    const item = await create();
+    await endTurn(engine, fake, said(LIMIT) as never);
+    // Its session is alive, so it still holds the one slot: a second run is refused.
+    await expect(create()).rejects.toThrow("At capacity");
+    // Time passes and the limit resets: nothing closes it, and it stays Stuck until you Resume.
+    tick(24 * 60);
+    await engine.upkeep(fake.paseo);
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "blocked", reason: PAUSED_AT });
+    await engine.unblock(fake.paseo, item.id, "");
+    expect((await engine.get(item.id)).item.state).toBe("running");
+    expect(fake.sent.at(-1)).toMatchObject({ agentId: "agent-1" });
+    expect(fake.sent.at(-1)?.text).toContain("Continue where you stopped");
+  });
+
+  test("a login that expired is a pause too, counted and Stuck, not work that finished (BRO-2999 review)", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await endTurn(
+      engine,
+      fake,
+      said("Failed to authenticate: OAuth session expired and could not be refreshed") as never,
+    );
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "blocked",
+      reason: "Paused: the session's login expired; sign in again, then Resume",
+    });
+    const other = await create();
+    await endTurn(engine, fake, said("Not logged in · Please run /login") as never, "agent-2");
+    expect((await engine.get(other.id)).item.reason).toContain("login expired");
+    const third = await create();
+    await endTurn(
+      engine,
+      fake,
+      said(
+        "Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key",
+      ) as never,
+      "agent-3",
+    );
+    expect((await engine.get(third.id)).item.reason).toBe(
+      "Paused: your organization has disabled subscription access for Claude Code",
+    );
+  });
+
+  test("a limit turn at work that holds a permission prompt keeps its approval: the prompt is still yours", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await engine.onPermissionRequested({ id: "agent-1" }, { id: "p1", name: "Bash", input: { command: "git push" } });
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "review", permission: { requestId: "p1" } });
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    // A late turn end that says the limit was hit, while the prompt is still pending: nothing is moved off the gate.
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, said(LIMIT) as never);
+    const { item: after } = await engine.get(item.id);
+    expect(after.state).toBe("review");
+    expect(after.reason ?? "").not.toContain("Paused");
+  });
+
+  test("a paused run whose session is gone says Resume starts a fresh run, not that the session resumes", async () => {
+    const { create, engine, fake, store } = await setup();
+    const item = await create();
+    for (const agent of fake.agents.values()) agent.status = "idle";
+    const current = await store.findById(item.id);
+    await store.mutate(
+      item.id,
+      () => ({
+        to: "review",
+        actor: "agent",
+        events: [
+          {
+            ts: new Date(clock).toISOString(),
+            type: "turn.ended",
+            actor: "agent",
+            agentId: "agent-1",
+            outcome: "completed",
+            error: null,
+            summary: LIMIT,
+            turnId: null,
+          },
+        ],
+      }),
+      current.dir,
+    );
+    // The session was archived after the limit turn, before the sweep got to the work.
+    await store.mutate(
+      item.id,
+      () => ({
+        events: [{ ts: new Date(clock + 1000).toISOString(), type: "note", actor: "maestro", text: ARCHIVED_NOTE }],
+      }),
+      current.dir,
+    );
+    await engine.upkeep(null);
+    expect((await engine.get(item.id)).item).toMatchObject({
+      state: "blocked",
+      reason: `${PAUSED_AT}; its session was archived, so Resume starts a fresh run`,
+    });
+  });
+
+  test("work already at your gate on a limit message moves to Stuck once; one that went on since stays", async () => {
+    const { create, engine, fake, store } = await setup();
+    const stale = await create();
+    const alive = await create();
+    // As an older Maestro left them: the limit turn recorded, the work landed at review.
+    const landed = async (id: string, extra: WorkEvent[] = []) => {
+      const current = await store.findById(id);
+      const agentId = id === stale.id ? "agent-1" : "agent-2";
+      await store.mutate(
+        id,
+        () => ({
+          to: "review",
+          actor: "agent",
+          events: [
+            {
+              ts: new Date(clock).toISOString(),
+              type: "turn.ended",
+              actor: "agent",
+              agentId,
+              outcome: "completed",
+              error: null,
+              summary: LIMIT,
+              turnId: null,
+            },
+            ...extra,
+          ],
+        }),
+        current.dir,
+      );
+    };
+    for (const agent of fake.agents.values()) agent.status = "idle";
+    await landed(stale.id);
+    await landed(alive.id, [
+      { ts: new Date(clock + 1000).toISOString(), type: "turn.started", actor: "agent", agentId: "agent-2" },
+    ]);
+    expect(await engine.upkeep(fake.paseo)).toBe(true);
+    expect((await engine.get(stale.id)).item).toMatchObject({ state: "blocked", reason: PAUSED_AT });
+    expect((await engine.get(alive.id)).item.state).toBe("review");
+    // Once: nothing more to move.
+    expect(await engine.upkeep(fake.paseo)).toBe(false);
+  });
+});
+
 describe("the gate", () => {
   test("a clean run under gate:human lands at Needs you, never at done", async () => {
     const { create, engine } = await setup();
@@ -303,10 +540,35 @@ describe("the gate", () => {
     expect(stuck.reason).toBe("Could not reach the session: socket closed");
   });
 
+  test("work.verdict approve is refused: work is never approved, gates merge it (A1, BRO-2999)", async () => {
+    const { create, engine, fake, store } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    expect((await engine.get(item.id)).item.state).toBe("review");
+    await expect(engine.verdict(fake.paseo, item.id, "approve", "")).rejects.toThrow(APPROVE_RETIRED);
+    await expect(engine.verdict(null, item.id, "approve", "ship it")).rejects.toThrow("Work is not approved");
+    // Nothing was recorded, and the work still waits.
+    const { item: still, events } = await engine.get(item.id);
+    expect(still).toMatchObject({ state: "review", pending: null });
+    expect(events.map((event) => event.text)).not.toContain("You approved");
+    expect((await store.findById(item.id)).events.some((event) => event.type === "gate.pending")).toBe(false);
+  });
+
+  test("a decision to approve recorded by an older Maestro still reads, and still applies", async () => {
+    const { create, engine, fake, legacyApprove, timers } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    const pending = await legacyApprove(item.id);
+    expect(pending).toMatchObject({ state: "review", pending: { verdict: "approve" } });
+    tickMs(UNDO_MS);
+    await timers.fire();
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "done", verdict: "You approved" });
+  });
+
   test("verdicts only apply at the gate", async () => {
     const { create, engine, fake } = await setup();
     const item = await create();
-    await expect(engine.verdict(fake.paseo, item.id, "approve", "")).rejects.toThrow("Only work waiting on you");
+    await expect(engine.verdict(fake.paseo, item.id, "block", "")).rejects.toThrow("Only work waiting on you");
   });
 });
 
@@ -348,7 +610,7 @@ describe("the agent's side", () => {
     const asking = (await engine.get(item.id)).item;
     expect(asking.state).toBe("review");
     expect(asking.phase).toBe("asking");
-    await expect(engine.verdict(null as unknown as Paseo, item.id, "approve", "")).rejects.toThrow(
+    await expect(engine.verdict(null as unknown as Paseo, item.id, "revise", "Again")).rejects.toThrow(
       "waiting on a question",
     );
     await engine.onPermissionResolved({ id: "agent-1" }, "p1");
@@ -358,8 +620,8 @@ describe("the agent's side", () => {
   test("a failed turn is stuck with the error; unblocking wakes the session", async () => {
     const { create, engine, fake } = await setup();
     const item = await create();
-    await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "rate limited" } }, []);
-    expect((await engine.get(item.id)).item.reason).toBe("rate limited");
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "the daemon crashed" } }, []);
+    expect((await engine.get(item.id)).item.reason).toBe("the daemon crashed");
     const resumed = await engine.unblock(fake.paseo, item.id, "Try again now");
     expect(resumed.state).toBe("running");
     expect(fake.sent.at(-1)?.text).toBe("Try again now");
@@ -718,11 +980,11 @@ describe("recovery acts only on what it saw", () => {
     if (agent) agent.status = "idle";
     fake.timelines.set("agent-1", [
       { type: "user_message", text: "go" },
-      { type: "error", message: "Provider rate limit" },
+      { type: "error", message: "Provider crashed" },
     ]);
     tick(5);
     await engine.upkeep(fake.paseo);
-    expect((await engine.get(item.id)).item).toMatchObject({ state: "blocked", reason: "Provider rate limit" });
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "blocked", reason: "Provider crashed" });
   });
 
   test("M2: a recovered completion never closes itself, even when the checks pass", async () => {
@@ -766,13 +1028,13 @@ describe("recovery acts only on what it saw", () => {
     });
   });
 
-  test("m5: approve is refused while the session is working again", async () => {
+  test("m5: a decision is refused while the session is working again", async () => {
     const { create, engine, fake } = await setup();
     const item = await create();
     await endTurn(engine, fake);
     const agent = fake.agents.get("agent-1");
     if (agent) agent.status = "running";
-    await expect(engine.verdict(fake.paseo, item.id, "approve", "")).rejects.toThrow("working again");
+    await expect(engine.verdict(fake.paseo, item.id, "revise", "Again")).rejects.toThrow("working again");
     expect((await engine.get(item.id)).item.state).toBe("review");
   });
 });
@@ -1224,11 +1486,11 @@ test("a read while a change is in flight returns the finished change, never half
 
 describe("the undo window", () => {
   test("a decision is recorded when you make it and takes effect 8s later", async () => {
-    const { create, engine, fake, timers } = await setup();
+    const { create, engine, fake, timers, legacyApprove } = await setup();
     const item = await create();
     await endTurn(engine, fake);
     const looksBefore = (await engine.list(fake.paseo)).scoreboard.looks;
-    const pending = await engine.verdict(fake.paseo, item.id, "approve", "");
+    const pending = await legacyApprove(item.id);
     expect(pending).toMatchObject({ state: "review", pending: { verdict: "approve", remainingMs: UNDO_MS } });
     expect(timers.live().map((timer) => timer.ms)).toEqual([UNDO_MS]);
     // The look counts at the click, not when it applies.
@@ -1249,7 +1511,7 @@ describe("the undo window", () => {
   });
 
   test("undo inside the window takes it back, and nothing applies later", async () => {
-    const { create, engine, fake, timers } = await setup();
+    const { create, engine, fake, timers, legacyApprove } = await setup();
     const item = await create();
     await endTurn(engine, fake);
     const looksBefore = (await engine.list(fake.paseo)).scoreboard.looks;
@@ -1267,7 +1529,7 @@ describe("the undo window", () => {
     // The decision was a look; taking it back does not add or remove one.
     expect((await engine.list(fake.paseo)).scoreboard.looks).toBe(looksBefore + 1);
     // A fresh decision can follow.
-    expect((await engine.verdict(fake.paseo, item.id, "approve", "")).pending?.verdict).toBe("approve");
+    expect((await legacyApprove(item.id)).pending?.verdict).toBe("approve");
   });
 
   test("undo after it took effect is refused, and so is undo with nothing decided", async () => {
@@ -1281,10 +1543,10 @@ describe("the undo window", () => {
   });
 
   test("one decision at a time: a second is refused until the first is undone", async () => {
-    const { create, engine, fake } = await setup();
+    const { create, engine, fake, legacyApprove } = await setup();
     const item = await create();
     await endTurn(engine, fake);
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await legacyApprove(item.id);
     await expect(engine.verdict(fake.paseo, item.id, "block", "")).rejects.toThrow("already waiting to take effect");
     await expect(engine.cancel(item.id)).rejects.toThrow("already waiting to take effect");
     await engine.undo(item.id);
@@ -1305,10 +1567,10 @@ describe("the undo window", () => {
   });
 
   test("a restart after the window closed applies the decision on load", async () => {
-    const { create, engine, fake, config, timers } = await setup();
+    const { create, engine, fake, config, timers, legacyApprove } = await setup();
     const item = await create();
     await endTurn(engine, fake);
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await legacyApprove(item.id);
     // The plugin goes down inside the window; its timer goes with it.
     engine.stop();
     expect(timers.live()).toHaveLength(0);
@@ -1342,10 +1604,10 @@ describe("the undo window", () => {
   });
 
   test("with no client yet, an overdue approval waits instead of skipping its guard", async () => {
-    const { create, engine, fake, config } = await setup();
+    const { create, engine, fake, config, legacyApprove } = await setup();
     const item = await create();
     await endTurn(engine, fake);
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await legacyApprove(item.id);
     const other = await create();
     await endTurn(engine, fake, [], "agent-2");
     await engine.cancel(other.id);
@@ -1374,10 +1636,10 @@ describe("the undo window", () => {
   });
 
   test("stopping the engine clears every timer it armed", async () => {
-    const { create, engine, fake, timers } = await setup();
+    const { create, engine, fake, timers, legacyApprove } = await setup();
     const item = await create();
     await endTurn(engine, fake);
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await legacyApprove(item.id);
     expect(timers.live()).toHaveLength(1);
     engine.stop();
     expect(timers.live()).toHaveLength(0);
@@ -1389,10 +1651,10 @@ describe("the undo window", () => {
 
 describe("guards when a decision takes effect", () => {
   test("a question asked inside the window drops an approval, with the reason", async () => {
-    const { create, engine, fake, timers } = await setup();
+    const { create, engine, fake, timers, legacyApprove } = await setup();
     const item = await create();
     await endTurn(engine, fake);
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await legacyApprove(item.id);
     await engine.onPermissionRequested({ id: "agent-1" }, { id: "p1", name: "Bash", input: { command: "ls" } });
     tickMs(UNDO_MS);
     await timers.fire();
@@ -1405,10 +1667,10 @@ describe("guards when a decision takes effect", () => {
   });
 
   test("a session working again when the window closes drops the approval", async () => {
-    const { create, engine, fake, timers } = await setup();
+    const { create, engine, fake, timers, legacyApprove } = await setup();
     const item = await create();
     await endTurn(engine, fake);
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await legacyApprove(item.id);
     const agent = fake.agents.get("agent-1");
     if (agent) agent.status = "running";
     tickMs(UNDO_MS);
@@ -2188,10 +2450,10 @@ describe("stop run", () => {
 
 describe("races around a decision and a stop", () => {
   test("an undo that lands while the decision is being applied wins", async () => {
-    const { create, engine, fake, timers } = await setup();
+    const { create, engine, fake, timers, legacyApprove } = await setup();
     const item = await create();
     await endTurn(engine, fake);
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await legacyApprove(item.id);
     // Hold the apply open while it asks the session whether it is working again.
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
@@ -2223,10 +2485,10 @@ describe("races around a decision and a stop", () => {
   });
 
   test("the sweep applies a decision whose timer never ran; a list only shows it pending (BRO-2995)", async () => {
-    const { create, engine, fake, config } = await setup();
+    const { create, engine, fake, config, legacyApprove } = await setup();
     const item = await create();
     await endTurn(engine, fake);
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await legacyApprove(item.id);
     engine.stop();
     tickMs(UNDO_MS);
     const restarted = new Engine({ now: () => new Date(clock), config: async () => config, log: () => {} });
@@ -2299,7 +2561,7 @@ function holdScan(nth: number) {
 
 describe("round 2 of review: a decision is about the result you saw", () => {
   test("approve, send back or cancel is dropped when the run went on and came back", async () => {
-    const { create, engine, fake, timers } = await setup();
+    const { create, engine, fake, timers, legacyApprove } = await setup();
     const cases = [
       ["approve", "", "Approve"],
       ["revise", "Tighten it", "Send back"],
@@ -2309,7 +2571,8 @@ describe("round 2 of review: a decision is about the result you saw", () => {
       const agentId = `agent-${n + 1}`;
       const item = await create();
       await endTurn(engine, fake, [], agentId);
-      await engine.verdict(fake.paseo, item.id, verdict, note);
+      if (verdict === "approve") await legacyApprove(item.id);
+      else await engine.verdict(fake.paseo, item.id, verdict, note);
       // The session picks up again and lands a different result at the gate before the window closes.
       await engine.onTurnStarted({ id: agentId });
       await endTurn(
@@ -2329,12 +2592,12 @@ describe("round 2 of review: a decision is about the result you saw", () => {
   });
 
   test("a turn that ended at the gate after you decided (its start missed) drops the approval", async () => {
-    const { create, engine, fake, timers } = await setup();
+    const { create, engine, fake, timers, legacyApprove } = await setup();
     const item = await create();
     const agent = fake.agents.get("agent-1");
     if (agent) agent.status = "idle";
     await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await legacyApprove(item.id);
     await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-late");
     expect((await engine.get(item.id)).events.filter((event) => event.type === "turn.ended")).toHaveLength(2);
     tickMs(UNDO_MS);
@@ -2343,10 +2606,10 @@ describe("round 2 of review: a decision is about the result you saw", () => {
   });
 
   test("a turn start alone after you decided is the run going on", async () => {
-    const { create, engine, fake, timers, store } = await setup();
+    const { create, engine, fake, timers, store, legacyApprove } = await setup();
     const item = await create();
     await endTurn(engine, fake);
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await legacyApprove(item.id);
     // Every path today records a turn start with a state change; the rule does not depend on that.
     await store.mutate(item.id, () => ({
       events: [{ ts: new Date(clock).toISOString(), type: "turn.started", actor: "agent", agentId: "agent-1" }],
@@ -2359,10 +2622,10 @@ describe("round 2 of review: a decision is about the result you saw", () => {
   });
 
   test("a write torn after the state landed is completed, not reported as refused", async () => {
-    const { create, engine, fake, timers, store } = await setup();
+    const { create, engine, fake, timers, store, legacyApprove } = await setup();
     const item = await create();
     await endTurn(engine, fake);
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await legacyApprove(item.id);
     // A crash between the contract write and the receipts: the file says done, the log never heard.
     await store.mutate(item.id, () => ({ patch: { state: "done" } }));
     tickMs(UNDO_MS);
@@ -2386,10 +2649,10 @@ describe("round 2 of review: a decision is about the result you saw", () => {
   });
 
   test("an overdue decision reads as due, never as negative time", async () => {
-    const { create, engine, fake } = await setup();
+    const { create, engine, fake, legacyApprove } = await setup();
     const item = await create();
     await endTurn(engine, fake);
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await legacyApprove(item.id);
     engine.stop();
     tickMs(UNDO_MS + 5_000);
     expect((await engine.get(item.id)).item.pending).toMatchObject({ verdict: "approve", remainingMs: 0 });
@@ -2398,10 +2661,10 @@ describe("round 2 of review: a decision is about the result you saw", () => {
 
 describe("round 2 of review: client, cap and stop", () => {
   test("a decision found due with no client re-arms a timer and applies once a client exists", async () => {
-    const { create, engine, fake, config } = await setup();
+    const { create, engine, fake, config, legacyApprove } = await setup();
     const item = await create();
     await endTurn(engine, fake);
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await legacyApprove(item.id);
     engine.stop();
     tickMs(UNDO_MS);
     let handle: Paseo | null = null;
@@ -2628,13 +2891,13 @@ describe("round 3 of review", () => {
   });
 
   test("a torn approval followed by a turn stays closed, says the run went on, and archives nothing", async () => {
-    const { create, engine, fake, timers, store, repo } = await setup({ archiveOnApprove: true });
+    const { create, engine, fake, timers, store, repo, legacyApprove } = await setup({ archiveOnApprove: true });
     const item = await create();
     cleanWorktree(repo, item.worker);
     const agent = fake.agents.get("agent-1");
     if (agent) agent.status = "idle";
     await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-1");
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await legacyApprove(item.id);
     await store.mutate(item.id, () => ({ patch: { state: "done" } }));
     // Done cannot reopen, but the session still ended another turn after you decided.
     await engine.onTurnEnded({ id: "agent-1" }, { kind: "completed" }, [], "turn-2");
@@ -2673,7 +2936,7 @@ describe("round 3 of review", () => {
   });
 
   test("a sweep while a timer's apply is in flight arms nothing more; one timer is left after", async () => {
-    const { create, engine: first, fake, config, store } = await setup();
+    const { create, engine: first, fake, config, store, recordApprove } = await setup();
     const item = await create();
     await endTurn(first, fake);
     first.stop();
@@ -2699,7 +2962,8 @@ describe("round 3 of review", () => {
       log: () => {},
       timer: timers.timer,
     });
-    await engine.verdict(fake.paseo, item.id, "approve", "");
+    await recordApprove(item.id);
+    await engine.sweep(fake.paseo);
     const { items } = await store.scan();
     // The timer fires before the clock gets there, and its apply is held open.
     hold = true;

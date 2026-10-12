@@ -5,9 +5,11 @@
 // here reconciles, sweeps or writes.
 //
 // The kinds (owner answer A1):
-//   - approval: work at your gate. A permission prompt the session is paused on
-//     (`heldBy: permission`), or a landing Maestro's human gate holds (`heldBy:
-//     gate`, until BRO-2999 makes it Allow / Deny on a held action).
+//   - approval: one exact action a policy layer held (A1, BRO-2999): a
+//     permission prompt a session is paused on (`heldBy: permission`, on the
+//     work that session runs), or an action an agent asked leave for
+//     (approval.request, `approval:<id>`, `heldBy` the layer it names). Work is
+//     never asked to be approved: finished work is watched, and gates merge it.
 //   - ask: a decision ask that waits on you (shared/fleet.ts isWaiting), the
 //     workspace's and each fleet root's; and a due initiative review (B2), with
 //     a review body. An idea filed for an initiative is a proposal, watched
@@ -29,6 +31,7 @@ import type { Initiative } from "../shared/initiatives";
 import {
   ANSWERS_KEY,
   type ApprovalBody,
+  approvalKey,
   askHoldKey,
   type Closer,
   type Evidence,
@@ -40,6 +43,8 @@ import {
   type NeedRow,
   type NeedSummary,
   type Needs,
+  type PendingApproval,
+  permissionAction,
   reviewKey,
   workKey,
 } from "../shared/needs";
@@ -100,6 +105,25 @@ export interface NeedSources {
   sessionAgents?: ReadonlyMap<string, string>;
   /** The workspace's name (the control repo's folder): the scope of its asks, reviews and batch. */
   workspace: string;
+  /** The actions agents asked leave for that nothing has decided yet (server/approvals.ts open()). Absent: none. */
+  approvals?: readonly OpenApproval[];
+  /** Your decisions waiting out their undo window, by the hold's key (server/owner-verbs.ts). Absent: none. */
+  pending?: ReadonlyMap<string, PendingApproval>;
+}
+
+/** An action an agent asked leave for, as a hold (server/approvals.ts). */
+export interface OpenApproval {
+  id: string;
+  at: string;
+  agentId: string;
+  /** The exact action, `ref` included: what a decision binds to. */
+  action: string;
+  heldBy: string;
+  title: string;
+  scope: string;
+  ticket?: string;
+  evidence: Evidence[];
+  after: string[];
 }
 
 const shortId = (id: string) => id.slice(0, 8);
@@ -135,8 +159,11 @@ function evidenceOf(item: WorkItem): Evidence[] {
   return out;
 }
 
-/** A work item's hold, or null when it holds nothing of yours (shared/needs-you.ts needsHand). */
-export function workNeed(item: WorkItem): NeedRow | null {
+/**
+ * A work item's hold, or null when it holds nothing of yours (shared/needs-you.ts needsHand): the permission
+ * prompt its session is paused on, or work only you may start. Finished work holds nothing (A1): it is watched.
+ */
+export function workNeed(item: WorkItem, pending?: ReadonlyMap<string, PendingApproval>): NeedRow | null {
   if (!needsHand(item)) return null;
   const ticket = item.ticket ?? ticketOf(item.title);
   const base = {
@@ -146,28 +173,23 @@ export function workNeed(item: WorkItem): NeedRow | null {
     ...(ticket ? { ticket } : {}),
     blocksWork: true,
   };
-  if (item.group === "review") {
+  const permission = item.group === "review" ? item.permission : null;
+  if (permission) {
     const session = item.worker
       ? { session: { agentId: item.worker.agentId, name: shortId(item.worker.agentId), waiting: true } }
       : {};
-    const permission = item.permission;
-    const body: ApprovalBody = permission
-      ? {
-          action: permission.detail ? `${permission.title}: ${permission.detail}` : permission.title,
-          heldBy: "permission",
-          requestId: permission.requestId,
-          evidence: evidenceOf(item),
-          after: ["Your answer goes to the session's permission prompt", "The session goes on with its turn"],
-        }
-      : {
-          action: "Close it as done",
-          heldBy: "gate",
-          evidence: evidenceOf(item),
-          after: [
-            `Maestro records your decision and shows Undo for ${UNDO_MS / 1000} s`,
-            "Allow closes it as done; Deny sends it back to its session with your note",
-          ],
-        };
+    const decided = pending?.get(base.key);
+    const body: ApprovalBody = {
+      action: permissionAction(permission),
+      heldBy: "permission",
+      requestId: permission.requestId,
+      evidence: evidenceOf(item),
+      after: [
+        `Maestro records your decision and shows Undo for ${UNDO_MS / 1000} s`,
+        "Then your answer goes to the session's permission prompt, and the session goes on with its turn",
+      ],
+      ...(decided ? { pending: decided } : {}),
+    };
     // Waiting since it reached your gate, not since its last note: a remark never makes it look newer.
     const since = item.landedAt ?? item.updatedAt;
     return { ...base, ...session, kind: "approval", since, verbs: [...KIND_VERBS.approval], body };
@@ -185,6 +207,35 @@ export function workNeed(item: WorkItem): NeedRow | null {
       where: "Maestro: the work's Dispatch (yours alone)",
       doneCheck: `Done when it runs. ${flag.reason}`,
       waitingSessions: 0,
+    },
+  };
+}
+
+/** An action an agent asked leave for, as the hold it is: Allow and Deny, bound to that exact action. */
+export function approvalNeed(approval: OpenApproval, pending?: ReadonlyMap<string, PendingApproval>): NeedRow {
+  const key = approvalKey(approval.id);
+  const decided = pending?.get(key);
+  return {
+    kind: "approval",
+    key,
+    title: approval.title,
+    scope: approval.scope,
+    ...(approval.ticket ? { ticket: approval.ticket } : {}),
+    session: { agentId: approval.agentId, name: shortId(approval.agentId), waiting: true },
+    since: approval.at,
+    blocksWork: true,
+    verbs: [...KIND_VERBS.approval],
+    body: {
+      action: approval.action,
+      heldBy: approval.heldBy,
+      evidence: approval.evidence,
+      after: approval.after.length
+        ? approval.after
+        : [
+            `Maestro records your decision and shows Undo for ${UNDO_MS / 1000} s`,
+            "Then it tells the session your answer, and the session decides what to do",
+          ],
+      ...(decided ? { pending: decided } : {}),
     },
   };
 }
@@ -354,7 +405,7 @@ export function summaryOf(rows: readonly NeedRow[]): NeedSummary {
 
 /** needs.list: every hold, in deck order, each key once; `kind` narrows it to one kind. */
 export function needsOf(sources: NeedSources, now: number, kind?: NeedKind, seen?: FirstSeen): Needs {
-  const work = sources.items.map(workNeed);
+  const work = sources.items.map((item) => workNeed(item, sources.pending));
   // One prompt is one hold: fleet-reconcile's "Session … is waiting at a prompt" ask is the same permission
   // prompt the session's work holds as an approval (held by that prompt, not by Maestro's gate), so it counts
   // once, as the approval. The ask names the Claude session; the work, the Paseo agent: joined through the
@@ -369,6 +420,7 @@ export function needsOf(sources: NeedSources, now: number, kind?: NeedKind, seen
   const asks = sources.asks.filter((ask) => !(ask.promptSession && heldByPrompt(ask.promptSession)));
   const all = [
     ...work,
+    ...(sources.approvals ?? []).map((approval) => approvalNeed(approval, sources.pending)),
     ...asks.map((ask) => askNeed(ask, sources.workspace, now, seen)),
     ...sources.reviews.map((initiative) => reviewNeed(initiative, sources.items, sources.asks, sources.workspace)),
     answersNeed(sources.landing, sources.workspace, now, seen),

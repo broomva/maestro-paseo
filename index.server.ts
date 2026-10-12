@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { agentMethods, keepServing } from "./server/agent-socket";
 import { AnswerRouter } from "./server/answer-routes";
 import { AnswersLander, ghForge } from "./server/answers-landing";
+import { Approvals } from "./server/approvals";
 import { attentionOf } from "./server/attention";
 import { loadConfig, saveConfig } from "./server/config";
 import { WorkspaceAsks } from "./server/control-home";
@@ -20,19 +22,30 @@ import { Loop } from "./server/loop";
 import { homeWriter, Loops } from "./server/loops";
 import { gitLedger, loopPaths, loopReposPath, multiLedger } from "./server/loops-ledger";
 import { firstSeenMemory, handledOf, needsOf } from "./server/needs";
+import { OwnerVerbs } from "./server/owner-verbs";
 import {
+  approvalsPath,
   controlAskPaths,
   controlRepoPaths,
   expandHome,
   launchdPrefix,
   paseoSchedulesDir,
   socketPath,
+  verbsPath,
+  verbWindowMs,
   wakeLogPath,
 } from "./server/paths";
 import { Records } from "./server/records";
 import type { Paseo } from "./server/runs";
 import { fetchEvery, Sweep, sweepEvery } from "./server/sweep";
 import { Timeline } from "./server/timeline";
+import {
+  decideApprovalHandler,
+  promptSessionHandler,
+  registerApprovalVerbs,
+  registerWorkVerbs,
+  workVerbHandlers,
+} from "./server/verb-specs";
 import { WAKE_LOG_MAX, WakeLog } from "./server/wake-log";
 import { answersNotice, decideConductor, undoConductor } from "./shared/answers";
 import {
@@ -48,6 +61,7 @@ import {
   inspectFolder,
   leaveRunning,
   listWork,
+  type MaestroConfig,
   setConfig,
   stopWork,
   unblockWork,
@@ -57,22 +71,33 @@ import {
   workForAgent,
 } from "./shared/contracts";
 import {
+  type AnswerInput,
   answerAsk,
   type DecisionAsk,
   getFleet,
   getFleetTick,
   getWorkspaceAsks,
   homeKey,
+  type ReviewVerdict,
   reviewProposal,
 } from "./shared/fleet";
 import { fileIdeaWork, getInitiatives, ideaRef, type WorkRef } from "./shared/initiatives";
 import { galleryEnabled, kitGallery } from "./shared/kit";
 import { getLoops } from "./shared/loops";
-import { listHandled, listNeeds, type NeedKind } from "./shared/needs";
+import { askHoldKey, listHandled, listNeeds, type NeedKind, workKey } from "./shared/needs";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
 import { getTimeline, getTimelineLog } from "./shared/timeline";
+import { decideApproval, listVerbs, promptSession, undoVerb } from "./shared/verbs";
 
 const log = (message: string) => console.log(`[maestro] ${message}`);
+
+/** What a decision at the gate says while it waits: what you did, in the past tense. */
+function gateLabel(title: string, pending: { verdict: "approve" | "revise" | "block"; note: string }): string {
+  const short = title.length > 50 ? `${title.slice(0, 47)}...` : title;
+  if (pending.verdict === "block") return `Canceled ${short}`;
+  if (pending.verdict === "revise") return `Changed course on ${short}: ${pending.note}`;
+  return `Approved ${short}`;
+}
 
 export default function contribute(host: PluginServerContext) {
   // A run that lands at your gate leaves an approval card in its session, through the latest client below.
@@ -115,6 +140,14 @@ export default function contribute(host: PluginServerContext) {
     label: paseoLabel,
     landed: (before, after) => Promise.all([cards.landed(before, after), inbox.landed(before, after)]),
   });
+  // Every verb of yours that changes state takes effect 8 s after you make it, and leaves a receipt (B4,
+  // server/owner-verbs.ts); what agents asked leave for waits in its own file (server/approvals.ts).
+  const verbs = new OwnerVerbs({ path: verbsPath(), client: () => latest, windowMs: verbWindowMs(), log });
+  const approvals = new Approvals({ path: approvalsPath() });
+  const verbDeps = { verbs, engine, approvals };
+  registerApprovalVerbs(verbDeps);
+  registerWorkVerbs(verbDeps);
+  const work = workVerbHandlers(verbDeps);
   // The workspace's own asks: the control repo's ledgers, at their homes (spec #861 §5.2).
   const control = controlRepoPaths();
   const askPaths = controlAskPaths();
@@ -192,6 +225,11 @@ export default function contribute(host: PluginServerContext) {
       }),
   };
 
+  /** A gate decision's answer: the work, and the receipt and time of the decision it now holds. */
+  const receipted = (item: WorkItem) => ({
+    item,
+    ...(item.pending?.receipt ? { receipt: item.pending.receipt, appliesAt: item.pending.effectiveAt } : {}),
+  });
   // History, a work folder's files and each run's changed line: read-only, and never on the agent socket.
   const records = new Records(() => engine.settings());
   server.handle(listWork, (_input, { paseo }) => engine.list(paseo).then((list) => records.withChanged(paseo, list)));
@@ -407,7 +445,7 @@ export default function contribute(host: PluginServerContext) {
   const needsNow = async (kind?: NeedKind) => {
     // A source that cannot be read this time costs its rows, never their first-seen times.
     let partial = false;
-    const [read, [asks, asksRead], reviews, landing, sessionAgents] = await Promise.all([
+    const [read, [asks, asksRead], reviews, landing, sessionAgents, open, waiting] = await Promise.all([
       workItems(),
       allAsks(),
       (initiatives?.reviews() ?? Promise.resolve([])).catch((error) => {
@@ -424,12 +462,28 @@ export default function contribute(host: PluginServerContext) {
         log(`needs: reading the fleet's sessions: ${(error as Error).message}`);
         return new Map<string, string>();
       }),
+      // What agents asked leave for, and your decisions still in their window: files, read as they stand.
+      approvals.open().catch((error) => {
+        partial = true;
+        log(`needs: reading the approval requests: ${(error as Error).message}`);
+        return [];
+      }),
+      verbs.list().catch((error) => {
+        partial = true;
+        log(`needs: reading your decisions: ${(error as Error).message}`);
+        return { pending: [], recent: [] };
+      }),
     ]);
+    const pending = new Map(
+      waiting.pending
+        .filter((verb) => verb.verb === "approval.decide")
+        .map((verb) => [verb.key, { receipt: verb.receipt, label: verb.label, appliesAt: verb.appliesAt }]),
+    );
     // The work that could not be read costs its own rows, never the asks', the reviews' or the batch's.
     const items = read ?? [];
     const now = Date.now();
     const needs = needsOf(
-      { items, asks, reviews, landing, sessionAgents, workspace: workspaceName },
+      { items, asks, reviews, landing, sessionAgents, workspace: workspaceName, approvals: open, pending },
       now,
       kind,
       firstSeen.at,
@@ -465,16 +519,48 @@ export default function contribute(host: PluginServerContext) {
   });
   server.handle(dispatchWork, ({ id }, { paseo }) => engine.dispatch(paseo, id).then((item) => ({ item })));
   server.handle(decideWork, ({ id, verdict, note }, { paseo }) =>
-    engine.verdict(paseo, id, verdict, note).then((item) => ({ item })),
+    engine.verdict(paseo, id, verdict, note).then(receipted),
   );
-  server.handle(unblockWork, ({ id, note }, { paseo }) => engine.unblock(paseo, id, note).then((item) => ({ item })));
-  server.handle(cancelWork, ({ id }, { paseo }) => engine.cancel(id, paseo).then((item) => ({ item })));
+  // Allow or Deny one held action, with the 8 s undo (A1, B4): yours alone, never on the agent socket.
+  server.handle(decideApproval, decideApprovalHandler(verbDeps));
+  // Send a prompt to an existing session (Continue, Change course): never creates one (A8).
+  server.handle(promptSession, promptSessionHandler(verbDeps));
+  // Take back any verb inside its window: the ledger's, or a gate decision's (its receipt is the decision's token).
+  server.handle(undoVerb, async ({ receipt }) => {
+    if (await verbs.knows(receipt)) return verbs.undo(receipt);
+    await engine.undoDecision(receipt);
+    return { undone: true };
+  });
+  // What waits in the ledger, and the decisions at your gate waiting in their own window: one list, one Undo.
+  server.handle(listVerbs, async () => {
+    const [held, listed] = await Promise.all([verbs.list(), engine.list().catch(() => null)]);
+    const gate = (listed?.items ?? []).flatMap((item) =>
+      item.pending?.receipt
+        ? [
+            {
+              receipt: item.pending.receipt,
+              verb: "work.verdict" as const,
+              key: workKey(item.id),
+              label: gateLabel(item.title, item.pending),
+              at: item.pending.decidedAt,
+              appliesAt: item.pending.effectiveAt,
+              remainingMs: item.pending.remainingMs,
+            },
+          ]
+        : [],
+    );
+    return { pending: [...held.pending, ...gate].sort((a, b) => b.at.localeCompare(a.at)), recent: held.recent };
+  });
+  server.handle(unblockWork, ({ id, note }) => work.unblock(id, note));
+  // Work at your gate is canceled there (a decision with its own window); everything else waits 8 s here.
+  server.handle(
+    cancelWork,
+    async ({ id }, { paseo }) => (await work.cancel(id)) ?? receipted(await engine.cancel(id, paseo)),
+  );
   server.handle(undoWork, ({ id }) => engine.undo(id).then((item) => ({ item })));
   // Yours alone, like the gate: never on the agent socket (server/agent-socket.ts GATE_METHODS).
-  server.handle(leaveRunning, ({ id }) => engine.leaveRunning(id).then((item) => ({ item })));
-  server.handle(stopWork, ({ id, discard }, { paseo }) =>
-    engine.stopRun(paseo, id, { discard: discard === true }).then((item) => ({ item })),
-  );
+  server.handle(leaveRunning, ({ id }) => work.leaveRunning(id));
+  server.handle(stopWork, ({ id, discard }) => work.stop(id, discard === true));
   server.handle(adoptAgent, ({ agentId, title, ticket }, { paseo }) =>
     engine.adopt(paseo, agentId, title, undefined, { ticket }).then((item) => ({ item })),
   );
@@ -482,7 +568,40 @@ export default function contribute(host: PluginServerContext) {
   server.handle(inspectFolder, ({ path }) => inspect(path));
   // The Fleet view, and your verdict on a proposal: yours alone, never on the agent socket.
   server.handle(getFleet, ({ scope, ticks }) => fleet.get(scope, ticks));
-  server.handle(reviewProposal, ({ scope, keys, verdict, note }) => fleet.review({ scope, keys, verdict, note }));
+  // Your verdict is written when its undo window closes (B4); the keys are checked now and again then.
+  type Review = { scope: string; keys: string[]; verdict: ReviewVerdict; note: string };
+  verbs.register<Review>("fleet.review", {
+    check: async ({ scope, keys }) => {
+      const view = await fleet.get(scope, 1);
+      const proposed = new Set(
+        (view.detail?.id === scope ? view.detail.proposals : []).map((proposal) => proposal.key),
+      );
+      if (keys.some((key) => !proposed.has(key))) {
+        throw new UserError(
+          "The fleet no longer proposes this: its latest report changed. Look at the Fleet view again.",
+        );
+      }
+    },
+    apply: async (input) => {
+      const { proposals } = await fleet.review(input);
+      return `${input.verdict === "accept" ? "Accepted" : "Rejected"} ${proposals.length} proposal(s): ${proposals[0]?.action ?? ""}`;
+    },
+  });
+  server.handle(reviewProposal, async ({ scope, keys, verdict, note }) => {
+    const input: Review = { scope, keys, verdict, note };
+    const made = await verbs.schedule("fleet.review", {
+      key: `fleet:${scope}:${createHash("sha256")
+        .update([...new Set(keys)].sort().join("\n"))
+        .digest("hex")
+        .slice(0, 12)}`,
+      label: `${verdict === "accept" ? "Accepted" : "Rejected"} ${keys.length} fleet proposal${keys.length === 1 ? "" : "s"} in ${scope}`,
+      args: input,
+    });
+    // Nothing is written yet: the proposals stand as they are, and the receipt is what undoes your verdict.
+    const view = await fleet.get(scope, 1);
+    const wanted = new Set(keys);
+    return { proposals: (view.detail?.proposals ?? []).filter((proposal) => wanted.has(proposal.key)), ...made };
+  });
   server.handle(getFleetTick, ({ scope, tick }) => fleet.tick(scope, tick));
   // The workspace's asks, each read at its home (server/control-home.ts).
   // Each fleet scope's own root asks ride along, so Decisions lists every ask Maestro reads.
@@ -500,12 +619,40 @@ export default function contribute(host: PluginServerContext) {
       : view.decisions;
     return { ...view, decisions, fleet: scoped.asks, warnings: [...view.warnings, ...scoped.warnings] };
   });
-  // Your answer to a decision ask, at its home: written under the ledger lock, and never on the agent socket.
-  // An idea answered develop also files its held work item (above); park writes the wake you chose.
-  server.handle(answerAsk, async ({ where, ...input }, { paseo }) => {
+  // Your answer to a decision ask, at its home: written under the ledger lock when its undo window closes (B4),
+  // and never on the agent socket. An idea answered develop also files its held work item (above); park writes
+  // the wake you chose.
+  /** The ask as it reads now, or why it can no longer be answered: the refusals the write itself makes, said at the call. */
+  const openAsk = async ({
+    where,
+    ledger,
+    uid,
+    id,
+    hash,
+  }: Pick<AnswerInput, "where" | "ledger" | "uid" | "id" | "hash">) => {
+    const all =
+      where.kind === "fleet"
+        ? (await fleet.scopeDecisions()).asks.filter((ask) => ask.scope === where.scope)
+        : workspace
+          ? (await workspace.read()).all.filter((ask) => homeKey(ask.home) === where.home)
+          : [];
+    const found = all.find((ask) => ask.ledger === ledger && (uid ? ask.uid === uid : !ask.uid && ask.id === id));
+    if (!found)
+      throw new UserError(`The workspace no longer holds the ask ${id} in ${ledger}. Look at Decisions again.`);
+    if (found.state !== "open")
+      throw new UserError(`The ask ${id} was already answered or retired; your answer was not written.`);
+    if (found.refusal) throw new UserError(found.refusal);
+    if (found.hash !== hash)
+      throw new UserError(`The ask ${id} changed since you read it; look at it again before answering.`);
+    return found;
+  };
+  async function answerNowAt(
+    { where, ...input }: AnswerInput,
+    paseo: Paseo | null,
+  ): Promise<{ ask: DecisionAsk; warning: string | null; work: WorkRef | null }> {
     if (where.kind === "fleet") {
       if (input.wake) throw new UserError("Only an idea in your workspace takes a wake date.");
-      return fleet.answer({ ...input, scope: where.scope });
+      return { ...(await fleet.answer({ ...input, scope: where.scope })), work: null };
     }
     if (!workspace) throw new UserError("Maestro reads no control repo here (MAESTRO_PASEO_CONTROL_REPO is off).");
     const answered = await workspace.answer({ ...input, home: where.home });
@@ -517,6 +664,30 @@ export default function contribute(host: PluginServerContext) {
       warning: [answered.warning, filed.warning].filter(Boolean).join(" ") || null,
       work: filed.work,
     };
+  }
+  verbs.register<AnswerInput>("ask.answer", {
+    check: async (input) => {
+      if (input.where.kind === "fleet" && input.wake)
+        throw new UserError("Only an idea in your workspace takes a wake date.");
+      if (input.where.kind === "workspace" && !workspace) {
+        throw new UserError("Maestro reads no control repo here (MAESTRO_PASEO_CONTROL_REPO is off).");
+      }
+      await openAsk(input);
+    },
+    apply: async (input, paseo) => {
+      const done = await answerNowAt(input, paseo);
+      const said = input.option ?? "your words";
+      return [`Answered ${done.ask.id} in ${done.ask.ledger}: ${said}.`, done.warning].filter(Boolean).join(" ");
+    },
+  });
+  server.handle(answerAsk, async (input) => {
+    const found = await openAsk(input);
+    const made = await verbs.schedule("ask.answer", {
+      key: askHoldKey(found),
+      label: `Answered ${found.headline ?? found.question ?? found.id}`,
+      args: input,
+    });
+    return { ask: found, warning: null, work: null, ...made };
   });
   // The workspace's initiatives, each with its ideas (server/initiatives.ts): read-only but for the answers above.
   server.handle(getInitiatives, async (_input, { paseo }) => {
@@ -553,14 +724,27 @@ export default function contribute(host: PluginServerContext) {
   });
   server.handle(getConfig, () => loadConfig());
   // Saved Settings may turn the loop on or off, or change its period: arm it again from them.
-  server.handle(setConfig, async (input) => {
-    const saved = await saveConfig(input);
-    await loop.reschedule();
-    return saved;
+  verbs.register<MaestroConfig>("config.set", {
+    supersedes: true,
+    apply: async (input) => {
+      await saveConfig(input);
+      await loop.reschedule();
+      return "Saved Settings.";
+    },
   });
+  server.handle(setConfig, async (input) => ({
+    ...input,
+    ...(await verbs.schedule("config.set", { key: "config", label: "Saved Settings", args: input })),
+  }));
   // The loop's state and a wake now: yours, never on the agent socket.
   server.handle(getLoop, () => loop.get());
-  server.handle(wakeLoop, () => loop.wake("manual"));
+  verbs.register<Record<string, never>>("loop.wake", {
+    apply: async () => {
+      const entry = await loop.wake("manual");
+      return entry.skipped ? `Not woken: ${entry.skipped}` : entry.narrative.join(" ") || "Woke the loop.";
+    },
+  });
+  server.handle(wakeLoop, () => verbs.schedule("loop.wake", { key: "loop", label: "Woke the loop", args: {} }));
   // Your decision on an answer that waits for the conductor, and its undo: yours, never on the agent socket.
   server.handle(decideConductor, ({ key, verb }) => {
     if (!router) throw new UserError("Maestro reads no control repo here (MAESTRO_PASEO_CONTROL_REPO is off).");
@@ -585,7 +769,7 @@ export default function contribute(host: PluginServerContext) {
 
   // Sessions reach Maestro through a socket of its own (server/agent-socket.ts).
   // If it cannot open, Maestro's own screens still work, and it keeps trying.
-  const stopSocket = keepServing({ path: socketPath(), methods: agentMethods(engine, () => latest), log });
+  const stopSocket = keepServing({ path: socketPath(), methods: agentMethods(engine, () => latest, approvals), log });
 
   // The plugin sweep (server/sweep.ts): what the reads above no longer do, on its own cadence, whoever looks.
   // Its first sweep runs now: decisions made before a restart are armed, or applied when overdue.
@@ -598,6 +782,13 @@ export default function contribute(host: PluginServerContext) {
         name: "the work",
         run: async (paseo) => {
           if (await engine.upkeep(paseo)) log("sweep: the work moved to match its sessions, or a decision came due");
+        },
+      },
+      // Your verbs in their window are armed again after a restart, and those overdue apply (server/owner-verbs.ts).
+      {
+        name: "your decisions",
+        run: async () => {
+          if (await verbs.resume()) log("sweep: a decision of yours came due");
         },
       },
       // In the background (never waited for, one at a time): a fetch or the loops' whole view may take a while.
@@ -631,6 +822,7 @@ export default function contribute(host: PluginServerContext) {
     loop.stop();
     // Before a reload's new router resumes your decisions: this one applies none of them any more.
     router?.stop();
+    verbs.stop();
     fleet.stop();
     awakeClock?.stop();
     engine.stop();

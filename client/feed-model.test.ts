@@ -243,6 +243,7 @@ describe("a card", () => {
     const card = cardOf(
       fakeWork("a", "review", live, {
         title: "Act on your answer: Add a status_quo key",
+        permission: null,
         look: { ran: "", decided: [], ask: "", closing: "I've added the key, with tests." },
       }),
       NOW,

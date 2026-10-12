@@ -121,6 +121,8 @@ export const PendingSchema = z.object({
   effectiveAt: z.string(),
   /** Time left in the undo window when this was read; 0 once it is due. */
   remainingMs: z.number(),
+  /** The decision's receipt, what verb.undo takes. Absent from an older daemon. */
+  receipt: z.string().optional(),
 });
 export type Pending = z.infer<typeof PendingSchema>;
 
@@ -270,6 +272,11 @@ export const ConfigSchema = z.object({
 export type MaestroConfig = z.infer<typeof ConfigSchema>;
 
 const ItemResult = z.object({ item: WorkItemSchema });
+/**
+ * A verb of yours on work: the work as it stands, and the receipt of what you did and when it takes effect
+ * (8 s after the call, B4); verb.undo takes the receipt back. Absent from an older daemon.
+ */
+const Receipted = ItemResult.extend({ receipt: z.string().optional(), appliesAt: z.string().optional() });
 const ById = z.object({ id: z.string().min(1) });
 
 export const listWork = defineRpc({
@@ -339,16 +346,16 @@ export const dispatchWork = defineRpc({ name: "work.dispatch", input: ById, outp
 export const decideWork = defineRpc({
   name: "work.verdict",
   input: z.object({ id: z.string().min(1), verdict: z.enum(VERDICTS), note: z.string() }),
-  output: ItemResult,
+  output: Receipted,
 });
 
 export const unblockWork = defineRpc({
   name: "work.unblock",
   input: z.object({ id: z.string().min(1), note: z.string() }),
-  output: ItemResult,
+  output: Receipted,
 });
 
-export const cancelWork = defineRpc({ name: "work.cancel", input: ById, output: ItemResult });
+export const cancelWork = defineRpc({ name: "work.cancel", input: ById, output: Receipted });
 
 /** Take back a decision at the gate before it takes effect. */
 export const undoWork = defineRpc({ name: "work.undo", input: ById, output: ItemResult });
@@ -362,7 +369,7 @@ export const undoWork = defineRpc({ name: "work.undo", input: ById, output: Item
 export const stopWork = defineRpc({
   name: "work.stop",
   input: ById.extend({ discard: z.boolean().optional() }),
-  output: ItemResult,
+  output: Receipted,
 });
 
 /** How a Stop refused because it would delete work that is not committed begins. */
@@ -374,7 +381,7 @@ export const NOT_STOPPED = "Not stopped:";
  * quiet clock from now. Refused unless the work is running with a quiet flag.
  * A `yours` or `failed` flag clears when you act on the work (dispatch, cancel).
  */
-export const leaveRunning = defineRpc({ name: "work.leave-running", input: ById, output: ItemResult });
+export const leaveRunning = defineRpc({ name: "work.leave-running", input: ById, output: Receipted });
 
 export const adoptAgent = defineRpc({
   name: "work.adopt",
@@ -398,10 +405,14 @@ export const getConfig = defineRpc({
   output: ConfigSchema,
 });
 
+/**
+ * Save Settings, 8 s after the call unless undone (B4). The output is the Settings you asked for, with the
+ * receipt; a newer save before the window closes replaces this one.
+ */
 export const setConfig = defineRpc({
   name: "config.set",
   input: ConfigSchema,
-  output: ConfigSchema,
+  output: ConfigSchema.extend({ receipt: z.string().optional(), appliesAt: z.string().optional() }),
 });
 
 /**
@@ -523,5 +534,12 @@ export const getLoop = defineRpc({
   }),
 });
 
-/** Wake the loop now. Returns this wake's entry, or a skipped one when a wake is already running. */
-export const wakeLoop = defineRpc({ name: "loop.wake", input: z.object({}), output: WakeEntrySchema });
+/**
+ * Wake the loop, 8 s after the call unless undone (B4). The wake's entry is in loop.get's `recent` once it
+ * has run, or a skipped one when a wake is already running.
+ */
+export const wakeLoop = defineRpc({
+  name: "loop.wake",
+  input: z.object({}),
+  output: z.object({ receipt: z.string(), appliesAt: z.string() }),
+});

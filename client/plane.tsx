@@ -19,6 +19,7 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
+import { workKey } from "../shared/needs";
 import { ChangeScope } from "./changed";
 import { type DecisionsFocus, DecisionsView } from "./decision-triage";
 import { AnswersNotices, AskNotices, useWorkspaceAsks } from "./decisions";
@@ -47,6 +48,7 @@ import { requestIntent, useIntent } from "./intent";
 import { LoopControl, LoopPanel } from "./loop";
 import { LoopsNotices, LoopsView } from "./loops";
 import { NewWork } from "./new-work";
+import { PendingVerbs } from "./pending-verbs";
 import { FilterRow, ScopeRow, ViewPicker } from "./plane-controls";
 import {
   applyFilter,
@@ -279,6 +281,15 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
 
       {compact && loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
 
+      {/* What you decided that has not taken effect: every verb of yours waits 8 s, with one Undo (B4). A work's
+          own decision at the gate counts down in its detail. */}
+      <PendingVerbs
+        theme={theme}
+        compact={compact}
+        skip={["work.verdict"]}
+        except={current ? [workKey(current)] : undefined}
+      />
+
       {/* What needs you could not be read: said, never shown as nothing. */}
       {needs.isError && !needs.data ? (
         <Notice theme={theme} tone="danger">
@@ -379,6 +390,7 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
               {query &&
               needsEntries.length +
                 sections.stuck.length +
+                sections.finished.length +
                 sections.running.length +
                 sections.queued.length +
                 sections.done.count ===

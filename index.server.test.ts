@@ -1,4 +1,4 @@
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,6 +17,27 @@ const roots: string[] = [];
 afterAll(async () => {
   await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
 });
+
+// Your verbs wait 8 s before they take effect (B4). The plugin's tests shorten the window so they can wait it
+// out; the 8 s itself is proved to the millisecond in server/owner-verbs.test.ts.
+const windowWas = process.env.MAESTRO_PASEO_VERB_WINDOW_MS;
+beforeAll(() => {
+  process.env.MAESTRO_PASEO_VERB_WINDOW_MS = "0";
+});
+afterAll(() => {
+  if (windowWas === undefined) delete process.env.MAESTRO_PASEO_VERB_WINDOW_MS;
+  else process.env.MAESTRO_PASEO_VERB_WINDOW_MS = windowWas;
+});
+
+/** Wait until every verb of yours has taken effect (or been dropped): the ledger holds none pending. */
+async function settled(read: (name: string, input: unknown) => Promise<unknown>): Promise<void> {
+  for (let i = 0; i < 300; i += 1) {
+    const { pending } = (await read("verbs.list", {})) as { pending: unknown[] };
+    if (pending.length === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("a verb of yours never took effect");
+}
 
 type Handler = (input: unknown, context: unknown) => unknown;
 
@@ -155,6 +176,9 @@ test("undo, stop and the default gate are wired through the plugin's handlers", 
   for (const key of fleet) process.env[key] = join(root, "no-fleet", key);
   process.env.MAESTRO_PASEO_CONFIG = config;
   process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
+  // The ledger's window, shortened so the test can wait it out: the 8 s itself is proved in server/owner-verbs.test.ts.
+  const savedWindow = process.env.MAESTRO_PASEO_VERB_WINDOW_MS;
+  process.env.MAESTRO_PASEO_VERB_WINDOW_MS = "4000";
   const { host, handlers, hooks } = fakeHost();
   const cleanup = contribute(host);
   const fake = fakePaseo();
@@ -164,6 +188,8 @@ test("undo, stop and the default gate are wired through the plugin's handlers", 
     if (!handler) throw new Error(`${name} is not handled`);
     return (await handler(input, context)) as {
       item: { id: string; state: string; gate: string } & Record<string, unknown>;
+      receipt?: string;
+      appliesAt?: string;
     };
   };
   try {
@@ -190,10 +216,24 @@ test("undo, stop and the default gate are wired through the plugin's handlers", 
     const ended = hooks.get("agent.turn_ended");
     if (!ended) throw new Error("agent.turn_ended is not subscribed");
     await ended({ agent: { id: "agent-1" }, outcome: { kind: "completed" }, timeline: [], turnId: "t1" }, context);
-    const { item: pending } = await run("work.verdict", { id: chosen.id, verdict: "approve", note: "" });
-    expect(pending).toMatchObject({ state: "review", pending: { verdict: "approve" } });
-    const { item: undone } = await run("work.undo", { id: chosen.id });
-    expect(undone).toMatchObject({ state: "review", pending: null });
+    // Work is not approved (A1): the verdict is refused, and nothing is recorded.
+    await expect(run("work.verdict", { id: chosen.id, verdict: "approve", note: "" })).rejects.toThrow(
+      "Work is not approved",
+    );
+    expect((await run("work.get", { id: chosen.id })).item).toMatchObject({ state: "review", pending: null });
+    // Change course is recorded with a receipt, and verb.undo takes it back by that receipt.
+    const revised = await run("work.verdict", { id: chosen.id, verdict: "revise", note: "Again" });
+    expect(revised.item).toMatchObject({ state: "review", pending: { verdict: "revise" } });
+    expect(revised.receipt).toBeString();
+    expect(revised.appliesAt).toBe(
+      revised.item.pending ? (revised.item.pending as { effectiveAt: string }).effectiveAt : "",
+    );
+    const listedPending = (await run("verbs.list", {})) as unknown as {
+      pending: Array<{ receipt: string; verb: string }>;
+    };
+    expect(listedPending.pending).toMatchObject([{ receipt: revised.receipt, verb: "work.verdict" }]);
+    expect(await run("verb.undo", { receipt: revised.receipt })).toMatchObject({ undone: true });
+    expect((await run("work.get", { id: chosen.id })).item).toMatchObject({ state: "review", pending: null });
     const { item: canceling } = await run("work.cancel", { id: chosen.id });
     expect(canceling).toMatchObject({ state: "review", pending: { verdict: "block" } });
     await run("work.undo", { id: chosen.id });
@@ -204,10 +244,31 @@ test("undo, stop and the default gate are wired through the plugin's handlers", 
     // Its folder is no git worktree, so nothing proves stopping loses nothing: refused, then confirmed.
     await expect(run("work.stop", { id: other.id })).rejects.toThrow("Not stopped:");
     expect(fake.archived).toEqual([]);
-    const { item: stopped } = await run("work.stop", { id: other.id, discard: true });
-    expect(stopped).toMatchObject({ state: "blocked", reason: "You stopped the run" });
+    // Stop waits out its window: recorded, the run still running, and Undo takes it back.
+    const asked = await run("work.stop", { id: other.id, discard: true });
+    expect(asked.item).toMatchObject({ state: "running" });
+    expect(asked.receipt).toBeString();
+    expect(await run("verb.undo", { receipt: asked.receipt })).toMatchObject({ undone: true });
+    // Past the end of the window it would have had: nothing took effect.
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(0, Date.parse(asked.appliesAt ?? "") - Date.now()) + 300),
+    );
+    expect(fake.archived).toEqual([]);
+    expect((await run("work.get", { id: other.id })).item.state).toBe("running");
+    await run("work.stop", { id: other.id, discard: true });
+    expect(fake.archived).toEqual([]);
+    for (let i = 0; i < 600 && fake.archived.length === 0; i += 1) await new Promise((r) => setTimeout(r, 20));
     expect(fake.archived).toEqual(["agent-2"]);
+    expect((await run("work.get", { id: other.id })).item).toMatchObject({
+      state: "blocked",
+      reason: "You stopped the run",
+    });
+    expect(
+      ((await run("verbs.list", {})) as unknown as { recent: Array<{ outcome: string }> }).recent.map((v) => v.outcome),
+    ).toEqual(["applied", "undone"]);
   } finally {
+    if (savedWindow === undefined) delete process.env.MAESTRO_PASEO_VERB_WINDOW_MS;
+    else process.env.MAESTRO_PASEO_VERB_WINDOW_MS = savedWindow;
     await cleanup();
     process.env.MAESTRO_PASEO_CONFIG = saved.config;
     process.env.MAESTRO_PASEO_SOCKET = saved.socket;
@@ -253,9 +314,9 @@ test("decisions left from before a restart apply on load, or once a client arriv
     return item.id;
   };
   const canceled = await make("Cancel me");
-  const approved = await make("Approve me");
+  const revised = await make("Change my course");
   await before.verdict(fake.paseo, canceled, "block", "");
-  await before.verdict(fake.paseo, approved, "approve", "");
+  await before.verdict(fake.paseo, revised, "revise", "Again");
   before.stop();
   expect(past + UNDO_MS).toBeLessThan(Date.now());
 
@@ -290,16 +351,16 @@ test("decisions left from before a restart apply on load, or once a client arriv
   try {
     // On load, with no client yet: the cancel asks nothing of the session and applies.
     expect(await until(canceled, "canceled")).toBe("canceled");
-    // The approval must ask whether the session is working again, so it waits for a client:
+    // A change of course must ask whether the session is working again, so it waits for a client:
     // still waiting a while later, not merely not reached yet by the sweep.
     for (let i = 0; i < 15; i += 1) {
-      expect(await state(approved)).toBe("review");
+      expect(await state(revised)).toBe("review");
       await new Promise((r) => setTimeout(r, 20));
     }
     const created = hooks.get("agent.created");
     if (!created) throw new Error("agent.created is not subscribed");
     await created({ agent: { id: "someone" } }, { paseo: fake.paseo, signal: new AbortController().signal });
-    expect(await until(approved, "done")).toBe("done");
+    expect(await until(revised, "running")).toBe("running");
   } finally {
     await cleanup();
     process.env.MAESTRO_PASEO_CONFIG = saved.config;
@@ -368,7 +429,11 @@ test("the loop is wired: off by default, Settings arm and disarm it, a wake now 
     const settings = await run("config.get", {});
     expect(settings.loopMinutes).toBeNull();
     const before = Date.now();
-    await run("config.set", { ...settings, loopMinutes: 5 });
+    const saving = await run("config.set", { ...settings, loopMinutes: 5 });
+    // Recorded, with its receipt: nothing is armed until the window closes.
+    expect(saving.receipt).toBeString();
+    expect((await run("loop.get", {})).minutes).toBeNull();
+    await settled(run);
     const on = await run("loop.get", {});
     expect(on.minutes).toBe(5);
     const ahead = Date.parse(on.nextAt) - before;
@@ -376,10 +441,13 @@ test("the loop is wired: off by default, Settings arm and disarm it, a wake now 
     expect(ahead).toBeLessThan(5 * 60_000 + 10_000);
 
     // A wake now is yours to ask for: it says so, and starts nothing (A8): the work stays queued.
-    const woke = await run("loop.wake", {});
+    const asked = await run("loop.wake", {});
+    expect(asked.receipt).toBeString();
+    await settled(run);
+    const [woke] = (await run("loop.get", {})).recent;
     expect(woke).toMatchObject({ cause: "manual", dispatched: [], deferred: [] });
     expect(fake.created).toHaveLength(0);
-    expect((await run("loop.get", {})).recent.map((entry: { tickId: string }) => entry.tickId)).toEqual([woke.tickId]);
+    expect((await run("loop.get", {})).recent).toHaveLength(1);
     expect((await stat(join(root, "wake-log.jsonl"))).isFile()).toBe(true);
     // Your Dispatch still starts it.
     expect((await run("work.dispatch", { id: item.id })).item.state).toBe("running");
@@ -387,6 +455,7 @@ test("the loop is wired: off by default, Settings arm and disarm it, a wake now 
 
     // Off again: nothing is armed.
     await run("config.set", { ...settings, loopMinutes: null });
+    await settled(run);
     expect(await run("loop.get", {})).toMatchObject({ minutes: null, nextAt: null });
   } finally {
     await cleanup();
@@ -506,25 +575,23 @@ test("initiatives and their ideas are wired: develop files held work in the init
     // Each idea is answered at its home as read: origin/main, whose answers are batched on maestro/answers.
     expect([first.home.kind, second.home.kind]).toEqual(["main", "main"]);
     const where = { kind: "workspace", home: "origin/main" };
-    const developed = await run<{ ask: Ask; warning: string | null; work: { id: string; path: string } | null }>(
-      "ask.answer",
-      {
-        where,
-        ledger: "ideas-maestro.yaml",
-        uid: null,
-        id: "I1",
-        hash: first.hash,
-        option: "develop",
-        note: "start small",
-      },
-    );
-    expect([developed.ask.state, developed.ask.answerOption, developed.ask.batched, developed.warning]).toEqual([
-      "answered",
-      "develop",
-      true,
-      null,
-    ]);
-    if (!developed.work) throw new Error("no work filed");
+    const asked = await run<{ ask: Ask; receipt?: string }>("ask.answer", {
+      where,
+      ledger: "ideas-maestro.yaml",
+      uid: null,
+      id: "I1",
+      hash: first.hash,
+      option: "develop",
+      note: "start small",
+    });
+    // Recorded, with its receipt; written when the window closes, so until then the ask stands open.
+    expect([asked.ask.state, typeof asked.receipt]).toEqual(["open", "string"]);
+    await settled(run);
+    const answered = (await run<View>("initiatives.list", {})).ideas.find((ask) => ask.id === "I1");
+    expect([answered?.state, answered?.answerOption, answered?.batched]).toEqual(["answered", "develop", true]);
+    const [made] = (await run<{ developed: { id: string; path: string }[] }>("initiatives.list", {})).developed;
+    if (!made) throw new Error("no work filed");
+    const developed = { work: made };
     expect(developed.work.path).toStartWith("maestro/");
     // Queued, held for you: the loop and sessions leave it, and its brief carries the initiative and the idea.
     const { item } = await run<{ item: { state: string; initiative: string; nextRun: { held: string | null } } }>(
@@ -569,7 +636,7 @@ test("initiatives and their ideas are wired: develop files held work in the init
       run("initiatives.file", { ledger: "ideas-maestro.yaml", id: "I2", home: "origin/main" }),
     ).rejects.toThrow("is not answered develop");
 
-    const parked = await run<{ ask: Ask; work: unknown }>("ask.answer", {
+    await run("ask.answer", {
       where,
       ledger: "ideas-maestro.yaml",
       uid: null,
@@ -579,7 +646,9 @@ test("initiatives and their ideas are wired: develop files held work in the init
       note: "",
       wake: "2099-02-03",
     });
-    expect([parked.ask.answerOption, parked.ask.idea.wake, parked.work]).toEqual(["park", "2099-02-03", null]);
+    await settled(run);
+    const parked = (await run<View>("initiatives.list", {})).ideas.find((ask) => ask.id === "I2");
+    expect([parked?.answerOption, parked?.idea.wake]).toEqual(["park", "2099-02-03"]);
     const batch = join(root, "state", "control-answers", ".control", "asks", "ideas-maestro.yaml");
     expect(await readFile(batch, "utf8")).toContain('wake: "2099-02-03"');
     // The owner's checkout is untouched: the answer waits in the batch.
@@ -667,7 +736,7 @@ test("asks.workspace carries each fleet scope's root asks, tagged; a fleet answe
     expect(view.warnings.some((warning) => warning === `The fleet config (${fleetConfig}) is not valid JSON.`)).toBe(
       true,
     );
-    const answered = await run<{ ask: Ask }>("ask.answer", {
+    const asked = await run<{ ask: Ask; receipt?: string }>("ask.answer", {
       where: { kind: "fleet", scope: "alpha" },
       ledger: "fleet-alpha.yaml",
       uid: null,
@@ -676,8 +745,12 @@ test("asks.workspace carries each fleet scope's root asks, tagged; a fleet answe
       option: "go",
       note: "",
     });
-    // The reply is the ledger's ask as written, untagged: the card that asked files it under its own list's scope.
-    expect([answered.ask.scope, answered.ask.state]).toEqual([undefined, "answered"]);
+    // Recorded with its receipt, written 8 s later: until then the ask stands open, and the ledger is untouched.
+    expect([asked.ask.state, typeof asked.receipt]).toEqual(["open", "string"]);
+    expect(await readFile(join(askRoot, "fleet-alpha.yaml"), "utf8")).not.toContain("answered_at");
+    await settled(run);
+    const after = await run<{ fleet?: Ask[] }>("asks.workspace", {});
+    expect(after.fleet?.map((ask) => [ask.scope, ask.state])).toEqual([["alpha", "answered"]]);
   } finally {
     await cleanup();
     for (const [key, value] of saved) {
@@ -847,19 +920,37 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
   type Needs = import("./shared/needs").Needs;
   const needsNow = async (input: unknown = {}) => (await run("needs.list", input)) as unknown as Needs;
   try {
-    // Work: queued, at your gate, stuck, and held for you (only you may start it, once the loop has seen it).
+    // Work: queued, paused on a permission prompt (a held action), stuck, and held for you (only you may start
+    // it, once the loop has seen it). And an action an agent asked leave for, through the agent socket.
     const base = { brief: "", repo, initiative: "", dispatch: false, check: "", gate: "human" };
     const { item: queued } = await run("work.create", { ...base, title: "Queued" });
     const { item: gated } = await run("work.create", { ...base, title: "At your gate" });
     await run("work.dispatch", { id: gated.id });
     const agent = fake.agents.get("agent-1");
-    if (agent) agent.status = "idle";
+    const asked = hooks.get("agent.permission_requested");
+    if (!asked) throw new Error("agent.permission_requested is not subscribed");
+    agent?.pendingPermissions.push({ id: "p1", name: "Bash" });
+    await asked(
+      { agent: { id: "agent-1" }, request: { id: "p1", name: "Bash", input: { command: "git push" } } },
+      context,
+    );
     const ended = hooks.get("agent.turn_ended");
     if (!ended) throw new Error("agent.turn_ended is not subscribed");
-    await ended({ agent: { id: "agent-1" }, outcome: { kind: "completed" }, timeline: [], turnId: "t1" }, context);
+    const socket = join(root, "m.sock");
+    const deadline = Date.now() + 30_000;
+    while (!(await answers(socket))) {
+      if (Date.now() > deadline) throw new Error("the agent socket never opened");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await call(
+      "approval.request",
+      { action: "gh pr merge 933 --squash", ref: "ce73104", heldBy: "gate", title: "Merge #933", scope: "broomva" },
+      { path: socket, caller: "agent-9" },
+    );
     const { item: stuck } = await run("work.create", { ...base, title: "Stuck" });
     await run("work.dispatch", { id: stuck.id });
     await run("work.stop", { id: stuck.id, discard: true });
+    await settled(run);
     // Held for you (`hold` in its _work.md, as an idea you chose to develop is filed), and flagged so by the
     // loop: its receipt, as a wake writes it.
     const { item: held } = await run("work.create", { ...base, title: "Held" });
@@ -885,11 +976,13 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
     const counts = () => [fake.sent.length, fake.created.length, fake.archived.length];
     const sentBefore = counts();
 
-    // Every kind, from every source: the gate's approval, the held start and the batch as owner steps, the two
-    // asks that wait and the due review. Queued and stuck work, and the calm ask, hold nothing of yours (A1).
+    // Every kind, from every source: the two held actions (a prompt and a request), the held start and the batch as
+    // owner steps, the two asks that wait and the due review. Queued and stuck work, finished work and the calm
+    // ask hold nothing of yours (A1).
     const needs = await needsNow();
     expect(needs.rows.map((row) => [row.kind, row.key.split(":")[0], row.title]).sort()).toEqual(
       [
+        ["approval", "approval", "Merge #933"],
         ["approval", "work", "At your gate"],
         ["ask", "ask", "Blocks?"],
         ["ask", "ask", "One way?"],
@@ -898,7 +991,7 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
         ["owner_step", "work", "Start it yourself: Held"],
       ].sort(),
     );
-    expect(needs.summary).toMatchObject({ total: 6, byKind: { ask: 3, approval: 1, owner_step: 2 } });
+    expect(needs.summary).toMatchObject({ total: 7, byKind: { ask: 3, approval: 2, owner_step: 2 } });
     expect((await needsNow({ kind: "ask" })).rows).toHaveLength(3);
     expect(queued.state).toBe("proposed");
     const handled = (await run("handled.list", {})) as unknown as { rows: unknown[]; today: Record<string, number> };

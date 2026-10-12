@@ -20,6 +20,45 @@ export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.MAESTRO_PASEO_SOCKET ?? join(dirname(configPath(env)), "maestro.sock");
 }
 
+let scratches = 0;
+/** A folder of a test's own for one plugin instance: two plugins in one test process never share a ledger. */
+function scratch(kind: string): string {
+  scratches += 1;
+  return join(tmpdir(), `maestro-test-${kind}-${process.pid}-${scratches}`);
+}
+
+/**
+ * How long the owner-verb ledger holds a verb before it takes effect: the owner's 8 s (shared/undo.ts, B4), always,
+ * outside a test. Under `bun test` (NODE_ENV=test), MAESTRO_PASEO_VERB_WINDOW_MS may shorten it (0 or more), so a
+ * test can wait it out; a daemon never honours it, so the variable cannot take the undo away.
+ */
+export function verbWindowMs(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  if (!underTest(env)) return undefined;
+  const raw = env.MAESTRO_PASEO_VERB_WINDOW_MS?.trim();
+  const ms = raw ? Number(raw) : Number.NaN;
+  return Number.isFinite(ms) && ms >= 0 ? Math.round(ms) : undefined;
+}
+
+/**
+ * The owner-verb ledger (server/owner-verbs.ts): every verb of yours that changes state, its undo window
+ * and its receipt. Under `bun test` a test that names none gets a scratch file of its own.
+ */
+export function verbsPath(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.MAESTRO_PASEO_VERBS) return env.MAESTRO_PASEO_VERBS;
+  if (env.NODE_ENV === "test") return join(scratch("verbs"), "verbs.jsonl");
+  return join(homedir(), ".local", "state", "maestro-paseo", "verbs.jsonl");
+}
+
+/**
+ * The actions agents asked leave for (server/approvals.ts, `approval.request`): each request, and what became
+ * of it. Under `bun test` a test that names none gets a scratch file of its own.
+ */
+export function approvalsPath(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.MAESTRO_PASEO_APPROVALS) return env.MAESTRO_PASEO_APPROVALS;
+  if (env.NODE_ENV === "test") return join(scratch("approvals"), "approvals.jsonl");
+  return join(homedir(), ".local", "state", "maestro-paseo", "approvals.jsonl");
+}
+
 /** The loop's wake log sits beside the config too (server/wake-log.ts). */
 export function wakeLogPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.MAESTRO_PASEO_WAKE_LOG ?? join(dirname(configPath(env)), "wake-log.jsonl");

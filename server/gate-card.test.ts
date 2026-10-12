@@ -81,7 +81,7 @@ async function setup(options: { landed?: EngineOptions["landed"] } = {}) {
     throw new Error(`never reached ${want}`);
   };
   /** A decision at the gate, with its undo window run out so it takes effect. */
-  const decide = async (id: string, verdict: "approve" | "revise" | "block", note = "", on: Engine = engine) => {
+  const decide = async (id: string, verdict: "revise" | "block", note = "", on: Engine = engine) => {
     await on.verdict(fake.paseo, id, verdict, note);
     clock += UNDO_MS;
     await on.sweep(fake.paseo);
@@ -120,9 +120,9 @@ describe("the gate card in the worker's timeline", () => {
     expect(fake.appended[0]?.item.id).toBe(`${GATE_CARD_KIND}:${item.id}:${card.landing}`);
     const landed = (await engine.get(item.id)).item;
     expect(landed.landing).toBe(card.landing);
-    expect(cardView(card, landed)).toBe("deciding");
-    // Approved, the work has left the gate: the same card now says how, and offers nothing.
-    const done = await decide(item.id, "approve");
+    expect(cardView(card, landed)).toBe("finished");
+    // Canceled, the work has left the gate: the same card now says how, and offers nothing.
+    const done = await decide(item.id, "block");
     expect(done.landing).toBe(card.landing);
     expect(cardView(card, done)).toBe("resolved");
   });
@@ -143,7 +143,7 @@ describe("the gate card in the worker's timeline", () => {
     expect(current.state).toBe("review");
     expect(newer.landing ?? -1).toBeGreaterThan(older.landing ?? -1);
     expect(cardView(older, current)).toBe("superseded");
-    expect(cardView(newer, current)).toBe("deciding");
+    expect(cardView(newer, current)).toBe("finished");
   });
 
   test("a card in session A, after the work moved to session B, offers nothing and cannot answer B's question", async () => {

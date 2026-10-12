@@ -475,7 +475,7 @@ export function holdInspector(entry: NeedEntry, now: number): InspectorItem {
         summary:
           row.body.heldBy === "permission"
             ? "The session is paused on its permission prompt until you answer."
-            : "Maestro's gate holds it until you decide.",
+            : `The ${row.body.heldBy} holds it until you decide.`,
         action: row.body.action,
         evidence: row.body.evidence,
         after: row.body.after,

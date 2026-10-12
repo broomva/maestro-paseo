@@ -3,27 +3,22 @@
 // dismiss on a proposal. `planVerb` decides, purely, which call a verb makes for its target, so
 // each mapping is tested (client/verbs.test.ts); `useVerbs` makes the call and says what it did.
 //
-// BRO-2999 retires Approve and adds approval.decide and session.prompt at the same time as this
-// module lands. Its two seams are marked "BRO-2999": every approval goes through
-// `decideApproval`, and Continue and Change course through `promptSession`. Until then they call
-// what exists today: the session's permission prompt (Paseo's respondToPermission) for a prompt,
-// work.verdict for a hold at Maestro's own gate, and nothing for a prompt to a session.
+// BRO-2999: every approval is `approval.decide` against the exact action the row shows (and, for a
+// permission prompt, the request id it names): recorded, applied 8 s later by the server, receipted. Continue
+// is `session.prompt`. Nothing here answers a prompt on Paseo itself (client/no-direct-permission.test.ts).
+// work.verdict approve is refused by the server; Change course is the item's own form (a send back with a note).
 //
-// BRO-2999's contract, for when it lands: approval.decide {key, allow, action, note?} → {receipt, appliesAt}
-// (key is the NeedRow key, action the exact body.action shown); session.prompt {agentId, prompt, key?} →
-// {receipt, appliesAt}; verb.undo {receipt} takes back any of them, so the toast's receipt channel becomes
-// `verb:<receipt>`; work.verdict approve is refused. Neither exists on main yet.
-//
-// A verb that leaves a receipt carries an undo, inside UNDO_MS (B4): the toast's receipt is
-// `<channel>:<value>`, which `undoVerb` reads back. A verb whose call has no undo yet (an answer,
-// a permission prompt) says what it did and leaves the toast's Undo out.
+// Every verb that changes state leaves a receipt and an undo, inside UNDO_MS (B4): the toast's receipt is
+// `<channel>:<value>`, which `undo` reads back. `verb:<receipt>` is the server's ledger (and a decision at the
+// gate); `work:` and `conductor:` read as before. A verb that changes nothing (Open, Skip) says what it did.
 
-import { usePaseo, useRpc } from "@getpaseo/plugin/client";
+import { useRpc } from "@getpaseo/plugin/client";
 import { useQueryClient } from "@tanstack/react-query";
 import { decideConductor, undoConductor } from "../shared/answers";
-import { cancelWork, decideWork, dispatchWork, unblockWork, undoWork, type WorkItem } from "../shared/contracts";
+import { cancelWork, dispatchWork, unblockWork, undoWork, type WorkItem } from "../shared/contracts";
 import { answerAsk, type DecisionAsk } from "../shared/fleet";
 import { holdOf, type NeedRow } from "../shared/needs";
+import { decideApproval as decideApprovalRpc, promptSession as promptSessionRpc, undoVerb } from "../shared/verbs";
 import { whereOf } from "./decisions-model";
 import { invalidateNeeds, useRefresh } from "./hooks";
 import type { MaestroIntent } from "./intent";
@@ -58,10 +53,12 @@ export interface VerbTarget {
 
 /** The call a verb makes. Pure data: `useVerbs` runs it. */
 export type VerbPlan =
-  | { call: "permission"; agentId: string; requestId: string; allow: boolean; done: string }
+  /** Allow or Deny one held action: approval.decide, bound to the exact action (and prompt) the row shows. */
+  | { call: "decide"; key: string; allow: boolean; action: string; requestId?: string; done: string }
   /** The prompt the card showed is not the session's prompt now: nothing is answered, and everything is read again. */
   | { call: "stale"; done: string }
-  | { call: "verdict"; id: string; verdict: "approve" | "revise"; note: string; done: string }
+  /** Send a prompt to an existing session (session.prompt): Continue. Never creates one (A8). */
+  | { call: "prompt"; agentId: string; prompt: string; key: string; done: string }
   | {
       call: "answer";
       ask: DecisionAsk;
@@ -87,10 +84,9 @@ function urlOf(where: string): string | null {
 }
 
 /**
- * BRO-2999: every approval is decided here. Today a session's permission prompt is answered on the
- * session (Paseo's respondToPermission) and a hold at Maestro's own gate is a verdict (Allow closes it
- * as done, Deny sends it back with a note); BRO-2999 makes both approval.decide against the exact
- * action, with its receipt and undo.
+ * Every approval is decided here (BRO-2999): `approval.decide` against the exact action the row shows. A permission
+ * prompt also names its request id, taken from the same read as its action, never from work.list's: a session that
+ * raised another prompt between the two reads is not approved (the plan is `stale`, and everything is read again).
  */
 export function decideApproval(
   row: Extract<NeedRow, { kind: "approval" }>,
@@ -98,30 +94,27 @@ export function decideApproval(
   allow: boolean,
 ): VerbPlan {
   const hold = holdOf(row.key);
-  if (hold?.kind !== "work") return { call: "unavailable", why: "Only work holds an approval today." };
-  if (row.body.heldBy === "permission") {
-    // The prompt answered is the one the row shows: its session and its request id come from the same read as its
-    // action, never from work.list's (a session that raised another prompt between the two reads is not approved).
-    const agentId = row.session?.agentId ?? null;
-    const requestId = row.body.requestId ?? null;
-    if (!agentId || !requestId)
-      return {
-        call: "go",
-        intent: { kind: "select", id: hold.id },
-        done: "Opened the item: its prompt is not read yet",
-      };
-    if (item && item.permission?.requestId !== requestId)
-      return { call: "stale", done: "That prompt changed: reading it again" };
-    return { call: "permission", agentId, requestId, allow, done: allow ? "Allowed" : "Denied" };
+  const done = allow ? "Allowed" : "Denied";
+  if (hold?.kind === "approval") return { call: "decide", key: row.key, allow, action: row.body.action, done };
+  if (hold?.kind !== "work") return { call: "unavailable", why: "Only a held action is allowed or denied." };
+  const requestId = row.body.requestId ?? null;
+  if (!requestId) {
+    return {
+      call: "go",
+      intent: { kind: "select", id: hold.id },
+      done: "Opened the item: its prompt is not read yet",
+    };
   }
-  return allow
-    ? { call: "verdict", id: hold.id, verdict: "approve", note: "", done: "Allowed: closes as done" }
-    : { call: "verdict", id: hold.id, verdict: "revise", note: "Denied from Maestro.", done: "Denied: goes back" };
+  if (item && item.permission?.requestId !== requestId) {
+    return { call: "stale", done: "That prompt changed: reading it again" };
+  }
+  return { call: "decide", key: row.key, allow, action: row.body.action, requestId, done };
 }
 
-/** BRO-2999: Continue and Change course prompt the session (session.prompt). No such call exists yet. */
-export function promptSession(_key: string, _prompt: string): VerbPlan {
-  return { call: "unavailable", why: "Prompting a session lands with BRO-2999 (session.prompt)." };
+/** Continue prompts the session (session.prompt); a session that is gone, or none, has nothing to prompt. */
+export function promptSession(agentId: string | null, key: string, prompt: string): VerbPlan {
+  if (!agentId) return { call: "unavailable", why: "It has no session to prompt." };
+  return { call: "prompt", agentId, prompt, key, done: "Sent: continue" };
 }
 
 /**
@@ -178,7 +171,11 @@ export function planVerb(verb: VerbId, target: VerbTarget, choice?: string): Ver
       if (!target.proposal) return { call: "unavailable", why: "Only a proposal is filed or dismissed." };
       return { call: "conductor", key: target.proposal, verb, done: verb === "file" ? "Filed as work" : "Dismissed" };
     case "continue":
-      return promptSession(row?.key ?? (item ? `work:${item.id}` : ""), "Continue");
+      return promptSession(
+        item?.worker?.agentId ?? row?.session?.agentId ?? null,
+        row?.key ?? (item ? `work:${item.id}` : ""),
+        "Continue where you stopped. End with the Decided and Ask sections.",
+      );
   }
 }
 
@@ -200,22 +197,33 @@ export interface VerbEnv {
   openAgent(agentId: string): void;
 }
 
+/**
+ * How long after a verb answers its effect can be read: the verb takes effect when its window closes (8 s, B4),
+ * so what the screen shows (Needs you, the work's state) changes then, not when the call returned. A beat past
+ * `appliesAt`, so the server has applied it. Pure.
+ */
+export function settleDelay(appliesAt: string | undefined, now: number): number | null {
+  const at = appliesAt ? Date.parse(appliesAt) : Number.NaN;
+  return Number.isFinite(at) ? Math.max(0, at - now) + 700 : null;
+}
+
 /** A receipt the toast hands back: which undo it takes, and its value. */
-export function receiptOf(value: string): { channel: "work" | "conductor"; value: string } | null {
+export function receiptOf(value: string): { channel: "work" | "conductor" | "verb"; value: string } | null {
   const at = value.indexOf(":");
   const channel = value.slice(0, at);
   const rest = value.slice(at + 1);
   if (at < 0 || !rest) return null;
-  return channel === "work" || channel === "conductor" ? { channel, value: rest } : null;
+  return channel === "work" || channel === "conductor" || channel === "verb" ? { channel, value: rest } : null;
 }
 
 /** Runs a plan: one hook for the screen, every verb's call in one place. */
 export function useVerbs() {
-  const paseo = usePaseo();
   const client = useQueryClient();
   const refresh = useRefresh();
   const rpc = {
-    verdict: useRpc(decideWork),
+    approval: useRpc(decideApprovalRpc),
+    prompt: useRpc(promptSessionRpc),
+    undoVerb: useRpc(undoVerb),
     dispatch: useRpc(dispatchWork),
     unblock: useRpc(unblockWork),
     cancel: useRpc(cancelWork),
@@ -231,18 +239,21 @@ export function useVerbs() {
   };
   const perform = async (plan: VerbPlan, env: VerbEnv): Promise<Omit<VerbOutcome, "settled">> => {
     switch (plan.call) {
-      case "permission":
-        await paseo.agents.ref(plan.agentId).respondToPermission({
-          requestId: plan.requestId,
-          response: plan.allow ? { behavior: "allow" } : { behavior: "deny", message: "Declined from Maestro" },
+      case "decide": {
+        const { receipt, appliesAt } = await rpc.approval({
+          key: plan.key,
+          allow: plan.allow,
+          action: plan.action,
+          ...(plan.requestId ? { requestId: plan.requestId } : {}),
         });
-        return { done: plan.done };
-      case "verdict": {
-        const { item } = await rpc.verdict({ id: plan.id, verdict: plan.verdict, note: plan.note });
-        return { done: plan.done, receipt: `work:${plan.id}`, appliesAt: item.pending?.effectiveAt };
+        return { done: plan.done, receipt: `verb:${receipt}`, appliesAt };
+      }
+      case "prompt": {
+        const { receipt, appliesAt } = await rpc.prompt({ agentId: plan.agentId, prompt: plan.prompt, key: plan.key });
+        return { done: plan.done, receipt: `verb:${receipt}`, appliesAt };
       }
       case "answer": {
-        const { warning } = await rpc.answer({
+        const { warning, receipt, appliesAt } = await rpc.answer({
           where: whereOf(plan.ask),
           ledger: plan.ask.ledger,
           uid: plan.ask.uid,
@@ -251,20 +262,20 @@ export function useVerbs() {
           option: plan.option,
           note: "",
         });
-        return { done: warning ? `${plan.done} · ${warning}` : plan.done };
+        const done = warning ? `${plan.done} · ${warning}` : plan.done;
+        return receipt ? { done, receipt: `verb:${receipt}`, appliesAt } : { done };
       }
       case "dispatch":
         await rpc.dispatch({ id: plan.id });
         return { done: plan.done };
-      case "unblock":
-        await rpc.unblock({ id: plan.id, note: "" });
-        return { done: plan.done };
+      case "unblock": {
+        const { receipt, appliesAt } = await rpc.unblock({ id: plan.id, note: "" });
+        return receipt ? { done: plan.done, receipt: `verb:${receipt}`, appliesAt } : { done: plan.done };
+      }
       case "cancel": {
-        // Work at review holds its cancel for UNDO_MS; queued work is canceled at once, with nothing to take back.
-        const { item } = await rpc.cancel({ id: plan.id });
-        return item.pending
-          ? { done: plan.done, receipt: `work:${plan.id}`, appliesAt: item.pending.effectiveAt }
-          : { done: plan.done };
+        // Every cancel waits its 8 s: at your gate on the work's own decision, elsewhere in the ledger.
+        const { receipt, appliesAt } = await rpc.cancel({ id: plan.id });
+        return receipt ? { done: plan.done, receipt: `verb:${receipt}`, appliesAt } : { done: plan.done };
       }
       case "conductor": {
         const { receipt, appliesAt } = await rpc.conductor({ key: plan.key, verb: plan.verb });
@@ -300,6 +311,9 @@ export function useVerbs() {
         if (reads) void settle();
         throw error;
       }
+      // It takes effect when its window closes: read everything again then, so the hold leaves Needs you on time.
+      const later = settleDelay(outcome.appliesAt, Date.now());
+      if (later !== null) setTimeout(() => void settle(), later);
       return { ...outcome, settled: reads ? settle() : Promise.resolve() };
     },
     /** Take a verb back by its receipt, inside its window. */
@@ -308,6 +322,7 @@ export function useVerbs() {
       if (!read) return;
       try {
         if (read.channel === "work") await rpc.undo({ id: read.value });
+        else if (read.channel === "verb") await rpc.undoVerb({ receipt: read.value });
         else await rpc.conductorUndo({ receipt: read.value });
       } finally {
         void settle();

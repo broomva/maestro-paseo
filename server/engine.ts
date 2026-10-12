@@ -24,6 +24,8 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { type FlagKind, type MaestroConfig, NOT_STOPPED, type RunChoices, type WorkItem } from "../shared/contracts";
+import { permissionAction } from "../shared/needs";
+import { ARCHIVED_RESUME } from "../shared/paused";
 import { skipsPrompts } from "../shared/run";
 import {
   GROUP_ORDER,
@@ -99,6 +101,7 @@ import {
   WORK_LABEL,
 } from "./runs";
 import { type Mutation, placement, type StoredWork, WorkStore, withLock } from "./store";
+import { pausedBy } from "./usage-limit";
 import { toWire } from "./wire";
 import { type WorktreeStatus, worktreeStatus } from "./worktree";
 
@@ -306,6 +309,16 @@ export const NOT_QUIET = "Only a run the loop flagged as quiet can be left runni
 /** Why Stop is refused while checks run: the session is done, and the checks decide where the work lands. */
 export const CHECKING = "The run already finished and its checks are running. When they report, it lands with you.";
 
+/** Why Stop is refused for this item right now, or null: checking, or not a live run. */
+function stopRefusal(item: StoredWork): string | null {
+  const phase = phaseOf(item.contract.state, item.events);
+  // The session already finished; stopping now would only strand the checks' result.
+  if (phase === "checking") return CHECKING;
+  // Working, or paused on its question at the gate: either way the session is alive, and Stop archives it.
+  if (phase !== "working" && phase !== "asking") return NOT_STOPPABLE;
+  return null;
+}
+
 /** Why Stop is refused outside a live run: only a session that is working, or asking you something, has anything to stop. */
 export const NOT_STOPPABLE = "Only a run that is working, or asking you something, can be stopped.";
 
@@ -416,6 +429,14 @@ function gateRefusal(item: StoredWork, verdict: Verdict, applying: boolean): str
 
 const ALREADY_PENDING = "A decision is already waiting to take effect. Undo it first to change it.";
 
+/**
+ * Why work.verdict refuses `approve` (A1, BRO-2999): work never asks to be approved, gates merge it. What is yours
+ * is the action a policy layer held (Allow or Deny, approval.decide), a change of course (send it back), or Cancel.
+ * Decisions recorded before approve was retired still read and still apply (applyPending).
+ */
+export const APPROVE_RETIRED =
+  "Work is not approved: gates merge it. Allow or Deny the action a session holds, change its course, or cancel it.";
+
 /** Why a decision is dropped when the run moved after it was made: you decided on a result that is no longer the one there. */
 export const RUN_WENT_ON = "The run went on after you decided.";
 
@@ -456,6 +477,31 @@ function startRefusal(item: StoredWork, origin: Origin): string | null {
       if (isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events))) return null;
       return "Only queued or stuck work can be dispatched.";
   }
+}
+
+/** What may follow a turn's end without the run having gone on: its landing, a remark, the loop's flag. */
+const AFTER_A_LIMIT: ReadonlySet<WorkEvent["type"]> = new Set(["state", "note", "loop.flagged", "flag.cleared"]);
+
+/**
+ * The Stuck reason work at your gate (or left running) should have when its last turn ended on a usage limit and
+ * nothing since says the run went on (BRO-3073), else null. Work recorded before such turns were Stuck reads so.
+ */
+function pausedAtGate(item: StoredWork): string | null {
+  const state = item.contract.state;
+  if (state !== "review" && state !== "running") return null;
+  if (pendingPermission(item.events)) return null;
+  const at = item.events.findLastIndex((event) => event.type === "turn.ended");
+  const ended = item.events[at];
+  if (ended?.type !== "turn.ended") return null;
+  const after = item.events.slice(at + 1);
+  if (!after.every((event) => AFTER_A_LIMIT.has(event.type) && (event.type !== "state" || event.to === "review"))) {
+    return null;
+  }
+  const reason = pausedBy(ended.outcome, ended.summary, ended.error);
+  if (!reason) return null;
+  // Its session is gone (archived, ended) since the turn: Resume cannot send it on, so it starts a fresh run, and the
+  // reason says so rather than promise the session.
+  return sessionGoneSince(item.events) ? `${reason}; ${ARCHIVED_RESUME}` : reason;
 }
 
 export class Engine {
@@ -754,6 +800,34 @@ export class Engine {
       this.index(store, items);
     }
     if (await this.sweep(paseo, items)) changed = true;
+    if (await this.reclassifyPaused(store, items)) changed = true;
+    return changed;
+  }
+
+  /**
+   * Work whose last word is a usage-limit message, recorded before turns that end on one were Stuck (BRO-3073): at
+   * your gate or left running, it moves to Stuck with its reset, once, so "Close it as done" is never offered for
+   * work that did not finish. Only work whose newest event is that turn's end moves: a session that went on since
+   * has a newer event, and is left alone. Idempotent: the move is out of the states it reads.
+   */
+  private async reclassifyPaused(store: WorkStore, items: readonly StoredWork[]): Promise<boolean> {
+    let changed = false;
+    for (const item of items) {
+      if (pausedAtGate(item) === null) continue;
+      const moved = await store.mutate(
+        item.contract.id,
+        (fresh) => {
+          // Read again under the work's lock: it may have gone on since the scan.
+          const reason = pausedAtGate(fresh);
+          return reason === null ? null : { to: "blocked", actor: "maestro", reason };
+        },
+        item.dir,
+      );
+      if (moved.contract.state === "blocked") {
+        changed = true;
+        this.log(`${item.contract.id}: its last turn ended on a usage limit, so it is Stuck, not at your gate`);
+      }
+    }
     return changed;
   }
 
@@ -1163,6 +1237,7 @@ export class Engine {
    * counts now, when you decide.
    */
   async verdict(paseo: Paseo | null | undefined, id: string, verdict: Verdict, note: string): Promise<WorkItem> {
+    if (verdict === "approve") throw new UserError(APPROVE_RETIRED);
     const { store, config } = await this.store();
     const trimmed = note.trim();
     if (verdict === "revise" && !trimmed) throw new UserError("Say what should change before sending it back.");
@@ -1196,6 +1271,79 @@ export class Engine {
     );
     this.arm(id, token, effectiveAt, paseo ?? null, updated.dir);
     return toWire(updated, this.now().getTime(), config);
+  }
+
+  /**
+   * The prompt a work holds, read now, for an Allow or Deny on it (approval.decide): the request it is, and the
+   * session that asked. Your decision binds to `action`, the exact words you saw: a prompt that has changed since
+   * (another request, another command) is a different action, and is refused. Throws a UserError otherwise.
+   */
+  async permissionHold(
+    id: string,
+    action: string,
+    requestId?: string,
+  ): Promise<{ requestId: string; agentId: string }> {
+    const { store } = await this.store();
+    const item = await store.findById(id);
+    const permission = pendingPermission(item.events);
+    const worker = workerOf(item.events);
+    if (item.contract.state !== "review" || !permission || !worker) {
+      throw new UserError("Nothing is waiting on a question from this session any more.");
+    }
+    if (permissionAction(permission) !== action || (requestId !== undefined && permission.requestId !== requestId)) {
+      throw new UserError("The session now asks something else. Read what it asks, then decide again.");
+    }
+    return { requestId: permission.requestId, agentId: worker.agentId };
+  }
+
+  /**
+   * Answer a held permission prompt, once your window closed (approval.decide): re-checks that it is still the
+   * prompt you decided on, still held by the session, then sends your answer to the session and records it.
+   * Throws a UserError, which drops the decision with its reason, when the prompt moved on.
+   */
+  async answerPermission(
+    paseo: Paseo,
+    id: string,
+    { requestId, action, allow, note }: { requestId: string; action: string; allow: boolean; note: string },
+  ): Promise<string> {
+    const { store } = await this.store();
+    const item = await store.findById(id);
+    const permission = pendingPermission(item.events);
+    const worker = workerOf(item.events);
+    if (item.contract.state !== "review" || permission?.requestId !== requestId || !worker) {
+      throw new UserError(`The prompt moved on before your decision took effect, so nothing was sent: ${action}`);
+    }
+    if (permissionAction(permission) !== action) {
+      throw new UserError("The session asks something else now, so your decision was not sent.");
+    }
+    const snapshot = await within(() => paseo.agents.ref(worker.agentId).refresh(), this.claimWaitMs);
+    const held = snapshot?.agent.pendingPermissions.some((p) => p.id === requestId) ?? false;
+    if (!held) {
+      // The session no longer holds it (answered in its own window, or gone): the work's record catches up.
+      await this.resolvePermission(store, item, worker.agentId, requestId);
+      throw new UserError("The session no longer holds that prompt, so nothing was sent.");
+    }
+    await within(
+      () =>
+        paseo.agents.ref(worker.agentId).respondToPermission({
+          requestId,
+          response: allow
+            ? { behavior: "allow" }
+            : { behavior: "deny", message: note.trim() || "Declined from Maestro" },
+        }),
+      this.claimWaitMs,
+    );
+    await this.resolvePermission(store, item, worker.agentId, requestId);
+    return allow ? `Allowed: ${action}` : `Denied: ${action}`;
+  }
+
+  /** Take back the decision at the gate whose receipt is `token`, wherever its work is (verb.undo). */
+  async undoDecision(token: string): Promise<WorkItem> {
+    const { store } = await this.store();
+    const { items } = await store.scan();
+    const found = items.find((item) => pendingDecision(item.events)?.token === token);
+    if (!found) throw new UserError("There is no decision waiting to take effect with that receipt.");
+    return this.undo(found.contract.id);
   }
 
   /** Take back a decision that has not taken effect yet. */
@@ -1571,6 +1719,50 @@ export class Engine {
     };
   }
 
+  /**
+   * Why a verb of yours on this work is refused now, read at the call so the refusal reaches you at once and
+   * not as a dropped receipt after the undo window (server/owner-verbs.ts check). Each throws a UserError; each
+   * verb checks again when it applies.
+   */
+  async cancelRefusal(id: string): Promise<void> {
+    if (this.dispatching.has(id)) throw new UserError("A run is starting for this work. Cancel it once it is running.");
+    const { store } = await this.store();
+    const current = await store.findById(id);
+    const state = current.contract.state;
+    if (state === "review") throw new UserError("Work at your gate is canceled there.");
+    if (isTerminal(state)) throw new UserError("It is already closed.");
+    if (state === "running" && workerOf(current.events)) {
+      throw new UserError("Stop the run first, then cancel the work.");
+    }
+  }
+
+  async unblockRefusal(id: string): Promise<void> {
+    if (this.dispatching.has(id)) throw new UserError("A run is already starting for this work.");
+    const { store } = await this.store();
+    if ((await store.findById(id)).contract.state !== "blocked")
+      throw new UserError("Only stuck work can be unblocked.");
+  }
+
+  async leaveRunningRefusal(id: string): Promise<void> {
+    const { store } = await this.store();
+    const current = await store.findById(id);
+    if (current.contract.state !== "running" || flagOf(current.events)?.kind !== "quiet")
+      throw new UserError(NOT_QUIET);
+  }
+
+  /** Stop's refusals that need a look at the worktree, read now: the same ones stopRun makes, with nothing changed. */
+  async stopPreflight(paseo: Paseo | null, id: string, { discard = false }: { discard?: boolean } = {}): Promise<void> {
+    if (this.dispatching.has(id)) throw new UserError("A run is starting for this work. Stop it once it is running.");
+    if (!paseo) throw new UserError(NO_HANDLE);
+    const { store } = await this.store();
+    const current = await store.findById(id);
+    const early = stopRefusal(current);
+    if (early) throw new UserError(early);
+    const worker = workerOf(current.events);
+    const checked = worker && !discard ? await this.stopLoss(paseo, current, worker) : null;
+    if (checked && "refusal" in checked) throw new UserError(checked.refusal);
+  }
+
   async unblock(paseo: Paseo, id: string, note: string): Promise<WorkItem> {
     if (this.dispatching.has(id)) throw new UserError("A run is already starting for this work.");
     const { store, config } = await this.store();
@@ -1695,14 +1887,7 @@ export class Engine {
     if (this.dispatching.has(id)) throw new UserError("A run is starting for this work. Stop it once it is running.");
     const { store, config } = await this.store();
     const current = await store.findById(id);
-    const refusal = (item: StoredWork): string | null => {
-      const phase = phaseOf(item.contract.state, item.events);
-      // The session already finished; stopping now would only strand the checks' result.
-      if (phase === "checking") return CHECKING;
-      // Working, or paused on its question at the gate: either way the session is alive, and Stop archives it.
-      if (phase !== "working" && phase !== "asking") return NOT_STOPPABLE;
-      return null;
-    };
+    const refusal = stopRefusal;
     const early = refusal(current);
     if (early) throw new UserError(early);
     const worker = workerOf(current.events);
@@ -2136,6 +2321,13 @@ export class Engine {
           turnId: options.turnId ?? null,
         };
         const state = fresh.contract.state;
+        // A turn that ended on a usage limit (or a provider's rate-limit or credit error) finished nothing: the run is
+        // paused, and Stuck with the reset, never at your gate where Close it as done would close unfinished work
+        // (BRO-3073). The session is alive, so it keeps its slot.
+        const paused = pausedBy(outcome.kind, ended.summary, ended.error);
+        if (paused && (state === "running" || (state === "review" && !pendingPermission(fresh.events)))) {
+          return { at, to: "blocked", reason: paused, events: [ended] };
+        }
         // A session Maestro adopted runs its own arc over many turns: a turn that hands you nothing (handsBack:
         // no verdict, no ask) is the arc between steps, not work at your gate. It stays running, and the loop
         // names it if it goes quiet. One that failed still stops it: that is something to look at. A turn

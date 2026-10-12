@@ -69,6 +69,7 @@ export function toWire(item: StoredWork, now: number, config: MaestroConfig): Wo
           decidedAt: decision.decidedAt,
           effectiveAt: decision.effectiveAt,
           remainingMs: Math.max(0, Date.parse(decision.effectiveAt) - now),
+          receipt: decision.token,
         }
       : null,
     flag: flagNow(events, contract.state, next, now, item.mtime),

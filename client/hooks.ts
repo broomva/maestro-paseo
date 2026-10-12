@@ -6,7 +6,7 @@
 
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   adoptAgent,
   attentionWork,
@@ -27,6 +27,7 @@ import {
   workForAgent,
 } from "../shared/contracts";
 import { listHandled, listNeeds, type Needs } from "../shared/needs";
+import { decideApproval, listVerbs, promptSession, undoVerb } from "../shared/verbs";
 import { type LoopState, loopPollMs } from "./loop-model";
 import { latestNeeds, onNeeds, publishNeeds, readTicket, stampNeeds, ticketOf, watchSessions } from "./needs-bus";
 
@@ -94,6 +95,9 @@ export function useVerbs() {
     leaveRunning: useRpc(leaveRunning),
     saveConfig: useRpc(setConfig),
     wake: useRpc(wakeLoop),
+    approval: useRpc(decideApproval),
+    prompt: useRpc(promptSession),
+    undoVerb: useRpc(undoVerb),
   };
   return {
     create: useMutation({ mutationFn: rpc.create, onSettled: refresh }),
@@ -107,6 +111,12 @@ export function useVerbs() {
     leaveRunning: useMutation({ mutationFn: rpc.leaveRunning, onSettled: refresh }),
     saveConfig: useMutation({ mutationFn: rpc.saveConfig, onSettled: refresh }),
     wake: useMutation({ mutationFn: () => rpc.wake({}), onSettled: refresh }),
+    /** Allow or Deny one held action (approval.decide): recorded now, applied 8 s later, with a receipt. */
+    approval: useMutation({ mutationFn: rpc.approval, onSettled: refresh }),
+    /** Send a prompt to an existing session (session.prompt): Continue, Change course. */
+    prompt: useMutation({ mutationFn: rpc.prompt, onSettled: refresh }),
+    /** Take back any verb inside its window, by the receipt it answered with (verb.undo). */
+    undoVerb: useMutation({ mutationFn: rpc.undoVerb, onSettled: refresh }),
   };
 }
 
@@ -200,4 +210,39 @@ export function useNeedsEvents(): void {
 export function useWatched() {
   const read = useRpc(attentionWork);
   return useQuery({ queryKey: [...KEY, "attention"], queryFn: () => read({}), refetchInterval: 30_000 });
+}
+
+const VERBS_KEY = [...KEY, "verbs"] as const;
+/** Between verbs: what settled is read on this slow beat; while one waits, every second. */
+const VERBS_IDLE_MS = 15_000;
+const VERBS_LIVE_MS = 1_000;
+
+/**
+ * What waits to take effect, and what settled in the last day (verbs.list). Read every second while a verb of
+ * yours waits out its window, so the countdown and Undo stay true, and every 15 s otherwise. When a verb leaves
+ * the pending list it took effect (or was undone): every Maestro query is read again at once.
+ */
+export function useVerbLedger() {
+  const read = useRpc(listVerbs);
+  const refresh = useRefresh();
+  const query = useQuery({
+    queryKey: VERBS_KEY,
+    queryFn: () => read({}),
+    refetchInterval: (state) => (state.state.data?.pending.length ? VERBS_LIVE_MS : VERBS_IDLE_MS),
+  });
+  const waiting = query.data?.pending.map((verb) => verb.receipt).join(",") ?? "";
+  const was = useRef(waiting);
+  useEffect(() => {
+    const before = was.current ? was.current.split(",") : [];
+    was.current = waiting;
+    const now = new Set(waiting ? waiting.split(",") : []);
+    if (before.some((receipt) => !now.has(receipt))) void refresh();
+  }, [waiting, refresh]);
+  return query;
+}
+
+/** Read the ledger again now, as when a verb has just answered with its receipt. */
+export function useLedgerRefresh() {
+  const client = useQueryClient();
+  return useCallback(() => client.invalidateQueries({ queryKey: VERBS_KEY }), [client]);
 }

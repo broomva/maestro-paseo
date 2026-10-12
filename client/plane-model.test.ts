@@ -4,6 +4,7 @@ import { needsYouOf } from "../shared/needs-you";
 import { GROUP_ORDER, groupOf, type OrchState, QUEUED_LOOP_HINT } from "../shared/states";
 import {
   applyFilter,
+  atGateOf,
   boardColumns,
   cardLabel,
   changedVisible,
@@ -21,6 +22,7 @@ import {
   inFilter,
   initiatives,
   inScope,
+  isFinished,
   needsHand,
   resolveScope,
   SYSTEM_VIEWS,
@@ -55,7 +57,8 @@ function work(id: string, state: OrchState, extra: Partial<WorkItem> = {}): Work
     reason: null,
     verdict: null,
     look: null,
-    permission: null,
+    // Work at the gate holds a prompt unless a test says it finished (`permission: null`): only a held action needs you (A1).
+    permission: state === "review" ? { requestId: `req-${id}`, title: "Run a command", detail: "git push" } : null,
     checks: [],
     pending: null,
     flag: null,
@@ -79,6 +82,31 @@ const plane = [
   work("f", "done", { initiative: "genesis" }),
   work("g", "canceled", { initiative: "hawthorne" }),
 ];
+
+describe("work at the gate: a held action needs you, finished work is watched (A1, BRO-2999)", () => {
+  const finished = work("fin", "review", { permission: null });
+  const holding = work("hold", "review");
+
+  test("only a held action, or work only you may start, needs a hand", () => {
+    expect(needsHand(holding)).toBe(true);
+    expect(needsHand(finished)).toBe(false);
+    expect(isFinished(finished)).toBe(true);
+    expect(isFinished(holding)).toBe(false);
+    expect(isFinished(work("run", "running"))).toBe(false);
+    expect(needsYouOf([finished, holding]).map((item) => item.id)).toEqual(["hold"]);
+  });
+
+  test("the board and the list still show finished work at the gate, after the held actions and before what only you start", () => {
+    const yours = work("y", "proposed", { flag: yoursFlag });
+    expect(atGateOf([yours, finished, holding]).map((item) => item.id)).toEqual(["hold", "fin", "y"]);
+    expect(groupsOf([finished]).map((entry) => entry.group)).toEqual(["review"]);
+    // The count is what holds: Finished is listed, never counted.
+    expect(summaryText([finished])).toBe("What needs you is not read yet");
+    expect(summaryText([finished, holding])).toBe("1 work item needs you");
+    expect(stateText(finished)).toBe("Finished");
+    expect(stateText(holding)).toBe("Needs you");
+  });
+});
 
 describe("views", () => {
   test("compact shows the feed, or History when it is chosen", () => {

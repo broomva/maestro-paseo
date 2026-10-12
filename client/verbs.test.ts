@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { NeedRow } from "../shared/needs";
 import { fakeWork } from "./fake-work";
-import { decideApproval, planVerb, promptSession, receiptOf } from "./verbs";
+import { decideApproval, planVerb, promptSession, receiptOf, settleDelay } from "./verbs";
 
 const live = { agentId: "agent-9", workspaceId: "ws1" };
 const base = { title: "T", scope: "broomva", since: "2026-10-12T10:00:00.000Z", blocksWork: true };
@@ -32,16 +32,22 @@ describe("approvals go through decideApproval", () => {
     body: { action: "Bash: ls", heldBy: "permission", ...(requestId ? { requestId } : {}), evidence: [], after: [] },
   });
 
-  test("a permission prompt is answered on the session, by the request id the row shows", () => {
+  test("a permission prompt is approval.decide on the row's key, its exact action and the request id it shows", () => {
     const item = fakeWork("w1", "review", live);
     item.permission = { requestId: REQ } as never;
-    expect(decideApproval(permission(REQ), item, true)).toMatchObject({
-      call: "permission",
-      agentId: AGENT,
-      requestId: REQ,
+    expect(decideApproval(permission(REQ), item, true)).toEqual({
+      call: "decide",
+      key: "work:w1",
       allow: true,
+      action: "Bash: ls",
+      requestId: REQ,
+      done: "Allowed",
     });
-    expect(decideApproval(permission(REQ), item, false)).toMatchObject({ call: "permission", allow: false });
+    expect(decideApproval(permission(REQ), item, false)).toMatchObject({
+      call: "decide",
+      allow: false,
+      done: "Denied",
+    });
   });
 
   test("a session that raised another prompt since the row was read is not approved: nothing is answered", () => {
@@ -65,12 +71,25 @@ describe("approvals go through decideApproval", () => {
   });
 
   test("a prompt this client has not read as work still answers the prompt the row shows", () => {
-    expect(decideApproval(permission(REQ), null, true)).toMatchObject({ call: "permission", requestId: REQ });
+    expect(decideApproval(permission(REQ), null, true)).toMatchObject({ call: "decide", requestId: REQ });
   });
 
-  test("a hold at Maestro's gate is a verdict: Allow approves, Deny sends it back", () => {
-    expect(decideApproval(approval("gate"), null, true)).toMatchObject({ call: "verdict", verdict: "approve" });
-    expect(decideApproval(approval("gate"), null, false)).toMatchObject({ call: "verdict", verdict: "revise" });
+  test("an action an agent asked leave for is decided by its own key; work is never approved", () => {
+    const request = { ...approval("gate"), key: "approval:5d1f0c2e9a7b4c3d" };
+    expect(decideApproval(request, null, true)).toEqual({
+      call: "decide",
+      key: "approval:5d1f0c2e9a7b4c3d",
+      allow: true,
+      action: "gh pr merge 1",
+      done: "Allowed",
+    });
+    // No plan approves work: Allow never becomes a verdict.
+    for (const plan of [decideApproval(request, null, true), decideApproval(permission(REQ), null, false)]) {
+      expect(JSON.stringify(plan)).not.toContain("approve");
+      expect(plan.call).not.toBe("verdict");
+    }
+    // A key of no hold has nothing to allow.
+    expect(decideApproval({ ...approval("gate"), key: "ask:x" }, null, true).call).toBe("unavailable");
   });
 
   test("allow and deny on anything but an approval do nothing", () => {
@@ -112,9 +131,21 @@ describe("the other verbs", () => {
     expect(planVerb("file", {}).call).toBe("unavailable");
   });
 
-  test("snooze and continue say which ticket brings them", () => {
+  test("snooze says which ticket brings it", () => {
     expect(planVerb("snooze", {})).toMatchObject({ call: "unavailable", why: expect.stringContaining("BRO-3036") });
-    expect(promptSession("work:w1", "Continue")).toMatchObject({ call: "unavailable" });
+  });
+
+  test("continue prompts the work's session (session.prompt), and a work with no session has nothing to prompt", () => {
+    const item = fakeWork("w1", "review", live);
+    expect(planVerb("continue", { item })).toMatchObject({
+      call: "prompt",
+      agentId: "agent-9",
+      key: "work:w1",
+      prompt: expect.stringContaining("Continue where you stopped"),
+    });
+    expect(planVerb("continue", {})).toMatchObject({ call: "unavailable" });
+    expect(promptSession(null, "work:w1", "Continue")).toMatchObject({ call: "unavailable" });
+    expect(promptSession("agent-9", "work:w1", "Continue")).toMatchObject({ call: "prompt", agentId: "agent-9" });
   });
 });
 
@@ -122,8 +153,25 @@ describe("receipts", () => {
   test("a receipt names its channel; an unknown channel or an empty value is no receipt", () => {
     expect(receiptOf("work:w1")).toEqual({ channel: "work", value: "w1" });
     expect(receiptOf("conductor:a:b")).toEqual({ channel: "conductor", value: "a:b" });
+    // The server's ledger (and a decision at the gate): verb.undo takes it by the receipt.
+    expect(receiptOf("verb:0f3c1d2e-7a54-4e0f-9b1e-5f6a7b8c9d01")).toEqual({
+      channel: "verb",
+      value: "0f3c1d2e-7a54-4e0f-9b1e-5f6a7b8c9d01",
+    });
     expect(receiptOf("nope:x")).toBeNull();
     expect(receiptOf("work:")).toBeNull();
     expect(receiptOf("work")).toBeNull();
+  });
+});
+
+describe("when a verb's effect can be read", () => {
+  test("a beat after its window closes, never before, and never for a verb with no window", () => {
+    const now = Date.parse("2026-10-12T09:00:00.000Z");
+    expect(settleDelay("2026-10-12T09:00:08.000Z", now)).toBe(8700);
+    expect(settleDelay("2026-10-12T09:00:03.000Z", now + 1000)).toBe(2700);
+    // Already past: read at once (a beat after).
+    expect(settleDelay("2026-10-12T08:59:00.000Z", now)).toBe(700);
+    expect(settleDelay(undefined, now)).toBeNull();
+    expect(settleDelay("not a time", now)).toBeNull();
   });
 });

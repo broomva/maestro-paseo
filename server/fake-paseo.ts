@@ -38,6 +38,9 @@ export function fakePaseo(options: FakePaseoOptions = {}) {
   const now = options.now ?? (() => new Date());
   const agents = new Map<string, FakeAgent>();
   const sent: Array<{ agentId: string; text: string }> = [];
+  /** Every respondToPermission call: the answers a session's prompts got. */
+  const answered: Array<{ agentId: string; requestId: string; response: Record<string, unknown> }> = [];
+  let failRespond = false;
   const created: Array<Record<string, unknown>> = [];
   const archived: string[] = [];
   const archivedWorkspaces: string[] = [];
@@ -112,6 +115,12 @@ export function fakePaseo(options: FakePaseoOptions = {}) {
           if (failSend) throw new Error("socket closed");
           sent.push({ agentId: id, text });
         },
+        respondToPermission: async (input: { requestId: string; response: Record<string, unknown> }) => {
+          if (failRespond) throw new Error("the daemon did not answer");
+          answered.push({ agentId: id, ...input });
+          const agent = agents.get(id);
+          if (agent) agent.pendingPermissions = agent.pendingPermissions.filter((p) => p.id !== input.requestId);
+        },
         archive: async () => {
           archived.push(id);
           const agent = agents.get(id);
@@ -144,6 +153,10 @@ export function fakePaseo(options: FakePaseoOptions = {}) {
     refetched,
     agents,
     sent,
+    answered,
+    failNextAnswer: () => {
+      failRespond = true;
+    },
     created,
     archived,
     archivedWorkspaces,

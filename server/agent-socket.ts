@@ -4,10 +4,12 @@
 // only this user can open. Every session has a shell; `bin/maestro.ts` is the
 // client.
 //
-// It offers the noun and the verb, never the gate: approve, send back, undo,
-// stop, unblock, cancel, settings and the loop are not served, so no session
-// can pass its own gate, take back your decision, loosen how runs start, or
-// drive the loop (which starts nothing anyway, A8). A session starts only
+// It offers the noun and the verb, never the gate: allow or deny, send back,
+// undo, stop, unblock, cancel, settings and the loop are not served, so no
+// session can pass its own gate, decide its own request, take back your
+// decision, loosen how runs start, or drive the loop (which starts nothing
+// anyway, A8). A session may only ask: `approval.request` raises one exact
+// held action as a hold in Needs you (server/approvals.ts) and decides nothing. A session starts only
 // queued work, and only in a Settings mode that does not ask: the caller it
 // reports is not verified, so it never picks the mode a run takes (server/
 // runs.ts settingsLane, unattendedRefusal; BRO-2996 verifies callers). It
@@ -29,6 +31,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { GATE_MODES } from "../shared/states";
 import { TICKET } from "../shared/text";
+import type { Approvals } from "./approvals";
 import { type Engine, NO_HANDLE, UserError } from "./engine";
 import type { Origin } from "./events";
 import type { Paseo } from "./runs";
@@ -43,6 +46,10 @@ export type AgentMethod = (input: unknown, caller: Caller) => Promise<unknown>;
 
 /** The verbs that stay with you. Named so a session that asks for one is told why. */
 export const GATE_METHODS: ReadonlySet<string> = new Set([
+  "approval.decide",
+  "session.prompt",
+  "verb.undo",
+  "verbs.list",
   "work.verdict",
   "work.undo",
   "work.stop",
@@ -73,6 +80,11 @@ function method<S extends z.ZodType>(
 }
 
 const ById = z.object({ id: z.string().min(1) });
+
+function requireApprovals(approvals: Approvals | null): Approvals {
+  if (!approvals) throw new UserError("This Maestro keeps no approval requests.");
+  return approvals;
+}
 const ForAgent = z.object({ agentId: z.string().min(1).optional() });
 
 const AgentCreate = z.object({
@@ -89,7 +101,11 @@ const AgentCreate = z.object({
  * The allowlist. `paseo` returns the daemon client once the plugin has been
  * handed one; verbs that start or read a session refuse until then.
  */
-export function agentMethods(engine: Engine, paseo: () => Paseo | null): ReadonlyMap<string, AgentMethod> {
+export function agentMethods(
+  engine: Engine,
+  paseo: () => Paseo | null,
+  approvals: Approvals | null = null,
+): ReadonlyMap<string, AgentMethod> {
   const origin = (caller: Caller): Origin => ({ actor: "agent", by: caller.agentId });
   const connected = (): Paseo => {
     const handle = paseo();
@@ -142,6 +158,9 @@ export function agentMethods(engine: Engine, paseo: () => Paseo | null): Readonl
       method(ForAgent, async ({ agentId }, caller) => ({ item: await engine.forAgent(session(agentId, caller)) })),
     ],
     ["config.get", method(z.object({}), () => engine.settings())],
+    // Ask leave for one exact action a policy layer held (frame C1). It only raises the hold: the decision is yours.
+    ["approval.request", async (input, caller) => requireApprovals(approvals).request(caller.agentId, input)],
+    ["approval.withdraw", method(ById, ({ id }, caller) => requireApprovals(approvals).withdraw(caller.agentId, id))],
   ]);
 }
 

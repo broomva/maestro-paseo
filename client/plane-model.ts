@@ -2,7 +2,7 @@
 // count, and the words on each card. No React here, so every rule is tested.
 
 import type { Worker, WorkItem } from "../shared/contracts";
-import { needsHand, needsYouOf, sectionOf } from "../shared/needs-you";
+import { atGateOf, isFinished, needsHand, needsYouOf, sectionOf } from "../shared/needs-you";
 import { GROUP_COPY, GROUP_ORDER, type Group, PLAIN_VOICE, QUEUED_LOOP_HINT } from "../shared/states";
 import { agoWords, basename, plural } from "./format";
 
@@ -66,7 +66,7 @@ export function filterLabel(filter: Filter): string {
  * hold). All holds everything, which is the five sections together, since
  * each item is in exactly one.
  */
-export function inFilter(item: Pick<WorkItem, "group" | "flag">, filter: Filter): boolean {
+export function inFilter(item: Pick<WorkItem, "group" | "flag" | "permission">, filter: Filter): boolean {
   if (filter === "all") return true;
   return sectionOf(item) === filter;
 }
@@ -106,7 +106,7 @@ export function emptyText(filter: Filter): string {
 }
 
 /** What needs you, as every surface counts it (shared/needs-you.ts). */
-export { needsHand, needsYouOf, sectionOf };
+export { atGateOf, isFinished, needsHand, needsYouOf, sectionOf };
 
 export interface Initiative {
   name: string;
@@ -172,7 +172,7 @@ export function groupHint(group: Group, loopOn: boolean): string {
 export function groupsOf(items: readonly WorkItem[]): { group: Group; items: WorkItem[] }[] {
   return GROUP_ORDER.map((group) => ({
     group,
-    items: group === "review" ? needsYouOf(items) : items.filter((item) => sectionOf(item) === group),
+    items: group === "review" ? atGateOf(items) : items.filter((item) => sectionOf(item) === group),
   })).filter((entry) => entry.items.length > 0);
 }
 
@@ -203,7 +203,7 @@ export function boardColumns(items: readonly WorkItem[], loopOn = false): Column
     id,
     title: GROUP_COPY[group].title,
     hint: groupHint(group, loopOn),
-    items: group === "review" ? needsYouOf(items) : items.filter((item) => sectionOf(item) === group),
+    items: group === "review" ? atGateOf(items) : items.filter((item) => sectionOf(item) === group),
   }));
 }
 
@@ -217,6 +217,8 @@ export function crumb(item: WorkItem): string | null {
 export function stateText(item: WorkItem): string {
   if (item.phase === "asking") return "Question";
   if (item.phase === "checking") return "Checking";
+  // Work that finished and waits at the gate asks nothing of you (A1): it is Finished, not Needs you.
+  if (isFinished(item)) return "Finished";
   return item.state === "canceled" ? "Canceled" : PLAIN_VOICE[item.state].label;
 }
 

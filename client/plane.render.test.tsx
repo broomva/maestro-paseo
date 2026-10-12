@@ -219,7 +219,8 @@ function work(id: string, state: OrchState, extra: Partial<WorkItem> = {}): Work
     reason: null,
     verdict: null,
     look: null,
-    permission: null,
+    // Work at the gate holds a prompt unless a test says it finished (`permission: null`): only a held action needs you (A1).
+    permission: state === "review" ? { requestId: `req-${id}`, title: "Run a command", detail: "git push" } : null,
     checks: [],
     pending: null,
     flag: null,
@@ -242,6 +243,9 @@ const fixture = (): WorkItem[] => [
   work("f", "done", { initiative: "genesis" }),
   work("g", "review", { worker: worker("g", null), look }),
 ];
+/** The fixture with some work finished at the gate (nothing held), as an older run that ended without asking. */
+const finished = (...ids: string[]): WorkItem[] =>
+  fixture().map((item) => (ids.includes(item.id) ? { ...item, permission: null } : item));
 let items = fixture();
 
 // Work fleet-reconcile raised, as the producer writes it (BRO-2839): an old count title, its brief for the run.
@@ -361,6 +365,16 @@ const loopOff = () => ({
 });
 let loopState = loopOff();
 /** What loop.wake answers next. */
+/** What waits in the ledger (verbs.list), as approval.decide leaves it for 8 s. */
+let pendingVerbs: Array<{
+  receipt: string;
+  verb: string;
+  key: string;
+  label: string;
+  at: string;
+  appliesAt: string;
+  remainingMs: number;
+}> = [];
 let nextWake: () => WakeEntry = () => wakeEntry("w-now", 0, { cause: "manual" });
 const settingsFixture = (): MaestroConfig => ({
   workRoot: "/work",
@@ -1021,7 +1035,31 @@ const invoke = async (method: string, input: unknown) => {
     throw new Error(stopRefusal);
   }
   if (method === "loop.get") return loopState;
-  if (method === "loop.wake") return nextWake();
+  if (method === "loop.wake") {
+    // Your wake takes effect 8 s later (B4): its entry is listed once it has run.
+    loopState = { ...loopState, recent: [nextWake(), ...loopState.recent] };
+    return { receipt: "r-wake", appliesAt: new Date(Date.now() + 8_000).toISOString() };
+  }
+  if (method === "verbs.list") return { pending: pendingVerbs, recent: [] };
+  if (method === "approval.decide") {
+    const { key, allow, action } = input as { key: string; allow: boolean; action: string };
+    const entry = {
+      receipt: `r-${pendingVerbs.length + 1}`,
+      verb: "approval.decide",
+      key,
+      label: `${allow ? "Allowed" : "Denied"} ${action}`,
+      at: new Date().toISOString(),
+      appliesAt: new Date(Date.now() + 8_000).toISOString(),
+      remainingMs: 8_000,
+    };
+    pendingVerbs = [entry, ...pendingVerbs];
+    return { receipt: entry.receipt, appliesAt: entry.appliesAt };
+  }
+  if (method === "verb.undo") {
+    const { receipt } = input as { receipt: string };
+    pendingVerbs = pendingVerbs.filter((entry) => entry.receipt !== receipt);
+    return { undone: true };
+  }
   if (method === "config.get") return settings;
   if (method === "config.set") return input;
   if (method === "work.list") return { root: "/work", items, warnings: [], scoreboard: board() };
@@ -1391,6 +1429,7 @@ afterEach(async () => {
   const failures = await unmountAll();
   takeIntent();
   items = fixture();
+  pendingVerbs = [];
   loopState = loopOff();
   nextWake = () => wakeEntry("w-now", 0, { cause: "manual" });
   settings = settingsFixture();
@@ -1449,14 +1488,15 @@ afterAll(async () => {
 
 describe("the changed line", () => {
   test("a surface without client state renders, logs once, and shows no changed stat", async () => {
+    items = finished("a");
     const view = await mount(surface(true));
-    // needs.list's holds: Work a and Work g at your gate (Work b is stuck: watched, A1).
-    expect(view.text()).toContain("2 need you · 1 running");
+    // needs.list's holds: Work g at your gate, holding a prompt (Work a finished, Work b is stuck: watched, A1).
+    expect(view.text()).toContain("1 needs you · 1 running");
     expect(view.text()).toContain("hawthorne · core");
     expect(view.text()).toContain("maestro/a-1");
     expect(view.text()).not.toMatch(/\+\d+ −\d+/);
     expect(probeLogs()).toBe(1);
-    await view.press(view.byLabel("Work a, Needs you, hawthorne · core, updated 12 minutes ago"));
+    await view.press(view.byLabel("Work a, Finished, hawthorne · core, updated 12 minutes ago"));
     expect(view.text()).toContain("Changed");
     await view.press(view.byLabel("Back to all work"));
     await view.press(view.byLabel("Work g, Needs you, updated 12 minutes ago"));
@@ -1517,10 +1557,11 @@ describe("the changed line", () => {
   });
 
   test("with client state, the card and the detail show +a −d", async () => {
+    items = finished("a");
     const view = await mount(surface(true), { state: diffState as unknown as PluginClientStateSource });
     expect(view.text()).toContain("+12 −3");
     expect(view.byLabel("12 lines added, 3 removed")).not.toBeNull();
-    const card = view.byLabel("Work a, Needs you, hawthorne · core, updated 12 minutes ago");
+    const card = view.byLabel("Work a, Finished, hawthorne · core, updated 12 minutes ago");
     expect(card?.getAttribute("aria-current")).toBe("false");
     await view.press(card);
     // A phone's detail takes the page: the stat is on the detail, and the list is behind it.
@@ -1530,14 +1571,17 @@ describe("the changed line", () => {
   });
 
   test("the server's changed line shows on the card and the detail with no client state", async () => {
-    items = fixture().map((item) => (item.id === "a" ? { ...item, changed: { additions: 5, deletions: 1 } } : item));
+    items = finished("a").map((item) =>
+      item.id === "a" ? { ...item, changed: { additions: 5, deletions: 1 } } : item,
+    );
     const view = await mount(surface(true));
     expect(view.byLabel("5 lines added, 1 removed")).not.toBeNull();
-    await view.press(view.byLabel("Work a, Needs you, hawthorne · core, updated 12 minutes ago"));
+    await view.press(view.byLabel("Work a, Finished, hawthorne · core, updated 12 minutes ago"));
     expect(view.text().match(/\+5 −1/g)).toHaveLength(1);
   });
 
   test("the detail alone, as the agent panel mounts it, survives a host without state", async () => {
+    items = finished("a");
     const view = await mount(
       <WorkDetail id="a" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
     );
@@ -1724,6 +1768,7 @@ describe("a finished arc at your gate (BRO-2856)", () => {
     items = [
       ...fixture(),
       work("arc", "review", {
+        permission: null,
         worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
         look: arcLook,
       }),
@@ -1755,6 +1800,7 @@ describe("a finished arc at your gate (BRO-2856)", () => {
     items = [
       ...fixture(),
       work("arc", "review", {
+        permission: null,
         worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
         look: arcLook,
       }),
@@ -1779,6 +1825,7 @@ describe("a finished arc at your gate (BRO-2856)", () => {
     items = [
       ...fixture(),
       work("arc", "review", {
+        permission: null,
         worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
         look: arcLook,
         landing: 3,
@@ -1819,18 +1866,29 @@ describe("a finished arc at your gate (BRO-2856)", () => {
       layout: { compact: false },
     } as unknown as ComponentProps<typeof Card>;
     const view = await mount(<Card {...props} />);
-    for (let tries = 0; tries < 100 && !view.text().includes("Approve"); tries += 1) await settle(20);
+    for (
+      let tries = 0;
+      tries < 100 && !view.text().includes("Change course") && !view.text().includes("The agent is asking");
+      tries += 1
+    ) {
+      await settle(20);
+    }
     return view;
   }
 
   test("a card for a run that asked nothing shows its last words and says what the verbs do, inventing no ask", async () => {
     const said = "Stored it on the Run record. All 40 tests pass and the branch is pushed.";
     const look = { ran: "18m unsupervised · 1 turn · ran to the gate", decided: [], ask: "", arc: null, closing: said };
-    items = [...fixture(), work("plain", "review", { worker: worker("plain", null), look, landing: 3 })];
+    items = [
+      ...fixture(),
+      work("plain", "review", { permission: null, worker: worker("plain", null), look, landing: 3 }),
+    ];
     const text = (await gateCard("plain")).text();
     expect(text).toContain("Its last words");
     expect(text).toContain(said);
-    expect(text).toContain("Approve marks the work done. Send back reopens its session with your note.");
+    expect(text).toContain(
+      "Change course reopens its session with your note. Gates merge finished work; you do not approve it.",
+    );
     expect(text).not.toContain("Ask");
     expect(text).not.toContain("Approve to close it");
     // What it asks comes before how long it ran: the run's meta is the footer.
@@ -1846,7 +1904,10 @@ describe("a finished arc at your gate (BRO-2856)", () => {
       closing: null,
       handed: "| # | ask | unblocks |\n|---|---|---|\n| 1 | Merge #2134 | the deploy |",
     };
-    items = [...fixture(), work("handed", "review", { worker: worker("handed", null), look, landing: 3 })];
+    items = [
+      ...fixture(),
+      work("handed", "review", { permission: null, worker: worker("handed", null), look, landing: 3 }),
+    ];
     const text = (await gateCard("handed")).text();
     expect(text).toContain("⛔ Blocked on you — 1 item, ~2 min");
     expect(text).toContain("What it handed you");
@@ -1857,6 +1918,7 @@ describe("a finished arc at your gate (BRO-2856)", () => {
     items = [
       ...fixture(),
       work("arc", "review", {
+        permission: null,
         worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
         look: arcLook,
       }),
@@ -1894,7 +1956,7 @@ describe("a finished arc at your gate (BRO-2856)", () => {
       archived: false,
       ask: "It reports its arc finished. Approve to close the work, or send it back with a note.",
     };
-    items = [...fixture(), work("arc", "review", { worker: worker("arc", null), look: bare })];
+    items = [...fixture(), work("arc", "review", { permission: null, worker: worker("arc", null), look: bare })];
     const view = await mount(detail("arc"));
     const text = view.text();
     expect(text).toContain("It reports its arc finished.");
@@ -2012,11 +2074,11 @@ describe("Stop run", () => {
     await view.press(view.byLabel("Stop run"));
     await view.press(view.byLabel("Stop run"));
     expect(view.byLabel("Discard and stop")).not.toBeNull();
-    move("k", work("k", "review", { worker: worker("k", "maestro/k-1"), look }));
+    move("k", work("k", "review", { permission: null, worker: worker("k", "maestro/k-1"), look }));
     await view.refetch();
     expect(view.byLabel("Discard and stop")).toBeNull();
     expect(view.all('[role="alert"]').map((el) => el.textContent)).toContain(
-      "The run moved on before you confirmed: it is now in Needs you.Dismiss",
+      "The run moved on before you confirmed: it is now Finished.Dismiss",
     );
   });
 
@@ -2694,23 +2756,25 @@ describe("J1, the Feed home on the desktop (BRO-3035)", () => {
     await until(() => panel(view) !== undefined);
     calls.length = 0;
     await view.press(view.all('[data-testid="inspector-bar"] [aria-label="Allow"]')[0]);
-    await until(() => calls.some((call) => call.method === "work.verdict"));
-    expect(calls.filter((call) => call.method === "work.verdict").map((call) => call.input)).toEqual([
-      { id: "g", verdict: "approve", note: "" },
+    await until(() => calls.some((call) => call.method === "approval.decide"));
+    // One exact action, and the prompt it names: never a verdict on the work, and never a call on Paseo itself.
+    expect(calls.filter((call) => call.method === "approval.decide").map((call) => call.input)).toEqual([
+      { key: "work:g", allow: true, action: "Run a command: git push", requestId: "req-g" },
     ]);
+    expect(calls.some((call) => call.method === "work.verdict")).toBe(false);
     const toast = view.all('[data-testid="undo-toast"]')[0];
     expect(toast?.textContent).toContain("Allowed");
     // The window is UNDO_MS (8 s): the toast counts down to when it applies.
     expect(toast?.textContent).toMatch(/applies in [78] s/);
     await view.press(view.all('[aria-label^="Undo: "]')[0]);
-    await until(() => calls.some((call) => call.method === "work.undo"));
-    expect(calls.filter((call) => call.method === "work.undo").map((call) => call.input)).toEqual([{ id: "g" }]);
+    await until(() => calls.some((call) => call.method === "verb.undo"));
+    expect(calls.filter((call) => call.method === "verb.undo").map((call) => call.input)).toEqual([{ receipt: "r-1" }]);
   });
 
   test("⌘↵ allows only from inside Maestro's screen, once: the body and Paseo's chrome do nothing, a held key is ignored, two at once send one", async () => {
     const view = await mount(surface(false, { hold: "work:g" }));
     await until(() => panel(view) !== undefined);
-    const verdicts = () => calls.filter((call) => call.method === "work.verdict").length;
+    const verdicts = () => calls.filter((call) => call.method === "approval.decide").length;
     calls.length = 0;
     await press("Enter", { metaKey: true });
     const chrome = win.document.createElement("button");
@@ -2742,7 +2806,7 @@ describe("J1, the Feed home on the desktop (BRO-3035)", () => {
       (allow as unknown as { click(): void }).click();
     });
     await settle(60);
-    expect(calls.filter((call) => call.method === "work.verdict")).toHaveLength(1);
+    expect(calls.filter((call) => call.method === "approval.decide")).toHaveLength(1);
   });
 
   test("the Needs you tile opens the first hold you can see: a workspace that hides the first does not select it", async () => {
@@ -5113,5 +5177,96 @@ describe("Loops", () => {
     await view.press(view.byLabel("Health: kg-lint: Paused but running"));
     await until(view, "Session & watchers");
     expect(view.text()).toContain("Session & watchers");
+  });
+});
+
+describe("Allow and Deny, and Change course: approval.decide and its undo (BRO-2999)", () => {
+  const permission = { requestId: "r1", title: "Run a command", detail: "git push origin main" };
+  const ACTION = "Run a command: git push origin main";
+  const asking = (id: string) =>
+    work(id, "review", {
+      worker: worker(id, `maestro/${id}-1`),
+      phase: "asking",
+      landing: 3,
+      permission,
+      look: { ran: "4m unsupervised · 1 turn · paused on a question", decided: [], ask: ACTION },
+    });
+  const detail = (id: string) => (
+    <WorkDetail id={id} theme={theme} compact={false} navigation={undefined} open={requestIntent} />
+  );
+  const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
+  const card = async (id: string) => {
+    const Card = createGateCard(() => undefined);
+    const props = {
+      item: { data: { workId: id, landing: 3, agentId: `ag-${id}` } },
+      theme,
+      layout: { compact: false },
+    } as unknown as ComponentProps<typeof Card>;
+    const view = await mount(<Card {...props} />);
+    for (let tries = 0; tries < 100 && !view.byLabel("Allow"); tries += 1) await settle(20);
+    return view;
+  };
+
+  for (const [where, open] of [
+    ["the work's detail", async () => mount(detail("k"))],
+    ["the card in the session", async () => card("k")],
+  ] as const) {
+    test(`Allow in ${where} is approval.decide on the exact action, with a countdown and an Undo`, async () => {
+      items = [...fixture(), asking("k")];
+      const view = await open();
+      for (let tries = 0; tries < 100 && !view.byLabel("Allow"); tries += 1) await settle(20);
+      await view.press(view.byLabel("Allow"));
+      expect(sent("approval.decide")).toEqual([{ key: "work:k", allow: true, action: ACTION, requestId: "r1" }]);
+      for (let tries = 0; tries < 100 && !view.text().includes("takes effect in"); tries += 1) await settle(20);
+      expect(view.text()).toContain(`Allowed ${ACTION} · takes effect in`);
+      // One decision at a time: both verbs wait while it does, so a second press sends nothing.
+      await view.press(view.byLabel("Deny"));
+      await view.press(view.byLabel("Allow"));
+      expect(sent("approval.decide")).toHaveLength(1);
+      await view.press(view.byLabel(`Undo: Allowed ${ACTION}`));
+      expect(sent("verb.undo")).toEqual([{ receipt: "r-1" }]);
+      for (let tries = 0; tries < 100 && view.text().includes("takes effect in"); tries += 1) await settle(20);
+      expect(view.text()).not.toContain("takes effect in");
+    });
+
+    test(`Deny in ${where} is approval.decide with allow false`, async () => {
+      items = [...fixture(), asking("k")];
+      const view = await open();
+      for (let tries = 0; tries < 100 && !view.byLabel("Deny"); tries += 1) await settle(20);
+      await view.press(view.byLabel("Deny"));
+      expect(sent("approval.decide")).toEqual([{ key: "work:k", allow: false, action: ACTION, requestId: "r1" }]);
+    });
+  }
+
+  test("finished work offers Change course and Cancel work, and never Approve", async () => {
+    items = [...fixture(), work("fin", "review", { permission: null, worker: worker("fin", "maestro/fin-1"), look })];
+    const view = await mount(detail("fin"));
+    for (let tries = 0; tries < 100 && !view.byLabel("Change course"); tries += 1) await settle(20);
+    expect(view.text()).toContain("Finished");
+    expect(view.byLabel("Change course")).not.toBeNull();
+    expect(view.byLabel("Cancel work")).not.toBeNull();
+    expect(view.byLabel("Approve")).toBeNull();
+    expect(view.byLabel("Allow")).toBeNull();
+    await view.press(view.byLabel("Change course"));
+    await view.type(view.byLabel("What should change"), "Use the cache.");
+    await view.press(view.byLabel("Change course"));
+    expect(sent("work.verdict")).toEqual([{ id: "fin", verdict: "revise", note: "Use the cache." }]);
+  });
+
+  test("the session card for finished work says Finished, offers Change course, and no Approve", async () => {
+    items = [
+      ...fixture(),
+      work("fin", "review", { permission: null, worker: worker("fin", "maestro/fin-1"), look, landing: 3 }),
+    ];
+    const Card = createGateCard(() => undefined);
+    const props = {
+      item: { data: { workId: "fin", landing: 3, agentId: "ag-fin" } },
+      theme,
+      layout: { compact: false },
+    } as unknown as ComponentProps<typeof Card>;
+    const view = await mount(<Card {...props} />);
+    for (let tries = 0; tries < 100 && !view.byLabel("Change course"); tries += 1) await settle(20);
+    expect(view.text()).toContain("Finished");
+    expect(view.byLabel("Approve")).toBeNull();
   });
 });
