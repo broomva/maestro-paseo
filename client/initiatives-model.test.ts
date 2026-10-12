@@ -25,6 +25,7 @@ const initiative = (extra: Partial<Initiative>): Initiative =>
     closedAt: null,
     stale: null,
     error: null,
+    sessions: [],
     ...extra,
   }) as Initiative;
 
