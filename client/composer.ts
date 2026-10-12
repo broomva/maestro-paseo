@@ -205,8 +205,10 @@ export interface PromiseRow {
 }
 
 /**
- * What the work must land to reach you, said before you send (J9): the five promises the contract
- * makes. The last one is always the lane: Maestro never starts work (A8).
+ * What the work must land to reach you, said before you send (J9): the five promises the contract makes. The last
+ * one says who starts it, and it is you: Dispatch starts a session now (engine.dispatch → runs.ts), Save to queue
+ * starts nothing, and Maestro never starts work on its own (A8). No lane does it yet (`lanes.get` does not exist);
+ * server/engine.test.ts holds this row against both paths.
  */
 export function contractPromises(input: {
   project: string | null;
@@ -234,11 +236,17 @@ export function contractPromises(input: {
           ? "the check decides: a pass closes it, a fail marks it stuck for you"
           : "you approve it at your gate, check or not",
     },
-    { id: "nothing", label: "If it lands nothing", text: "it stays Standing; questions come to Decisions" },
+    {
+      id: "nothing",
+      label: "If it lands nothing",
+      text: "it ends Finished for you to read, or Stuck in Health when its check fails; it is never closed without its gate",
+    },
     {
       id: "starts",
       label: "Who starts it",
-      text: "the Broomva lane: now on Dispatch, or on its next tick (\u2264 15 min) from the queue. Maestro never starts it (A8).",
+      text: `You do: Dispatch starts a session ${
+        input.isolation === "worktree" ? "in its own worktree" : `in ${where}`
+      } now. Save to queue starts nothing: it waits in Queued for you. Maestro never starts work on its own (A8).`,
     },
   ];
 }

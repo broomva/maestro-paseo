@@ -17,7 +17,7 @@ import { holdKicker, workScope } from "./home-model";
 import { titleText } from "./records-text";
 
 export const LANES = [
-  { id: "queued", title: "Queued", hint: "you or a lane start these", icon: "CircleDashed" },
+  { id: "queued", title: "Queued", hint: "waits for you to dispatch them", icon: "CircleDashed" },
   { id: "running", title: "Running", hint: "a session is taking turns", icon: "LoaderCircle" },
   { id: "standing", title: "Standing", hint: "alive, between turns; nothing to review yet", icon: "Pause" },
   { id: "needs", title: "Needs you", hint: "holds an ask, an approval or an owner step", icon: "Hand" },
@@ -159,7 +159,9 @@ export function workBoard({ items, needs, handled, asks, filters, now }: WorkInp
   const queued = items
     .filter((item) => sectionOf(item) === "queued" && !held.has(`work:${item.id}`))
     .filter((item) => passes(filters, workScope(item), item, null, titleText(item)))
-    .map((item) => workCard(item, "queued", item.gate === "human" ? "gate: you" : "a lane starts it next"));
+    .map((item) =>
+      workCard(item, "queued", item.gate === "human" ? "waits for Dispatch · gate: you" : "waits for Dispatch"),
+    );
   const running = runningOf(items)
     .filter((item) => passes(filters, workScope(item), item, null, titleText(item)))
     .map((item) => workCard(item, "running", runningLine(item, now)));

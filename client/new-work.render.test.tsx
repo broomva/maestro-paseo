@@ -339,7 +339,9 @@ describe("the promises (J9)", () => {
     expect(rows.length).toBe(5);
     const starts = view.one('[data-testid="promise-starts"]');
     expect(starts?.textContent).toContain("Who starts it");
-    expect(starts?.textContent).toContain("Maestro never starts it");
+    expect(starts?.textContent).toContain("Dispatch starts a session");
+    expect(starts?.textContent).toContain("Maestro never starts work on its own");
+    expect(starts?.textContent).not.toContain("lane");
     expect(view.text()).toContain("everything else starts at your defaults");
   });
 });

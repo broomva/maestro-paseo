@@ -152,11 +152,11 @@ describe("the five trays", () => {
     ]);
   });
 
-  test("Queued holds what a lane or you start, never held work; stuck work is in no tray (it is Health's)", () => {
+  test("Queued holds what waits for your Dispatch (no lane starts work yet), never held work; stuck work is in no tray (it is Health's)", () => {
     const board = workBoard(input);
     expect(laneOf(board, "queued").map((card) => [card.item?.id, card.line])).toEqual([
-      ["q1", "gate: you"],
-      ["q2", "a lane starts it next"],
+      ["q1", "waits for Dispatch · gate: you"],
+      ["q2", "waits for Dispatch"],
     ]);
     const keys = board.lanes.flatMap((lane) => lane.cards.map((card) => card.key));
     expect(keys).not.toContain("work:stuck");

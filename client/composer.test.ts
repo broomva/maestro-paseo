@@ -237,11 +237,21 @@ describe("what the work must land to reach you (J9)", () => {
     expect(contractPromises(base).map((r) => r.id)).toEqual(["deliverable", "checks", "gate", "nothing", "starts"]);
   });
 
-  test("the lane starts it: never Maestro (A8)", () => {
+  test("you start it: Dispatch does, Save to queue does not, and Maestro never does (A8)", () => {
     const starts = row(base, "starts");
-    expect(starts).toContain("the Broomva lane");
-    expect(starts).toContain("now on Dispatch");
-    expect(starts).toContain("Maestro never starts it");
+    expect(starts).toStartWith("You do: Dispatch starts a session in its own worktree now.");
+    expect(starts).toContain("Save to queue starts nothing: it waits in Queued for you.");
+    expect(starts).toContain("Maestro never starts work on its own (A8)");
+    expect(starts).not.toContain("lane");
+    expect(starts).not.toContain("15 min");
+    expect(row({ ...base, isolation: "directory" }, "starts")).toContain("starts a session in maestro-paseo now");
+  });
+
+  test("what it lands nothing says what happens, not a state it is not in", () => {
+    const nothing = row(base, "nothing");
+    expect(nothing).toContain("Finished");
+    expect(nothing).toContain("Stuck in Health");
+    expect(nothing).not.toContain("Standing");
   });
 
   test("the deliverable follows where it runs", () => {

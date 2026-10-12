@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, renameSync, symlinkSync, unlinkSync, 
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { contractPromises } from "../client/composer";
 import type { MaestroConfig } from "../shared/contracts";
 import { nextRunCopy } from "../shared/run";
 import type { Verdict } from "../shared/states";
@@ -211,6 +212,23 @@ describe("dispatch", () => {
     expect(options.config.provider).toBe("claude/sonnet");
     expect(options.prompt).toContain("## Decided");
     expect(options.prompt).toContain(item.worker?.branch ?? "missing");
+  });
+
+  test("who starts it (J9's row): Dispatch starts one session, Save to queue starts none", async () => {
+    const { create, fake } = await setup();
+    const saved = await create({ dispatch: false });
+    expect(saved.state).toBe("proposed");
+    expect(fake.created).toHaveLength(0);
+    const sent = await create({ dispatch: true });
+    expect(sent.state).toBe("running");
+    expect(fake.created).toHaveLength(1);
+    // The composer's row says exactly this, and names neither a lane nor a tick.
+    const starts = contractPromises({ project: "p", isolation: "worktree", check: "", gate: "human" }).find(
+      (row) => row.id === "starts",
+    )?.text;
+    expect(starts).toContain("Dispatch starts a session");
+    expect(starts).toContain("Save to queue starts nothing");
+    expect(starts).not.toMatch(/lane|tick/);
   });
 
   test("a dispatch labels its agent with the ticket its title names (BRO-2908)", async () => {
