@@ -810,12 +810,12 @@ describe("the gallery is behind its flag", () => {
     const view = await mount(<KitGalleryScreen {...props(false)} />);
     expect(view.id("gallery-pane-light")).toBeTruthy();
     expect(view.id("gallery-pane-dark")).toBeTruthy();
-    expect(view.text()).toContain("Allow merging workspace#933?");
-    for (const section of ["Phone", "Undertow", "M1 shell", "Desktop"]) {
+    for (const section of ["Phone", "Undertow", "M1 shell"]) {
       const radio = view.all('[role="radio"]').find((el) => el.textContent === section);
       await view.press(radio);
     }
-    expect(view.all('[data-testid="glance-tile-needs"]').length).toBe(2);
+    // J1 adopted the desktop parts (BRO-3035): the gallery has no Desktop section left.
+    expect(view.all('[role="radio"]').some((el) => el.textContent === "Desktop")).toBe(false);
   });
   it("on the phone it opens on the live M1 shell, in the active appearance only", async () => {
     // The sheet and the card wait for the shell's measured height, which happy-dom never lays out.

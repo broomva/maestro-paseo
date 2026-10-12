@@ -15,9 +15,9 @@
 // views come in two labelled groups, Work and System; a phone picks one from a
 // single menu.
 
-import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
+import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { workKey } from "../shared/needs";
 import { ChangeScope } from "./changed";
@@ -39,6 +39,9 @@ import { FleetNotices, FleetView } from "./fleet";
 import { duration, errorText, plural } from "./format";
 import { holdTarget, tabBadges } from "./header-count";
 import { HistoryView } from "./history";
+import { type HomeFocus, HomeScreen } from "./home";
+import { HomeHeaderBar } from "./home-header";
+import { HOME_TABS, type HomeTab, TAB_VIEWS, tabOfView } from "./home-model";
 import { useHandled, useLoop, useNeeds, useNeedsEvents, useWorkList } from "./hooks";
 import { InitiativeNotices, InitiativesView } from "./initiatives";
 import { requestIntent, useIntent } from "./intent";
@@ -46,7 +49,7 @@ import { LoopControl, LoopPanel } from "./loop";
 import { LoopsNotices, LoopsView } from "./loops";
 import { NewWork } from "./new-work";
 import { PendingVerbs } from "./pending-verbs";
-import { FilterRow, ScopeRow, ViewPicker, ViewSwitch } from "./plane-controls";
+import { FilterRow, ScopeRow, ViewPicker } from "./plane-controls";
 import {
   applyFilter,
   countFilters,
@@ -58,6 +61,7 @@ import {
   resolveScope,
   SYSTEM_VIEWS,
   summaryText,
+  VIEWS,
   viewFor,
   viewsFor,
   visibleFilters,
@@ -65,9 +69,9 @@ import {
 import { BoardView, FeedView, ListView } from "./plane-views";
 import { ScoreboardCard } from "./scoreboard";
 import { TimelineNotices, TimelineView } from "./timeline";
-import { Button, Card, IconButton, Notice, space, useText } from "./ui";
+import { Button, Card, IconButton, Notice, Segmented, space, useText } from "./ui";
 
-export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps) {
+export function MaestroSurface({ theme, layout, navigation, params }: PluginScreenProps) {
   const list = useWorkList();
   // What needs you (needs.list): the subtitle, the tabs and Needs you say the header's number, read once.
   const needs = useNeeds();
@@ -88,6 +92,9 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const [fleetTick, setFleetTick] = useState<number | null>(null);
   const [decisionsFocus, setDecisionsFocus] = useState<DecisionsFocus | null>(null);
   const [query, setQuery] = useState("");
+  const [workspace, setWorkspace] = useState<string | null>(null);
+  const [homeFocus, setHomeFocus] = useState<HomeFocus | null>(null);
+  const lastView = useRef<Partial<Record<HomeTab, PlaneView>>>({});
   const asksRead = useWorkspaceAsks();
   const asks = asksRead.data ? decisionAsks(asksRead.data) : [];
   const openFleet = (scope: string | null, tick: number | null = null) => {
@@ -100,9 +107,21 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     setDecisionsFocus({ ledger, ask, at: Date.now() });
     setView("decisions");
   };
+  // Opening on `params.hold` (a push, the header count): that hold's inspector on the Feed (BRO-3033 fact 2).
+  const holdParam = params?.hold;
+  useEffect(() => {
+    if (!holdParam) return;
+    setView("feed");
+    setHomeFocus({ hold: holdParam, at: Date.now() });
+  }, [holdParam]);
   useIntent((intent) => {
-    if (intent.kind === "select") setSelected(intent.id);
-    else if (intent.kind === "new") setCreating(true);
+    if (intent.kind === "select") {
+      // On the desktop the Feed home opens it: a hold in its inspector, other work in its own detail.
+      if (!layout.compact) {
+        setView("feed");
+        setHomeFocus({ work: intent.id, at: Date.now() });
+      } else setSelected(intent.id);
+    } else if (intent.kind === "new") setCreating(true);
     else if (intent.kind === "fleet") openFleet(intent.scope);
     else if (intent.kind === "decisions")
       openDecisions(
@@ -116,6 +135,8 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
       // A filter opened from elsewhere means that group across all work, where its chips show.
       setFilter(intent.group);
       setScope(null);
+      // Its chips are the List's: the Work tab opens there, not on the Board, which would clear the filter.
+      lastView.current.work = "list";
       // The Board splits by state, History lists receipts, and the system views are not work: none applies the chips.
       setView((view) => (view === "board" || view === "history" || SYSTEM_VIEWS.includes(view) ? "feed" : view));
     }
@@ -123,6 +144,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   const compact = layout.compact;
   const pad = compact ? space[4] : space[6];
   const view = viewFor(chosenView, compact);
+  const tab = tabOfView(view);
 
   const items = list.data?.items ?? [];
   const current = selected && items.some((item) => item.id === selected) ? selected : null;
@@ -175,6 +197,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
   // The board has no state chips, so it clears the filter rather than hide one.
   const chooseView = (next: PlaneView) => {
     setView(next);
+    lastView.current[tabOfView(next)] = next;
     if (next === "board") setFilter("all");
     // A tick opened from a timeline run is that visit's: the Fleet tab chosen later opens on none. So is an ask an initiative opened.
     setFleetTick(null);
@@ -218,43 +241,45 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
       }}
       keyboardShouldPersistTaps="handled"
     >
-      <View style={{ gap: space[2] }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: space[3] }}>
-          <View style={{ flex: 1 }}>
-            <Text style={text.heading} accessibilityRole="header">
-              Maestro
-            </Text>
+      {compact ? (
+        <View style={{ gap: space[2] }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space[3] }}>
+            <View style={{ flex: 1 }}>
+              <Text style={text.heading} accessibilityRole="header">
+                Maestro
+              </Text>
+            </View>
+            <IconButton theme={theme} icon="RefreshCw" label="Refresh work" onPress={() => void list.refetch()} />
+            <Button
+              theme={theme}
+              variant="primary"
+              icon="Plus"
+              label="New work"
+              compact={compact}
+              onPress={() => setCreating(true)}
+            />
           </View>
-          <IconButton theme={theme} icon="RefreshCw" label="Refresh work" onPress={() => void list.refetch()} />
-          <Button
-            theme={theme}
-            variant="primary"
-            icon="Plus"
-            label="New work"
-            compact={compact}
-            onPress={() => setCreating(true)}
-          />
+          {/* Its own row under the title, as the design has it: beside the buttons it wraps. */}
+          <Text style={[text.body, { fontWeight: "500" }]}>
+            {/* Maestro-wide, as the header button: once needs.list is read; before that, what the work alone says. */}
+            {view === "feed" && loaded && needsYouTotal !== null
+              ? headerLine(needsYouTotal, sectionsOf(items).running.length, handledForYou(allHandled).length)
+              : summaryText(items, needsYouTotal)}
+          </Text>
+          {/* Its own row, the pane's full width: beside the buttons a phone wraps "Next wake in 15 min". */}
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space[3], flexWrap: "wrap" }}>
+            <LoopControl theme={theme} open={loopOpen} onToggle={() => setLoopOpen((open) => !open)} />
+            {board ? (
+              <Text style={[text.small, text.tabular]}>
+                {board.live ? "running now · " : ""}
+                {duration(board.unsupervisedMs)} unsupervised today
+              </Text>
+            ) : null}
+          </View>
         </View>
-        {/* Its own row under the title, as the design has it: beside the buttons it wraps. */}
-        <Text style={[text.body, { fontWeight: "500" }]}>
-          {/* Maestro-wide, as the header button: once needs.list is read; before that, what the work alone says. */}
-          {view === "feed" && loaded && needsYouTotal !== null
-            ? headerLine(needsYouTotal, sectionsOf(items).running.length, handledForYou(allHandled).length)
-            : summaryText(items, needsYouTotal)}
-        </Text>
-        {/* Its own row, the pane's full width: beside the buttons a phone wraps "Next wake in 15 min". */}
-        <View style={{ flexDirection: "row", alignItems: "center", gap: space[3], flexWrap: "wrap" }}>
-          <LoopControl theme={theme} open={loopOpen} onToggle={() => setLoopOpen((open) => !open)} />
-          {board ? (
-            <Text style={[text.small, text.tabular]}>
-              {board.live ? "running now · " : ""}
-              {duration(board.unsupervisedMs)} unsupervised today
-            </Text>
-          ) : null}
-        </View>
-      </View>
+      ) : null}
 
-      {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
+      {compact && loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
 
       {/* What you decided that has not taken effect: every verb of yours waits 8 s, with one Undo (B4). A work's
           own decision at the gate counts down in its detail. */}
@@ -288,9 +313,15 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
 
       {compact ? (
         <ViewPicker theme={theme} view={view} onView={chooseView} views={viewsFor(true)} badges={badges} />
-      ) : (
-        <ViewSwitch theme={theme} view={view} onView={chooseView} views={viewsFor(false)} badges={badges} />
-      )}
+      ) : TAB_VIEWS[tab].length > 1 ? (
+        <Segmented
+          theme={theme}
+          label={`${HOME_TABS.find((entry) => entry.id === tab)?.label ?? "Maestro"} views`}
+          options={VIEWS.filter((option) => TAB_VIEWS[tab].includes(option.id))}
+          value={view}
+          onChange={chooseView}
+        />
+      ) : null}
 
       {view === "fleet" ? (
         <FleetView
@@ -448,39 +479,53 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     );
   }
 
-  // The board, the list, History and the system views want the width: the item opens beside them only when one is picked.
-  // So does the Feed with nothing picked: a home page, not a narrow rail beside an empty pane.
-  const wide = view !== "feed" || !current;
+  // The desktop: Maestro's own header over the Feed home (J1) or, for any other tab, its view with the item
+  // that is picked beside it. The Feed home opens holds in its inspector, so it has no detail pane of its own.
   return (
     <ChangeScope>
-      <View style={{ flex: 1, flexDirection: "row", backgroundColor: theme.colors.surface0 }}>
-        <View
-          style={
-            wide
-              ? { flex: 1 }
-              : { width: 560, maxWidth: "50%", borderRightWidth: 1, borderRightColor: theme.colors.border }
-          }
-        >
-          {listPane}
+      <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
+        <View style={{ paddingHorizontal: 20, paddingTop: 16, zIndex: 30, gap: 12 }}>
+          <HomeHeaderBar
+            theme={theme}
+            tab={tab}
+            onTab={(next) => chooseView(lastView.current[next] ?? TAB_VIEWS[next][0])}
+            workspace={workspace}
+            onWorkspace={setWorkspace}
+            query={query}
+            onQuery={setQuery}
+            wakeOpen={loopOpen}
+            onWake={() => setLoopOpen((open) => !open)}
+            onNew={() => setCreating(true)}
+          />
+          {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
         </View>
-        {wide ? (
-          current ? (
-            <View style={{ width: 440, maxWidth: "45%", borderLeftWidth: 1, borderLeftColor: theme.colors.border }}>
-              <WorkDetail
-                id={current}
-                theme={theme}
-                compact={false}
-                navigation={navigation}
-                onBack={() => setSelected(null)}
-                open={requestIntent}
-              />
-            </View>
-          ) : null
+        {view === "feed" ? (
+          <HomeScreen
+            theme={theme}
+            navigation={navigation}
+            workspace={workspace}
+            query={query}
+            focus={homeFocus}
+            onFocusHandled={() => setHomeFocus(null)}
+            onOpenWork={(id) => {
+              chooseView("list");
+              setSelected(id);
+            }}
+          />
         ) : (
-          // Not wide means the Feed with an item picked: the item takes the rest of the window.
-          <View style={{ flex: 1 }}>
+          <View style={{ flex: 1, flexDirection: "row" }}>
+            <View style={{ flex: 1 }}>{listPane}</View>
             {current ? (
-              <WorkDetail id={current} theme={theme} compact={false} navigation={navigation} open={requestIntent} />
+              <View style={{ width: 440, maxWidth: "45%", borderLeftWidth: 1, borderLeftColor: theme.colors.border }}>
+                <WorkDetail
+                  id={current}
+                  theme={theme}
+                  compact={false}
+                  navigation={navigation}
+                  onBack={() => setSelected(null)}
+                  open={requestIntent}
+                />
+              </View>
             ) : null}
           </View>
         )}

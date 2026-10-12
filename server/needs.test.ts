@@ -165,6 +165,8 @@ describe("needs.list's kinds (owner answer A1)", () => {
     expect(perm.verbs).toEqual(["allow", "deny"]);
     expect(perm.session).toEqual({ agentId: live.agentId, name: "agent-12", waiting: true });
     expect(perm.blocksWork).toBe(true);
+    // The row names the prompt it shows, so an answer can only be to that one.
+    expect(perm.body.requestId).toBe("r1");
 
     const yours = byKey.get("work:yours");
     if (yours?.kind !== "owner_step") throw new Error("not an owner step");

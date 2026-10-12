@@ -98,7 +98,10 @@ export const ApprovalBodySchema = z.object({
   action: z.string(),
   /** The layer that held it: `permission` (the session's permission prompt), or the policy an agent names (`gate`, `policy`). */
   heldBy: z.string(),
-  /** For a permission prompt: the prompt's request id, the one the `action` describes. approval.decide binds to it. */
+  /**
+   * The permission prompt this row shows, by its request id (`heldBy: permission` only). An answer names it, so
+   * Allow can only answer the prompt the card showed: a session that has since raised another is not approved.
+   */
   requestId: z.string().optional(),
   evidence: z.array(EvidenceSchema),
   /** What happens after you allow it, step by step. */
