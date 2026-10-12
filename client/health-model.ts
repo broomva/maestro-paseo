@@ -75,6 +75,8 @@ export interface HealthInput {
   notices: Notices | null;
   /** notices.list could not be read at all. */
   noticesFailed?: boolean;
+  /** work.list could not be read: the running count and the stuck and quiet rows are missing, not none. */
+  workFailed?: boolean;
   items: readonly WorkItem[];
   loop: LoopState | null;
   now: number;
@@ -191,6 +193,7 @@ export function healthModel({
   loops,
   notices,
   noticesFailed = false,
+  workFailed = false,
   items,
   loop,
   now,
@@ -205,7 +208,10 @@ export function healthModel({
   const featured = reads.find((read) => read.detail)?.detail ?? null;
   const total = notices?.summary.total ?? 0;
   const ticks = { rows: cells, passed, total: counted.length };
-  const unread = noticesFailed && !notices ? ["the notices"] : (notices?.summary.unread ?? []);
+  const unread = [
+    ...(noticesFailed && !notices ? ["the notices"] : (notices?.summary.unread ?? [])),
+    ...(workFailed && !notices?.summary.unread.includes("the work") ? ["the work"] : []),
+  ];
   // A notice that could not be read is missing, not none: never say "All clear" over one.
   const clear = total === 0 && unread.length === 0;
   const tone: Tone = clear ? "ok" : (notices?.summary.byKind.stuck ?? 0) > 0 ? "danger" : "warn";

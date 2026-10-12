@@ -317,6 +317,7 @@ export function HealthScreen({
     loops: loops.data ?? null,
     notices: notices.data ?? null,
     noticesFailed: notices.isError,
+    workFailed: list.isError && !list.data,
     items,
     loop: loop.data ?? null,
     now,
@@ -339,6 +340,11 @@ export function HealthScreen({
   const tone = toneColor(kit, model.verdict.tone);
   return (
     <View ref={inspector.root as never} testID="health-screen" style={{ flex: 1, gap: 14 }}>
+      {list.isError && !list.data ? (
+        <Notice theme={theme} tone="danger">
+          {`The work could not be read: ${errorText(list.error)}`}
+        </Notice>
+      ) : null}
       {fleet.isError && !fleet.data ? (
         <Notice theme={theme} tone="danger">
           {`The fleet could not be read: ${errorText(fleet.error)}`}

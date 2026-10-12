@@ -544,8 +544,11 @@ export default function contribute(host: PluginServerContext) {
   // What you watch that went wrong (server/notices.ts): one projection, so the Health tab, the Feed's Health section
   // and J7 are the same rows. A pure read; a source that cannot be read costs its own rows, never the rest.
   const noticesNow = async () => {
-    const items = (await workItems()) ?? [];
     const unread: string[] = [];
+    // Unread work is not no work: the stuck and quiet notices come from it, so the gap is named.
+    const read = await workItems();
+    if (read === null) unread.push("the work");
+    const items = read ?? [];
     const quietly = <T>(what: string, read: Promise<T[]>): Promise<T[]> =>
       read.catch((error) => {
         log(`notices: reading ${what}: ${(error as Error).message}`);

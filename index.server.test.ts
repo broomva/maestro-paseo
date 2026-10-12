@@ -1137,6 +1137,8 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
     expect(unread.rows.filter((row) => row.key.startsWith("work:"))).toEqual([]);
     expect(unread.summary.total).toBe(beforeBreak.rows.filter((row) => !row.key.startsWith("work:")).length);
     expect(unread.summary.total).toBeGreaterThan(0);
+    // And the notices say so: unread work is named, so Health never says "All clear" over a missing stuck run.
+    expect((await noticesNow()).summary.unread).toContain("the work");
   } finally {
     await cleanup();
     process.env.MAESTRO_PASEO_CONFIG = saved.config;

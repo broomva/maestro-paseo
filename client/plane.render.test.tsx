@@ -541,6 +541,7 @@ let answerFail: string | null = null;
 let landingNow: AnswersLanding | null = null;
 /** While set, needs.list fails with it. */
 let needsFail: string | null = null;
+let workFail: string | null = null;
 /** Loop drift work.attention says needs you: none unless a test says. */
 let loopNoticesNow: LoopNotice[] = [];
 /** The Loops tab's read (loops.get): two standing rows, one drifting, and a p9 watcher. */
@@ -1100,6 +1101,7 @@ const invoke = async (method: string, input: unknown) => {
   }
   if (method === "config.get") return settings;
   if (method === "config.set") return input;
+  if (method === "work.list" && workFail) throw new Error(workFail);
   if (method === "work.list") return { root: "/work", items, warnings: [], scoreboard: board() };
   if (method === "work.history") return { events: history(), capped: false };
   if (method === "work.attention") {
@@ -1518,6 +1520,7 @@ afterEach(async () => {
   loopNoticesNow = [];
   landingNow = null;
   needsFail = null;
+  workFail = null;
   askSessionNow = null;
   opened = [];
   initiativesNow = initiativesFixture();
@@ -3254,6 +3257,16 @@ describe("J7, Health (BRO-3036)", () => {
     );
     expect(view.byLabel("Undo: Snoozed quiet:z for 4 h")).not.toBeNull();
     expect(view.byLabel("Undo: Snoozed quiet:y for 4 h")).not.toBeNull();
+  });
+
+  test("while work.list cannot be read, Health says so and never says All clear over the missing runs", async () => {
+    workFail = "disk gone";
+    const view = await mount(surface(false));
+    await view.goto("Health");
+    await until(() => view.text().includes("The work could not be read: disk gone"));
+    expect(view.text()).toContain("The work could not be read: disk gone");
+    // The verdict names the gap; with no notice listed it would read "Not all clear", never "All clear".
+    expect(view.text()).toContain("Could not read the work");
   });
 
   test("a failed schedule is a row of the same list: its verb opens the Timeline, where its runs are", async () => {

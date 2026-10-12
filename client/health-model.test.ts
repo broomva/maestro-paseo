@@ -190,6 +190,17 @@ describe("the verdict says one thing, and the notices are its count", () => {
       now: NOW,
     });
     expect(failed.verdict.title).toBe("Not all clear");
+    // The work could not be read: the stuck and quiet rows are missing, and the verdict says the work.
+    const noWork = healthModel({
+      reads,
+      loops: loops([]),
+      notices: none,
+      workFailed: true,
+      items: [],
+      loop: null,
+      now: NOW,
+    });
+    expect(noWork.verdict.sentence).toContain("Could not read the loops, the work");
   });
 
   test("the sentence names the ticks and each kind of notice, in a person's words", () => {
