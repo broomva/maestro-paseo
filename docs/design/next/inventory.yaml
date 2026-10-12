@@ -128,8 +128,8 @@ features:
     status: keep
     kind: watch
     pages: [P-initiatives]
-    interfaces: [I-initiatives-list, I-initiatives-file, I-ask-answer]
-    code: [client/initiatives.tsx, server/initiatives.ts]
+    interfaces: [I-initiatives-list, I-initiatives-file, I-initiatives-review, I-ask-answer]
+    code: [client/initiatives.tsx, server/initiatives.ts, server/reviews.ts]
   F-health-view:
     name: Health — fleet ticks, schedules, loops, lanes and sessions; adopt, prompt, stop
     status: change
@@ -328,7 +328,7 @@ pages:
     components: [C-work-row, C-segmented, C-state-label, C-button, C-undertow, C-inspector, C-swipe-row]
     reads: [I-work-list, I-work-history]
     writes: [I-work-cancel, I-work-stop, I-session-prompt, I-approval-decide, I-undo]
-    code: [client/plane-views.tsx, client/history.tsx]
+    code: [client/work-board.tsx, client/work-model.ts, client/use-inspector.ts, client/plane-views.tsx, client/history.tsx]
   P-health:
     name: J7 Health — verdict, tick grid, sessions, schedules, the conductor and lanes, notices with what closes each. M7 on the phone
     status: change
@@ -339,7 +339,7 @@ pages:
     components: [C-tick-strip, C-notice-card, C-roster, C-segmented, C-pill, C-button, C-glance-tile, C-deck, C-undertow, C-swipe-row]
     reads: [I-fleet-get, I-fleet-tick, I-timeline-get, I-loops-get, I-lanes-get, I-needs-list, I-notices-list]
     writes: [I-work-adopt, I-session-prompt, I-work-stop, I-notice-snooze, I-fleet-tick-run, I-fleet-mode-set, I-loop-control, I-undo]
-    code: [client/fleet.tsx, client/fleet-health.tsx, client/fleet-roster.tsx, client/timeline.tsx, client/loops.tsx]
+    code: [client/health.tsx, client/health-model.ts, client/fleet.tsx, client/fleet-health.tsx, client/fleet-roster.tsx, client/timeline.tsx, client/loops.tsx]
   P-initiatives:
     name: J8 Initiatives — lateness loudest; a due review is an Ask on its due date in the Feed deck (B2). M8 on the phone
     status: change
@@ -349,8 +349,8 @@ pages:
     phone_frame: VaM84
     components: [C-initiative-card, C-decision-card, C-button, C-inspector, C-detail-header]
     reads: [I-initiatives-list, I-needs-list]
-    writes: [I-ask-answer, I-initiatives-file, I-undo]
-    code: [client/initiatives.tsx]
+    writes: [I-ask-answer, I-initiatives-file, I-initiatives-review, I-undo]
+    code: [client/initiatives-board.tsx, client/initiatives-board-model.ts, client/initiatives.tsx]
   P-new-work:
     name: J9 New work — grows from New work over a dimmed Feed; who starts it (the lane, A8). M9 grows from +
     status: change
@@ -361,7 +361,7 @@ pages:
     components: [C-composer, C-pill, C-kbd, C-button]
     reads: [I-config-get, I-folder-inspect, I-lanes-get]
     writes: [I-work-create]
-    code: [client/new-work.tsx]
+    code: [client/new-work.tsx, client/composer.ts]
   P-phone:
     name: M10 From a push — Paseo's push, the asking session's card, Open in Maestro on the same hold
     status: new
@@ -565,7 +565,7 @@ interfaces:
   I-presence-get: { name: "presence.get", status: new, handler: plugin, callers: [ui, conductor] }
   I-policy-get: { name: "policy.get (policy.yaml and preauth, read only)", status: new, handler: plugin, callers: [ui] }
   I-notices-registry-get: { name: "notices.registry", status: new, handler: plugin, callers: [ui] }
-  I-notices-list: { name: "notices.list (the Health deck: stuck, quiet, schedule, loop, initiative)", status: new, handler: plugin, callers: [ui, conductor] }
+  I-notices-list: { name: "notices.list (the Health deck: stuck, quiet, schedule, loop, initiative; a pure read)", status: new, handler: plugin, callers: [ui, conductor], code: [server/notices.ts, shared/notices.ts] }
   I-answers-status: { name: "answers.status (waiting to land, routed, acted, held, recent)", status: new, handler: plugin, callers: [ui], code: [server/answers-status.ts] }
 
   # Owner verbs. Each records a receipt and honours the undo window (BRO-2999).
@@ -593,7 +593,8 @@ interfaces:
   I-work-unblock: { name: "work.unblock (8 s undo; Resume for work paused on a usage limit)", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-work, S-verbs], code: [server/engine.ts, server/verb-specs.ts] }
   I-work-cancel: { name: "work.cancel (8 s undo; at your gate it is a decision with its own window)", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-work, S-verbs], code: [server/engine.ts, server/verb-specs.ts] }
   I-work-stop: { name: "work.stop (8 s undo; the not-committed check is at the call and again when it applies)", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-work, S-verbs], code: [server/engine.ts, server/verb-specs.ts] }
-  I-notice-snooze: { name: "notice.snooze", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-notices-state] }
+  I-notice-snooze: { name: "notice.snooze", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-notices-state], code: [server/notice-snoozes.ts] }
+  I-initiatives-review: { name: "initiatives.review (a due review answered: a receipt in the asks log, 8 s undo; never edits an initiative file)", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-ask-receipts], code: [server/reviews.ts] }
   I-config-set: { name: "config.set (saved 8 s later; a newer save replaces a waiting one)", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-config, S-verbs], code: [server/config.ts, index.server.ts] }
   I-sweep-wake: { name: "sweep.wake (today loop.wake)", status: change, handler: plugin, callers: [ui, plugin], stores: [S-wake-log, S-work], code: [server/loop.ts] }
   I-presence-set: { name: "presence.set", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-presence] }
@@ -687,7 +688,7 @@ stores:
     code: [server/control-asks.ts]
   S-verbs: { name: "~/.local/state/maestro-paseo/verbs.jsonl (the owner-verb ledger: pending, undone, applied, dropped)", status: new, owner: plugin, modules: [server/owner-verbs.ts], code: [server/owner-verbs.ts] }
   S-approvals: { name: "~/.local/state/maestro-paseo/approvals.jsonl (approval.request and what became of each)", status: new, owner: plugin, modules: [server/approvals.ts], code: [server/approvals.ts] }
-  S-notices-state: { name: "notice state (raised, snoozed, resolved by key)", status: new, owner: plugin }
+  S-notices-state: { name: "notice state (raised, snoozed, resolved by key; today only snoozes: ~/.local/state/maestro-paseo/notice-snoozes.jsonl)", status: new, owner: plugin, modules: [server/notice-snoozes.ts], code: [server/notice-snoozes.ts] }
   S-presence: { name: "owner presence (present, away, off)", status: new, owner: plugin }
   S-inbox: { name: "~/.config/maestro-paseo/inbox.json", status: change, owner: plugin, modules: [server/inbox.ts], code: [server/inbox.ts] }
   S-conductor-state: { name: "the conductor's state.yaml and ticks ledger", status: new, owner: conductor }
