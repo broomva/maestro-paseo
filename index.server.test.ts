@@ -1200,3 +1200,140 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
     }
   }
 });
+
+test("a snooze and a review answer are checked again when their window closes (B4)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
+  roots.push(root);
+  const repo = join(root, "repo");
+  await mkdir(join(repo, ".git"), { recursive: true });
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+      cwd,
+      stdio: "pipe",
+    });
+  const origin = join(root, "origin.git");
+  const control = join(root, "control");
+  await mkdir(origin);
+  git(origin, "init", "-q", "--bare", "-b", "main");
+  git(root, "clone", "-q", origin, control);
+  await mkdir(join(control, ".control", "asks"), { recursive: true });
+  await mkdir(join(control, ".control", "initiatives"), { recursive: true });
+  await writeFile(
+    join(control, ".control", "initiatives", "skene.yaml"),
+    'id: skene\ntitle: "Skene"\nintent: "Ship the stage."\nintent_source: "owner, 2026-09-01"\nstated: 2026-09-01\nstatus: active\nnext_action: "Land the PR."\ndriver: owner\nlinks:\n  linear: [BRO-2953]\nreview_by: 2026-01-01\nexit: "It ships."\n',
+  );
+  git(control, "add", ".control");
+  git(control, "commit", "-q", "-m", "ledgers");
+  git(control, "push", "-q", "origin", "main");
+  const state = join(root, "state");
+  await mkdir(state, { recursive: true });
+  const config = join(root, "config.json");
+  await writeFile(
+    config,
+    JSON.stringify({
+      workRoot: join(root, "work"),
+      provider: "claude/test-model",
+      modeId: null,
+      isolation: "worktree",
+    }),
+  );
+  const snoozes = join(state, "notice-snoozes.jsonl");
+  const env: Record<string, string> = {
+    // A window long enough to change the world inside it, short enough to wait out.
+    MAESTRO_PASEO_VERB_WINDOW_MS: "700",
+    MAESTRO_PASEO_SWEEP_SECONDS: "3600",
+    MAESTRO_PASEO_FETCH_SECONDS: "0",
+    BROOMVA_HOME: join(root, "home"),
+    MAESTRO_PASEO_LAUNCHD: "off",
+    MAESTRO_PASEO_SCHEDULES: join(root, "schedules"),
+    MAESTRO_PASEO_LOOP_REPOS: "off",
+    MAESTRO_PASEO_FLEET_CONFIG: join(root, "no-fleet", "config"),
+    MAESTRO_PASEO_FLEET_STATE: join(root, "no-fleet", "state"),
+    MAESTRO_PASEO_FLEET_AGENTS: join(root, "no-fleet", "agents"),
+    MAESTRO_PASEO_CONTROL_REPO: control,
+    MAESTRO_PASEO_CONTROL_ANSWERS: join(root, "answers"),
+    MAESTRO_PASEO_ASK_RECEIPTS: join(state, "asks.jsonl"),
+    MAESTRO_PASEO_ASK_LOCKS: join(state, "locks"),
+    MAESTRO_PASEO_NOTICE_SNOOZES: snoozes,
+  };
+  const savedEnv = Object.keys(env).map((key) => [key, process.env[key]] as const);
+  const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
+  Object.assign(process.env, env);
+  process.env.MAESTRO_PASEO_CONFIG = config;
+  process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
+  const { host, handlers } = fakeHost();
+  const cleanup = contribute(host);
+  const fake = fakePaseo();
+  const context = { paseo: fake.paseo, signal: new AbortController().signal };
+  const run = async (name: string, input: unknown) => {
+    const handler = handlers.get(name);
+    if (!handler) throw new Error(`${name} is not handled`);
+    return (await handler(input, context)) as Record<string, unknown> & { item: { id: string; state: string } };
+  };
+  const lines = async (path: string, needle: string) =>
+    (await readFile(path, "utf8").catch(() => "")).split("\n").filter((line) => line.includes(needle));
+  try {
+    // A review answer is checked as it is sent and again when the window closes: answered meanwhile (by a receipt
+    // from elsewhere), it writes nothing a second time.
+    await run("initiatives.review", { id: "skene", date: "2026-01-01", answer: "park", note: "" });
+    await writeFile(
+      join(state, "asks.jsonl"),
+      `${JSON.stringify({ kind: "initiative.reviewed", initiative: "skene", date: "2026-01-01", answer: "keep", note: "", at: new Date().toISOString() })}\n`,
+    );
+    await settled(run);
+    expect(await lines(join(state, "asks.jsonl"), "initiative.reviewed")).toHaveLength(1);
+
+    // A snooze is checked the same way: the run stopped being quiet inside its window, so nothing is snoozed.
+    const { item } = await run("work.create", {
+      title: "Quiet",
+      brief: "",
+      repo,
+      initiative: "",
+      dispatch: true,
+      check: "",
+      gate: "human",
+    });
+    const dir = join(root, "work", (item as unknown as { path: string }).path);
+    await writeFile(
+      join(dir, "_events.jsonl"),
+      `${await readFile(join(dir, "_events.jsonl"), "utf8")}${JSON.stringify({
+        ts: new Date().toISOString(),
+        type: "loop.flagged",
+        actor: "maestro",
+        kind: "quiet",
+        reason: "Quiet for 90 minutes.",
+      })}\n`,
+    );
+    const key = `quiet:${item.id}`;
+    expect(
+      ((await run("notices.list", {})) as unknown as import("./shared/notices").Notices).rows.map((row) => row.key),
+    ).toContain(key);
+    await run("notice.snooze", { key, hours: 4 });
+    // The loop takes the quiet flag down inside the window: nothing to snooze when it closes.
+    await writeFile(
+      join(dir, "_events.jsonl"),
+      `${await readFile(join(dir, "_events.jsonl"), "utf8")}${JSON.stringify({
+        ts: new Date().toISOString(),
+        type: "flag.cleared",
+        actor: "maestro",
+        kind: "quiet",
+        reason: "It worked.",
+      })}\n`,
+    );
+    expect(
+      ((await run("notices.list", {})) as unknown as import("./shared/notices").Notices).rows.map((row) => row.key),
+    ).not.toContain(key);
+    await settled(run);
+    expect(await lines(snoozes, key)).toEqual([]);
+  } finally {
+    await cleanup();
+    process.env.MAESTRO_PASEO_CONFIG = saved.config;
+    process.env.MAESTRO_PASEO_SOCKET = saved.socket;
+    if (saved.config === undefined) delete process.env.MAESTRO_PASEO_CONFIG;
+    if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
+    for (const [name, value] of savedEnv) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
