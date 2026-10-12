@@ -148,6 +148,7 @@ export function HoldCard({
         accessibilityRole="button"
         accessibilityLabel={`${look.label}: ${row.title}`}
         accessibilityState={{ selected }}
+        aria-current={selected}
         onPress={onSelect}
         style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({
           ...focusRing(theme, focused),
@@ -245,6 +246,7 @@ function WatchedShell({
         accessibilityRole="button"
         accessibilityLabel={label}
         accessibilityState={{ selected }}
+        aria-current={selected}
         onPress={onSelect}
         style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({
           ...focusRing(theme, focused),

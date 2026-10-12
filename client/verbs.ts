@@ -9,6 +9,11 @@
 // what exists today: the session's permission prompt (Paseo's respondToPermission) for a prompt,
 // work.verdict for a hold at Maestro's own gate, and nothing for a prompt to a session.
 //
+// BRO-2999's contract, for when it lands: approval.decide {key, allow, action, note?} → {receipt, appliesAt}
+// (key is the NeedRow key, action the exact body.action shown); session.prompt {agentId, prompt, key?} →
+// {receipt, appliesAt}; verb.undo {receipt} takes back any of them, so the toast's receipt channel becomes
+// `verb:<receipt>`; work.verdict approve is refused. Neither exists on main yet.
+//
 // A verb that leaves a receipt carries an undo, inside UNDO_MS (B4): the toast's receipt is
 // `<channel>:<value>`, which `undoVerb` reads back. A verb whose call has no undo yet (an answer,
 // a permission prompt) says what it did and leaves the toast's Undo out.

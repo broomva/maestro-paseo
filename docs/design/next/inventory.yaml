@@ -270,7 +270,7 @@ pages:
     phone_frame: FKTsX
     components: [C-header, C-count-chip, C-tabs, C-button, C-presence-menu]
     reads: [I-needs-list]
-    code: [client/plane.tsx, client/integrations.ts]
+    code: [client/home-header.tsx, client/home-model.ts, client/presence.ts, client/plane.tsx, client/integrations.ts]
   P-feed:
     name: "J1 Feed — glance tiles; holds as cards, watched as rows; rail; inspector from the right. M1 on the phone: deck, pull-up sheet carrying the tab bar, swipes, undo toast"
     status: change
@@ -282,7 +282,7 @@ pages:
     components: [C-hold-card, C-finished-card, C-notice-card, C-work-row, C-rail, C-state-label, C-pill, C-button, C-glance-tile, C-inspector, C-undo-toast, C-undertow, C-deck, C-pull-sheet, C-tab-bar, C-swipe-row]
     reads: [I-needs-list, I-handled-list, I-work-list, I-notices-list, I-sweep-get]
     writes: [I-ask-answer, I-approval-decide, I-owner-step-done, I-session-prompt, I-notice-snooze, I-work-unblock, I-undo]
-    code: [client/feed.tsx, client/feed-model.ts]
+    code: [client/home.tsx, client/home-cards.tsx, client/home-model.ts, client/verbs.ts, client/feed.tsx, client/feed-model.ts]
   P-briefing:
     name: J2–J4 Briefings — the inspector per kind (approval, ask, notice); M2–M4 cards with the detail header
     status: change
@@ -408,6 +408,7 @@ pages:
     components: [C-presence-menu, C-segmented, C-toggle]
     reads: [I-presence-get]
     writes: [I-presence-set, I-undo]
+    code: [client/presence.ts, client/home-header.tsx]
   P-agent-panel:
     name: The Work panel beside a Paseo agent
     status: keep
@@ -481,20 +482,20 @@ pages:
 
   # Development (BRO-3034). Reached by its route only, and off unless the daemon runs with MAESTRO_KIT_GALLERY=1.
   P-kit-gallery:
-    name: "Component gallery — the kit's parts (M components, Undertow, J1's inspector) in every state, light and dark; until BRO-3035–3037 adopt them"
+    name: "Component gallery — the kit's phone parts (M components, Undertow) in every state, light and dark; J1 adopted the desktop parts (BRO-3035); BRO-3036–3037 adopt the rest"
     status: new
     frame: eTSe9
     png: j1-feed-home.png
     phone_frame: FKTsX
     phone_png: m1-feed-home-mobile.png
     note: "frame eTSe9 is 'M components'; the Undertow is MTdih and J1's inspector VbnhW. Each screen ticket deletes its parts here as it adopts them"
-    components: [C-inspector, C-glance-tile, C-deck, C-pull-sheet, C-tab-bar, C-detail-header, C-swipe-row, C-undo-toast, C-undertow]
+    components: [C-inspector, C-deck, C-pull-sheet, C-tab-bar, C-detail-header, C-swipe-row, C-undo-toast, C-undertow]
     reads: [I-kit-gallery]
     code: [client/kit/gallery.tsx, client/kit/gallery-data.ts]
 
 components:
-  C-header: { name: "Shell/Header", status: change, pen: R4srT, code: [client/plane.tsx] }
-  C-tabs: { name: "Tabs", status: change, pen: null, code: [client/plane-controls.tsx] }
+  C-header: { name: "Shell/Header", status: change, pen: R4srT, code: [client/home-header.tsx, client/plane.tsx] }
+  C-tabs: { name: "Tabs", status: change, pen: null, code: [client/home-header.tsx, client/plane-controls.tsx] }
   C-count-chip: { name: "Count chip by kind", status: new, pen: p5UJ7N }
   C-button: { name: "Button (primary, secondary, ghost)", status: keep, pen: fNXA8, code: [client/ui.tsx] }
   C-pill: { name: "Pill", status: change, pen: p5UJ7N, code: [client/fleet-ui.tsx, client/new-work.tsx] }
@@ -505,11 +506,11 @@ components:
     name: Hold card — variants ask, approval, owner step; the verbs in place
     status: new
     pen: null
-    code: [client/decision-card.tsx, client/gate-card.tsx]
-  C-finished-card: { name: "Finished card", status: new, pen: null, code: [client/arc-report.tsx] }
+    code: [client/home-cards.tsx, client/decision-card.tsx, client/gate-card.tsx]
+  C-finished-card: { name: "Finished card", status: new, pen: null, code: [client/home-cards.tsx, client/arc-report.tsx] }
   C-notice-card: { name: "Notice card", status: change, pen: null, code: [client/fleet-queue.tsx] }
-  C-work-row: { name: "Work row (Undertow while running)", status: change, pen: null, code: [client/plane-views.tsx, client/feed.tsx] }
-  C-rail: { name: "Feed rail (Decide, Handled for you, Proposals, Today)", status: new, pen: null }
+  C-work-row: { name: "Work row (Undertow while running)", status: change, pen: null, code: [client/home-cards.tsx, client/plane-views.tsx, client/feed.tsx] }
+  C-rail: { name: "Feed rail (Decide, Handled for you, Proposals, Today)", status: new, pen: null, code: [client/home-cards.tsx] }
   C-briefing: { name: "Briefing pane", status: change, pen: null, code: [client/detail.tsx] }
   C-decision-card: { name: "Decision card", status: keep, pen: null, code: [client/decision-card.tsx] }
   C-progress: { name: "Progress bar", status: keep, pen: null, code: [client/ui.tsx] }
@@ -531,7 +532,7 @@ components:
   C-swipe-row: { name: "Swipe row (right default, left Snooze or Open; never a hold)", status: new, pen: null, code: [client/kit/swipe-row.tsx, client/kit/swipe-model.ts] }
   C-undo-toast: { name: "Undo toast (8 s)", status: new, pen: xuqvS, code: [client/kit/undo-toast.tsx, client/kit/undo-model.ts, shared/undo.ts] }
   C-undertow: { name: "Undertow halo, tidepool dot and standing pulse (Running only)", status: new, pen: L4xCf4, code: [client/kit/undertow.tsx, client/kit/undertow-model.ts, client/kit/assumptions.ts] }
-  C-presence-menu: { name: "Presence menu", status: new, pen: kJOpv }
+  C-presence-menu: { name: "Presence menu", status: new, pen: kJOpv, code: [client/home-header.tsx, client/presence.ts] }
 
 interfaces:
   # Reads. Pure: no write, no send, no create (BRO-2995).

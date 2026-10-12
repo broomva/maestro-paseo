@@ -210,7 +210,7 @@ export function HomeScreen({
       const plan = planVerb(verb, target, choice);
       const out = await verbs.run(plan, env);
       if (out.go) requestIntent(out.go);
-      if (out.receipt) undo.show(undoEntry(out.receipt, out.done, Date.now(), out.appliesAt));
+      if (out.receipt) undo.show(undoEntry(out.receipt, out.done, Date.now(), out.appliesAt, "applies in"));
       else toast.show(out.done);
     } catch (error) {
       toast.error(errorText(error));

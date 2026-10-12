@@ -1209,12 +1209,12 @@ const diffState = {
   getWorkspace: (id: string) => (id === "ws-a" ? { id, diffStat: { additions: 12, deletions: 3 } } : null),
   getAgent: () => null,
 };
-const surface = (compact: boolean) => (
+const surface = (compact: boolean, params: Record<string, string> = {}) => (
   <MaestroSurface
     theme={theme}
     host={{ id: "h", label: "h" }}
     layout={{ compact, platform: "web" }}
-    params={{}}
+    params={params}
     navigation={{
       openAgent({ agentId }: { agentId: string }) {
         opened.push(agentId);
@@ -2557,6 +2557,159 @@ describe("the Queued hint", () => {
   }
 });
 
+describe("J1, the Feed home on the desktop (BRO-3035)", () => {
+  const panel = (view: Awaited<ReturnType<typeof mount>>) => view.all('[data-testid="inspector-panel"]')[0];
+  const holds = (view: Awaited<ReturnType<typeof mount>>) =>
+    view.all('[data-testid^="hold-"]').map((el) => el.getAttribute("data-testid"));
+  const until = async (ok: () => boolean) => {
+    for (let tries = 0; tries < 150 && !ok(); tries += 1) await settle(20);
+  };
+  const press = (name: string, init: { metaKey?: boolean } = {}, target?: unknown) =>
+    step(generation, () => {
+      const at = (target ?? win.document.body) as unknown as { dispatchEvent(event: unknown): boolean };
+      at.dispatchEvent(new win.KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init }));
+    }).then(() => settle(30));
+
+  test("the home is the Feed tab: holds as cards, the four tiles, the scope bar, no rail until there is something to say", async () => {
+    const view = await mount(surface(false));
+    await until(() => holds(view).length === 2);
+    expect(holds(view)).toEqual(["hold-work:a", "hold-work:g"]);
+    // Four tiles at most (JE): Needs you, Running, Handled today, Unsupervised today.
+    const tiles = view.all('[data-testid^="glance-tile-"]');
+    expect(tiles).toHaveLength(4);
+    expect(tiles.map((tile) => tile.getAttribute("aria-label")?.split(",")[0])).toEqual([
+      "Needs you",
+      "Running",
+      "Handled today",
+      "Unsupervised today",
+    ]);
+    // The scope bar's chips are needs.list's kinds, and the first says the total.
+    expect(view.byLabel("All")).not.toBeNull();
+    expect(view.byLabel("2 approvals")).not.toBeNull();
+    // Running work wears the Undertow; a hold never does (B1).
+    expect(view.byLabel("Running: Work c")).not.toBeNull();
+  });
+
+  test("a card opens the inspector from the right, lit in the stream; J and K walk the holds; Esc closes it", async () => {
+    const view = await mount(surface(false));
+    await until(() => holds(view).length === 2);
+    expect(panel(view)).toBeUndefined();
+    await view.press(view.byLabel("Approval: Work a"));
+    await until(() => panel(view) !== undefined);
+    expect(panel(view)?.textContent).toContain("Work a");
+    expect(view.byLabel("Approval: Work a")?.getAttribute("aria-current")).toBe("true");
+    // J walks to the next hold, K back: one hold selected at a time.
+    await press("j");
+    expect(panel(view)?.textContent).toContain("Work g");
+    expect(view.byLabel("Approval: Work g")?.getAttribute("aria-current")).toBe("true");
+    expect(view.byLabel("Approval: Work a")?.getAttribute("aria-current")).toBe("false");
+    await press("k");
+    expect(panel(view)?.textContent).toContain("Work a");
+    // Esc closes it.
+    await press("Escape");
+    await until(() => panel(view) === undefined);
+    expect(panel(view)).toBeUndefined();
+    // A key typed in the search keeps its own meaning: J there is a letter, not a step.
+    await view.press(view.byLabel("Approval: Work a"));
+    await until(() => panel(view) !== undefined);
+    await press("j", {}, view.byLabel("Search work, ticket or branch"));
+    expect(panel(view)?.textContent).toContain("Work a");
+  });
+
+  test("opening on params.hold opens that hold's inspector (BRO-3033 fact 2); a hold already answered says so", async () => {
+    const view = await mount(surface(false, { hold: "work:g" }));
+    await until(() => panel(view) !== undefined);
+    expect(panel(view)?.textContent).toContain("Work g");
+    expect(view.byLabel("Approval: Work g")?.getAttribute("aria-current")).toBe("true");
+    const gone = await mount(surface(false, { hold: "work:answered" }));
+    await until(() => gone.text().includes("no longer waiting on you"));
+    expect(gone.text()).toContain("That hold is no longer waiting on you");
+    expect(panel(gone)).toBeUndefined();
+  });
+
+  test("the counts are one number: the header tab, the tile, the section and needs.list's total", async () => {
+    const view = await mount(surface(false));
+    await until(() => holds(view).length === 2);
+    const total = needsNow().summary.total;
+    expect(total).toBe(2);
+    expect(view.byLabel(`Feed, ${total} need you`)).not.toBeNull();
+    expect(view.all(`[aria-label^="Needs you, ${total}, holds"]`)).toHaveLength(1);
+    expect(holds(view)).toHaveLength(total);
+    expect(view.byLabel(`${total} approvals`)).not.toBeNull();
+    // A kind chip narrows the section, never a tile or a tab.
+    await view.press(view.byLabel("2 approvals"));
+    expect(holds(view)).toHaveLength(total);
+    await view.press(view.byLabel("1 health"));
+    expect(holds(view)).toHaveLength(0);
+    expect(view.byLabel(`Feed, ${total} need you`)).not.toBeNull();
+    expect(view.all(`[aria-label^="Needs you, ${total}, holds"]`)).toHaveLength(1);
+  });
+
+  test("Allow goes through the verbs adapter, and the toast counts down with Undo for eight seconds (B4)", async () => {
+    const view = await mount(surface(false, { hold: "work:g" }));
+    await until(() => panel(view) !== undefined);
+    calls.length = 0;
+    await view.press(view.all('[data-testid="inspector-bar"] [aria-label="Allow"]')[0]);
+    await until(() => calls.some((call) => call.method === "work.verdict"));
+    expect(calls.filter((call) => call.method === "work.verdict").map((call) => call.input)).toEqual([
+      { id: "g", verdict: "approve", note: "" },
+    ]);
+    const toast = view.all('[data-testid="undo-toast"]')[0];
+    expect(toast?.textContent).toContain("Allowed");
+    // The window is UNDO_MS (8 s): the toast counts down to when it applies.
+    expect(toast?.textContent).toMatch(/applies in [78] s/);
+    await view.press(view.all('[aria-label^="Undo: "]')[0]);
+    await until(() => calls.some((call) => call.method === "work.undo"));
+    expect(calls.filter((call) => call.method === "work.undo").map((call) => call.input)).toEqual([{ id: "g" }]);
+  });
+
+  test("the presence pill opens P1: the three states, and it says choosing is not built yet", async () => {
+    const view = await mount(surface(false));
+    await view.press(view.byLabel("Presence: Present"));
+    const text = view.text();
+    expect(text).toContain("from signals");
+    expect(text).toContain("Away");
+    expect(text).toContain("reachable on the phone");
+    expect(text).toContain("held for the morning digest");
+    expect(text).toContain("until I change it");
+    expect(text).toContain("BRO-2987");
+    expect(view.all('[role="menuitemradio"]')).toHaveLength(3);
+  });
+
+  test("the workspace menu narrows the holds, never the counts; its holds are needs.list's rows by scope", async () => {
+    const view = await mount(surface(false));
+    await until(() => holds(view).length === 2);
+    await view.press(view.byLabel("Workspace: All workspaces"));
+    const options = view.all('[role="menuitemradio"]');
+    const named = options.find((el) => el.getAttribute("aria-label") !== "All workspaces");
+    expect(named).toBeDefined();
+    const scope = named?.getAttribute("aria-label") ?? "";
+    await view.press(named);
+    const rows = needsNow().rows.filter((row) => row.scope === scope);
+    expect(holds(view)).toEqual(rows.map((row) => `hold-${row.key}`));
+    expect(view.byLabel(`Workspace: ${scope}`)).not.toBeNull();
+    expect(view.byLabel(`Feed, ${needsNow().summary.total} need you`)).not.toBeNull();
+  });
+
+  test("the header's tabs open the views; the Feed tab's workspace menu is the Feed's alone", async () => {
+    const view = await mount(surface(false));
+    expect(view.byLabel("Workspace: All workspaces")).not.toBeNull();
+    await view.goto("Decisions");
+    expect(view.byLabel("Workspace: All workspaces")).toBeNull();
+    await view.goto("Feed");
+    expect(view.byLabel("Workspace: All workspaces")).not.toBeNull();
+    expect(view.tabs().filter((tab) => tab.getAttribute("aria-selected") === "true")).toHaveLength(1);
+  });
+
+  test("the wake chip says when the loop wakes next and opens the loop's panel", async () => {
+    loopState = { ...loopOff(), minutes: 15, nextAt: new Date(Date.now() + 9 * 60_000 + 20_000).toISOString() };
+    const view = await mount(surface(false));
+    await until(() => view.byLabel("Next wake: 10 min. Show the loop") !== null);
+    await view.press(view.byLabel("Next wake: 10 min. Show the loop"));
+    expect(view.text()).toContain("Wake now");
+  });
+});
+
 describe("Settings", () => {
   const settingsScreen = () => (
     <MaestroSettings theme={theme} host={{ id: "h", label: "h" }} layout={{ compact: false, platform: "web" }} />
@@ -2603,8 +2756,6 @@ describe("Settings", () => {
 
 describe("the Fleet view", () => {
   const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
-  const fleetTab = (view: Awaited<ReturnType<typeof mount>>) =>
-    view.tabs().find((tab) => tab.getAttribute("aria-label") === "Fleet");
   const starting = (view: Awaited<ReturnType<typeof mount>>, label: string) =>
     view.all("[aria-label]").find((one) => one.getAttribute("aria-label")?.startsWith(label));
 
@@ -3206,9 +3357,6 @@ describe("the Fleet view", () => {
 });
 
 describe("the Timeline", () => {
-  const tab = (view: Awaited<ReturnType<typeof mount>>, label = "Timeline") =>
-    // By its name: a tab with a badge says it after a comma ("Feed, 2 need you").
-    view.tabs().find((one) => (one.getAttribute("aria-label") ?? "").split(", ")[0] === label);
   const rows = (view: Awaited<ReturnType<typeof mount>>) =>
     view
       .all('[role="button"][aria-expanded]')
@@ -3286,9 +3434,6 @@ describe("the Timeline", () => {
 });
 
 describe("drilling in", () => {
-  const tab = (view: Awaited<ReturnType<typeof mount>>, label: string) =>
-    // By its name: a tab with a badge says it after a comma ("Feed, 2 need you").
-    view.tabs().find((one) => (one.getAttribute("aria-label") ?? "").split(", ")[0] === label);
   const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
 
   test("a decision ask shows its stakes and options, and is answered in place: chosen, then Answer", async () => {
@@ -4460,9 +4605,6 @@ describe("the Decisions tab", () => {
 });
 
 describe("Initiatives", () => {
-  const tab = (view: Awaited<ReturnType<typeof mount>>, label: string) =>
-    // By its name: a tab with a badge says it after a comma ("Feed, 2 need you").
-    view.tabs().find((one) => (one.getAttribute("aria-label") ?? "").split(", ")[0] === label);
   const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
   /** The tab loads on its own query once it opens: waited for, never assumed, on a slow runner. */
   const until = async (view: Awaited<ReturnType<typeof mount>>, text: string) => {
@@ -4674,7 +4816,7 @@ describe("Initiatives", () => {
 
     initiativesFail = "the control repo is gone";
     const broken = await mount(surface(false));
-    await broken.press(tab(broken, "Initiatives"));
+    await broken.goto("Initiatives");
     await until(broken, "could not be read");
     expect(broken.text()).toContain("Your initiatives could not be read: the control repo is gone");
     initiativesFail = null;
@@ -4808,9 +4950,6 @@ describe("the Feed home (BRO-2906)", () => {
 });
 
 describe("Loops", () => {
-  const tab = (view: Awaited<ReturnType<typeof mount>>, label: string) =>
-    // By its name: a tab with a badge says it after a comma ("Feed, 2 need you").
-    view.tabs().find((one) => (one.getAttribute("aria-label") ?? "").split(", ")[0] === label);
   const until = async (view: Awaited<ReturnType<typeof mount>>, text: string) => {
     for (let tries = 0; tries < 150 && !view.text().includes(text); tries += 1) await settle(20);
   };

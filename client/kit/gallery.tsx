@@ -4,10 +4,12 @@
 // MAESTRO_KIT_GALLERY=1 (shared/kit.ts), and the screen has no sidebar row or
 // Command Center item, so it is reached by its route only. Each screen ticket
 // (BRO-3035 J1, BRO-3036 J2–J9, BRO-3037 M1–M11) deletes a component's entries
-// here as it adopts the component; the gallery goes when it is empty.
+// here as it adopts the component; the gallery goes when it is empty. J1 adopted
+// the desktop parts (the glance tiles, the inspector panel and the undo toast on
+// the desktop), so the Desktop section is gone; the phone's inspector card and
+// toast stay until M1–M4.
 //
-// Sections: Desktop (glance tiles, the inspector per kind with both bar looks,
-// the undo toast), Phone (detail header, tab bar, swipe row states, inspector
+// Sections: Phone (detail header, tab bar, swipe row states, inspector
 // cards), Undertow (halo, ring fallback, dot, pulse, and what wears nothing),
 // and M1, the live phone shell: deck, pull-up sheet with the tab bar riding
 // it, swipe rows, undo toast, and the card that rises from the deck.
@@ -21,14 +23,13 @@ import { kitGallery } from "../../shared/kit";
 import { UNDO_MS } from "../../shared/undo";
 import { isDarkSurface } from "../fleet-color";
 import { Segmented } from "../ui";
-import { BOTH_WAYS, type Directions, type FrostLook, LEFTWARD, swipeDirections } from "./assumptions";
+import { BOTH_WAYS, type Directions, LEFTWARD, swipeDirections } from "./assumptions";
 import { Deck, DeckHold } from "./deck";
 import { DetailHeader } from "./detail-header";
 import { GALLERY_DARK, GALLERY_LIGHT, INSPECTOR_SAMPLES, type RowSample, SHEET_ROWS } from "./gallery-data";
-import { GlanceTile } from "./glance-tile";
-import { InspectorBody, InspectorCard, type InspectorItem, InspectorPanel } from "./inspector";
+import { InspectorBody, InspectorCard } from "./inspector";
 import { KIND_LOOK, verbsFor } from "./inspector-model";
-import { Chip, CLIP, Dot, MONO, Pill } from "./parts";
+import { Chip, CLIP, Dot, MONO } from "./parts";
 import { PullSheet } from "./pull-sheet";
 import { SwipeRow } from "./swipe-row";
 import { type Tab, TabBar } from "./tab-bar";
@@ -37,11 +38,10 @@ import { StandingPulse, TidepoolDot, Undertow } from "./undertow";
 import { undoEntry } from "./undo-model";
 import { UndoToast, useUndoToast } from "./undo-toast";
 
-type Section = "desktop" | "phone" | "undertow" | "m1";
+type Section = "phone" | "undertow" | "m1";
 type Scheme = "both" | "light" | "dark";
 
 const SECTIONS: readonly { id: Section; label: string }[] = [
-  { id: "desktop", label: "Desktop" },
   { id: "phone", label: "Phone" },
   { id: "undertow", label: "Undertow" },
   { id: "m1", label: "M1 shell" },
@@ -61,7 +61,7 @@ const TABS: readonly Tab[] = [
 
 /** A clock frozen 3 s into an 8 s window, so a still toast reads "5 s" in every shot. */
 const FROZEN = 1_000_000;
-const frozenNow = () => FROZEN + 3_000;
+const _frozenNow = () => FROZEN + 3_000;
 
 const ignore = () => undefined;
 
@@ -112,7 +112,7 @@ export function KitGallery({
   hold?: string;
 }) {
   const kit = kitOf(theme);
-  const [section, setSection] = useState<Section>(initialSection ?? (compact ? "m1" : "desktop"));
+  const [section, setSection] = useState<Section>(initialSection ?? (compact ? "m1" : "phone"));
   const [scheme, setScheme] = useState<Scheme>(initialScheme ?? (compact ? (kit.dark ? "dark" : "light") : "both"));
   const activeDark = isDarkSurface(theme.colors.surface0);
   // The active Paseo theme stands for its own appearance; broomva's palette for the other.
@@ -176,7 +176,6 @@ export function KitGallery({
       <View style={{ flexDirection: compact ? "column" : "row", gap: 16, paddingHorizontal: compact ? 12 : 20 }}>
         {panes.map((pane) => (
           <Pane key={pane.colors.surface0} theme={pane}>
-            {section === "desktop" ? <DesktopParts theme={pane} /> : null}
             {section === "phone" ? <PhoneParts theme={pane} /> : null}
             {section === "undertow" ? <UndertowParts theme={pane} /> : null}
           </Pane>
@@ -230,177 +229,6 @@ function Group({
       </View>
       {children}
     </View>
-  );
-}
-
-function DesktopParts({ theme }: { theme: PluginTheme }) {
-  const kit = kitOf(theme);
-  const [kind, setKind] = useState<InspectorItem["kind"]>("approval");
-  const [open, setOpen] = useState(true);
-  const [frost, setFrost] = useState<FrostLook>("frost");
-  const [undone, setUndone] = useState<string | null>(null);
-  const toast = useUndoToast((receipt) => setUndone(receipt));
-  const [stage, setStage] = useState(0);
-  const item = INSPECTOR_SAMPLES.find((sample) => sample.kind === kind) ?? INSPECTOR_SAMPLES[0];
-  return (
-    <>
-      <Group theme={theme} title="Glance tiles" note="Tinted only for Needs you (Tidepool) or late and stranded (warn)">
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
-          <GlanceTile
-            theme={theme}
-            icon="Hand"
-            label="Needs you"
-            value="4"
-            unit="holds"
-            line="1 approval · 1 owner step · 2 asks"
-            tone="needs"
-            onPress={ignore}
-          />
-          <GlanceTile theme={theme} icon="Loader" label="Running" value="3" unit="sessions" onPress={ignore}>
-            {["sri · STI-3684 turn 4", "holon turn 1 · gh api"].map((line) => (
-              <View key={line} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                <TidepoolDot theme={theme} state="running" size={11} />
-                <Text numberOfLines={1} style={{ color: kit.fg2, fontSize: 11.5 }}>
-                  {line}
-                </Text>
-              </View>
-            ))}
-          </GlanceTile>
-          <GlanceTile
-            theme={theme}
-            icon="CheckCheck"
-            label="Handled today"
-            value="22"
-            unit="closed for you"
-            line="4 closed by you · 3 asks answered"
-            onPress={ignore}
-          />
-          <GlanceTile
-            theme={theme}
-            icon="Clock"
-            label="Waiting to land"
-            value="27"
-            unit="answers"
-            line="stranded: no session took them"
-            tone="warn"
-            onPress={ignore}
-          />
-          <GlanceTile
-            theme={theme}
-            icon="Timer"
-            label="Unsupervised today"
-            value="4h 32m"
-            line="selected · next wake 18 min"
-            selected
-            onPress={ignore}
-          />
-        </View>
-      </Group>
-
-      <Group
-        theme={theme}
-        title="Inspector"
-        note="Every kind; slides in from the right; Esc or × sends it back. Bar: frost (web) or solid (iOS, A2)"
-      >
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-          <Segmented
-            theme={theme}
-            label="Kind"
-            options={INSPECTOR_SAMPLES.map((sample) => ({ id: sample.kind, label: KIND_LOOK[sample.kind].label }))}
-            value={kind}
-            onChange={(next) => {
-              setKind(next);
-              setOpen(true);
-            }}
-          />
-          <Segmented
-            theme={theme}
-            label="Bar"
-            options={[
-              { id: "frost", label: "Frost" },
-              { id: "solid", label: "Solid" },
-            ]}
-            value={frost}
-            onChange={setFrost}
-          />
-          <Pill theme={theme} label={open ? "Close inspector" : "Open inspector"} onPress={() => setOpen(!open)} />
-        </View>
-        <View
-          onLayout={(event: LayoutChangeEvent) => setStage(event.nativeEvent.layout.width)}
-          style={{
-            height: 660,
-            borderRadius: 14,
-            overflow: "hidden",
-            backgroundColor: kit.dark ? kit.sunken : "#e9ebee",
-          }}
-        >
-          <View style={{ padding: 16, gap: 8, width: Math.max(0, stage - Math.min(480, stage - 32) - 32) }}>
-            {INSPECTOR_SAMPLES.map((sample) => (
-              <View
-                key={sample.key}
-                style={{
-                  backgroundColor: kit.bg,
-                  borderRadius: 12,
-                  borderWidth: sample.kind === kind && open ? 2 : 1,
-                  borderColor: sample.kind === kind && open ? kit.needs : kit.hairline,
-                  padding: 10,
-                }}
-              >
-                <Text numberOfLines={2} style={{ color: kit.fg, fontSize: 12.5, fontWeight: "600" }}>
-                  {sample.title}
-                </Text>
-              </View>
-            ))}
-          </View>
-          {stage > 0 ? (
-            <InspectorPanel
-              theme={theme}
-              item={item}
-              open={open}
-              width={Math.min(480, stage - 32)}
-              frost={frost}
-              onClose={() => setOpen(false)}
-              onNext={() => {
-                const at = INSPECTOR_SAMPLES.findIndex((sample) => sample.kind === kind);
-                setKind(INSPECTOR_SAMPLES[(at + 1) % INSPECTOR_SAMPLES.length].kind);
-              }}
-              onVerb={(id) => {
-                if (id === "allow" || id === "answer" || id === "unblock")
-                  toast.show(
-                    undoEntry(
-                      `receipt:${item.key}:${id}`,
-                      `${KIND_LOOK[item.kind].label} · ${id}`,
-                      Date.now(),
-                      undefined,
-                      "applies in",
-                    ),
-                  );
-              }}
-            />
-          ) : null}
-          <UndoToast theme={theme} entry={toast.entry} onUndo={toast.undo} />
-        </View>
-        {undone ? <Text style={{ color: kit.muted, fontSize: 12 }}>Undone: {undone}</Text> : null}
-      </Group>
-
-      <Group
-        theme={theme}
-        title="Undo toast"
-        note={`The ${UNDO_MS / 1000} s window (B4). Still states use a frozen clock; the live one is the inspector's verb above`}
-      >
-        {[
-          undoEntry("r1", "Allowed #933", FROZEN, FROZEN + UNDO_MS, "merges in"),
-          undoEntry("r2", "Continued · A1 adopted", FROZEN, FROZEN + UNDO_MS),
-        ].map((entry) => (
-          <View
-            key={entry.receipt}
-            style={{ height: 66, borderRadius: 12, backgroundColor: kit.dark ? kit.sunken : "#e9ebee" }}
-          >
-            <UndoToast theme={theme} entry={entry} onUndo={ignore} now={frozenNow} bottom={8} />
-          </View>
-        ))}
-      </Group>
-    </>
   );
 }
 
