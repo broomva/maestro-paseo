@@ -23,7 +23,7 @@ import {
   type Needs,
   workKey,
 } from "../shared/needs";
-import { sectionOf } from "../shared/needs-you";
+import { runningOf, sectionOf } from "../shared/needs-you";
 import { ticketOf } from "../shared/text";
 import type { TimelineNotice } from "../shared/timeline";
 import { forTheConductor, headlineOf, ledgerName, ledgerOf, silenceOf } from "./decisions-model";
@@ -267,7 +267,7 @@ export function homeSections(input: HomeInput): HomeSections {
     needs: filter === "health" || filter === "finished" ? [] : needs,
     finished: only("finished") ? finished : [],
     health: only("health") ? health : [],
-    running: filter === "all" ? items.filter((item) => item.state === "running" && shown(item)) : [],
+    running: filter === "all" ? runningOf(items).filter(shown) : [],
     queued:
       filter === "all"
         ? items.filter((item) => sectionOf(item) === "queued" && !held.has(workKey(item.id)) && shown(item))
@@ -301,7 +301,7 @@ export function glanceTiles(
   now: number,
 ): Tiles {
   const oldest = needs?.summary.oldest ? needs.rows.find((row) => row.key === needs.summary.oldest?.key) : null;
-  const running = items.filter((item) => item.state === "running");
+  const running = runningOf(items);
   const forYou = handled ? handledForYou(handled.rows) : [];
   const last = forYou[0] ?? null;
   const next = !loop

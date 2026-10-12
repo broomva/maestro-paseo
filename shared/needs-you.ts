@@ -55,3 +55,19 @@ export function atGateOf<T extends Placed>(items: readonly T[]): T[] {
 export function sectionOf(item: Placed): Group {
   return needsHand(item) || isFinished(item) ? "review" : item.group;
 }
+
+/**
+ * Whether running work is standing (J6): alive, with no turn lately and nothing to review yet. The loop flags a
+ * run quiet after 30 minutes (`flag.kind` "quiet"); that is the only signal work.list carries of a session between
+ * turns, so a standing run is a quiet one. It is watched, never a hold (A1): Health says what closes it.
+ */
+export const isStanding = (item: Pick<WorkItem, "state" | "flag">): boolean =>
+  item.state === "running" && item.flag?.kind === "quiet";
+
+/**
+ * The work that is running now, on a live turn: the Running lane, the Running tile, the Work tab's badge and the
+ * Undertow all read this one list (view-models.md invariant 4); standing work is the Standing lane's.
+ */
+export function runningOf<T extends Pick<WorkItem, "state" | "flag">>(items: readonly T[]): T[] {
+  return items.filter((item) => item.state === "running" && !isStanding(item));
+}

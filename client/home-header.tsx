@@ -6,6 +6,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useEffect, useState } from "react";
 import { Platform, Pressable, Text, TextInput, View } from "react-native";
+import { runningOf } from "../shared/needs-you";
 import type { TabBadge } from "./header-count";
 import {
   HOME_TABS,
@@ -30,6 +31,7 @@ import {
 } from "./presence";
 import { settingsOpener } from "./settings-link";
 import { CHOICE_ROLE, focusRing, webAria } from "./ui";
+import { useTick } from "./use-tick";
 
 type Menu = "workspace" | "presence" | null;
 
@@ -496,16 +498,6 @@ export function HomeHeader(props: HomeHeaderProps) {
   );
 }
 
-/** The time now, moved on every `ms` while mounted. */
-function useTick(ms: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), ms);
-    return () => clearInterval(timer);
-  }, [ms]);
-  return now;
-}
-
 /**
  * The header with its reads: the tabs' counts are needs.list's (homeBadges), the Work tab's the running work,
  * the Health tab's the rows the Feed lists, the workspace menu's holds are needs.list's rows by scope, and the
@@ -541,7 +533,7 @@ export function HomeHeaderBar({
   const presence = usePresence();
   const now = useTick(15_000);
   const items = list.data?.items ?? [];
-  const running = items.filter((item) => item.state === "running").length;
+  const running = runningOf(items).length;
   const health = healthRows(items, watched.data ?? null).length;
   return (
     <HomeHeader
