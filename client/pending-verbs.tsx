@@ -10,26 +10,8 @@ import { Text, View } from "react-native";
 import type { OwnerVerb, PendingVerb } from "../shared/verbs";
 import { errorText } from "./format";
 import { useVerbLedger, useVerbs } from "./hooks";
+import { pendingFor, pendingWords, secondsLeft, settledWords } from "./pending-model";
 import { Button, Card, space, useText } from "./ui";
-
-/** Whole seconds left, rounded up: "8" for the first second, "1" for the last. Pure. */
-export function secondsLeft(remainingMs: number): number {
-  return Math.max(0, Math.ceil(remainingMs / 1000));
-}
-
-/** The verbs of yours still waiting, those on `keys` only when given (a work's key, an ask's). Pure. */
-export function pendingFor(
-  pending: readonly PendingVerb[],
-  keys?: readonly string[],
-  skip: readonly OwnerVerb[] = [],
-): PendingVerb[] {
-  return pending.filter((verb) => (!keys || keys.includes(verb.key)) && !skip.includes(verb.verb));
-}
-
-/** What one waiting verb says: what you did, and when it takes effect. Pure. */
-export function pendingWords(verb: Pick<PendingVerb, "label">, left: number): string {
-  return left > 0 ? `${verb.label} · takes effect in ${left}s` : `${verb.label} · taking effect now`;
-}
 
 /**
  * The countdown, from what the host said was left when it was read, so a clock that differs from the host's
@@ -86,6 +68,7 @@ export function PendingVerbs({
   compact,
   keys,
   skip,
+  except,
 }: {
   theme: PluginTheme;
   compact: boolean;
@@ -93,9 +76,11 @@ export function PendingVerbs({
   keys?: readonly string[];
   /** Verbs this place already counts down itself (a work's own decision at the gate, in its detail). */
   skip?: readonly OwnerVerb[];
+  /** Keys whose countdown is shown beside this one already (the open work's, in its detail pane). */
+  except?: readonly string[];
 }) {
   const ledger = useVerbLedger();
-  const shown = pendingFor(ledger.data?.pending ?? [], keys, skip);
+  const shown = pendingFor(ledger.data?.pending ?? [], keys, skip).filter((verb) => !except?.includes(verb.key));
   if (shown.length === 0) return null;
   return (
     <Card theme={theme} style={{ gap: space[2] }}>
@@ -103,5 +88,25 @@ export function PendingVerbs({
         <PendingRow key={verb.receipt} verb={verb} readAt={ledger.dataUpdatedAt} theme={theme} compact={compact} />
       ))}
     </Card>
+  );
+}
+
+/** Receipts for your verbs on `keys`, newest first: nothing when there are none. */
+export function SettledVerbs({ theme, keys }: { theme: PluginTheme; keys: readonly string[] }) {
+  const text = useText(theme);
+  const ledger = useVerbLedger();
+  const shown = (ledger.data?.recent ?? []).filter((verb) => keys.includes(verb.key)).slice(0, 8);
+  if (shown.length === 0) return null;
+  return (
+    <View style={{ gap: space[2] }}>
+      <Text style={text.label} accessibilityRole="header">
+        Your decisions
+      </Text>
+      {shown.map((verb) => (
+        <Text key={verb.receipt} style={text.body} accessibilityLabel={settledWords(verb)}>
+          {settledWords(verb)}
+        </Text>
+      ))}
+    </View>
   );
 }

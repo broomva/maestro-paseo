@@ -31,7 +31,8 @@ import {
 } from "./decisions-model";
 import { errorText } from "./format";
 import { useRefresh, useVerbLedger } from "./hooks";
-import { PendingVerbs, pendingFor } from "./pending-verbs";
+import { pendingFor } from "./pending-model";
+import { PendingVerbs } from "./pending-verbs";
 import { Card, focusRing, Kbd, Notice, radius, size, space, usePressScale, useText } from "./ui";
 
 type Navigation = PluginSurfaceProps["navigation"];

@@ -267,7 +267,8 @@ export function cardOf(
             : item.state === "done"
               ? { label: "Done", tone: "muted" }
               : { label: "Queued", tone: "muted" };
-  const action = item.state === "review" ? (asked ? "Answer" : "Review") : stuck ? (fleet ? "Open log" : "Look") : null;
+  const action =
+    item.state === "review" ? (item.permission ? "Answer" : "Review") : stuck ? (fleet ? "Open log" : "Look") : null;
   return {
     icon: fleet
       ? "TriangleAlert"

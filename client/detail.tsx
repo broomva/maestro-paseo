@@ -21,7 +21,8 @@ import { ago, agoWords, basename, errorText } from "./format";
 import { LookView, VERBS_MEAN, verbsNeedSaying } from "./gate-look";
 import { useRefresh, useVerbLedger, useVerbs, useWorkDetail } from "./hooks";
 import type { MaestroIntent } from "./intent";
-import { PendingVerbs, pendingFor } from "./pending-verbs";
+import { pendingFor } from "./pending-model";
+import { PendingVerbs, SettledVerbs } from "./pending-verbs";
 import { changedVisible, isFinished } from "./plane-model";
 import { collapseRepeats, fleetOriginOf, placeText, repeatText, repeatWords, titleText } from "./records-text";
 import { Button, Card, IconButton, Notice, radius, StateLabel, space, Unbroken, useText } from "./ui";
@@ -143,6 +144,8 @@ export function WorkDetail({
       ) : null}
 
       <FilesSection key={item.id} id={item.id} theme={theme} />
+
+      <SettledVerbs theme={theme} keys={[workKey(item.id)]} />
 
       <Receipts theme={theme} events={events} />
 
