@@ -9,6 +9,7 @@ import { Pressable, Text, View } from "react-native";
 import type { WorkItem } from "../shared/contracts";
 import type { DecisionAsk } from "../shared/fleet";
 import { holdOf } from "../shared/needs";
+import { ChangeText, WithChange } from "./changed";
 import type { NeedEntry } from "./feed-model";
 import { type DecideRow, HANDLED_NAMED, type HandledGroup, handledTitle } from "./feed-model";
 import { ago, plural } from "./format";
@@ -168,6 +169,11 @@ export function HoldCard({
               {evidence}
             </Text>
           </View>
+        ) : null}
+        {entry.item ? (
+          <WithChange workspaceId={entry.item.worker?.workspaceId} stat={entry.item.changed}>
+            {(stat) => (stat ? <ChangeText theme={theme} stat={stat} /> : null)}
+          </WithChange>
         ) : null}
         {row.kind === "owner_step" ? (
           <View style={{ flexDirection: "row", gap: 8, alignItems: "flex-start" }}>

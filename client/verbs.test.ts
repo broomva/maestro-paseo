@@ -21,24 +21,51 @@ const step = (key: string, where: string): Extract<NeedRow, { kind: "owner_step"
   body: { where, doneCheck: "checked", waitingSessions: 0 },
 });
 
+// Real-shaped ids: a Paseo agent id, a permission request id, and a work id are three different things.
+const AGENT = "d3c2a1b0-7a54-4e0f-9b1e-5f6a7b8c9d01";
+const REQ = "perm_01JABCDEF123456789XYZ";
+
 describe("approvals go through decideApproval", () => {
-  test("a permission prompt is answered on the session, by the request the work holds", () => {
-    const item = fakeWork("w1", "review", live);
-    item.permission = { requestId: "req-1" } as never;
-    expect(decideApproval(approval("permission"), item, true)).toMatchObject({
-      call: "permission",
-      agentId: "agent-9",
-      requestId: "req-1",
-      allow: true,
-    });
-    expect(decideApproval(approval("permission"), item, false)).toMatchObject({ call: "permission", allow: false });
+  const permission = (requestId: string | undefined): Extract<NeedRow, { kind: "approval" }> => ({
+    ...approval("permission"),
+    session: { agentId: AGENT, name: "d3c2a1b0", waiting: true },
+    body: { action: "Bash: ls", heldBy: "permission", ...(requestId ? { requestId } : {}), evidence: [], after: [] },
   });
 
-  test("a prompt this client has not read opens the item instead of guessing", () => {
-    expect(decideApproval(approval("permission"), null, true)).toMatchObject({
+  test("a permission prompt is answered on the session, by the request id the row shows", () => {
+    const item = fakeWork("w1", "review", live);
+    item.permission = { requestId: REQ } as never;
+    expect(decideApproval(permission(REQ), item, true)).toMatchObject({
+      call: "permission",
+      agentId: AGENT,
+      requestId: REQ,
+      allow: true,
+    });
+    expect(decideApproval(permission(REQ), item, false)).toMatchObject({ call: "permission", allow: false });
+  });
+
+  test("a session that raised another prompt since the row was read is not approved: nothing is answered", () => {
+    const item = fakeWork("w1", "review", live);
+    item.permission = { requestId: "perm_01JNEWDANGEROUS000000", detail: "DANGEROUS-UNSEEN" } as never;
+    const plan = decideApproval(permission(REQ), item, true);
+    expect(plan.call).toBe("stale");
+    expect(JSON.stringify(plan)).not.toContain("DANGEROUS");
+    // The prompt cleared while the card was open: stale too, never an answer to a request that is gone.
+    const cleared = fakeWork("w1", "review", live);
+    expect(decideApproval(permission(REQ), cleared, true).call).toBe("stale");
+  });
+
+  test("a row from a daemon that names no request id opens the item instead of guessing one", () => {
+    const item = fakeWork("w1", "review", live);
+    item.permission = { requestId: REQ } as never;
+    expect(decideApproval(permission(undefined), item, true)).toMatchObject({
       call: "go",
       intent: { kind: "select", id: "w1" },
     });
+  });
+
+  test("a prompt this client has not read as work still answers the prompt the row shows", () => {
+    expect(decideApproval(permission(REQ), null, true)).toMatchObject({ call: "permission", requestId: REQ });
   });
 
   test("a hold at Maestro's gate is a verdict: Allow approves, Deny sends it back", () => {

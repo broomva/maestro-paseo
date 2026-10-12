@@ -77,6 +77,7 @@ function useTick(ms: number): number {
 
 type KeyEvent = {
   key: string;
+  repeat?: boolean;
   metaKey?: boolean;
   ctrlKey?: boolean;
   shiftKey?: boolean;
@@ -136,7 +137,7 @@ export function HomeScreen({
   const items = list.data?.items ?? [];
   const asks = asksRead.data ? decisionAsks(asksRead.data) : [];
   const rows = needs.data?.rows ?? null;
-  const sections = homeSections({
+  const homeInput = {
     needs: needs.data ?? null,
     handled: handled.data ?? null,
     items,
@@ -145,10 +146,12 @@ export function HomeScreen({
     workspace,
     filter,
     query,
-  });
+  };
+  const sections = homeSections(homeInput);
   // Every hold, joined, whatever the chips and the search keep: a selection survives a filter.
   const everyHold = useMemo(() => needsSection(rows ?? [], items, asks), [rows, items, asks]);
   const holdKeys = sections.needs.map((entry) => entry.row.key);
+  const visibleHolds = filter === "all" ? sections.needs : homeSections({ ...homeInput, filter: "all" }).needs;
   const finishedAll = homeSections({
     needs: needs.data ?? null,
     handled: handled.data ?? null,
@@ -217,10 +220,17 @@ export function HomeScreen({
     openUrl,
     openAgent: (agentId: string) => navigation?.openAgent({ agentId }),
   };
+  // One verb at a time on a hold: it cannot be acted on again until the call has answered and every read has landed.
+  const inFlight = useRef(new Set<string>());
   const act = async (verb: VerbId, target: VerbTarget, choice?: string) => {
+    const id = target.row?.key ?? (target.item ? `work:${target.item.id}` : (target.proposal ?? verb));
+    if (inFlight.current.has(id)) return;
+    inFlight.current.add(id);
+    let landed: Promise<void> = Promise.resolve();
     try {
       const plan = planVerb(verb, target, choice);
       const out = await verbs.run(plan, env);
+      landed = out.settled;
       // Work this screen has no hold or row for opens in its own detail; the rest is for the tab that owns it.
       if (out.go?.kind === "select") onOpenWork(out.go.id);
       else if (out.go) requestIntent(out.go);
@@ -228,6 +238,8 @@ export function HomeScreen({
       else toast.show(out.done);
     } catch (error) {
       toast.error(errorText(error));
+    } finally {
+      void landed.catch(() => undefined).then(() => inFlight.current.delete(id));
     }
   };
   const targetOf = (hold: typeof entry): VerbTarget =>
@@ -261,10 +273,10 @@ export function HomeScreen({
     if (!doc) return;
     const onHomeKey = (event: KeyEvent) => {
       if (!keyRef.current.open || !keyRef.current.inspected) return;
+      // Maestro's keys are Maestro's only while focus is inside its screen: the page's body is not Maestro's.
       const within = root.current as { contains?: (other: unknown) => boolean } | null;
       const target = event.target;
-      const loose = !target || target === doc || target === doc.body;
-      if (!loose && within?.contains && !within.contains(target)) return;
+      if (!target || !within?.contains?.(target)) return;
       const action = keyAction(
         keyRef.current.kind,
         { key: event.key, meta: event.metaKey, ctrl: event.ctrlKey, shift: event.shiftKey, alt: event.altKey },
@@ -273,7 +285,8 @@ export function HomeScreen({
       if (!action) return;
       event.preventDefault?.();
       if ("step" in action) walkRef.current(action.step);
-      else keyRef.current.onVerb(action.verb);
+      // A held key sends a verb once: only the first press acts.
+      else if (!event.repeat) keyRef.current.onVerb(action.verb);
     };
     doc.addEventListener("keydown", onHomeKey);
     return () => doc.removeEventListener("keydown", onHomeKey);
@@ -383,8 +396,10 @@ export function HomeScreen({
             tone={tiles.needs.value > 0 ? "needs" : "plain"}
             onPress={() => {
               setFilter("all");
-              const first = everyHold[0]?.row.key;
+              // The first hold you can see: the workspace and the search still narrow what is listed.
+              const first = visibleHolds[0]?.row.key;
               if (first) selectHold(first);
+              else toast.show("No hold here: the workspace or the search hides them");
             }}
           >
             {tiles.needs.oldest ? (

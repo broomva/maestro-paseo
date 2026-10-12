@@ -25,3 +25,10 @@ Left, and why:
 - **Presence** shows the three states and "from signals"; choosing one lands with BRO-2987 (presence.get and presence.set do not exist yet), and the menu says so.
 - **Inspector history** and the evidence tiles (Checks, P20, Diff, Reversible) are empty: the approval body the server builds today carries only the facts it has.
 - **Fonts** are the system's, not the frame's Inter and JetBrains Mono (paseo-plugin-capabilities.md).
+
+## What the desktop Feed lost, and where it lives now
+
+- **Refresh work button.** Gone from the desktop header. The reads poll (work.list every 4 s, needs.list on session events and every 30 s) and every verb reads again when it settles; the compact layout keeps its button.
+- **Feed initiative scope menu.** The header's workspace menu replaces it on the Feed. The List and Board keep the initiative scope row and its counts.
+- **The week bars** ("This week, 8h 45m unsupervised") live on the compact Feed and on the non-Feed views' scoreboard card, not on the desktop Feed.
+- The changed line (+a −d) and the loop flag's reason (inside "Done when it runs. …") are on the hold cards.

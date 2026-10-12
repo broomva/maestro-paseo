@@ -153,6 +153,9 @@ describe("needs.list's kinds (owner answer A1)", () => {
     if (perm?.kind !== "approval") throw new Error("not an approval");
     expect(perm.body.heldBy).toBe("permission");
     expect(perm.body.action).toBe("Run bash: git push");
+    // The row names the prompt it shows, so an answer can only be to that one; a gate hold has no prompt.
+    expect(perm.body.requestId).toBe("r1");
+    expect(gate.body.requestId).toBeUndefined();
 
     const yours = byKey.get("work:yours");
     if (yours?.kind !== "owner_step") throw new Error("not an owner step");

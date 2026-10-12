@@ -2564,7 +2564,7 @@ describe("J1, the Feed home on the desktop (BRO-3035)", () => {
   const until = async (ok: () => boolean) => {
     for (let tries = 0; tries < 150 && !ok(); tries += 1) await settle(20);
   };
-  const press = (name: string, init: { metaKey?: boolean } = {}, target?: unknown) =>
+  const press = (name: string, init: { metaKey?: boolean; repeat?: boolean } = {}, target?: unknown) =>
     step(generation, () => {
       const at = (target ?? win.document.body) as unknown as { dispatchEvent(event: unknown): boolean };
       at.dispatchEvent(new win.KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init }));
@@ -2598,12 +2598,20 @@ describe("J1, the Feed home on the desktop (BRO-3035)", () => {
     await until(() => panel(view) !== undefined);
     expect(panel(view)?.textContent).toContain("Work a");
     expect(view.byLabel("Approval: Work a")?.getAttribute("aria-current")).toBe("true");
-    // J walks to the next hold, K back: one hold selected at a time.
-    await press("j");
+    // J walks to the next hold, K back: one hold selected at a time. Keys are Maestro's inside its screen.
+    const inside = view.byLabel("Approval: Work a");
+    await press("j", {}, inside);
     expect(panel(view)?.textContent).toContain("Work g");
     expect(view.byLabel("Approval: Work g")?.getAttribute("aria-current")).toBe("true");
     expect(view.byLabel("Approval: Work a")?.getAttribute("aria-current")).toBe("false");
-    await press("k");
+    await press("k", {}, inside);
+    expect(panel(view)?.textContent).toContain("Work a");
+    // From the page's body or from Paseo's own chrome they are not.
+    await press("j");
+    const chrome = win.document.createElement("button");
+    win.document.body.appendChild(chrome);
+    await press("j", {}, chrome);
+    chrome.remove();
     expect(panel(view)?.textContent).toContain("Work a");
     // Esc from Paseo's own chrome (outside Maestro's screen) is not Maestro's: the inspector stays.
     const outside = win.document.createElement("button");
@@ -2697,6 +2705,77 @@ describe("J1, the Feed home on the desktop (BRO-3035)", () => {
     await view.press(view.all('[aria-label^="Undo: "]')[0]);
     await until(() => calls.some((call) => call.method === "work.undo"));
     expect(calls.filter((call) => call.method === "work.undo").map((call) => call.input)).toEqual([{ id: "g" }]);
+  });
+
+  test("⌘↵ allows only from inside Maestro's screen, once: the body and Paseo's chrome do nothing, a held key is ignored, two at once send one", async () => {
+    const view = await mount(surface(false, { hold: "work:g" }));
+    await until(() => panel(view) !== undefined);
+    const verdicts = () => calls.filter((call) => call.method === "work.verdict").length;
+    calls.length = 0;
+    await press("Enter", { metaKey: true });
+    const chrome = win.document.createElement("button");
+    win.document.body.appendChild(chrome);
+    await press("Enter", { metaKey: true }, chrome);
+    chrome.remove();
+    expect(verdicts()).toBe(0);
+    const inside = panel(view);
+    await press("Enter", { metaKey: true, repeat: true }, inside);
+    expect(verdicts()).toBe(0);
+    // Two presses in one frame: the second finds the hold still being decided.
+    await step(generation, () => {
+      for (let n = 0; n < 2; n += 1)
+        (inside as unknown as { dispatchEvent(event: unknown): boolean }).dispatchEvent(
+          new win.KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true }),
+        );
+    });
+    await settle(60);
+    expect(verdicts()).toBe(1);
+  });
+
+  test("Allow from a card is not sent twice while the first is being decided", async () => {
+    const view = await mount(surface(false));
+    await until(() => holds(view).length === 2);
+    calls.length = 0;
+    const allow = view.all('[data-testid="hold-work:g"] [aria-label="Allow"]')[0];
+    await step(generation, () => {
+      (allow as unknown as { click(): void }).click();
+      (allow as unknown as { click(): void }).click();
+    });
+    await settle(60);
+    expect(calls.filter((call) => call.method === "work.verdict")).toHaveLength(1);
+  });
+
+  test("the Needs you tile opens the first hold you can see: a workspace that hides the first does not select it", async () => {
+    const view = await mount(surface(false));
+    await until(() => holds(view).length === 2);
+    const rows = needsNow().rows;
+    const second = rows[1];
+    await view.press(view.byLabel("Workspace: All workspaces"));
+    await view.press(view.all('[role="menuitemradio"]').find((el) => el.getAttribute("aria-label") === second.scope));
+    expect(holds(view)).toEqual(rows.filter((row) => row.scope === second.scope).map((row) => `hold-${row.key}`));
+    await view.press(view.all('[aria-label^="Needs you, 2, holds"]')[0]);
+    await until(() => panel(view) !== undefined);
+    expect(panel(view)?.textContent).toContain(second.title);
+  });
+
+  test("a hold card keeps the changed line the old Feed card had, from the client state", async () => {
+    const view = await mount(surface(false), { state: diffState as unknown as PluginClientStateSource });
+    await until(() => holds(view).length === 2);
+    const card = view.all('[data-testid="hold-work:a"]')[0];
+    expect(card?.textContent).toContain("+12 −3");
+    expect(card?.querySelector('[aria-label="12 lines added, 3 removed"]')).not.toBeNull();
+  });
+
+  test("an owner step's card says why only you may start it", async () => {
+    const yoursFlag = {
+      kind: "yours" as const,
+      reason: "Start it yourself: it runs without permission prompts.",
+      at: new Date(Date.now() - 2 * 60_000).toISOString(),
+    };
+    items = [...fixture(), work("y", "proposed", { flag: yoursFlag })];
+    const view = await mount(surface(false));
+    await until(() => holds(view).includes("hold-work:y"));
+    expect(view.all('[data-testid="hold-work:y"]')[0]?.textContent).toContain(yoursFlag.reason);
   });
 
   test("the presence pill opens P1: the three states, and it says choosing is not built yet", async () => {

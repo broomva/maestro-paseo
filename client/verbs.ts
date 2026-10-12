@@ -59,6 +59,8 @@ export interface VerbTarget {
 /** The call a verb makes. Pure data: `useVerbs` runs it. */
 export type VerbPlan =
   | { call: "permission"; agentId: string; requestId: string; allow: boolean; done: string }
+  /** The prompt the card showed is not the session's prompt now: nothing is answered, and everything is read again. */
+  | { call: "stale"; done: string }
   | { call: "verdict"; id: string; verdict: "approve" | "revise"; note: string; done: string }
   | {
       call: "answer";
@@ -98,14 +100,18 @@ export function decideApproval(
   const hold = holdOf(row.key);
   if (hold?.kind !== "work") return { call: "unavailable", why: "Only work holds an approval today." };
   if (row.body.heldBy === "permission") {
-    const agentId = item?.worker?.agentId ?? row.session?.agentId ?? null;
-    const requestId = item?.permission?.requestId ?? null;
+    // The prompt answered is the one the row shows: its session and its request id come from the same read as its
+    // action, never from work.list's (a session that raised another prompt between the two reads is not approved).
+    const agentId = row.session?.agentId ?? null;
+    const requestId = row.body.requestId ?? null;
     if (!agentId || !requestId)
       return {
         call: "go",
         intent: { kind: "select", id: hold.id },
         done: "Opened the item: its prompt is not read yet",
       };
+    if (item && item.permission?.requestId !== requestId)
+      return { call: "stale", done: "That prompt changed: reading it again" };
     return { call: "permission", agentId, requestId, allow, done: allow ? "Allowed" : "Denied" };
   }
   return allow
@@ -184,6 +190,8 @@ export interface VerbOutcome {
   appliesAt?: string;
   /** Somewhere the screen should go (Decisions, the item). */
   go?: MaestroIntent;
+  /** Resolves once needs.list and every Maestro read have been read again after the call. */
+  settled: Promise<void>;
 }
 
 /** What a plan may need from the screen: a link opened, a session opened (the host's navigation). */
@@ -217,70 +225,82 @@ export function useVerbs() {
     conductorUndo: useRpc(undoConductor),
   };
   // Every call settles by reading again: needs.list and handled.list at once, and every Maestro read.
-  const settle = () => {
+  const settle = (): Promise<void> => {
     invalidateNeeds(client);
-    void refresh();
+    return refresh().then(() => undefined);
+  };
+  const perform = async (plan: VerbPlan, env: VerbEnv): Promise<Omit<VerbOutcome, "settled">> => {
+    switch (plan.call) {
+      case "permission":
+        await paseo.agents.ref(plan.agentId).respondToPermission({
+          requestId: plan.requestId,
+          response: plan.allow ? { behavior: "allow" } : { behavior: "deny", message: "Declined from Maestro" },
+        });
+        return { done: plan.done };
+      case "verdict": {
+        const { item } = await rpc.verdict({ id: plan.id, verdict: plan.verdict, note: plan.note });
+        return { done: plan.done, receipt: `work:${plan.id}`, appliesAt: item.pending?.effectiveAt };
+      }
+      case "answer": {
+        const { warning } = await rpc.answer({
+          where: whereOf(plan.ask),
+          ledger: plan.ask.ledger,
+          uid: plan.ask.uid,
+          id: plan.ask.id,
+          hash: plan.ask.hash,
+          option: plan.option,
+          note: "",
+        });
+        return { done: warning ? `${plan.done} · ${warning}` : plan.done };
+      }
+      case "dispatch":
+        await rpc.dispatch({ id: plan.id });
+        return { done: plan.done };
+      case "unblock":
+        await rpc.unblock({ id: plan.id, note: "" });
+        return { done: plan.done };
+      case "cancel": {
+        // Work at review holds its cancel for UNDO_MS; queued work is canceled at once, with nothing to take back.
+        const { item } = await rpc.cancel({ id: plan.id });
+        return item.pending
+          ? { done: plan.done, receipt: `work:${plan.id}`, appliesAt: item.pending.effectiveAt }
+          : { done: plan.done };
+      }
+      case "conductor": {
+        const { receipt, appliesAt } = await rpc.conductor({ key: plan.key, verb: plan.verb });
+        return { done: plan.done, receipt: `conductor:${receipt}`, appliesAt };
+      }
+      case "url":
+        env.openUrl(plan.url);
+        return { done: plan.done };
+      case "session":
+        env.openAgent(plan.agentId);
+        return { done: plan.done };
+      case "go":
+        return { done: plan.done, go: plan.intent };
+      case "stay":
+        return { done: plan.done };
+      case "stale":
+        return { done: plan.done };
+      case "unavailable":
+        throw new Error(plan.why);
+    }
   };
   return {
-    /** Make the plan's call. Rejects with the call's error; `unavailable` rejects with its reason. */
+    /**
+     * Make the plan's call. Rejects with the call's error; `unavailable` rejects with its reason. The outcome's
+     * `settled` resolves once everything has been read again, so a screen can hold a hold still until then.
+     */
     async run(plan: VerbPlan, env: VerbEnv): Promise<VerbOutcome> {
+      const reads = plan.call !== "go" && plan.call !== "stay" && plan.call !== "url" && plan.call !== "session";
+      let outcome: Omit<VerbOutcome, "settled">;
       try {
-        switch (plan.call) {
-          case "permission":
-            await paseo.agents.ref(plan.agentId).respondToPermission({
-              requestId: plan.requestId,
-              response: plan.allow ? { behavior: "allow" } : { behavior: "deny", message: "Declined from Maestro" },
-            });
-            return { done: plan.done };
-          case "verdict": {
-            const { item } = await rpc.verdict({ id: plan.id, verdict: plan.verdict, note: plan.note });
-            return { done: plan.done, receipt: `work:${plan.id}`, appliesAt: item.pending?.effectiveAt };
-          }
-          case "answer": {
-            const { warning } = await rpc.answer({
-              where: whereOf(plan.ask),
-              ledger: plan.ask.ledger,
-              uid: plan.ask.uid,
-              id: plan.ask.id,
-              hash: plan.ask.hash,
-              option: plan.option,
-              note: "",
-            });
-            return { done: warning ? `${plan.done} · ${warning}` : plan.done };
-          }
-          case "dispatch":
-            await rpc.dispatch({ id: plan.id });
-            return { done: plan.done };
-          case "unblock":
-            await rpc.unblock({ id: plan.id, note: "" });
-            return { done: plan.done };
-          case "cancel": {
-            // Work at review holds its cancel for UNDO_MS; queued work is canceled at once, with nothing to take back.
-            const { item } = await rpc.cancel({ id: plan.id });
-            return item.pending
-              ? { done: plan.done, receipt: `work:${plan.id}`, appliesAt: item.pending.effectiveAt }
-              : { done: plan.done };
-          }
-          case "conductor": {
-            const { receipt, appliesAt } = await rpc.conductor({ key: plan.key, verb: plan.verb });
-            return { done: plan.done, receipt: `conductor:${receipt}`, appliesAt };
-          }
-          case "url":
-            env.openUrl(plan.url);
-            return { done: plan.done };
-          case "session":
-            env.openAgent(plan.agentId);
-            return { done: plan.done };
-          case "go":
-            return { done: plan.done, go: plan.intent };
-          case "stay":
-            return { done: plan.done };
-          case "unavailable":
-            throw new Error(plan.why);
-        }
-      } finally {
-        if (plan.call !== "go" && plan.call !== "stay" && plan.call !== "url" && plan.call !== "session") settle();
+        outcome = await perform(plan, env);
+      } catch (error) {
+        if (reads) void settle();
+        throw error;
       }
+      return { ...outcome, settled: reads ? settle() : Promise.resolve() };
     },
     /** Take a verb back by its receipt, inside its window. */
     async undo(receipt: string): Promise<void> {
@@ -290,7 +310,7 @@ export function useVerbs() {
         if (read.channel === "work") await rpc.undo({ id: read.value });
         else await rpc.conductorUndo({ receipt: read.value });
       } finally {
-        settle();
+        void settle();
       }
     },
   };
