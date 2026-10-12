@@ -10,6 +10,9 @@ import { WORK_LABEL } from "./runs";
 /** Sets `labels` on the session `agentId`, adding to the ones it has. Rejects when the daemon refuses. */
 export type LabelAgent = (agentId: string, labels: Record<string, string>) => Promise<void>;
 
+/** The label Paseo itself puts on a session a session started: the agent that started it (the daemon's record, not Maestro's). */
+export const PARENT_AGENT_LABEL = "paseo.parent-agent-id";
+
 /** The labels a work's session carries: its work, and when known its ticket and the work that adopted it. */
 export const WORK_LABELS = { work: WORK_LABEL, ticket: "ticket", parent: "maestro.parent-work" } as const;
 

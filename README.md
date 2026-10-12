@@ -108,7 +108,7 @@ to it:
 alias maestro="bun /absolute/path/to/maestro-paseo/bin/maestro.ts"
 
 maestro ls                     # all work, what needs you first
-maestro new "Persist run transcripts" --brief "Store it on the Run record." --repo ~/code/project --dispatch
+maestro new "Persist run transcripts" --brief "Store it on the Run record." --repo ~/code/project
 maestro show <id>              # state, the look at the gate, receipts
 maestro track                  # track this session as work
 maestro mine                   # the work this session is running
@@ -116,183 +116,37 @@ maestro mine                   # the work this session is running
 
 - **Sessions get the noun and the verb, never the gate.** Approve, send back, unblock, cancel,
   leaving a quiet run running, settings and the loop are not served on the socket; a session that
-  asks is told they are yours. A session
-  starts only queued work (restarting stuck work is unblocking), and work it creates is always
-  `gate: human`.
+  asks is told they are yours. Work a session creates is always `gate: human`, and queued.
+- **A session starts nothing** (owner answer A8). `maestro dispatch` and `maestro new --dispatch`
+  are gone, and the socket refuses `work.dispatch` and `work.create` with `dispatch: true` with
+  "A session does not start work: you start it with Dispatch in Maestro, or a lane or the conductor
+  does". The client refuses before it sends anything, so nothing is half-made.
+- **The socket checks who is asking** (BRO-2996, `server/callers.ts`). Every verb that writes names
+  the session it acts for, and Maestro checks that session against Paseo's own registry
+  (`~/.paseo/agents/*/<agent id>.json`): it exists, it is live (not archived or closed), and the
+  shell that is asking is in the folder it runs in or under it. So run `maestro` from inside the
+  session. It then acts only for that session: `track` and `mine` take its own session, or one it
+  started (`--agent <id>`, by Paseo's `paseo.parent-agent-id` label), `approval request` is filed
+  under it and counted against its 20, and `approval withdraw` takes back only its own. A session
+  that names another's id from its own folder is refused. `ls`, `show` and `config` stay open to
+  any shell on the socket: the conductor and the lanes read the queue through them, and the files
+  are yours anyway. A work's lineage (which work a tracked session belongs under) is the session
+  that started it by Paseo's record, never the adopter's word.
+- **What the check does not prove.** A process of yours that reads the registry can send a live
+  session's id and folder and be taken for it: the same trust as editing the work folders
+  directly. Peer credentials (the pid on the other end of the socket) would close it, but reading
+  them needs a native `getsockopt` call that Node does not have, and the plugin runs under Paseo's
+  Node, where `bun:ffi` does not exist; a per-session secret would need Paseo to put one in each
+  session's environment.
+- **What a session says of itself closes nothing.** Its own `ARC-STATUS: DONE|CLOSED|MERGED` and its
+  archive no longer close its work: the work waits at your gate. Only an orchestrator that tracked
+  the session and then archived it closes it (a session that tracked itself has no orchestrator).
 - **A session cannot write a done check.** Checks run as you, with no session and no permission
   prompt in the loop, so they come from you: add one to the work's `_work.md` (`done.check`).
-- **A session's run takes your Settings' mode, and never starts in Always ask.** A run a session
-  starts is one nobody watches (owner answer A8, BRO-2990). Until the socket verifies its caller
-  (BRO-2996), the caller never picks the mode: the run takes your Settings' mode, and only when
-  that mode does not ask before it acts (for Claude, `bypassPermissions`). `modeId: null` never falls
-  through to Paseo's default (Always ask) for such a run: with no mode in Settings, a mode that
-  asks, or work whose provider is not the Settings provider, the start is refused with the reason,
-  nothing starts, and `maestro new --dispatch` still files the work, queued, with its id and why.
-  The same holds for `maestro dispatch` from a plain terminal with no `PASEO_AGENT_ID`: it is a
-  run nobody watches too, so start such work with Dispatch in Maestro. Lanes that dispatch (SRI's
-  tick) need a Settings mode that does not ask; until then they fall back to starting the session
-  in Paseo and `maestro track`. Work a session creates carries none of the run choices the composer offers you (provider,
-  isolation, mode, thinking, features). That is no more than a session can already do: Paseo's own
-  `create_agent` tool, which every session holds, starts an agent in any mode. The session a client
-  claims to be (`PASEO_AGENT_ID`) is recorded on the receipts but chooses nothing: naming another
-  session's id borrows nothing from it.
-- **A mode you chose for one work is yours to use.** A session cannot start work that carries its
-  own mode: it is told "This work runs in a mode you chose; start it yourself."
-- **Receipts say which session it said it was.** Everything done through the socket is recorded as
-  an agent's (`actor: agent`), never yours, reads "by session 1a2b3c4d" in the receipts, and never
-  counts as you stepping in on the scoreboard. The id is the `PASEO_AGENT_ID` the client reports;
-  nothing verifies it, and a terminal without one is recorded as "by a session".
-- **It is the surface a session is offered, not a sandbox.** A process running as you can still
-  edit the work folders directly; the receipts are what keep that visible.
-- **Starting runs needs one agent event first.** Paseo hands a plugin its daemon client only inside
-  hooks and handlers. Until the first agent event after the plugin starts, `dispatch` and `track`
-  refuse and say so. The calling session's own turn is such an event, so in practice this only shows
-  right after a reload.
-
-Exit codes: 0 done, 1 Maestro refused, 2 Maestro is not listening (or bad usage), 3 no clear answer:
-the request may still have been applied, so check with `maestro ls` before retrying.
-
-Why a socket and not a tool: plugin RPC travels over the daemon's password-protected socket, and a
-plugin cannot add tools to an agent. Every session has a shell.
-
-## The work file
-
-`_work.md` is Maestro's work contract, field for field, so the Maestro runtime can read files
-written here. Paseo keys are added beside it, and Maestro's parser ignores keys it does not know.
-
-```markdown
----
-id: b6a9b360-3575-4bc3-a1c4-3c00758dd3cd
-kind: task
-state: review
-gate: human
-done:
-  check: bun test
-created: 2026-09-22
-updated: 2026-09-22
-repo: /Users/you/code/project     # where runs happen (added)
-provider: claude/claude-sonnet-5  # optional: the provider, with or without a model (added)
-isolation: worktree               # optional: worktree or directory (added)
-mode: acceptEdits                 # optional: the provider's mode id (added)
-thinking: high                    # optional: the model's thinking level (added)
-features:                         # optional: the provider's feature toggles (added)
-  fast_mode: true
----
-
-# Persist run transcripts
-
-Store the full transcript on each run so reviews do not need the live session.
-```
-
-The optional keys are what the New work composer chose. An absent one means Settings, read at
-dispatch time; the Settings mode applies only while the run uses the Settings provider, since a
-mode belongs to one provider. A title left blank in the composer takes the brief's first line.
-
-Runs start only in a repository the work changes: never your home folder, the work folder, a folder
-holding it, or one inside it. With `isolation: worktree` the folder must be a git repository. The
-folder is checked when you create the work and again before every run starts, however it starts
-(dispatch, unblock, or restarting work tracked from a session), so a hand-edited `repo:` or a
-session tracked in such a folder can be recorded, but no run starts there.
-
-Folders nest: `<root>/<initiative>/<project>/<item>/_work.md`. The nesting is the grouping.
-Edits keep the author's comments and key order. `_events.jsonl` is append-only. A file that does
-not parse shows as a warning in the list; it is never silently skipped.
-
-## States and the gate
-
-The eight system states are Maestro's; the UI speaks the six plain labels.
-
-| System | Shown as | Means |
-|---|---|---|
-| proposed, reviewing, triggered | Queued | Ready when you dispatch it |
-| running | Running | Live in a worktree; checks run when the agent stops |
-| review | Needs you | Waiting at your gate, or the agent asked a question |
-| blocked | Stuck | The turn failed, was stopped, the checks failed under an auto gate, or the session went away |
-| done, canceled | Done | The branch is the receipt |
-
-- **gate: human** (the default): a finished run always lands at Needs you, whatever the checks
-  say. Only Approve moves it to Done.
-- **gate: auto**: requires a check. Passing checks close it; failing checks leave it Stuck.
-- **Its branch merged.** An orchestrator's child (a session an agent adopted) that is Stuck only
-  because its session ended unfinished closes as Done when a PR from its branch merged after the
-  adoption: the work landed, by that session before it died or by another the orchestrator sent.
-  The receipt says only that ("Its branch … merged as owner/name#N after it was adopted"). The
-  branch and GitHub repo (`owner/name`, never the raw remote) are recorded at adoption, only for a
-  separate worktree (never a shared checkout, or a symlinked folder inside one). The PR is looked
-  up with `gh` in the background (it never holds up the board; answers and failures are kept 10
-  minutes; a card is watched 7 days after it stopped). A branch any PR targets as its base (dev,
-  main) never counts, nor a fork's PR of the same name. Work you adopted or dispatched is yours and
-  stays Stuck, as does a child you acted on at all since its adoption (a Send back, an Unblock, a
-  note), one with no recorded branch, or one whose PR merged before the adoption
-  (`server/branch-merge.ts`, BRO-2923).
-- **Send back** wakes the same session with your note. **Unblock** does the same for stuck work,
-  or starts a fresh run if the session is gone.
-- **Notifications.** Paseo pushes to your phone only when a top-level session finishes a turn, and
-  never for a session another session started, which is every orchestrated arc. So Maestro keeps
-  one session of its own, *Maestro · Needs you*, on a provider it registers (`server/inbox.ts`).
-  Each landing at your gate is a turn there: its message ("Needs you · the work, then its ask") is
-  the push, and the gate card under it answers the work in place. Paseo pushes once until you open
-  the inbox, so landings within 10 minutes of a push join it silently; an inbox still unread after
-  that is archived and a fresh one pushes again (every item stays in Needs you either way). Archive
-  the inbox yourself and the next landing opens a new one.
-- A **permission request** parks the item at Needs you as a question. Answer it from Maestro or
-  in the session; the run resumes.
-- **Arcs an orchestrator tracks** (a session an agent adopted, running an arc of its own) land
-  at Needs you only when a turn hands you something: an `ARC-STATUS:` line, an `## Ask` section, or
-  the handback skill's `## ⛔ Blocked on you` block. Any other turn end is the arc between steps:
-  the work stays Running. With the loop on, it is named in Needs you once it goes quiet; with the
-  loop off (the default) an arc that stops without handing anything back stays Running until it
-  does, you stop it, or its session is archived (then it is Stuck). One that is idle when it is
-  tracked is read the same way: its last turn lands it only if that turn handed you something. A
-  session you adopt by hand is work you handed Maestro, so every turn end lands it, as before.
-  When an orchestrator archives a child it adopted whose last landing was the arc's own (not an
-  answer to your Send back or Unblock), and you have not acted on it since, the child closes as
-  Done with a receipt naming the orchestrator: that landing was the orchestrator's to read, and
-  the orchestrator raises what needs you as an ask. Maestro does not judge how the arc ended; the
-  receipt says only that its orchestrator took it back and archived it.
-  Only what the session said counts: a heading or verdict it quotes in a code fence, or mentions in
-  passing, is not a handback. A long handback keeps its ask when its text is cut to the last 8000
-  characters, so it still lands. A dispatched run is one task, so its turn end still lands, and so
-  does the first turn to end after your Send back or Unblock. The card shows the ask in the
-  session's own words, or its last words and what Approve and Send back do; it never invents a
-  question.
-
-Two edges differ from the Maestro runtime because Paseo owns execution: review can return to
-running (send back, answered question), and queued or stuck work can be canceled directly. Both
-are documented in `shared/states.ts`, and the invariant that matters is kept exactly: nothing
-under a human gate reaches Done without an approve verdict.
-
-## Reads, and the plugin sweep
-
-**A read never writes** (BRO-2995). `work.list`, `work.attention`, `loops.get` and every view they
-reach (the Fleet, the Timeline, the workspace's asks) write no file, fetch nothing, and create,
-prompt, archive or label no session, however often they are polled. A read that brings Maestro its
-first daemon client only keeps it. So the rate at which a client polls cannot change what happens.
-
-What a read used to do on the side, the **plugin sweep** does on its own cadence (`server/sweep.ts`):
-every 30 seconds while the plugin runs, whether or not anyone looks (`MAESTRO_PASEO_SWEEP_SECONDS`
-overrides the period). It runs apart from the loop's period in Settings, so it keeps the cards true
-even with the loop off. Each sweep:
-
-- keeps the work true to Paseo (`Engine.upkeep`): a turn end missed while the plugin was down is
-  recovered, a session gone moves its run to stuck, a permission answered elsewhere is cleared, an
-  adopted child whose branch merged closes; then the decisions at your gate whose 8-second undo
-  window closed are applied (a send back prompts the session);
-- in the background, without holding up the work: fetches the control repo's origin/main for the
-  asks and then records the loops' drift (its ledger fetched first), one after the other so the
-  sweep's two fetches never race each other, each at most every 5 minutes (`MAESTRO_PASEO_FETCH_SECONDS`
-  overrides that for the control repo; 0 fetches every sweep); and clears the ledger locks this
-  process left behind.
-
-One sweep runs at a time (its lease): a sweep asked for while one runs is the next one, shared by
-everyone who asked meanwhile. A step that fails is logged and keeps no other from running. A wake
-waits at most 90 seconds for its sweep, then reads the files as they are and says the sweep ran
-over; a background step still running after 5 minutes is abandoned, logged, and started again by
-the next sweep, so a step that hangs never stops a wake or that step for good. The first
-sweep runs as the plugin starts; the first client a hook brings runs another at once. The sweep
-starts no work (A8).
-
-## The loop
+- **Work a session creates carries none of the run choices the composer offers you** (provider,
+  isolation, mode, thinking, features): when you start it, it takes your Settings. That is no more
+  than a session can already do: Paseo's own `create_agent` tool, which every session holds, starts
+  an agent in any mode.
 
 Off by default. Give it a period in Settings (`loopMinutes`) and Maestro wakes on that schedule to
 look after the work. **It never starts work** (owner answer A8, BRO-2990): the plugin queues, and
@@ -303,9 +157,8 @@ sessions and applying decisions whose undo window closed), then reads the work, 
 you, flags quiet runs, and lands and routes your answers.
 
 - **Only you, a lane or the conductor start a run.** Your Dispatch (and Unblock) starts work as
-  Settings say. A session starts it through the agent socket (`maestro dispatch`), in its lane's
-  mode (above). Maestro itself is refused outright: `dispatch` as Maestro answers "Maestro never
-  starts work by a rule of its own".
+  Settings say. A session cannot start one through the agent socket (above), and Maestro itself is
+  refused outright: `dispatch` as Maestro answers "Maestro never starts work by a rule of its own".
 - **The run cap counts every run that still has its session.** Running, waiting on a permission
   (at your gate with a question pending), stuck with its session (a failed or canceled turn, an
   error), and starting (a dispatch in flight) each hold a slot. A run that landed at your gate with

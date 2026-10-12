@@ -26,7 +26,6 @@ import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { type FlagKind, type MaestroConfig, NOT_STOPPED, type RunChoices, type WorkItem } from "../shared/contracts";
 import { permissionAction } from "../shared/needs";
 import { ARCHIVED_RESUME } from "../shared/paused";
-import { skipsPrompts } from "../shared/run";
 import {
   GROUP_ORDER,
   isDispatchable,
@@ -36,7 +35,7 @@ import {
   type Verdict,
   verdictTarget,
 } from "../shared/states";
-import { TICKET, ticketOf } from "../shared/text";
+import { SESSIONS_START_NOTHING, TICKET, ticketOf } from "../shared/text";
 import { UNDO_MS } from "../shared/undo";
 import { adopterNames } from "./adopter-names";
 import {
@@ -57,11 +56,9 @@ import {
   archivedSince,
   BY_HUMAN,
   checkOutcome,
-  closedItself,
   decisionApplied,
   eventsSince,
   type FlaggedEvent,
-  finishedArc,
   flagOf,
   handsBack,
   keptSummary,
@@ -85,21 +82,9 @@ import {
 import { ACTIVE_AGAIN, flagStands, quietCleared } from "./flags";
 import { inspectFolder, repoRefusal } from "./folders";
 import { briefOf, type RunKeys, workTitle } from "./frontmatter";
-import { type LabelAgent, WORK_LABELS, workLabels } from "./labels";
+import { type LabelAgent, PARENT_AGENT_LABEL, WORK_LABELS, workLabels } from "./labels";
 import { describePermission, type PermissionLike } from "./permissions";
-import {
-  FILED_BEFORE_A8,
-  filedBeforeA8,
-  HELD_FOR_YOU,
-  type LaneProfile,
-  MODED_BY_YOU,
-  type Paseo,
-  runSettings,
-  settingsLane,
-  startRun,
-  unattendedRefusal,
-  WORK_LABEL,
-} from "./runs";
+import { type Paseo, startRun, WORK_LABEL } from "./runs";
 import { type Mutation, placement, type StoredWork, WorkStore, withLock } from "./store";
 import { pausedBy } from "./usage-limit";
 import { toWire } from "./wire";
@@ -118,9 +103,6 @@ export class UserError extends Error {
 
 /** A dispatch refused at the concurrency cap. The work is unchanged: it stays queued (or stuck). */
 export class AtCapacity extends UserError {}
-
-/** A run nobody would watch, refused for its lane profile (runs.ts unattendedRefusal). The work stays queued. */
-export class Unwatched extends UserError {}
 
 /**
  * Why a run holds one of the cap's slots (BRO-2990): the cap counts every run
@@ -350,13 +332,6 @@ export interface EngineOptions {
   merged?: (repo: string, branch: string) => Promise<MergedPr | null>;
   /** Sets labels on a session: the plugin passes server/labels.ts paseoLabel (the paseo CLI); absent, nothing is labelled. */
   label?: LabelAgent;
-  /**
-   * The profile a run nobody watches starts with, for the session that asked
-   * for it (runs.ts LaneProfile). Absent: your Settings, whoever asked
-   * (settingsLane), since the socket does not verify its caller yet: the seam
-   * BRO-2996 verifies the caller against, and BRO-2989 reads lanes.yaml in.
-   */
-  lane?: (agentId: string | null, paseo: Paseo, config: MaestroConfig) => Promise<LaneProfile | null>;
 }
 
 /** What work.create takes: the work, where it runs, how it is judged, and optionally how its runs start. */
@@ -453,30 +428,28 @@ export const NEVER_BY_RULE =
   "Maestro never starts work by a rule of its own: you start it with Dispatch, or a lane or the conductor does.";
 
 /**
- * Why this caller may not start this work, or null. You may start queued or
- * stuck work, or a run with no session recorded. A session may start only
- * queued work (restarting stuck work is unblocking, and that is yours), and
- * never work that carries a mode you chose for it: the mode is yours to use,
- * nor work held for you (`hold`). Its run is one nobody watches, so dispatch
- * also needs its lane profile's mode (unattendedRefusal).
- * Maestro itself (the loop, answer routing) starts nothing (A8): it queues.
+ * Why this caller may not start any run, or null: only you start work (A8, BRO-2990). Maestro itself (the loop,
+ * answer routing) queues and starts nothing, and a session never does either (BRO-2996: `maestro dispatch` is
+ * gone, and a session's `work.create` only queues). Pure.
  */
-function startRefusal(item: StoredWork, origin: Origin): string | null {
-  const state = item.contract.state;
+function launchRefusal(origin: Origin): string | null {
   switch (origin.actor) {
-    case "agent":
-      if (!isDispatchable(state)) return "A session can start only queued work. Stuck work is unblocked in Maestro.";
-      if (item.contract.hold) return HELD_FOR_YOU;
-      // Filed from your answer before A8 (runs.ts filedBeforeA8): yours, as held work is.
-      if (filedBeforeA8(item)) return FILED_BEFORE_A8;
-      // auto_accept is a mode by another name: it skips the prompts too (shared/run.ts).
-      return item.contract.modeId || skipsPrompts({ featureValues: item.contract.featureValues }) ? MODED_BY_YOU : null;
+    case "human":
+      return null;
     case "maestro":
       return NEVER_BY_RULE;
-    case "human":
-      if (isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events))) return null;
-      return "Only queued or stuck work can be dispatched.";
+    case "agent":
+      return SESSIONS_START_NOTHING;
   }
+}
+
+/** Why this work cannot be started now, or null. You may start queued or stuck work, or a run with no session recorded. */
+function startRefusal(item: StoredWork, origin: Origin): string | null {
+  const refused = launchRefusal(origin);
+  if (refused) return refused;
+  const state = item.contract.state;
+  if (isDispatchable(state) || state === "blocked" || (state === "running" && !workerOf(item.events))) return null;
+  return "Only queued or stuck work can be dispatched.";
 }
 
 /** What may follow a turn's end without the run having gone on: its landing, a remark, the loop's flag. */
@@ -559,7 +532,6 @@ export class Engine {
    * its list, or ends before the check reads the files, is still counted.
    */
   private readonly stopWatch = new Set<Set<string>>();
-  private readonly lane: NonNullable<EngineOptions["lane"]>;
   private closed = false;
 
   constructor(options: EngineOptions = {}) {
@@ -575,7 +547,6 @@ export class Engine {
     this.merged = options.merged ?? mergedPrs(undefined, undefined, this.log);
     // No label unless one is passed: index.server.ts passes the paseo CLI, so no test can label a real session.
     this.label = options.label ?? (async () => undefined);
-    this.lane = options.lane ?? (async (_agentId, _paseo, config) => settingsLane(config));
   }
 
   /**
@@ -961,13 +932,16 @@ export class Engine {
   // ── Human verbs ────────────────────────────────────────────────────────────
 
   async create(paseo: Paseo | null, input: CreateInput, origin: Origin = BY_HUMAN): Promise<WorkItem> {
+    // Before anything is written: work a caller may not start is not created half-way by asking for it to start.
+    const launch = input.dispatch ? launchRefusal(origin) : null;
+    if (launch) throw new UserError(launch);
     const title = workTitle(input.title, input.brief);
     if (!title) throw new UserError("Write a brief, or at least a title.");
     if (input.gate === "auto" && !input.check.trim()) {
       throw new UserError("Letting checks decide needs a check command.");
     }
     // How runs start is yours alone: work anyone else creates carries no run choices, so its runs start as
-    // your Settings say, and a run nobody watches only in a Settings mode that does not ask (unattendedRefusal).
+    // your Settings say.
     const run = origin.actor === "human" ? runKeys(input) : undefined;
     const folder = await inspectFolder(input.repo);
     const repo = folder.path;
@@ -1003,9 +977,8 @@ export class Engine {
   }
 
   /**
-   * Create work and, when asked, dispatch it. At the concurrency cap, or when
-   * a session's run would have nobody watching it in a mode that asks
-   * (Unwatched), the work is still created: it comes back queued with the
+   * Create work and, when asked, dispatch it (yours: launchRefusal). At the
+   * concurrency cap the work is still created: it comes back queued with the
    * reason, so the caller holds its id and a retry dispatches it rather than
    * creating it again.
    */
@@ -1014,28 +987,29 @@ export class Engine {
     input: Parameters<Engine["create"]>[1],
     origin: Origin = BY_HUMAN,
   ): Promise<{ item: WorkItem; notice: string | null }> {
+    // Before anything is written, as create does: work its caller may not start is not left half-made.
+    const launch = input.dispatch ? launchRefusal(origin) : null;
+    if (launch) throw new UserError(launch);
     const item = await this.create(paseo, { ...input, dispatch: false }, origin);
     if (!input.dispatch) return { item, notice: null };
     if (!paseo) throw new UserError(`Created ${item.id}, but it cannot be dispatched yet: ${NO_HANDLE}`);
     try {
       return { item: await this.dispatch(paseo, item.id, origin), notice: null };
     } catch (error) {
-      if (!(error instanceof AtCapacity || error instanceof Unwatched)) throw error;
+      if (!(error instanceof AtCapacity)) throw error;
       return { item: (await this.get(item.id)).item, notice: `Created ${item.id}, not started. ${error.message}` };
     }
   }
 
   async dispatch(paseo: Paseo, id: string, origin: Origin = BY_HUMAN): Promise<WorkItem> {
-    // Maestro itself starts nothing (A8): refused before it takes a slot or reads a file.
-    if (origin.actor === "maestro") throw new UserError(NEVER_BY_RULE);
+    // Only you start work (A8): refused before it takes a slot or reads a file.
+    const launch = launchRefusal(origin);
+    if (launch) throw new UserError(launch);
     if (this.dispatching.has(id)) throw new UserError("This work is already being dispatched.");
     this.dispatching.add(id);
     let ahead: string[] = [];
     let stops: Set<string> | null = null;
     try {
-      // A session's run is one nobody watches: it takes its profile's mode, and never Always ask (A8). Read
-      // and judged before it takes a slot, so a start that is refused never holds one while the profile is read.
-      const lane = origin.actor === "agent" ? await this.unwatchedLane(paseo, id, origin.by) : null;
       // Take a slot before reading the files: every dispatch admitted ahead of this one is
       // counted from here, whether or not the files say it holds a slot by the time they are read.
       ahead = [...this.admitted];
@@ -1048,7 +1022,7 @@ export class Engine {
       this.checkCapacity(item, ahead, await this.occupied(store), config.concurrencyCap, stops);
       let worker: Awaited<ReturnType<typeof startRun>>;
       try {
-        worker = await startRun(paseo, config, item, lane);
+        worker = await startRun(paseo, config, item);
       } catch (error) {
         const message = (error as Error).message;
         await store.mutate(id, () => ({ events: [this.note(`Dispatch failed: ${message}`)] }), item.dir);
@@ -1111,37 +1085,6 @@ export class Engine {
       if (this.dispatching.size === 0) {
         for (const agentId of [...this.queues.keys()]) await this.flush(agentId);
       }
-    }
-  }
-
-  /**
-   * The profile a session's run starts with, or why it may not start: the
-   * work's own refusal first (a session starts only queued work, never yours
-   * to start), then unattendedRefusal (Unwatched). Read before any slot.
-   */
-  private async unwatchedLane(paseo: Paseo, id: string, agentId: string | null): Promise<LaneProfile> {
-    const { store, config } = await this.store();
-    const item = await store.findById(id);
-    const refusal = startRefusal(item, { actor: "agent", by: agentId });
-    if (refusal) throw new UserError(refusal);
-    const read = await this.laneOf(agentId, paseo, config);
-    const unattended = unattendedRefusal(read.lane, runSettings(config, item).selection, read.error);
-    if (unattended || !read.lane) throw new Unwatched(unattended ?? "A run nobody watches has no profile.");
-    return read.lane;
-  }
-
-  /** The profile of a run a session asked for, bounded; one that cannot be read is none, and says why. */
-  private async laneOf(
-    agentId: string | null,
-    paseo: Paseo,
-    config: MaestroConfig,
-  ): Promise<{ lane: LaneProfile | null; error: string | null }> {
-    try {
-      return { lane: await within(() => this.lane(agentId, paseo, config), this.claimWaitMs), error: null };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.log(`reading the lane profile of ${agentId ?? "an unnamed session"}: ${message}`);
-      return { lane: null, error: message };
     }
   }
 
@@ -1526,7 +1469,7 @@ export class Engine {
   }
 
   /**
-   * After an approval applies, or work closed itself (finishedArc): archive
+   * After an approval applies, or work an orchestrator took back closed (adopterClosed): archive
    * the run's workspace, so its worktree goes and its branch stays as the
    * receipt. Best effort: a failure is a receipt and never undoes the close;
    * `stands` says what stands, in the receipt's words. Only a workspace a dispatch
@@ -2042,10 +1985,12 @@ export class Engine {
       origin,
     });
     const id = created.contract.id;
-    // The lineage (BRO-2908): an orchestrator that adopts runs as work of its own, which becomes this one's parent.
-    // Only an open work is a parent: a finished one is history, not the arc this one belongs to. A session that
-    // tracks itself has none: this work is not bound to it yet, and one already bound returned above.
-    const adopter = origin.actor === "agent" && origin.by ? await this.forAgent(origin.by).catch(() => null) : null;
+    // The lineage (BRO-2908): a session an agent tracks runs as work of the session that started it, which becomes
+    // this one's parent. Who started it is Paseo's record of the session (PARENT_AGENT_LABEL), never the adopter's
+    // word (`origin.by` is only who asked, BRO-2996). Only an open work is a parent: a finished one is history, not
+    // the arc this one belongs to.
+    const startedBy = origin.actor === "agent" ? agent.labels?.[PARENT_AGENT_LABEL] : undefined;
+    const adopter = startedBy ? await this.forAgent(startedBy).catch(() => null) : null;
     const parentWork = adopter && !isTerminal(adopter.state) ? adopter.id : null;
     const own = agent.labels?.[WORK_LABELS.ticket];
     const ticket =
@@ -2222,7 +2167,7 @@ export class Engine {
   /**
    * The session was archived: the work notes it (or stops, if it was mid-run
    * or asking). With the daemon's client, the item is reconciled at once, so
-   * a finished arc closes now (finishedArc), not on whoever lists next.
+   * work an orchestrator took back closes now (adopterClosed), not on whoever lists next.
    */
   async onArchived(agent: HookAgent, paseo: Paseo | null = null): Promise<void> {
     await this.route(agent.id, async (store, item) => {
@@ -2236,7 +2181,7 @@ export class Engine {
             return { to: "blocked", reason: ARCHIVED_ASKING };
           }
           if (isTerminal(state)) return null;
-          // A finished arc at your gate closes in the reconcile below (finishedArc), which can follow through.
+          // Work an orchestrator took back closes in the reconcile below (adopterClosed), which can follow through.
           return { events: [this.note(ARCHIVED_NOTE)] };
         },
         item.dir,
@@ -2621,20 +2566,20 @@ export class Engine {
     if (!agent || agent.archivedAt || agent.status === "closed") {
       if (state === "running") return guarded({ to: "blocked", reason: ENDED_MID_RUN });
       if (permission) return guarded({ to: "blocked", reason: ENDED_ASKING });
-      // A finished arc at your gate closes itself here, and only here (finishedArc): archived, by its hook's
-      // note or as the daemon now says (a missed hook, whose note is written with it).
+      // Work at your gate is closed by what the session says of itself never (BRO-2996): its own transcript, its own
+      // ARC-STATUS line, is not an owner's verdict, and the session wrote it. Only an orchestrator that took its
+      // child back and archived it closes it here, by its archive (adopterClosed): archived, by its hook's note or
+      // as the daemon now says (a missed hook, whose note is written with it).
       if (state === "review") {
         const archived = agent?.archivedAt && !archivedSince(item.events) ? [this.note(ARCHIVED_NOTE)] : [];
-        const seen = [...item.events, ...archived];
-        const line = finishedArc(seen);
         // An orchestrator's child leaves your gate once the orchestrator took it back and archived it (BRO-2903).
-        const adopter = line ? null : adopterClosed(seen);
-        if (line || adopter !== null) {
+        const adopter = adopterClosed([...item.events, ...archived]);
+        if (adopter !== null) {
           const closed = await guarded({
             to: "done",
             actor: "maestro",
-            ctx: line ? { arcFinished: true } : { adopterClosed: true },
-            reason: line ? closedItself(line) : archivedByOrchestrator(adopter ?? ""),
+            ctx: { adopterClosed: true },
+            reason: archivedByOrchestrator(adopter),
             events: archived,
           });
           // As an approval would: the workspace a run created goes when Settings says archive on approve.

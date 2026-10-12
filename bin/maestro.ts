@@ -4,7 +4,9 @@
 // only, so it runs from a plugin install that has no dev packages.
 //
 // The session's agent id comes from PASEO_AGENT_ID, which Paseo sets in every
-// session it starts. Anything done here is recorded as that session's.
+// session it starts, and every request carries the folder this shell is in. Maestro
+// checks both against Paseo's registry before it acts (server/callers.ts): run it from
+// inside the session. Anything done here is recorded as that session's.
 
 import { connect } from "node:net";
 import { resolve as resolvePath } from "node:path";
@@ -13,19 +15,18 @@ import { expandHome, socketPath } from "../server/paths";
 import type { MaestroConfig, WorkEventWire, WorkItem } from "../shared/contracts";
 import { needsYouOf, sectionOf } from "../shared/needs-you";
 import { GROUP_COPY, GROUP_ORDER, PLAIN_VOICE } from "../shared/states";
+import { SESSIONS_START_NOTHING } from "../shared/text";
 
 const USAGE = `maestro: operate Maestro from a Paseo session
 
   maestro ls                          All work, what needs you first
   maestro show <id>                   One item: state, the look at the gate, receipts
-  maestro new <title> [options]       Create work (it waits at your gate)
+  maestro new <title> [options]       Create work (it waits at your gate, queued)
       --brief <text>                  What to do and why
       --repo <path>                   Where runs happen (default: this directory)
       --initiative <name>             Group it under a folder
-      --dispatch                      Start a run right away
-  maestro dispatch <id>               Start a run in its own worktree
-  maestro track [--title <text>] [--ticket <id>]  Track this session as work (or --agent <id>)
-  maestro mine                        The work this session is running (or --agent <id>)
+  maestro track [--title <text>] [--ticket <id>]  Track this session as work (or --agent <id>, a session it started)
+  maestro mine                        The work this session is running (or --agent <id>, a session it started)
   maestro config                      Where work lives and how runs start
   maestro approval request <action>   Ask leave for one exact action a policy layer held
       --ref <sha>                     What it is bound to: a head SHA, a version
@@ -38,7 +39,11 @@ const USAGE = `maestro: operate Maestro from a Paseo session
 Exit codes: 0 done · 1 Maestro refused · 2 Maestro is not listening, or bad usage ·
 3 no clear answer (the request may still have been applied: check before retrying).
 
-Allow, Deny, change of course, unblock and cancel are yours, in Maestro: work is never
+Run it from inside the session: Maestro checks PASEO_AGENT_ID and this folder against
+Paseo's registry, and acts only for that live session (track, mine, approval).
+
+Starting work is yours, in Maestro, or a lane's or the conductor's: there is no dispatch
+here. Allow, Deny, change of course, unblock and cancel are yours too: work is never
 approved, gates merge it. A session can only ask leave for an action (approval request);
 it cannot decide it, pass its own gate, restart stuck work, or write a done check.`;
 
@@ -55,10 +60,12 @@ export class NoAnswer extends Error {}
 export function call(
   method: string,
   input: unknown = {},
-  options: { path?: string; caller?: string | null; timeoutMs?: number } = {},
+  options: { path?: string; caller?: string | null; cwd?: string | null; timeoutMs?: number } = {},
 ): Promise<unknown> {
   const path = options.path ?? socketPath();
   const caller = options.caller === undefined ? process.env.PASEO_AGENT_ID || null : options.caller;
+  // Where this shell is: Maestro checks it against the folder the session runs in.
+  const cwd = options.cwd === undefined ? process.cwd() : options.cwd;
   return new Promise((resolve, reject) => {
     const socket = connect(path);
     let buffer = "";
@@ -81,7 +88,7 @@ export function call(
     socket.setEncoding("utf8");
     socket.on("connect", () => {
       sent = true;
-      socket.write(`${JSON.stringify({ id: 1, method, input, caller })}\n`);
+      socket.write(`${JSON.stringify({ id: 1, method, input, caller, cwd })}\n`);
     });
     socket.on("data", (chunk: string) => {
       buffer += chunk;
@@ -242,24 +249,20 @@ export async function main(argv: string[], print: (text: string) => void = conso
       return 0;
     case "new": {
       const title = rest.join(" ").trim();
-      if (!title) throw new Usage("Usage: maestro new <title> [--brief <text>] [--repo <path>] [--dispatch]");
+      if (!title) throw new Usage("Usage: maestro new <title> [--brief <text>] [--repo <path>]");
+      // Refused before anything is created or sent: a session starts nothing (A8), and a half-made item helps nobody.
+      if (values.dispatch) throw new Refused(SESSIONS_START_NOTHING);
       const input = {
         title,
         brief: values.brief,
         repo: resolvePath(expandHome(values.repo ?? ".")),
         initiative: values.initiative,
-        dispatch: values.dispatch,
       };
-      show(await call("work.create", input), (output: { item: WorkItem }) =>
-        renderOne(values.dispatch ? "Dispatched" : "Created", output),
-      );
+      show(await call("work.create", input), (output: { item: WorkItem }) => renderOne("Created", output));
       return 0;
     }
     case "dispatch":
-      show(await call("work.dispatch", { id: needId() }), (output: { item: WorkItem }) =>
-        renderOne("Dispatched", output),
-      );
-      return 0;
+      throw new Refused(SESSIONS_START_NOTHING);
     case "track":
       show(
         await call("work.adopt", { agentId: values.agent, title: values.title, ticket: values.ticket }),

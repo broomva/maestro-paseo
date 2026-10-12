@@ -4,12 +4,12 @@ import {
   ARCHIVED_NOTE,
   adoptedByOf,
   adopterClosed,
+  archivedByOrchestrator,
   arcStatus,
   bullets,
   closedOf,
   closingAbove,
   type FlaggedEvent,
-  finishedArc,
   flagOf,
   formatDuration,
   handsBack,
@@ -717,45 +717,95 @@ describe("work its orchestrator took back leaves your gate once archived (BRO-29
   });
 });
 
-describe("work that closes itself (BRO-2861)", () => {
+describe("what a session says of itself closes nothing (BRO-2996)", () => {
   const ended = (text: string): WorkEvent[] =>
     toReview.map((e) => (e.type === "turn.ended" ? { ...e, summary: text } : e));
   const archived: WorkEvent = { ts: at(135), type: "note", actor: "maestro", text: ARCHIVED_NOTE };
+  const adoptedBy = (by: string | null, agentId: string, events: WorkEvent[]): WorkEvent[] =>
+    events.map((e) =>
+      e.type === "dispatched" ? { ...e, type: "adopted", actor: "agent", by, agentId } : e,
+    ) as WorkEvent[];
 
-  test("a finished arc's verdict and an archive since the turn: the verdict line; anything less, null", () => {
+  test("a finished arc's verdict and an archive since is not a way out of your gate, whoever adopted it", () => {
     for (const word of ["CLOSED", "DONE", "MERGED"]) {
-      expect(finishedArc([...ended(`x\nARC-STATUS: ${word}`), archived])).toBe(`ARC-STATUS: ${word}`);
-    }
-    // Not archived, a handback, a blocked arc, no verdict, a verdict not on its own line.
-    expect(finishedArc(ended("x\nARC-STATUS: CLOSED"))).toBeNull();
-    for (const text of ["x\nARC-STATUS: HANDBACK 1", "x\nARC-STATUS: BLOCKED", "Done.", "**ARC-STATUS:** done"]) {
-      expect(finishedArc([...ended(text), archived])).toBeNull();
+      const turn = ended(`x\nARC-STATUS: ${word}`);
+      // Dispatched by you, tracked by you, tracked by an orchestrator: none is closed by its own words.
+      expect(adopterClosed([...turn, archived])).toBeNull();
+      expect(
+        adopterClosed([
+          ...adoptedBy(null, "a1", turn).map((e) => (e.type === "adopted" ? { ...e, actor: "human" } : e)),
+          archived,
+        ] as WorkEvent[]),
+      ).toBeNull();
     }
   });
 
-  test("never while a decision of yours or checks are open, and never over checks that failed", () => {
-    const result = (ok: boolean) => ({
+  test("a session that tracked itself has no orchestrator: its own archive closes nothing, another's does", () => {
+    const turn = ended("Opened the PR.\n\nARC-STATUS: HANDBACK 1");
+    // The adopter named is the session's own agent id: itself.
+    expect(adopterClosed([...adoptedBy("a1", "a1", turn), archived])).toBeNull();
+    // A different session adopted it (an orchestrator): its archive is the orchestrator taking the arc back.
+    expect(adopterClosed([...adoptedBy("9c1e6a52-0d1b-4c52-9d66-2f3a5a6b7c88", "a1", turn), archived])).toBe(
+      "9c1e6a52-0d1b-4c52-9d66-2f3a5a6b7c88",
+    );
+  });
+
+  test("the card of work an orchestrator took back says so, after the checks it passed", () => {
+    const result = {
       name: "unit",
       run: "bun test",
       required: true,
-      ok,
-      exit: ok ? 0 : 1,
+      ok: true,
+      exit: 0,
       durationMs: 1,
       timedOut: false,
       tail: "",
-    });
-    const finished = (ok: boolean): WorkEvent => ({
+    };
+    const turn = ended("Done.\n\nARC-STATUS: HANDBACK 1");
+    const finished: WorkEvent = {
       ts: at(134),
       type: "checks.finished",
       actor: "maestro",
       token: "t",
-      results: [result(ok)],
+      results: [result],
+    };
+    const closed: WorkEvent = {
+      ts: at(136),
+      type: "state",
+      actor: "maestro",
+      from: "review",
+      to: "done",
+      reason: archivedByOrchestrator("9c1e6a52-0d1b-4c52-9d66-2f3a5a6b7c88"),
+    };
+    expect(verdictOf("done", [...turn, finished, archived, closed])).toBe(
+      "Check passed · its orchestrator (session 9c1e6a52) took it back and archived its session",
+    );
+  });
+
+  test("never while a decision of yours, checks or a question are open, and never over checks that failed", () => {
+    const failed = (ok: boolean): WorkEvent => ({
+      ts: at(134),
+      type: "checks.finished",
+      actor: "maestro",
+      token: "t",
+      results: [
+        {
+          name: "unit",
+          run: "bun test",
+          required: true,
+          ok,
+          exit: ok ? 0 : 1,
+          durationMs: 1,
+          timedOut: false,
+          tail: "",
+        },
+      ],
     });
-    const turn = ended("ARC-STATUS: CLOSED");
-    expect(finishedArc([...turn, finished(true), archived])).toBe("ARC-STATUS: CLOSED");
-    expect(finishedArc([...turn, finished(false), archived])).toBeNull();
+    const turn = adoptedBy("9c1e6a52-0d1b-4c52-9d66-2f3a5a6b7c88", "a1", ended("Done.\n\nARC-STATUS: HANDBACK 1"));
+    expect(adopterClosed([...turn, failed(true), archived])).not.toBeNull();
+    expect(adopterClosed([...turn, failed(false), archived])).toBeNull();
     const started: WorkEvent = { ts: at(134), type: "checks.started", actor: "maestro", token: "t2" };
-    expect(finishedArc([...turn, started, archived])).toBeNull();
+    expect(adopterClosed([...turn, started, archived])).toBeNull();
     const yours: WorkEvent = {
       ts: at(134),
       type: "gate.pending",
@@ -765,22 +815,7 @@ describe("work that closes itself (BRO-2861)", () => {
       token: "d1",
       effectiveAt: at(135),
     };
-    expect(finishedArc([...turn, yours, archived])).toBeNull();
-    // Closed itself after checks that passed: the card says both.
-    const closed: WorkEvent = {
-      ts: at(136),
-      type: "state",
-      actor: "maestro",
-      from: "review",
-      to: "done",
-      reason: "Its arc reported “ARC-STATUS: CLOSED” and its session was archived",
-    };
-    expect(verdictOf("done", [...turn, finished(true), archived, closed])).toBe(
-      "Check passed · its arc reported “ARC-STATUS: CLOSED” and its session was archived",
-    );
-  });
-
-  test("a question pending, or an archive before the turn that landed it, keeps it waiting", () => {
+    expect(adopterClosed([...turn, yours, archived])).toBeNull();
     const asking: WorkEvent = {
       ts: at(134),
       type: "permission.asked",
@@ -790,10 +825,7 @@ describe("work that closes itself (BRO-2861)", () => {
       title: "Run a command",
       detail: null,
     };
-    expect(finishedArc([...ended("ARC-STATUS: CLOSED"), asking, archived])).toBeNull();
-    const before: WorkEvent = { ...archived, ts: at(100) };
-    const turn = ended("ARC-STATUS: CLOSED");
-    expect(finishedArc([...turn.slice(0, 2), before, ...turn.slice(2)])).toBeNull();
+    expect(adopterClosed([...turn, asking, archived])).toBeNull();
   });
 });
 

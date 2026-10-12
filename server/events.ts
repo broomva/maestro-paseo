@@ -279,7 +279,7 @@ export function checkOutcome(results: readonly CheckResult[]): "passed" | "faile
 
 /**
  * Who closed finished work, and when: you (a verdict, a cancel), or Maestro on
- * its own evidence (finishedArc, adopterClosed, a merged branch). Null while
+ * its own evidence (adopterClosed, a merged branch). Null while
  * the work is open. The feed's Handled for you lists Maestro's (BRO-2906).
  */
 export function closedOf(state: OrchState, events: readonly WorkEvent[]): { by: "you" | "maestro"; at: string } | null {
@@ -321,7 +321,7 @@ export function verdictOf(state: OrchState, events: readonly WorkEvent[]): strin
   if (state === "done") {
     const gate = lastOf(events, "gate");
     if (gate?.verdict === "approve") return checks ? `${checks} · you approved` : "You approved";
-    // Closed by Maestro (finishedArc, adopterClosed, a merged branch): its receipt says why, after the checks it passed.
+    // Closed by Maestro (adopterClosed, a merged branch): its receipt says why, after the checks it passed.
     const closed = lastOf(events, "state");
     if (closed?.actor === "maestro" && (closed.from === "review" || closed.from === "blocked") && closed.reason) {
       return checks ? `${checks} · ${closed.reason.charAt(0).toLowerCase()}${closed.reason.slice(1)}` : closed.reason;
@@ -498,35 +498,15 @@ export function sessionGoneSince(events: readonly WorkEvent[]): boolean {
     .some((e) => e.type === "note" && (e.text === ARCHIVED_NOTE || e.text === SESSION_ENDED_NOTE));
 }
 
-/** The arc verdicts that say an arc is finished and leaves nothing to you. */
-export const FINISHED_ARC: ReadonlySet<string> = new Set(["CLOSED", "DONE", "MERGED"]);
-
-/**
- * Work at your gate that closes itself: its last turn ends with a finished
- * arc's verdict (FINISHED_ARC, ctx-core's grammar) and its session was
- * archived since (archivedSince). The verdict line, else null. Never while
- * anything else is open: a question, a decision of yours in its undo window,
- * or checks running; never over checks that failed. HANDBACK, BLOCKED, any
- * other word, or no verdict keeps waiting on you.
- */
-export function finishedArc(events: readonly WorkEvent[]): string | null {
-  if (pendingPermission(events) || pendingDecision(events) || pendingChecks(events)) return null;
-  if (checkOutcome(latestChecks(events)) === "failed" || !archivedSince(events)) return null;
-  const arc = arcStatus(lastOf(events, "turn.ended")?.summary ?? "");
-  return arc && FINISHED_ARC.has(arc.status) ? arc.line : null;
-}
-
-/** The receipt of work that closed itself (finishedArc). */
-export const closedItself = (line: string) => `Its arc reported “${line}” and its session was archived`;
-
 /**
  * Work at your gate that its orchestrator took back (BRO-2903): an agent
  * adopted the session (an orchestrator tracking an arc it started), the turn
  * that landed it was the arc's own (not an answer to a note or an unblock of
  * yours: onItsOwnArc), and the orchestrator archived the session since, with
  * you having done nothing with it. The adopter's session id ("" when
- * unrecorded), else null; under the same guards as finishedArc: never while a
- * question, a decision of yours or checks are open, never over failed checks.
+ * unrecorded), else null; never while a question, a decision of yours or checks
+ * are open, never over failed checks, and never for a session that tracked
+ * itself (BRO-2996: its own archive is not an orchestrator taking it back).
  * A session you adopted is yours to close. Maestro does not judge how the arc
  * ended (finished, or its session died and was replaced): the orchestrator
  * read it, and its archive is the only thing Maestro saw, so the receipt says
@@ -538,12 +518,15 @@ export function adopterClosed(events: readonly WorkEvent[]): string | null {
   const bind = events.findLast((e) => e.type === "dispatched" || e.type === "adopted");
   // Adopted by an agent: onItsOwnArc, below, is false for a session you adopted.
   if (bind?.type !== "adopted") return null;
+  const by = "by" in bind ? bind.by : null;
+  // A session that tracked itself has no orchestrator: its own archive closes nothing (BRO-2996).
+  if (by && by === bind.agentId) return null;
   const landed = events.findLastIndex((e) => e.type === "state" && e.to === "review");
   if (landed < 0 || events.slice(landed + 1).some((e) => e.actor === "human")) return null;
   const turn = events.slice(0, landed).findLastIndex((e) => e.type === "turn.ended");
   // The turn that landed it answered a task of yours (a Send back, an Unblock): that answer is yours to read.
   if (turn < 0 || !onItsOwnArc(events.slice(0, turn))) return null;
-  return ("by" in bind ? bind.by : null) ?? "";
+  return by ?? "";
 }
 
 /** The receipt of work its orchestrator took back (adopterClosed): what Maestro saw, and nothing more. */
@@ -575,8 +558,7 @@ const isVerdictWord = (word: string) => /^[A-Z][A-Z_-]+$/.test(word) || VERDICT_
 
 /**
  * The arc verdict a text ends with, as the gate reads it: ctx-core's grammar
- * exactly when it holds (arcStatus, whose word alone can close work:
- * finishedArc), else the last line that only means one (`**ARC-STATUS:** done
+ * exactly when it holds (arcStatus), else the last line that only means one (`**ARC-STATUS:** done
  * with handback.`), in plain words and with no word read from it. Null when no
  * line starts a verdict. Landing (handsBack) and the card (lookOf) both read
  * this, so work never lands on a verdict its card cannot show.

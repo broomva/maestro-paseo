@@ -9,19 +9,27 @@
 // session can pass its own gate, decide its own request, take back your
 // decision, loosen how runs start, or drive the loop (which starts nothing
 // anyway, A8). A session may only ask: `approval.request` raises one exact
-// held action as a hold in Needs you (server/approvals.ts) and decides nothing. A session starts only
-// queued work, and only in a Settings mode that does not ask: the caller it
-// reports is not verified, so it never picks the mode a run takes (server/
-// runs.ts settingsLane, unattendedRefusal; BRO-2996 verifies callers). It
-// cannot write a done check: checks run as you with no session in the loop.
-// Everything done through it is recorded as the agent's, since nothing here
-// can prove a person asked, under the agent id the client reports (unverified).
+// held action as a hold in Needs you (server/approvals.ts) and decides nothing.
+// A session starts nothing at all (A8): `work.dispatch` is gone, and `work.create`
+// only queues, for you, a lane or the conductor to start. It cannot write a done
+// check: checks run as you with no session in the loop.
+//
+// Who is asking is checked (BRO-2996, server/callers.ts): every verb that writes
+// names the session it acts for, and that session must exist in Paseo's registry,
+// be live, and be the one whose folder the shell is in. A verb then acts only for
+// that session: it tracks its own session (or one it started), asks leave for its
+// own actions, withdraws its own requests. The reads (work.list, work.get,
+// config.get) stay open to any session on the socket: the conductor and the lanes
+// read the queue through them, and the files they read are this user's anyway.
+// Everything done through it is recorded as that session's, since nothing here
+// can prove a person asked.
 // This is the surface a session is offered, not a sandbox. A process running as
-// you can still edit the work folders directly; the receipts are what keep that
-// visible.
+// you can still edit the work folders directly, and can still name a live session
+// it read from Paseo's registry (server/callers.ts says what the check does not
+// prove); the receipts are what keep that visible.
 //
 // Protocol: one JSON request per line, one JSON response per line, in order.
-//   → {"id":1,"method":"work.list","input":{},"caller":"<agent id>"}
+//   → {"id":1,"method":"work.list","input":{},"caller":"<agent id>","cwd":"<shell folder>"}
 //   ← {"id":1,"ok":true,"output":{...}}   or   {"id":1,"ok":false,"error":"..."}
 
 import { chmod, link, lstat, mkdir, rename, stat, unlink } from "node:fs/promises";
@@ -30,19 +38,16 @@ import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { GATE_MODES } from "../shared/states";
-import { TICKET } from "../shared/text";
+import { SESSIONS_START_NOTHING, TICKET } from "../shared/text";
 import type { Approvals } from "./approvals";
+import type { CallerClaim, Callers, VerifiedCaller } from "./callers";
 import { type Engine, NO_HANDLE, UserError } from "./engine";
 import type { Origin } from "./events";
 import type { Paseo } from "./runs";
 import { WorkNotFoundError } from "./store";
 
-export interface Caller {
-  /** The session's agent id, as the client reported it (`PASEO_AGENT_ID`). */
-  agentId: string | null;
-}
-
-export type AgentMethod = (input: unknown, caller: Caller) => Promise<unknown>;
+/** One verb: its input as sent, and who the request line says sent it (unverified until a verb checks it). */
+export type AgentMethod = (input: unknown, claim: CallerClaim) => Promise<unknown>;
 
 /** The verbs that stay with you. Named so a session that asks for one is told why. */
 export const GATE_METHODS: ReadonlySet<string> = new Set([
@@ -67,18 +72,16 @@ export const GATE_METHODS: ReadonlySet<string> = new Set([
   "conductor.undo",
 ]);
 
-function method<S extends z.ZodType>(
-  schema: S,
-  run: (input: z.output<S>, caller: Caller) => Promise<unknown>,
-): AgentMethod {
-  return async (raw, caller) => {
-    const parsed = schema.safeParse(raw ?? {});
-    if (!parsed.success) {
-      const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`);
-      throw new UserError(`Invalid input. ${issues.join("; ")}`);
-    }
-    return run(parsed.data, caller);
-  };
+/** The verbs that start work. They left the socket (A8): named so a session that asks for one is told who starts work. */
+export const LAUNCH_METHODS: ReadonlySet<string> = new Set(["work.dispatch"]);
+
+function parse<S extends z.ZodType>(schema: S, raw: unknown): z.output<S> {
+  const parsed = schema.safeParse(raw ?? {});
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`);
+    throw new UserError(`Invalid input. ${issues.join("; ")}`);
+  }
+  return parsed.data;
 }
 
 const ById = z.object({ id: z.string().min(1) });
@@ -101,31 +104,55 @@ const AgentCreate = z.object({
 
 /**
  * The allowlist. `paseo` returns the daemon client once the plugin has been
- * handed one; verbs that start or read a session refuse until then.
+ * handed one; verbs that read a session refuse until then. `callers` is
+ * Paseo's registry: every verb that writes checks its caller against it
+ * before it runs, and one that cannot be checked is refused.
  */
 export function agentMethods(
   engine: Engine,
   paseo: () => Paseo | null,
-  approvals: Approvals | null = null,
+  approvals: Approvals | null,
+  callers: Callers,
 ): ReadonlyMap<string, AgentMethod> {
-  const origin = (caller: Caller): Origin => ({ actor: "agent", by: caller.agentId });
+  const origin = (caller: VerifiedCaller): Origin => ({ actor: "agent", by: caller.agentId });
   const connected = (): Paseo => {
     const handle = paseo();
     if (!handle) throw new UserError(NO_HANDLE);
     return handle;
   };
-  const session = (agentId: string | undefined, caller: Caller): string => {
-    const id = agentId ?? caller.agentId;
-    if (!id) throw new UserError("Say which session: pass an agent id (PASEO_AGENT_ID is not set here).");
-    return id;
+  /** A read: it names no session and changes nothing. */
+  const read = <S extends z.ZodType>(schema: S, run: (input: z.output<S>) => Promise<unknown>): AgentMethod => {
+    return async (raw) => run(parse(schema, raw));
+  };
+  /** A verb that acts for a session: the caller is checked first, and `run` gets the session Maestro verified. */
+  const asSession = <S extends z.ZodType>(
+    schema: S,
+    run: (input: z.output<S>, caller: VerifiedCaller) => Promise<unknown>,
+  ): AgentMethod => {
+    return async (raw, claim) => {
+      const caller = await callers.verify(claim);
+      return run(parse(schema, raw), caller);
+    };
+  };
+  /**
+   * The session a verb acts on: the caller's own, or one the caller started (Paseo's record of who started it).
+   * Naming any other is refused: a session tracks and reads its own work, never another's.
+   */
+  const session = async (agentId: string | undefined, caller: VerifiedCaller): Promise<string> => {
+    if (!agentId || agentId === caller.agentId) return caller.agentId;
+    if (await callers.started(caller.agentId, agentId)) return agentId;
+    throw new UserError(
+      `A session acts only for itself or for one it started: ${agentId} is neither this session (${caller.agentId}) nor one it started.`,
+    );
   };
   return new Map<string, AgentMethod>([
     // A read, as every read is (BRO-2995): a session listing work reconciles nothing and applies no decision of yours.
-    ["work.list", method(z.object({}), () => engine.list(paseo() ?? undefined))],
-    ["work.get", method(ById, ({ id }) => engine.get(id))],
+    ["work.list", read(z.object({}), () => engine.list(paseo() ?? undefined))],
+    ["work.get", read(ById, ({ id }) => engine.get(id))],
     [
       "work.create",
-      method(AgentCreate, async (input, caller) => {
+      asSession(AgentCreate, async (input, caller) => {
+        if (input.dispatch) throw new UserError(SESSIONS_START_NOTHING);
         if (input.gate === "auto") {
           throw new UserError(
             "Work a session creates waits at your gate. Letting checks close it (gate: auto) is your call, made in Maestro.",
@@ -140,29 +167,34 @@ export function agentMethods(
       }),
     ],
     [
-      "work.dispatch",
-      method(ById, async ({ id }, caller) => ({ item: await engine.dispatch(connected(), id, origin(caller)) })),
-    ],
-    [
       "work.adopt",
-      method(
+      asSession(
         ForAgent.extend({
           title: z.string().default(""),
           ticket: z.string().regex(TICKET, "A ticket is a team key and a number, like BRO-2908").optional(),
         }),
         async ({ agentId, title, ticket }, caller) => ({
-          item: await engine.adopt(connected(), session(agentId, caller), title, origin(caller), { ticket }),
+          item: await engine.adopt(connected(), await session(agentId, caller), title, origin(caller), { ticket }),
         }),
       ),
     ],
     [
       "work.for-agent",
-      method(ForAgent, async ({ agentId }, caller) => ({ item: await engine.forAgent(session(agentId, caller)) })),
+      asSession(ForAgent, async ({ agentId }, caller) => ({
+        item: await engine.forAgent(await session(agentId, caller)),
+      })),
     ],
-    ["config.get", method(z.object({}), () => engine.settings())],
+    ["config.get", read(z.object({}), () => engine.settings())],
     // Ask leave for one exact action a policy layer held (frame C1). It only raises the hold: the decision is yours.
-    ["approval.request", async (input, caller) => requireApprovals(approvals).request(caller.agentId, input)],
-    ["approval.withdraw", method(ById, ({ id }, caller) => requireApprovals(approvals).withdraw(caller.agentId, id))],
+    // The request is the verified session's, so the cap and the withdrawal are per live session, not per claimed id.
+    [
+      "approval.request",
+      asSession(z.unknown(), (input, caller) => requireApprovals(approvals).request(caller.agentId, input)),
+    ],
+    [
+      "approval.withdraw",
+      asSession(ById, ({ id }, caller) => requireApprovals(approvals).withdraw(caller.agentId, id)),
+    ],
   ]);
 }
 
@@ -171,6 +203,8 @@ const Request = z.object({
   method: z.string().min(1),
   input: z.unknown().optional(),
   caller: z.string().min(1).max(200).nullable().default(null),
+  /** The folder the client's shell is in: checked against the session's own (server/callers.ts). */
+  cwd: z.string().min(1).max(4096).nullable().default(null),
 });
 
 export type AgentResponse =
@@ -194,16 +228,18 @@ export async function answer(
     const issues = request.error.issues.map((issue) => `${issue.path.join(".") || "request"}: ${issue.message}`);
     return { id: null, ok: false, error: `Invalid request (${issues.join("; ")}). Example: {"method":"work.list"}.` };
   }
-  const { id, method: name, input, caller } = request.data;
+  const { id, method: name, input, caller, cwd } = request.data;
   const run = methods.get(name);
   if (!run) {
     const error = GATE_METHODS.has(name)
       ? `${name} is yours alone: the gate, undo, stopping a run or leaving it running, unblocking, canceling, settings, the loop, your verdicts on the fleet's proposals and your answers to its asks happen in Maestro, not from a session.`
-      : `Unknown method ${name}. Offered: ${[...methods.keys()].join(", ")}.`;
+      : LAUNCH_METHODS.has(name)
+        ? `${name} is not offered. ${SESSIONS_START_NOTHING}`
+        : `Unknown method ${name}. Offered: ${[...methods.keys()].join(", ")}.`;
     return { id, ok: false, error };
   }
   try {
-    return { id, ok: true, output: await run(input, { agentId: caller }) };
+    return { id, ok: true, output: await run(input, { agentId: caller, cwd }) };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // A refusal or an unknown id is an answer, not a fault worth the plugin log.

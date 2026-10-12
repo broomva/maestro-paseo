@@ -9,6 +9,13 @@ const ELLIPSIS = "…";
 export const LINE_CAP = 2000;
 
 /** A ticket id, whole: a team key and a number (`STI-3508`, `BRO-2827`). */
+/**
+ * Why a session starts no work (owner answer A8, BRO-2990, BRO-2996): launching is yours, with Dispatch in Maestro,
+ * or a lane's or the conductor's. Said by the agent socket and by `maestro`, which refuses before it sends anything.
+ */
+export const SESSIONS_START_NOTHING =
+  "A session does not start work (A8): you start it with Dispatch in Maestro, or a lane or the conductor does. Work you create is queued.";
+
 export const TICKET = /^[A-Z][A-Z0-9]{1,6}-\d{1,6}$/;
 
 /** Ids that read like a ticket and never are one: standards (`UTF-8`, `SHA-256`), model names (`GPT-6`), `CVE-2024`; a team called MD or ISO keeps its tickets. */

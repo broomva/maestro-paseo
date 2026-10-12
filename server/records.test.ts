@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MaestroConfig, WorkItem } from "../shared/contracts";
 import { agentMethods } from "./agent-socket";
+import { Callers } from "./callers";
 import { ChangedCache } from "./changed";
 import { defaultConfig } from "./config";
 import { Engine } from "./engine";
@@ -257,7 +258,7 @@ describe("the changed line on work.list and work.get", () => {
 
 test("the agent socket offers none of it", async () => {
   const engine = new Engine({ config: async () => ({}) as MaestroConfig, log: () => undefined });
-  const methods = agentMethods(engine, () => null);
+  const methods = agentMethods(engine, () => null, null, new Callers({ dir: "/nonexistent" }));
   for (const name of ["work.history", "work.files", "work.file"]) expect(methods.has(name)).toBe(false);
 });
 

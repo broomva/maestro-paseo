@@ -22,12 +22,12 @@
 //      ends failed or canceled after the work landed (server/engine.ts
 //      endTurn): the gate then shows the turn that stopped, as Stuck.
 // The invariant that matters is kept exactly: under gate:human nothing reaches
-// done without an approve verdict, but for two named causes, with nothing of
-// yours open: arcFinished, the work's own arc reported itself finished and its
-// session was archived (server/events.ts finishedArc); and adopterClosed, an
-// orchestrator that adopted the work took back its own arc's landing and
-// archived its session, with you having done nothing with it since it landed
-// (server/events.ts adopterClosed, BRO-2903).
+// done without an approve verdict, but for one named cause, with nothing of
+// yours open: adopterClosed, an orchestrator that adopted the work took back
+// its own arc's landing and archived its session, with you having done nothing
+// with it since it landed (server/events.ts adopterClosed, BRO-2903). What a
+// session says of itself, its own ARC-STATUS line included, never closes its
+// work (BRO-2996).
 
 export const ORCH_STATES = [
   "proposed",
@@ -141,12 +141,6 @@ export interface TransitionContext {
   /** True when every required done check passed on this run. */
   checksPassed?: boolean;
   /**
-   * True when the work's own arc reported itself finished (its last turn's
-   * `ARC-STATUS: CLOSED|DONE|MERGED`) and its session was archived since
-   * (server/events.ts finishedArc): it closes itself, receipted as Maestro's.
-   */
-  arcFinished?: boolean;
-  /**
    * True when an orchestrator that adopted the work took back its own arc's
    * landing and archived its session since, untouched by you (server/events.ts
    * adopterClosed): that landing was the orchestrator's to read.
@@ -165,17 +159,11 @@ export function transition(from: OrchState, to: OrchState, ctx: TransitionContex
   if (!LEGAL[from].includes(to)) {
     throw new IllegalTransitionError(from, to);
   }
-  if (
-    from === "review" &&
-    to === "done" &&
-    ctx.verdict !== "approve" &&
-    ctx.arcFinished !== true &&
-    ctx.adopterClosed !== true
-  ) {
+  if (from === "review" && to === "done" && ctx.verdict !== "approve" && ctx.adopterClosed !== true) {
     throw new IllegalTransitionError(
       from,
       to,
-      "only an approve verdict, an arc that reported itself finished and was archived, or an orchestrator that took back its arc and archived it, closes gated work",
+      "only an approve verdict, or an orchestrator that took back its arc and archived it, closes gated work",
     );
   }
   if (from === "blocked" && to === "done" && ctx.branchMerged !== true) {
