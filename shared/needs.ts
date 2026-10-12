@@ -80,14 +80,29 @@ export const ReviewBodySchema = AskBodySchema.extend({
 });
 export type ReviewBody = z.infer<typeof ReviewBodySchema>;
 
+/** Your Allow or Deny on a held action while its undo window runs (approval.decide): what to count down to, and undo. */
+export const PendingApprovalSchema = z.object({
+  receipt: z.string(),
+  /** "Allowed git push origin main": what you did, in the past tense. */
+  label: z.string(),
+  appliesAt: z.string(),
+});
+export type PendingApproval = z.infer<typeof PendingApprovalSchema>;
+
+/**
+ * An approval is one exact action that a policy layer held (A1): a session's permission prompt, or an
+ * action an agent asked leave for (approval.request). Work is never asked to be approved.
+ */
 export const ApprovalBodySchema = z.object({
-  /** The exact action held, in words. */
+  /** The exact action held, in words. Your decision binds to this text: when it has changed, the decision is dropped. */
   action: z.string(),
-  /** The layer that held it: `permission` (the session's permission prompt) or `gate` (Maestro's human gate). */
+  /** The layer that held it: `permission` (the session's permission prompt), or the policy an agent names (`gate`, `policy`). */
   heldBy: z.string(),
   evidence: z.array(EvidenceSchema),
   /** What happens after you allow it, step by step. */
   after: z.array(z.string()),
+  /** Your decision, while it waits out its undo window. Absent when none is pending. */
+  pending: PendingApprovalSchema.optional(),
 });
 export type ApprovalBody = z.infer<typeof ApprovalBodySchema>;
 
@@ -110,12 +125,20 @@ export const workKey = (id: string): string => `work:${id}`;
 export const askHoldKey = (ask: Pick<DecisionAsk, "home" | "ledger" | "uid" | "id">): string =>
   `ask:${JSON.stringify([homeKey(ask.home), ask.ledger, ask.uid, ask.id])}`;
 export const reviewKey = (initiative: string): string => `review:${initiative}`;
+/** An action an agent asked leave for (approval.request): `approval:<id>`. */
+export const approvalKey = (id: string): string => `approval:${id}`;
+
+/** A permission prompt's action, as an approval says it and a decision binds to it. */
+export function permissionAction(permission: { title: string; detail: string | null }): string {
+  return permission.detail ? `${permission.title}: ${permission.detail}` : permission.title;
+}
 export const ANSWERS_KEY = "answers:batch";
 
 export type Hold =
   | { kind: "work"; id: string }
   | { kind: "ask"; askKey: string }
   | { kind: "review"; initiative: string }
+  | { kind: "approval"; id: string }
   | { kind: "answers" };
 
 /** What a key holds, or null for a key no hold has. */
@@ -132,13 +155,15 @@ export function holdOf(key: string): Hold | null {
       return { kind: "ask", askKey: rest };
     case "review":
       return { kind: "review", initiative: rest };
+    case "approval":
+      return { kind: "approval", id: rest };
     default:
       return null;
   }
 }
 
 const RowBase = z.object({
-  /** `work:<id>`, `ask:<ask key>`, `review:<initiative>` or `answers:batch` (holdOf). */
+  /** `work:<id>`, `ask:<ask key>`, `review:<initiative>`, `approval:<id>` or `answers:batch` (holdOf). */
   key: z.string(),
   title: z.string(),
   /** The workspace or lane it belongs to, e.g. "broomva", "sri". */

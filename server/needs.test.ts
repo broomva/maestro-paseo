@@ -137,7 +137,7 @@ function everyState(): WorkItem[] {
 
 describe("needs.list's kinds (owner answer A1)", () => {
   test("work at your gate is an approval; only you may start it is an owner step; nothing else is a need", () => {
-    const rows = everyState().map(workNeed);
+    const rows = everyState().map((item) => workNeed(item));
     const byKey = new Map(rows.filter((row): row is NeedRow => row !== null).map((row) => [row.key, row]));
     expect([...byKey.keys()].sort()).toEqual(["work:failed", "work:gate", "work:perm", "work:yours"]);
 

@@ -1,8 +1,10 @@
 // Which work needs you: one definition for every surface that counts, lists or
 // opens work under Needs you. Owner answer A1: work needs you only while it
 // holds something only you can give, an approval or an owner step:
-//   - at your gate (`review`): a permission prompt the session is paused on,
-//     or a landing Maestro's human gate holds (an approval, server/needs.ts);
+//   - at your gate (`review`) with a permission prompt the session is paused
+//     on: an approval, one exact held action (server/needs.ts). Work that
+//     finished and merely waits at the gate asks nothing of you (BRO-2999):
+//     gates merge it, so it is watched, "Finished", never counted here;
 //   - queued work only you may start (a `yours` flag: held for you, a mode
 //     you chose, filed from your answer; or a `failed` start from before A8):
 //     an owner step, "Start it yourself".
@@ -14,27 +16,42 @@
 import type { WorkItem } from "./contracts";
 import type { Group } from "./states";
 
-type Placed = Pick<WorkItem, "group" | "flag">;
+type Placed = Pick<WorkItem, "group" | "flag" | "permission">;
 
 /** Whether queued work waits for you to start it: the loop flagged it yours (or a start before A8 failed). */
 export const onlyYouStart = (item: Placed): boolean => item.flag?.kind === "yours" || item.flag?.kind === "failed";
 
-/** Whether this work holds something only you can give: it is at your gate, or only you may start it. */
-export const needsHand = (item: Placed): boolean => item.group === "review" || onlyYouStart(item);
+/** Whether work at your gate holds a permission prompt: one exact action a policy layer held. */
+export const holdsApproval = (item: Placed): boolean => item.group === "review" && item.permission != null;
 
-/** Work that needs you, in order: at your gate, then what only you may start, each as given. */
+/** Whether this work holds something only you can give: a held action, or work only you may start. */
+export const needsHand = (item: Placed): boolean => holdsApproval(item) || onlyYouStart(item);
+
+/** Work that finished and waits at the gate with no question pending: watched, "Finished" (BRO-2999). */
+export const isFinished = (item: Placed): boolean => item.group === "review" && item.permission == null;
+
+/** Work that needs you, in order: the held actions, then what only you may start, each as given. */
 export function needsYouOf<T extends Placed>(items: readonly T[]): T[] {
+  return [...items.filter(holdsApproval), ...items.filter((item) => item.group !== "review" && needsHand(item))];
+}
+
+/**
+ * The work at your gate, as the board's and the list's first section shows it: held actions first, then
+ * finished work waiting for your look, then what only you may start. Only the first and the last are counted
+ * under Needs you (needsYouOf); finished work is listed here so none of it is lost from sight.
+ */
+export function atGateOf<T extends Placed>(items: readonly T[]): T[] {
   return [
-    ...items.filter((item) => item.group === "review"),
+    ...items.filter(holdsApproval),
+    ...items.filter(isFinished),
     ...items.filter((item) => item.group !== "review" && needsHand(item)),
   ];
 }
 
 /**
- * Where work is listed: under Needs you when it needs a hand, else under its
- * own group (stuck work under Stuck, a quiet run under Running). Each item is
- * listed once; its state label still says what it is.
+ * Where work is listed: at the gate when it holds something or finished, else under its own group (stuck
+ * work under Stuck, a quiet run under Running). Each item is listed once; its state label still says what it is.
  */
 export function sectionOf(item: Placed): Group {
-  return needsHand(item) ? "review" : item.group;
+  return needsHand(item) || isFinished(item) ? "review" : item.group;
 }

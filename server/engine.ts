@@ -24,6 +24,7 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { type FlagKind, type MaestroConfig, NOT_STOPPED, type RunChoices, type WorkItem } from "../shared/contracts";
+import { permissionAction } from "../shared/needs";
 import { skipsPrompts } from "../shared/run";
 import {
   GROUP_ORDER,
@@ -415,6 +416,14 @@ function gateRefusal(item: StoredWork, verdict: Verdict, applying: boolean): str
 }
 
 const ALREADY_PENDING = "A decision is already waiting to take effect. Undo it first to change it.";
+
+/**
+ * Why work.verdict refuses `approve` (A1, BRO-2999): work never asks to be approved, gates merge it. What is yours
+ * is the action a policy layer held (Allow or Deny, approval.decide), a change of course (send it back), or Cancel.
+ * Decisions recorded before approve was retired still read and still apply (applyPending).
+ */
+export const APPROVE_RETIRED =
+  "Work is not approved: gates merge it. Allow or Deny the action a session holds, change its course, or cancel it.";
 
 /** Why a decision is dropped when the run moved after it was made: you decided on a result that is no longer the one there. */
 export const RUN_WENT_ON = "The run went on after you decided.";
@@ -1163,6 +1172,7 @@ export class Engine {
    * counts now, when you decide.
    */
   async verdict(paseo: Paseo | null | undefined, id: string, verdict: Verdict, note: string): Promise<WorkItem> {
+    if (verdict === "approve") throw new UserError(APPROVE_RETIRED);
     const { store, config } = await this.store();
     const trimmed = note.trim();
     if (verdict === "revise" && !trimmed) throw new UserError("Say what should change before sending it back.");
@@ -1196,6 +1206,73 @@ export class Engine {
     );
     this.arm(id, token, effectiveAt, paseo ?? null, updated.dir);
     return toWire(updated, this.now().getTime(), config);
+  }
+
+  /**
+   * The prompt a work holds, read now, for an Allow or Deny on it (approval.decide): the request it is, and the
+   * session that asked. Your decision binds to `action`, the exact words you saw: a prompt that has changed since
+   * (another request, another command) is a different action, and is refused. Throws a UserError otherwise.
+   */
+  async permissionHold(id: string, action: string): Promise<{ requestId: string; agentId: string }> {
+    const { store } = await this.store();
+    const item = await store.findById(id);
+    const permission = pendingPermission(item.events);
+    const worker = workerOf(item.events);
+    if (item.contract.state !== "review" || !permission || !worker) {
+      throw new UserError("Nothing is waiting on a question from this session any more.");
+    }
+    if (permissionAction(permission) !== action) {
+      throw new UserError("The session now asks something else. Read what it asks, then decide again.");
+    }
+    return { requestId: permission.requestId, agentId: worker.agentId };
+  }
+
+  /**
+   * Answer a held permission prompt, once your window closed (approval.decide): re-checks that it is still the
+   * prompt you decided on, still held by the session, then sends your answer to the session and records it.
+   * Throws a UserError, which drops the decision with its reason, when the prompt moved on.
+   */
+  async answerPermission(
+    paseo: Paseo,
+    id: string,
+    { requestId, action, allow, note }: { requestId: string; action: string; allow: boolean; note: string },
+  ): Promise<string> {
+    const { store } = await this.store();
+    const item = await store.findById(id);
+    const permission = pendingPermission(item.events);
+    const worker = workerOf(item.events);
+    if (item.contract.state !== "review" || permission?.requestId !== requestId || !worker) {
+      throw new UserError(`The prompt moved on before your decision took effect, so nothing was sent: ${action}`);
+    }
+    if (permissionAction(permission) !== action) {
+      throw new UserError("The session asks something else now, so your decision was not sent.");
+    }
+    const snapshot = await within(() => paseo.agents.ref(worker.agentId).refresh(), this.claimWaitMs);
+    const held = snapshot?.agent.pendingPermissions.some((p) => p.id === requestId) ?? false;
+    if (!held) {
+      // The session no longer holds it (answered in its own window, or gone): the work's record catches up.
+      await this.resolvePermission(store, item, worker.agentId, requestId);
+      throw new UserError("The session no longer holds that prompt, so nothing was sent.");
+    }
+    await within(
+      () =>
+        paseo.agents.ref(worker.agentId).respondToPermission({
+          requestId,
+          response: allow ? { behavior: "allow" } : { behavior: "deny", message: note.trim() || "Declined from Maestro" },
+        }),
+      this.claimWaitMs,
+    );
+    await this.resolvePermission(store, item, worker.agentId, requestId);
+    return allow ? `Allowed: ${action}` : `Denied: ${action}`;
+  }
+
+  /** Take back the decision at the gate whose receipt is `token`, wherever its work is (verb.undo). */
+  async undoDecision(token: string): Promise<WorkItem> {
+    const { store } = await this.store();
+    const { items } = await store.scan();
+    const found = items.find((item) => pendingDecision(item.events)?.token === token);
+    if (!found) throw new UserError("There is no decision waiting to take effect with that receipt.");
+    return this.undo(found.contract.id);
   }
 
   /** Take back a decision that has not taken effect yet. */
