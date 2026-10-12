@@ -2691,7 +2691,7 @@ describe("the Queued hint", () => {
       }
       // J6's tray says who starts it, which is true whether or not the loop is on: it never does (A8).
       await view.goto("Board");
-      expect(view.text()).toContain("you or a lane start these");
+      expect(view.text()).toContain("waits for you to dispatch them");
       expect(view.text()).not.toContain(hidden);
     });
   }
