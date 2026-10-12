@@ -131,6 +131,7 @@ function everything(): { items: WorkItem[]; asks: DecisionAsk[]; reviews: Initia
       nextAction: null,
       driver: null,
       waitingOn: [],
+      sessions: [],
       stale: { kind: "overdue", date: "2026-10-08" },
     } as unknown as Initiative,
   ];
