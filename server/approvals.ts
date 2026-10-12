@@ -62,6 +62,9 @@ export function requestId(agentId: string, action: string, ref: string | null): 
     .slice(0, 16);
 }
 
+/** How many requests one session may have waiting: the socket trusts its caller (BRO-2996), so a loop cannot flood Needs you. */
+export const MAX_OPEN_PER_SESSION = 20;
+
 export class Approvals {
   private readonly path: string;
   private readonly now: () => Date;
@@ -128,6 +131,12 @@ export class Approvals {
     return this.serial(async () => {
       const { requests, settled } = await this.read();
       if (!requests.has(id) || settled.has(id)) {
+        const waiting = [...requests.values()].filter((entry) => entry.agentId === agentId && !settled.has(entry.id));
+        if (waiting.length >= MAX_OPEN_PER_SESSION) {
+          throw new UserError(
+            `This session already has ${waiting.length} requests waiting on you. Withdraw some, or wait for an answer.`,
+          );
+        }
         await this.write({
           kind: "approval.requested",
           id,

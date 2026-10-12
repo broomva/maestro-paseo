@@ -192,6 +192,20 @@ describe("approval.decide on a permission prompt", () => {
     await decide({ key: workKey(item.id), allow: true, action, requestId: "p1" });
   });
 
+  test("the same prompt described differently is a different action: nothing is sent", async () => {
+    const { engine, fake, item, ask } = await setup();
+    await ask("p1", "git push");
+    await expect(
+      engine.answerPermission(fake.paseo, item.id, {
+        requestId: "p1",
+        action: "Run: git push --force",
+        allow: true,
+        note: "",
+      }),
+    ).rejects.toThrow("asks something else");
+    expect(fake.answered).toEqual([]);
+  });
+
   test("a prompt the session no longer holds is dropped, and the work's record catches up", async () => {
     const { engine, fake, verbs, timers, item, ask, decide } = await setup();
     await ask("p1", "git push");
@@ -333,6 +347,19 @@ describe("approval.request: an agent asks leave for one exact action", () => {
     expect((await verbs.list()).recent).toMatchObject([
       { outcome: "dropped", detail: "The session is gone, so it could not be told." },
     ]);
+  });
+
+  test("a session cannot flood Needs you: past 20 waiting, it is told to withdraw some", async () => {
+    const { approvals, engine, fake } = await setup();
+    const methods = agentMethods(engine, () => fake.paseo, approvals);
+    for (let n = 0; n < 20; n += 1) await call(methods, "approval.request", { action: `gh pr merge ${n}` }, "agent-9");
+    await expect(call(methods, "approval.request", { action: "gh pr merge 99" }, "agent-9")).rejects.toThrow(
+      "20 requests waiting",
+    );
+    // Asking again for one that waits is not a new request; another session has its own room.
+    await call(methods, "approval.request", { action: "gh pr merge 3" }, "agent-9");
+    await call(methods, "approval.request", { action: "gh pr merge 99" }, "agent-8");
+    expect(await approvals.open()).toHaveLength(21);
   });
 
   test("a session may ask and withdraw, never decide; only the asker may withdraw", async () => {
