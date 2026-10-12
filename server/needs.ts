@@ -313,11 +313,14 @@ export function reviewNeed(
     initiative.nextAction ? `Next action: ${initiative.nextAction}` : null,
     ...initiative.waitingOn.map((wait) => `Waiting on ${wait.kind} ${wait.ref}${wait.note ? `: ${wait.note}` : ""}`),
   ].filter((line): line is string => line !== null);
+  // Its driver's session, when the file names one that is a Paseo agent here: "Open the driver" opens it.
+  const driverAgent = initiative.sessions.find((link) => link.agentId !== null)?.agentId ?? null;
   return {
     kind: "ask",
     key: reviewKey(initiative.id),
     title: `Review ${name}: keep, park or close?`,
     scope: workspace,
+    ...(driverAgent ? { session: { agentId: driverAgent, name: shortId(driverAgent), waiting: false } } : {}),
     since: dayStartIso(stale.date),
     blocksWork: false,
     verbs: [...KIND_VERBS.ask],
@@ -330,6 +333,7 @@ export function reviewNeed(
       options: REVIEW_OPTIONS.map((option) => ({ ...option })),
       goesTo: `${initiative.file} in the control repo`,
       initiative: initiative.id,
+      date: stale.date,
       intent: initiative.quote ?? initiative.summary ?? name,
       since,
       hanging: { work, asks: open, ...(initiative.driver ? { driver: initiative.driver } : {}) },

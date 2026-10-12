@@ -45,6 +45,7 @@ import { HomeHeaderBar } from "./home-header";
 import { HOME_TABS, type HomeTab, TAB_VIEWS, tabOfView } from "./home-model";
 import { useHandled, useLoop, useNeeds, useNeedsEvents, useWorkList } from "./hooks";
 import { InitiativeNotices, InitiativesView } from "./initiatives";
+import { InitiativesBoard } from "./initiatives-board";
 import { requestIntent, useIntent } from "./intent";
 import { LoopControl, LoopPanel } from "./loop";
 import { LoopsNotices, LoopsView } from "./loops";
@@ -75,7 +76,7 @@ import { Button, Card, IconButton, Notice, space, useText } from "./ui";
 import { WorkBoard } from "./work-board";
 
 /** The views whose desktop screen is J2–J9 (BRO-3036): they carry their own watched things, so no notice band sits above them. */
-const J_SCREENS: readonly PlaneView[] = ["decisions", "board", "health"];
+const J_SCREENS: readonly PlaneView[] = ["decisions", "board", "health", "initiatives"];
 
 export function MaestroSurface({ theme, layout, navigation, params }: PluginScreenProps) {
   const list = useWorkList();
@@ -540,6 +541,19 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
               view={view}
               views={VIEWS.filter((option) => TAB_VIEWS[tab].includes(option.id))}
               onView={(next) => chooseView(next as PlaneView)}
+              onOpenWork={(id) => {
+                chooseView("list");
+                setSelected(id);
+              }}
+            />
+          </ScrollView>
+        ) : view === "initiatives" ? (
+          // J8: lateness first, four tiles, and a due review answered in the inspector (B2).
+          <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 12 }} keyboardShouldPersistTaps="handled">
+            <InitiativesBoard
+              theme={theme}
+              navigation={navigation}
+              onOpenDecision={(ledger, id) => openDecisions(ledger, id ? { ledger, id } : null)}
               onOpenWork={(id) => {
                 chooseView("list");
                 setSelected(id);

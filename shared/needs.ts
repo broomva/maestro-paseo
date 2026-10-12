@@ -72,6 +72,8 @@ export type AskBody = z.infer<typeof AskBodySchema>;
 /** A due initiative review, raised as an ask on its due date (B2). */
 export const ReviewBodySchema = AskBodySchema.extend({
   initiative: z.string(),
+  /** The review date it answers (Initiative.stale.date, YYYY-MM-DD): an answer names it, so it holds for this review only. */
+  date: z.string(),
   /** The owner's intent, verbatim when the file has it. */
   intent: z.string(),
   /** What its record says now: its next action and what it waits on. */

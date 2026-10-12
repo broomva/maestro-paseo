@@ -1079,6 +1079,20 @@ const invoke = async (method: string, input: unknown) => {
     pendingVerbs = [entry, ...pendingVerbs];
     return { receipt: entry.receipt, appliesAt: entry.appliesAt };
   }
+  if (method === "initiatives.review") {
+    const { id } = input as { id: string };
+    const entry = {
+      receipt: `r-review-${pendingVerbs.length + 1}`,
+      verb: "initiative.review",
+      key: `review:${id}`,
+      label: `Review of ${id}`,
+      at: new Date().toISOString(),
+      appliesAt: new Date(Date.now() + 8_000).toISOString(),
+      remainingMs: 8_000,
+    };
+    pendingVerbs = [entry, ...pendingVerbs];
+    return { receipt: entry.receipt, appliesAt: entry.appliesAt };
+  }
   if (method === "verb.undo") {
     const { receipt } = input as { receipt: string };
     pendingVerbs = pendingVerbs.filter((entry) => entry.receipt !== receipt);
@@ -3241,6 +3255,81 @@ describe("J7, Health (BRO-3036)", () => {
   });
 });
 
+describe("J8, Initiatives (BRO-3036)", () => {
+  const panel = (view: Awaited<ReturnType<typeof mount>>) => view.all('[data-testid="inspector-panel"]')[0];
+  const until = async (ok: () => boolean) => {
+    for (let tries = 0; tries < 150 && !ok(); tries += 1) await settle(20);
+  };
+  const due = () => {
+    reviewsNow = [
+      {
+        ...(initiativesNow.initiatives.find((entry) => entry.id === "mod-anything") as Initiative),
+        stale: { kind: "overdue", date: "2026-10-01" },
+      },
+    ];
+  };
+
+  test("the Review due tile, its chip and the tab's badge are needs.list's reviews: one number, late first", async () => {
+    due();
+    const view = await mount(surface(false));
+    await view.goto("Initiatives");
+    await until(() => view.byLabel("Initiative: mod-anything skill, review 4 d late") !== null);
+    const reviews = needsNow().rows.filter((row) => row.key.startsWith("review:")).length;
+    expect(reviews).toBe(1);
+    // The tile and its chip say the same number, and it is needs.list's.
+    expect(view.all(`[aria-label^="Review due, ${reviews}, due"]`)).toHaveLength(1);
+    expect(view.all('[role="radio"]').some((el) => el.getAttribute("aria-label") === `Review due, ${reviews}`)).toBe(
+      true,
+    );
+    expect(
+      view
+        .tabs()
+        .find((tab) => tab.getAttribute("aria-label")?.startsWith("Initiatives"))
+        ?.getAttribute("aria-label"),
+    ).toBe(`Initiatives, ${reviews} review is due`);
+    // The late one is the first row.
+    expect(view.all('[data-testid^="initiative-"]')[0]?.getAttribute("data-testid")).toBe("initiative-mod-anything");
+  });
+
+  test("a due review opens in the inspector with its three answers; Answer sends it through the adapter, once, with the date it read", async () => {
+    due();
+    const view = await mount(surface(false));
+    await view.goto("Initiatives");
+    await until(() => view.byLabel("Initiative: mod-anything skill, review 4 d late") !== null);
+    await view.press(view.byLabel("Initiative: mod-anything skill, review 4 d late"));
+    await until(() => panel(view) !== undefined);
+    const text = panel(view)?.textContent ?? "";
+    expect(text).toContain("Review mod-anything skill: keep, park or close?");
+    for (const answer of ["Keep", "Park", "Close"]) expect(text).toContain(answer);
+    // There is no Skip on a review; the primary names the option.
+    expect(view.all('[data-testid="inspector-bar"] [aria-label="Skip"]')).toHaveLength(0);
+    await view.press(view.all('[data-testid="inspector-panel"] [aria-label="Park"]')[0]);
+    calls.length = 0;
+    await view.press(view.all('[data-testid="inspector-bar"] [aria-label="Answer with 2"]')[0]);
+    await until(() => calls.some((call) => call.method === "initiatives.review"));
+    expect(calls.filter((call) => call.method === "initiatives.review").map((call) => call.input)).toEqual([
+      { id: "mod-anything", date: "2026-10-01", answer: "park", note: "" },
+    ]);
+    expect(view.all('[data-testid="undo-toast"]')[0]?.textContent).toMatch(
+      /Review of mod-anything: park.*applies in [78] s/,
+    );
+  });
+
+  test("a row that is not due opens its card, where its links and ideas are; the Proposed chip lists the ideas", async () => {
+    const view = await mount(surface(false));
+    await view.goto("Initiatives");
+    await until(
+      () => view.all('[data-testid="initiative-fleet-autonomy"]').length > 0 || view.text().includes("Fleet autonomy"),
+    );
+    await view.press(view.all('[aria-label^="Initiative: Fleet autonomy"]')[0]);
+    await until(() => view.text().includes("Show the ideas for") || view.text().includes("Next action"));
+    expect(panel(view)).toBeUndefined();
+    await view.press(view.all('[role="radio"]').find((el) => el.getAttribute("aria-label")?.startsWith("Proposed")));
+    await until(() => view.text().includes("Build idea"));
+    expect(view.text()).toContain("Build idea");
+  });
+});
+
 describe("Settings", () => {
   const settingsScreen = () => (
     <MaestroSettings theme={theme} host={{ id: "h", label: "h" }} layout={{ compact: false, platform: "web" }} />
@@ -5165,7 +5254,8 @@ describe("Initiatives", () => {
   const until = async (view: Awaited<ReturnType<typeof mount>>, text: string) => {
     for (let tries = 0; tries < 150 && !view.text().includes(text); tries += 1) await settle(20);
   };
-  const open = async (compact = false) => {
+  // The card and the ideas are the phone's list as well as J8's expanded row: their rules are tested on the list.
+  const open = async (compact = true) => {
     const view = await mount(surface(compact));
     await view.goto("Initiatives");
     await until(view, "mod-anything skill");
@@ -5234,7 +5324,9 @@ describe("Initiatives", () => {
       })),
       { ...decisionFixture(), home: { kind: "main" as const, path: "/Users/me/broomva", branch: null }, origin: null },
     ];
-    const view = await open();
+    // On the desktop (J8): the row opens its card, whose link goes to Decisions.
+    const view = await open(false);
+    await view.press(view.all('[aria-label^="Initiative: mod-anything skill"]')[0]);
     await view.press(view.byLabel("Open maestro-paseo-gaps.yaml#A10 in Decisions"));
     await until(view, "Decision ");
     expect(view.viewNow()).toBe("Decisions");

@@ -75,7 +75,13 @@ export function verbsFor(kind: InspectorKind, primaryLabel?: string): VerbSpec[]
  * work (a link at the bar's left) and says Unblock sends your prompt into the session. A notice is a fact:
  * it never offers Approve.
  */
-export function panelVerbsFor(kind: InspectorKind, primaryLabel?: string): VerbSpec[] {
+export function panelVerbsFor(kind: InspectorKind, primaryLabel?: string, driver = false): VerbSpec[] {
+  // A review is answered with one of its three, or left: there is no Skip (J8). Its driver's session, when it has
+  // one here, opens from the bar's left.
+  if (kind === "review") {
+    const answer = verbsFor(kind, primaryLabel).filter((verb) => verb.primary);
+    return [...(driver ? [{ id: "open", label: "Open the driver", primary: false, link: true }] : []), ...answer];
+  }
   if (kind !== "notice") return verbsFor(kind, primaryLabel);
   return [
     { id: "cancel", label: "Cancel work…", primary: false, link: true },

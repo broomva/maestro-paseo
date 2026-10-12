@@ -17,6 +17,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { decideConductor, undoConductor } from "../shared/answers";
 import { cancelWork, dispatchWork, unblockWork, undoWork, type WorkItem } from "../shared/contracts";
 import { type AnswerInput, answerAsk, type DecisionAsk } from "../shared/fleet";
+import { REVIEW_ANSWERS, type ReviewAnswer, reviewInitiative } from "../shared/initiatives";
 import { holdOf, type NeedRow } from "../shared/needs";
 import { SNOOZE_HOURS, snoozeNotice } from "../shared/notices";
 import { decideApproval as decideApprovalRpc, promptSession as promptSessionRpc, undoVerb } from "../shared/verbs";
@@ -76,6 +77,8 @@ export type VerbPlan =
   | { call: "cancel"; id: string; done: string }
   | { call: "conductor"; key: string; verb: "file" | "dismiss"; done: string }
   | { call: "snooze"; key: string; done: string }
+  /** Your answer to a due initiative review (B2, J8): keep, park or close, recorded as a receipt after the window. */
+  | { call: "review"; id: string; date: string; answer: ReviewAnswer; note: string; done: string }
   | { call: "url"; url: string; done: string }
   | { call: "session"; agentId: string; done: string }
   /**
@@ -140,7 +143,20 @@ export function planVerb(verb: VerbId, target: VerbTarget, choice?: string, word
       if (row?.kind !== "approval") return { call: "unavailable", why: "Only an approval is allowed or denied." };
       return decideApproval(row, item, verb === "allow");
     case "answer": {
-      if (hold?.kind === "review") return { call: "go", intent: { kind: "initiatives" }, done: "Opened Initiatives" };
+      if (hold?.kind === "review") {
+        const answer = REVIEW_ANSWERS.find((one) => one === choice);
+        // With no answer chosen, it opens where the review is handled; chosen, it is the review's answer.
+        if (!answer || row?.kind !== "ask" || !("initiative" in row.body))
+          return { call: "go", intent: { kind: "initiatives" }, done: "Opened Initiatives" };
+        return {
+          call: "review",
+          id: row.body.initiative,
+          date: row.body.date,
+          answer,
+          note: words.trim(),
+          done: `Review of ${row.body.initiative}: ${answer}`,
+        };
+      }
       if (hold?.kind === "answers") return { call: "go", intent: { kind: "decisions" }, done: "Opened Decisions" };
       if (row?.kind !== "ask") return { call: "unavailable", why: "Only an ask is answered." };
       const decisions: MaestroIntent = ask
@@ -256,6 +272,7 @@ export function useVerbs() {
     undo: useRpc(undoWork),
     answer: useRpc(answerAsk),
     snooze: useRpc(snoozeNotice),
+    review: useRpc(reviewInitiative),
     conductor: useRpc(decideConductor),
     conductorUndo: useRpc(undoConductor),
   };
@@ -306,6 +323,15 @@ export function useVerbs() {
       }
       case "snooze": {
         const { receipt, appliesAt } = await rpc.snooze({ key: plan.key, hours: SNOOZE_HOURS });
+        return { done: plan.done, receipt: `verb:${receipt}`, appliesAt };
+      }
+      case "review": {
+        const { receipt, appliesAt } = await rpc.review({
+          id: plan.id,
+          date: plan.date,
+          answer: plan.answer,
+          note: plan.note,
+        });
         return { done: plan.done, receipt: `verb:${receipt}`, appliesAt };
       }
       case "conductor": {
