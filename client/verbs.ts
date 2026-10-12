@@ -18,6 +18,7 @@ import { decideConductor, undoConductor } from "../shared/answers";
 import { cancelWork, dispatchWork, unblockWork, undoWork, type WorkItem } from "../shared/contracts";
 import { type AnswerInput, answerAsk, type DecisionAsk } from "../shared/fleet";
 import { holdOf, type NeedRow } from "../shared/needs";
+import { SNOOZE_HOURS, snoozeNotice } from "../shared/notices";
 import { decideApproval as decideApprovalRpc, promptSession as promptSessionRpc, undoVerb } from "../shared/verbs";
 import { whereOf } from "./decisions-model";
 import { invalidateNeeds, useRefresh } from "./hooks";
@@ -49,6 +50,8 @@ export interface VerbTarget {
   ask?: DecisionAsk | null;
   /** A proposal's conductor key (DecisionAsk.fate.key). */
   proposal?: string | null;
+  /** A notice (notices.list's row): what Snooze quiets. */
+  notice?: { key: string } | null;
 }
 
 /** The call a verb makes. Pure data: `useVerbs` runs it. */
@@ -72,6 +75,7 @@ export type VerbPlan =
   | { call: "unblock"; id: string; note: string; done: string }
   | { call: "cancel"; id: string; done: string }
   | { call: "conductor"; key: string; verb: "file" | "dismiss"; done: string }
+  | { call: "snooze"; key: string; done: string }
   | { call: "url"; url: string; done: string }
   | { call: "session"; agentId: string; done: string }
   /**
@@ -172,7 +176,8 @@ export function planVerb(verb: VerbId, target: VerbTarget, choice?: string, word
     case "later":
       return { call: "stay", done: "Left in Needs you" };
     case "snooze":
-      return { call: "unavailable", why: "Snooze lands with notices.list (BRO-3036)." };
+      if (!target.notice) return { call: "unavailable", why: "Only a notice is snoozed." };
+      return { call: "snooze", key: target.notice.key, done: `Snoozed for ${SNOOZE_HOURS} h` };
     case "open": {
       const agentId = item?.worker?.agentId ?? row?.session?.agentId ?? null;
       if (agentId) return { call: "session", agentId, done: "Opened the session" };
@@ -250,6 +255,7 @@ export function useVerbs() {
     cancel: useRpc(cancelWork),
     undo: useRpc(undoWork),
     answer: useRpc(answerAsk),
+    snooze: useRpc(snoozeNotice),
     conductor: useRpc(decideConductor),
     conductorUndo: useRpc(undoConductor),
   };
@@ -297,6 +303,10 @@ export function useVerbs() {
         // Every cancel waits its 8 s: at your gate on the work's own decision, elsewhere in the ledger.
         const { receipt, appliesAt } = await rpc.cancel({ id: plan.id });
         return receipt ? { done: plan.done, receipt: `verb:${receipt}`, appliesAt } : { done: plan.done };
+      }
+      case "snooze": {
+        const { receipt, appliesAt } = await rpc.snooze({ key: plan.key, hours: SNOOZE_HOURS });
+        return { done: plan.done, receipt: `verb:${receipt}`, appliesAt };
       }
       case "conductor": {
         const { receipt, appliesAt } = await rpc.conductor({ key: plan.key, verb: plan.verb });

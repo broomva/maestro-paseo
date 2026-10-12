@@ -120,7 +120,8 @@ export function useInspector({
   // One verb at a time on a hold: it cannot be acted on again until the call has answered and every read has landed.
   const inFlight = useRef(new Set<string>());
   const act = async (verb: VerbId, target: VerbTarget, choice?: string, words?: string) => {
-    const id = target.row?.key ?? (target.item ? `work:${target.item.id}` : (target.proposal ?? verb));
+    const id =
+      target.row?.key ?? (target.item ? `work:${target.item.id}` : (target.proposal ?? target.notice?.key ?? verb));
     if (inFlight.current.has(id)) return;
     inFlight.current.add(id);
     let landed: Promise<void> = Promise.resolve();

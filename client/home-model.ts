@@ -66,7 +66,7 @@ export const TAB_VIEWS: Record<HomeTab, readonly PlaneView[]> = {
   feed: ["feed"],
   decisions: ["decisions"],
   work: ["board", "list", "history"],
-  health: ["fleet", "timeline", "loops"],
+  health: ["health", "fleet", "timeline", "loops"],
   initiatives: ["initiatives"],
 };
 

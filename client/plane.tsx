@@ -38,6 +38,7 @@ import {
 import { FleetNotices, FleetView } from "./fleet";
 import { duration, errorText, plural } from "./format";
 import { holdTarget, tabBadges } from "./header-count";
+import { HealthScreen } from "./health";
 import { HistoryView } from "./history";
 import { type HomeFocus, HomeScreen } from "./home";
 import { HomeHeaderBar } from "./home-header";
@@ -74,7 +75,7 @@ import { Button, Card, IconButton, Notice, space, useText } from "./ui";
 import { WorkBoard } from "./work-board";
 
 /** The views whose desktop screen is J2–J9 (BRO-3036): they carry their own watched things, so no notice band sits above them. */
-const J_SCREENS: readonly PlaneView[] = ["decisions", "board"];
+const J_SCREENS: readonly PlaneView[] = ["decisions", "board", "health"];
 
 export function MaestroSurface({ theme, layout, navigation, params }: PluginScreenProps) {
   const list = useWorkList();
@@ -530,6 +531,21 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
               setSelected(id);
             }}
           />
+        ) : view === "health" ? (
+          // J7: Health as one sentence, four tiles, the notices with what closes each, and the sessions.
+          <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 12 }} keyboardShouldPersistTaps="handled">
+            <HealthScreen
+              theme={theme}
+              navigation={navigation}
+              view={view}
+              views={VIEWS.filter((option) => TAB_VIEWS[tab].includes(option.id))}
+              onView={(next) => chooseView(next as PlaneView)}
+              onOpenWork={(id) => {
+                chooseView("list");
+                setSelected(id);
+              }}
+            />
+          </ScrollView>
         ) : view === "board" ? (
           // J6: Work as five trays, its own filters and its own inspector; the other Work views keep their pane.
           <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 12 }} keyboardShouldPersistTaps="handled">

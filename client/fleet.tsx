@@ -80,7 +80,7 @@ export function useFleet(scope: string | null) {
  * or under All each scope, the first from the base read and the rest read
  * each under its own key (the same reads a scope chosen alone makes).
  */
-function useScopeReads(base: FleetRead | undefined, all: boolean, baseStale: string | null = null): ScopeRead[] {
+export function useScopeReads(base: FleetRead | undefined, all: boolean, baseStale: string | null = null): ScopeRead[] {
   const get = useRpc(getFleet);
   const others =
     all && base ? base.scopes.filter((scope) => scope.id !== base.detail?.id).map((scope) => scope.id) : [];

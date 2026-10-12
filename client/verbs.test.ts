@@ -132,8 +132,13 @@ describe("the other verbs", () => {
     expect(planVerb("file", {}).call).toBe("unavailable");
   });
 
-  test("snooze says which ticket brings it", () => {
-    expect(planVerb("snooze", {})).toMatchObject({ call: "unavailable", why: expect.stringContaining("BRO-3036") });
+  test("snooze quiets a notice for four hours, with its receipt; anything else is not snoozed", () => {
+    expect(planVerb("snooze", { notice: { key: "work:q1" } })).toMatchObject({
+      call: "snooze",
+      key: "work:q1",
+      done: "Snoozed for 4 h",
+    });
+    expect(planVerb("snooze", {}).call).toBe("unavailable");
   });
 
   test("continue prompts the work's session (session.prompt), and a work with no session has nothing to prompt", () => {

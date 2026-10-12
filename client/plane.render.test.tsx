@@ -2327,6 +2327,7 @@ describe("views and filters", () => {
     ]);
     await view.goto("Health");
     expect(view.all('[aria-label="Health views"] [role="radio"]').map((el) => el.getAttribute("aria-label"))).toEqual([
+      "Overview",
       "Fleet",
       "Timeline",
       "Loops",
@@ -3087,8 +3088,11 @@ describe("the Fleet view", () => {
     const view = await mount(surface(false));
     await view.goto("Fleet");
     for (let tries = 0; tries < 100 && !view.text().includes("Would list 4 unmanaged"); tries += 1) await settle(20);
-    // All reads each scope: the base read, then sri under its own key.
-    expect(sent("fleet.get")).toEqual([{ ticks: 24 }, { scope: "sri", ticks: 24 }]);
+    // All reads each scope: the base read, then sri under its own key (Health's overview, opened on the way, asks the same).
+    expect([...new Set(sent("fleet.get").map((input) => JSON.stringify(input)))]).toEqual([
+      JSON.stringify({ ticks: 24 }),
+      JSON.stringify({ scope: "sri", ticks: 24 }),
+    ]);
     const text = view.text();
     // Every scope that is not well is named, the worst first, and the session that wants a look too.
     expect(text).toContain(
