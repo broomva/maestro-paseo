@@ -542,6 +542,7 @@ let landingNow: AnswersLanding | null = null;
 /** While set, needs.list fails with it. */
 let needsFail: string | null = null;
 let workFail: string | null = null;
+let snoozeDelayMs = 0;
 /** Loop drift work.attention says needs you: none unless a test says. */
 let loopNoticesNow: LoopNotice[] = [];
 /** The Loops tab's read (loops.get): two standing rows, one drifting, and a p9 watcher. */
@@ -1067,6 +1068,7 @@ const invoke = async (method: string, input: unknown) => {
     return { receipt: entry.receipt, appliesAt: entry.appliesAt };
   }
   if (method === "notice.snooze") {
+    if (snoozeDelayMs) await new Promise((resolve) => setTimeout(resolve, snoozeDelayMs));
     const { key } = input as { key: string };
     const entry = {
       receipt: `r-snooze-${pendingVerbs.length + 1}`,
@@ -1521,6 +1523,7 @@ afterEach(async () => {
   landingNow = null;
   needsFail = null;
   workFail = null;
+  snoozeDelayMs = 0;
   askSessionNow = null;
   opened = [];
   initiativesNow = initiativesFixture();
@@ -3265,6 +3268,30 @@ describe("J7, Health (BRO-3036)", () => {
     await until(() => /\d+ runs? · \d+ fleet sessions?/.test(view.text()));
     expect(view.text()).toMatch(/\d+ runs? · \d+ fleet sessions?/);
     expect(view.text()).not.toContain(" seen");
+  });
+
+  test("a snooze in flight holds its own notice only: another notice is sent, the same one is not sent twice", async () => {
+    snoozeDelayMs = 400;
+    items = [
+      ...fixture(),
+      work("z", "running", { worker: worker("z", "maestro/z-1"), phase: "working", flag: quiet }),
+      work("y", "running", { worker: worker("y", "maestro/y-1"), phase: "working", flag: quiet }),
+    ];
+    const view = await mount(surface(false));
+    await view.goto("Health");
+    await until(() => view.byLabel("Snooze 4h: Work z") !== null && view.byLabel("Snooze 4h: Work y") !== null);
+    calls.length = 0;
+    await view.press(view.byLabel("Snooze 4h: Work z"));
+    await view.press(view.byLabel("Snooze 4h: Work z"));
+    await view.press(view.byLabel("Snooze 4h: Work y"));
+    await until(() => calls.filter((call) => call.method === "notice.snooze").length >= 2);
+    await settle(500);
+    expect(
+      calls
+        .filter((call) => call.method === "notice.snooze")
+        .map((call) => (call.input as { key: string }).key)
+        .sort(),
+    ).toEqual(["quiet:y", "quiet:z"]);
   });
 
   test("while work.list cannot be read, Health says so and never says All clear over the missing runs", async () => {
