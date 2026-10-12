@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { NeedRow } from "../shared/needs";
 import { fakeWork } from "./fake-work";
-import { decideApproval, planVerb, promptSession, receiptOf } from "./verbs";
+import { decideApproval, planVerb, promptSession, receiptOf, settleDelay } from "./verbs";
 
 const live = { agentId: "agent-9", workspaceId: "ws1" };
 const base = { title: "T", scope: "broomva", since: "2026-10-12T10:00:00.000Z", blocksWork: true };
@@ -161,5 +161,17 @@ describe("receipts", () => {
     expect(receiptOf("nope:x")).toBeNull();
     expect(receiptOf("work:")).toBeNull();
     expect(receiptOf("work")).toBeNull();
+  });
+});
+
+describe("when a verb's effect can be read", () => {
+  test("a beat after its window closes, never before, and never for a verb with no window", () => {
+    const now = Date.parse("2026-10-12T09:00:00.000Z");
+    expect(settleDelay("2026-10-12T09:00:08.000Z", now)).toBe(8700);
+    expect(settleDelay("2026-10-12T09:00:03.000Z", now + 1000)).toBe(2700);
+    // Already past: read at once (a beat after).
+    expect(settleDelay("2026-10-12T08:59:00.000Z", now)).toBe(700);
+    expect(settleDelay(undefined, now)).toBeNull();
+    expect(settleDelay("not a time", now)).toBeNull();
   });
 });

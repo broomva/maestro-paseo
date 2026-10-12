@@ -197,6 +197,16 @@ export interface VerbEnv {
   openAgent(agentId: string): void;
 }
 
+/**
+ * How long after a verb answers its effect can be read: the verb takes effect when its window closes (8 s, B4),
+ * so what the screen shows (Needs you, the work's state) changes then, not when the call returned. A beat past
+ * `appliesAt`, so the server has applied it. Pure.
+ */
+export function settleDelay(appliesAt: string | undefined, now: number): number | null {
+  const at = appliesAt ? Date.parse(appliesAt) : Number.NaN;
+  return Number.isFinite(at) ? Math.max(0, at - now) + 700 : null;
+}
+
 /** A receipt the toast hands back: which undo it takes, and its value. */
 export function receiptOf(value: string): { channel: "work" | "conductor" | "verb"; value: string } | null {
   const at = value.indexOf(":");
@@ -301,6 +311,9 @@ export function useVerbs() {
         if (reads) void settle();
         throw error;
       }
+      // It takes effect when its window closes: read everything again then, so the hold leaves Needs you on time.
+      const later = settleDelay(outcome.appliesAt, Date.now());
+      if (later !== null) setTimeout(() => void settle(), later);
       return { ...outcome, settled: reads ? settle() : Promise.resolve() };
     },
     /** Take a verb back by its receipt, inside its window. */
