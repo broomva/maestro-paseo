@@ -3,12 +3,13 @@
 // record, newest first.
 
 import type { PluginTheme } from "@getpaseo/plugin";
-import { type PluginSurfaceProps, usePaseo } from "@getpaseo/plugin/client";
+import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { type CheckResult, NOT_STOPPED, type Pending, type WorkEventWire, type WorkItem } from "../shared/contracts";
 import { fleetDetail, parseFleetBrief } from "../shared/fleet-item";
+import { permissionAction, workKey } from "../shared/needs";
 import { nextRunCopy } from "../shared/run";
 import { PLAIN_VOICE } from "../shared/states";
 import { ArcReport } from "./arc-report";
@@ -17,9 +18,10 @@ import { FilesSection } from "./files";
 import { FleetBriefView } from "./fleet-brief";
 import { ago, agoWords, basename, errorText } from "./format";
 import { LookView, VERBS_MEAN, verbsNeedSaying } from "./gate-look";
-import { useRefresh, useVerbs, useWorkDetail } from "./hooks";
+import { useRefresh, useVerbLedger, useVerbs, useWorkDetail } from "./hooks";
 import type { MaestroIntent } from "./intent";
-import { changedVisible } from "./plane-model";
+import { PendingVerbs, pendingFor } from "./pending-verbs";
+import { changedVisible, isFinished } from "./plane-model";
 import { collapseRepeats, fleetOriginOf, placeText, repeatText, repeatWords, titleText } from "./records-text";
 import { Button, Card, IconButton, Notice, radius, StateLabel, space, Unbroken, useText } from "./ui";
 
@@ -80,7 +82,7 @@ export function WorkDetail({
       {onBack ? <BackRow theme={theme} onBack={onBack} /> : null}
       <View style={{ gap: space[2] }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space[3], flexWrap: "wrap" }}>
-          <StateLabel theme={theme} state={item.state} />
+          <StateLabel theme={theme} state={item.state} label={isFinished(item) ? "Finished" : undefined} />
           <Text style={[text.small, text.tabular]}>{ago(item.updatedAt)}</Text>
           <Text style={text.small}>{item.gate === "human" ? "You approve" : "Checks decide"}</Text>
         </View>
@@ -204,7 +206,7 @@ export function movedOnText(item: WorkItem): string {
   const lead = "The run moved on before you confirmed:";
   // Still Running by its label, but the session is done and the checks decide where it lands.
   if (item.state === "running") return `${lead} it finished, and its checks are running.`;
-  const { label } = PLAIN_VOICE[item.state];
+  const label = isFinished(item) ? "Finished" : PLAIN_VOICE[item.state].label;
   return `${lead} it is now ${label === "Needs you" ? "in Needs you" : label}.`;
 }
 
@@ -221,11 +223,10 @@ function Verbs({
 }) {
   const verbs = useVerbs();
   const toast = useToast();
-  const paseo = usePaseo();
   const text = useText(theme);
+  const ledger = useVerbLedger();
   const [note, setNote] = useState("");
-  const [sendingBack, setSendingBack] = useState(false);
-  const [answering, setAnswering] = useState(false);
+  const [changingCourse, setChangingCourse] = useState(false);
   // Stop run's confirm lives here, above the per-state cards, so a move between the states it acts on
   // (working, asking) keeps it open. Each piece names its item, so none carries over to another item.
   // The item whose Stop run is being confirmed.
@@ -302,12 +303,17 @@ function Verbs({
         {movedOn.text}
       </Notice>
     ) : null;
+  // Your verbs on this work waiting out their window (the ledger, B4): each counts down, with its Undo.
+  const key = workKey(item.id);
+  const waiting = pendingFor(ledger.data?.pending ?? [], [key], ["work.verdict"]);
+  const decided = waiting.some((verb) => verb.verb === "approval.decide");
   // What sits above the state's own verbs: a Stop that the run outran, then a decision in its undo window.
   const withTop = (node: ReactNode) =>
-    movedOnCard || pendingCard ? (
+    movedOnCard || pendingCard || waiting.length > 0 ? (
       <View style={{ gap: space[3] }}>
         {movedOnCard}
         {pendingCard}
+        <PendingVerbs theme={theme} compact={compact} keys={[key]} skip={["work.verdict"]} />
         {node}
       </View>
     ) : (
@@ -315,22 +321,9 @@ function Verbs({
     );
 
   if (item.state === "review" && item.permission) {
-    const { requestId } = item.permission;
-    const answer = async (allow: boolean) => {
-      if (!item.worker) return;
-      setAnswering(true);
-      try {
-        await paseo.agents.ref(item.worker.agentId).respondToPermission({
-          requestId,
-          response: allow ? { behavior: "allow" } : { behavior: "deny", message: "Declined from Maestro" },
-        });
-        toast.show(allow ? "Allowed" : "Declined", { variant: "success" });
-      } catch (error) {
-        fail(error);
-      } finally {
-        setAnswering(false);
-      }
-    };
+    // One exact action, held: your decision binds to these words, and takes effect 8 s later unless undone.
+    const action = permissionAction(item.permission);
+    const decide = (allow: boolean) => verbs.approval.mutate({ key, allow, action }, { onError: fail });
     return withTop(
       <Card theme={theme}>
         <Text style={text.label}>The agent is asking</Text>
@@ -341,16 +334,17 @@ function Verbs({
             theme={theme}
             variant="primary"
             label="Allow"
-            busy={answering}
+            busy={verbs.approval.isPending}
+            disabled={decided}
             compact={compact}
-            onPress={() => void answer(true)}
+            onPress={() => decide(true)}
           />
           <Button
             theme={theme}
             label="Deny"
-            disabled={answering}
+            disabled={verbs.approval.isPending || decided}
             compact={compact}
-            onPress={() => void answer(false)}
+            onPress={() => decide(false)}
           />
         </View>
         {/* Or end the run without answering. No Cancel here: it would close the work and leave the
@@ -369,7 +363,7 @@ function Verbs({
     const look = item.look;
     return withTop(
       <Card theme={theme}>
-        <Text style={text.label}>Needs you</Text>
+        <Text style={text.label}>Finished</Text>
         {look ? (
           <View style={{ gap: space[3] }}>
             <LookView look={look} theme={theme} compact={compact} />
@@ -390,7 +384,7 @@ function Verbs({
           }
         </WithChange>
         {item.verdict ? <Text style={text.small}>{item.verdict}</Text> : null}
-        {sendingBack ? (
+        {changingCourse ? (
           <View style={{ gap: space[2] }}>
             <TextInput
               value={note}
@@ -405,7 +399,7 @@ function Verbs({
               <Button
                 theme={theme}
                 variant="primary"
-                label="Send it back"
+                label="Change course"
                 compact={compact}
                 busy={verbs.verdict.isPending}
                 disabled={!note.trim()}
@@ -415,7 +409,7 @@ function Verbs({
                     {
                       onSuccess: () => {
                         setNote("");
-                        setSendingBack(false);
+                        setChangingCourse(false);
                       },
                       onError: fail,
                     },
@@ -427,7 +421,7 @@ function Verbs({
                 variant="quiet"
                 label="Keep it here"
                 compact={compact}
-                onPress={() => setSendingBack(false)}
+                onPress={() => setChangingCourse(false)}
               />
             </View>
           </View>
@@ -436,18 +430,10 @@ function Verbs({
             <Button
               theme={theme}
               variant="primary"
-              icon="Check"
-              label="Approve"
-              compact={compact}
-              busy={verbs.verdict.isPending}
-              onPress={() => verbs.verdict.mutate({ id: item.id, verdict: "approve", note: "" }, { onError: fail })}
-            />
-            <Button
-              theme={theme}
               icon="Undo2"
-              label="Send back"
+              label="Change course"
               compact={compact}
-              onPress={() => setSendingBack(true)}
+              onPress={() => setChangingCourse(true)}
             />
             <Button
               theme={theme}
@@ -458,7 +444,7 @@ function Verbs({
             />
           </View>
         )}
-        {!sendingBack && verbsNeedSaying(look) ? <Text style={text.small}>{VERBS_MEAN}</Text> : null}
+        {!changingCourse && verbsNeedSaying(look) ? <Text style={text.small}>{VERBS_MEAN}</Text> : null}
         {look ? <Text style={[text.small, text.tabular]}>{look.ran}</Text> : null}
       </Card>,
     );

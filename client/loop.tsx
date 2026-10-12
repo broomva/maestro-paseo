@@ -21,6 +21,7 @@ import {
   wakesShown,
   wokeText,
 } from "./loop-model";
+import { PendingVerbs } from "./pending-verbs";
 import { settingsOpener } from "./settings-link";
 import { Button, Card, IconButton, Notice, radius, size, space, useText } from "./ui";
 
@@ -75,19 +76,16 @@ export function LoopPanel({ theme, onClose }: { theme: PluginTheme; onClose: () 
   const loop = useLoop();
   const verbs = useVerbs();
   const text = useText(theme);
-  // The entry Wake now returned, shown at once and kept until the next read lists it.
-  const [latest, setLatest] = useState<WakeEntry | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const openSettings = settingsOpener();
   const state: LoopState | undefined = loop.data;
-  const wakes = state ? wakesShown(state.recent, latest) : [];
-  const skipped = latest ? skippedText(latest) : null;
+  const wakes = state ? wakesShown(state.recent, null) : [];
+  // A wake asked for while another ran is recorded as skipped, and says why: the newest wake is the one asked for.
+  const skipped = wakes[0] ? skippedText(wakes[0]) : null;
   const wake = () => {
     setFailure(null);
-    verbs.wake.mutate(undefined, {
-      onSuccess: (entry) => setLatest(entry),
-      onError: (error) => setFailure(errorText(error)),
-    });
+    // The wake runs 8 s from now unless undone (B4); its entry is listed here once it has run.
+    verbs.wake.mutate(undefined, { onError: (error) => setFailure(errorText(error)) });
   };
   return (
     <Card theme={theme}>
@@ -120,6 +118,7 @@ export function LoopPanel({ theme, onClose }: { theme: PluginTheme; onClose: () 
             {/* Never disabled: pressed while a wake runs, the answer says it was not woken and why. */}
             <Button theme={theme} icon="AlarmClock" label="Wake now" busy={verbs.wake.isPending} onPress={wake} />
           </View>
+          <PendingVerbs theme={theme} compact={false} keys={["loop"]} />
           {failure ? (
             <Notice theme={theme} tone="danger">
               {failure}

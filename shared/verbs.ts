@@ -8,8 +8,13 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
-/** The verbs the ledger holds. A work verdict at the gate keeps its own window (server/engine.ts). */
+/**
+ * The verbs behind the 8 s window. All but `work.verdict` are held by the ledger (server/owner-verbs.ts); a
+ * decision at the gate (Change course, Cancel) keeps its own window on the work's events (server/engine.ts), and
+ * verbs.list reads it in beside the rest, so one Undo serves them all.
+ */
 export const OWNER_VERBS = [
+  "work.verdict",
   "approval.decide",
   "session.prompt",
   "work.cancel",
@@ -92,7 +97,11 @@ export const decideApproval = defineRpc({
  */
 export const promptSession = defineRpc({
   name: "session.prompt",
-  input: z.object({ agentId: z.string().min(1), prompt: z.string().trim().min(1, "Say what to send"), key: z.string().optional() }),
+  input: z.object({
+    agentId: z.string().min(1),
+    prompt: z.string().trim().min(1, "Say what to send"),
+    key: z.string().optional(),
+  }),
   output: VerbReceiptSchema,
 });
 

@@ -62,6 +62,8 @@ async function withPlugin(
     MAESTRO_PASEO_CONTROL_ANSWERS: join(root, "control-answers"),
     MAESTRO_PASEO_ASK_LOCKS: join(root, "ask-locks"),
     MAESTRO_PASEO_ASK_RECEIPTS: join(root, "asks.jsonl"),
+    // Your verbs wait 8 s before they take effect (B4); here they take effect at once, so the test can read them.
+    MAESTRO_PASEO_VERB_WINDOW_MS: "0",
   };
   const saved = {
     MAESTRO_PASEO_CONFIG: process.env.MAESTRO_PASEO_CONFIG,
@@ -173,10 +175,17 @@ test("work.attention and work.list reconcile no session, however often they are 
       await call("work.attention", {});
       await call("work.list", {});
     }
-    expect(await call("work.attention", {})).toMatchObject({ waiting: [{ id: item.id, group: "review" }] });
+    // Finished work waiting at the gate holds nothing of yours (A1): the header counts it nowhere.
+    expect(await call("work.attention", {})).toMatchObject({
+      waiting: [],
+      sessions: [{ workId: item.id, state: "review" }],
+    });
     expect(fake.refreshed).toEqual([]);
     // The loop's wake (Settings' Wake now) sweeps first, and the sweep asks Paseo about the bound session.
     await call("loop.wake", {});
+    for (let tries = 0; tries < 200 && !fake.refreshed.includes("agent-1"); tries += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     expect(fake.refreshed).toContain("agent-1");
   });
 });
@@ -256,9 +265,20 @@ test("the Fleet view, your verdict and a missed tick in the header count, throug
       verdict: "reject",
       note: "Not yet",
     })) as { proposals: NonNullable<FleetView["detail"]>["proposals"] };
-    expect(proposals[0]?.review).toMatchObject({ verdict: "reject", note: "Not yet" });
-    const lines = (await readFile(join(fleet.state, "broomva", "proposal-reviews.jsonl"), "utf8")).trim().split("\n");
-    expect(lines.map((line) => JSON.parse(line).verdict)).toEqual(["reject"]);
+    // Recorded with its receipt, written when the window closes: the proposal stands unreviewed until then.
+    expect(proposals[0]?.review ?? null).toBeNull();
+    const file = join(fleet.state, "broomva", "proposal-reviews.jsonl");
+    let written = "";
+    for (let tries = 0; tries < 200 && !written; tries += 1) {
+      written = await readFile(file, "utf8").catch(() => "");
+      if (!written) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(
+      written
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).verdict),
+    ).toEqual(["reject"]);
   });
 });
 

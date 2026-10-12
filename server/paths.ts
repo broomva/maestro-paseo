@@ -21,6 +21,16 @@ export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
+ * How long the owner-verb ledger holds a verb before it takes effect: MAESTRO_PASEO_VERB_WINDOW_MS when a test
+ * or a dogfood sets it (0 or more), else the owner's 8 s (shared/undo.ts, B4).
+ */
+export function verbWindowMs(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const raw = env.MAESTRO_PASEO_VERB_WINDOW_MS?.trim();
+  const ms = raw ? Number(raw) : Number.NaN;
+  return Number.isFinite(ms) && ms >= 0 ? Math.round(ms) : undefined;
+}
+
+/**
  * The owner-verb ledger (server/owner-verbs.ts): every verb of yours that changes state, its undo window
  * and its receipt. Under `bun test` a test that names none gets a scratch file of its own.
  */

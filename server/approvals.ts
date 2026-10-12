@@ -29,7 +29,10 @@ export const ApprovalRequestSchema = z.object({
   scope: z.string().trim().min(1).max(60).default("maestro"),
   ticket: z.string().regex(TICKET, "A ticket is a team key and a number, like BRO-2999").optional(),
   /** What the gates already checked, one fact each. */
-  evidence: z.array(EvidenceSchema.extend({ label: z.string().max(40), value: z.string().max(300) })).max(8).default([]),
+  evidence: z
+    .array(EvidenceSchema.extend({ label: z.string().max(40), value: z.string().max(300) }))
+    .max(8)
+    .default([]),
   /** What happens after you allow it. */
   after: z.array(z.string().max(200)).max(6).default([]),
 });
@@ -53,7 +56,10 @@ export interface ApprovalsOptions {
 
 /** The id of a request: the same session asking for the same action at the same ref is one request. */
 export function requestId(agentId: string, action: string, ref: string | null): string {
-  return createHash("sha256").update(JSON.stringify([agentId, action, ref])).digest("hex").slice(0, 16);
+  return createHash("sha256")
+    .update(JSON.stringify([agentId, action, ref]))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 export class Approvals {
@@ -157,9 +163,7 @@ export class Approvals {
 
   /** Record how a request ended: your decision, once it took effect. */
   async decided(id: string, outcome: { allow: boolean; note: string; receipt: string }): Promise<void> {
-    await this.serial(() =>
-      this.write({ kind: "approval.decided", id, at: this.now().toISOString(), ...outcome }),
-    );
+    await this.serial(() => this.write({ kind: "approval.decided", id, at: this.now().toISOString(), ...outcome }));
   }
 
   /** The session took its request back: nothing waits on you any more. Only the session that asked may. */

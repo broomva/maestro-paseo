@@ -18,8 +18,8 @@
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { ALREADY_PENDING, type OwnerVerb, type PendingVerb, RECENT_VERBS_MS, type SettledVerb } from "../shared/verbs";
 import { UNDO_MS } from "../shared/undo";
+import { ALREADY_PENDING, type OwnerVerb, type PendingVerb, RECENT_VERBS_MS, type SettledVerb } from "../shared/verbs";
 import { CLIENT_WAIT_MS, realTimer, type Timer, UserError } from "./engine";
 import type { Paseo } from "./runs";
 
@@ -44,7 +44,16 @@ export interface VerbSpec<Args> {
 }
 
 type Line =
-  | { kind: "verb.pending"; receipt: string; verb: OwnerVerb; key: string; label: string; at: string; appliesAt: string; args: unknown }
+  | {
+      kind: "verb.pending";
+      receipt: string;
+      verb: OwnerVerb;
+      key: string;
+      label: string;
+      at: string;
+      appliesAt: string;
+      args: unknown;
+    }
   | { kind: "verb.undone" | "verb.applied" | "verb.dropped"; receipt: string; at: string; detail: string };
 
 interface Entry {
@@ -65,6 +74,8 @@ export interface OwnerVerbsOptions {
   client?: () => Paseo | null;
   /** Schedules the undo window. Tests pass their own, driven by the same clock as `now`. */
   timer?: Timer;
+  /** How long a verb waits before it takes effect: UNDO_MS (8 s, B4). Only a test's or a dogfood's passes another. */
+  windowMs?: number;
   log?: (message: string) => void;
 }
 
@@ -76,6 +87,7 @@ export class OwnerVerbs {
   private readonly now: () => Date;
   private readonly client: () => Paseo | null;
   private readonly timer: Timer;
+  private readonly windowMs: number;
   private readonly log: (message: string) => void;
   private readonly specs = new Map<OwnerVerb, VerbSpec<never>>();
   /** Windows armed, by receipt, to the timer's cancel. */
@@ -90,6 +102,7 @@ export class OwnerVerbs {
     this.now = options.now ?? (() => new Date());
     this.client = options.client ?? (() => null);
     this.timer = options.timer ?? realTimer;
+    this.windowMs = options.windowMs ?? UNDO_MS;
     this.log = options.log ?? (() => undefined);
   }
 
@@ -136,7 +149,11 @@ export class OwnerVerbs {
       }
       const entry = entries.get(line.receipt);
       if (!entry || entry.settled) continue;
-      entry.settled = { outcome: line.kind.slice("verb.".length) as "applied" | "undone" | "dropped", at: line.at, detail: line.detail };
+      entry.settled = {
+        outcome: line.kind.slice("verb.".length) as "applied" | "undone" | "dropped",
+        at: line.at,
+        detail: line.detail,
+      };
     }
     return entries;
   }
@@ -164,11 +181,16 @@ export class OwnerVerbs {
       for (const entry of entries.values()) {
         if (entry.settled || entry.verb !== verb || entry.key !== request.key) continue;
         if (!spec.supersedes) throw new UserError(ALREADY_PENDING);
-        await this.write({ kind: "verb.undone", receipt: entry.receipt, at: this.stamp(), detail: "Replaced by a newer one." });
+        await this.write({
+          kind: "verb.undone",
+          receipt: entry.receipt,
+          at: this.stamp(),
+          detail: "Replaced by a newer one.",
+        });
         this.disarm(entry.receipt);
       }
       const at = this.now();
-      const made = { receipt: randomUUID(), appliesAt: new Date(at.getTime() + UNDO_MS).toISOString() };
+      const made = { receipt: randomUUID(), appliesAt: new Date(at.getTime() + this.windowMs).toISOString() };
       await this.write({
         kind: "verb.pending",
         receipt: made.receipt,
@@ -288,7 +310,7 @@ export class OwnerVerbs {
     // Claimed before the first await after the read, so an undo past this point is too late, and a second apply is none.
     this.applying.add(receipt);
     try {
-      const confirmed = await this.serial(async () => ((await this.read()).get(receipt)?.settled ? false : true));
+      const confirmed = await this.serial(async () => !(await this.read()).get(receipt)?.settled);
       if (!confirmed) return "settled";
       let detail: string;
       let outcome: "applied" | "dropped";
@@ -300,7 +322,14 @@ export class OwnerVerbs {
         outcome = "dropped";
         if (!(error instanceof UserError)) this.log(`${entry.verb} ${receipt}: ${(error as Error).message}`);
       }
-      await this.serial(() => this.write({ kind: outcome === "applied" ? "verb.applied" : "verb.dropped", receipt, at: this.stamp(), detail }));
+      await this.serial(() =>
+        this.write({
+          kind: outcome === "applied" ? "verb.applied" : "verb.dropped",
+          receipt,
+          at: this.stamp(),
+          detail,
+        }),
+      );
       return outcome;
     } finally {
       this.applying.delete(receipt);

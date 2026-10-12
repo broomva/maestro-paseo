@@ -10,8 +10,12 @@ import type { Look } from "../shared/contracts";
 import { ClampedMarkdown } from "./arc-report";
 import { space, useText } from "./ui";
 
-/** What the gate's two verbs do, said beside them when the session's own ask does not say it (an arc's does). */
-export const VERBS_MEAN = "Approve marks the work done. Send back reopens its session with your note.";
+/**
+ * What a finished card's verbs do, said beside them when the session's own ask does not say it (an arc's does).
+ * Work is never approved (A1): gates merge it, so there is no Approve.
+ */
+export const VERBS_MEAN =
+  "Change course reopens its session with your note. Gates merge finished work; you do not approve it.";
 
 /** Whether the verbs need VERBS_MEAN beside them: an arc's ask already names them (server/events.ts arcAsk). */
 export const verbsNeedSaying = (look: Look | null): boolean => !look?.arc;

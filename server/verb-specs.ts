@@ -3,7 +3,7 @@
 // re-checks it when it applies (`apply`, so a decision about something that moved is dropped, never applied to
 // something else).
 
-import { holdOf } from "../shared/needs";
+import { holdOf, workKey } from "../shared/needs";
 import type { VerbReceipt } from "../shared/verbs";
 import type { Approvals } from "./approvals";
 import { type Engine, UserError } from "./engine";
@@ -122,4 +122,74 @@ export function promptSessionHandler({ verbs }: Pick<VerbDeps, "verbs">) {
       label: `Sent to ${input.agentId.slice(0, 8)}: ${gist(input.prompt)}`,
       args: { agentId: input.agentId, prompt: input.prompt },
     });
+}
+
+/** What a verb on one work item records: the item, in a receipt's words. */
+const titled = (title: string) => (title.length > 50 ? `${title.slice(0, 47)}...` : title);
+
+/**
+ * work.cancel, work.stop, work.unblock and work.leave-running on the ledger. At your gate Cancel keeps its own
+ * window on the work (Engine.verdict); everything else waits here, 8 s, and is checked again when it applies.
+ */
+export function registerWorkVerbs({ verbs, engine }: Pick<VerbDeps, "verbs" | "engine">): void {
+  verbs.register<{ id: string }>("work.cancel", {
+    check: async ({ id }) => engine.cancelRefusal(id),
+    apply: async ({ id }, paseo) => {
+      const { item } = await engine.get(id);
+      // It reached your gate during the window: canceling there is a decision of its own, with its own window.
+      if (item.state === "review")
+        throw new UserError("It reached your gate while the window ran, so it was not canceled.");
+      await engine.cancel(id, paseo);
+      return "Canceled the work.";
+    },
+  });
+  verbs.register<{ id: string; discard: boolean }>("work.stop", {
+    client: true,
+    check: async ({ id, discard }, paseo) => engine.stopPreflight(paseo, id, { discard }),
+    apply: async ({ id, discard }, paseo) => {
+      if (!paseo) throw new UserError("Maestro has no connection to Paseo yet.");
+      await engine.stopRun(paseo, id, { discard });
+      return discard
+        ? "Stopped the run and discarded what it had not committed."
+        : "Stopped the run; its branch stays.";
+    },
+  });
+  verbs.register<{ id: string; note: string }>("work.unblock", {
+    client: true,
+    check: async ({ id }) => engine.unblockRefusal(id),
+    apply: async ({ id, note }, paseo) => {
+      if (!paseo) throw new UserError("Maestro has no connection to Paseo yet.");
+      await engine.unblock(paseo, id, note);
+      return "Unblocked: the session is going on.";
+    },
+  });
+  verbs.register<{ id: string }>("work.leave-running", {
+    check: async ({ id }) => engine.leaveRunningRefusal(id),
+    apply: async ({ id }) => {
+      await engine.leaveRunning(id);
+      return "Left it running.";
+    },
+  });
+}
+
+/** The handlers for those four, each answering with its receipt and the work as it stands. */
+export function workVerbHandlers({ verbs, engine }: Pick<VerbDeps, "verbs" | "engine">) {
+  const done = async (verb: Parameters<OwnerVerbs["schedule"]>[0], id: string, label: string, args: unknown) => {
+    const made = await verbs.schedule(verb, { key: workKey(id), label, args });
+    return { item: (await engine.get(id)).item, ...made };
+  };
+  const named = async (id: string) => titled((await engine.get(id)).item.title);
+  return {
+    /** Work at your gate is canceled there (its own window); everything else here. */
+    cancel: async (id: string) => {
+      const { item } = await engine.get(id);
+      if (item.state === "review") return null;
+      return done("work.cancel", id, `Canceled ${await named(id)}`, { id });
+    },
+    stop: async (id: string, discard: boolean) => {
+      return done("work.stop", id, `Stopped ${await named(id)}`, { id, discard });
+    },
+    unblock: async (id: string, note: string) => done("work.unblock", id, `Unblocked ${await named(id)}`, { id, note }),
+    leaveRunning: async (id: string) => done("work.leave-running", id, `Left ${await named(id)} running`, { id }),
+  };
 }

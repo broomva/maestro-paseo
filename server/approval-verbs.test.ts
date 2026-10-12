@@ -166,14 +166,18 @@ describe("approval.decide on a permission prompt", () => {
     tickMs(UNDO_MS);
     await timers.fire();
     expect(fake.answered).toEqual([]);
-    expect((await verbs.list()).recent).toMatchObject([{ outcome: "dropped", detail: expect.stringContaining("moved on") }]);
+    expect((await verbs.list()).recent).toMatchObject([
+      { outcome: "dropped", detail: expect.stringContaining("moved on") },
+    ]);
     expect((await engine.get(item.id)).item.permission).toMatchObject({ requestId: "p2" });
   });
 
   test("a decision on an action that is no longer the one waiting is refused at once", async () => {
     const { item, ask, decide, verbs } = await setup();
     await ask("p1", "git push");
-    await expect(decide({ key: workKey(item.id), allow: true, action: "Run: ls" })).rejects.toThrow("asks something else");
+    await expect(decide({ key: workKey(item.id), allow: true, action: "Run: ls" })).rejects.toThrow(
+      "asks something else",
+    );
     expect((await verbs.list()).pending).toEqual([]);
   });
 
@@ -188,7 +192,9 @@ describe("approval.decide on a permission prompt", () => {
     tickMs(UNDO_MS);
     await timers.fire();
     expect(fake.answered).toEqual([]);
-    expect((await verbs.list()).recent).toMatchObject([{ outcome: "dropped", detail: expect.stringContaining("no longer holds") }]);
+    expect((await verbs.list()).recent).toMatchObject([
+      { outcome: "dropped", detail: expect.stringContaining("no longer holds") },
+    ]);
     expect((await engine.get(item.id)).item.state).toBe("running");
   });
 
@@ -199,6 +205,13 @@ describe("approval.decide on a permission prompt", () => {
     expect(holdOf("approval:abc")).toEqual({ kind: "approval", id: "abc" });
   });
 });
+
+/** An agent-socket method, called as the session `agentId` would. */
+function call(methods: ReturnType<typeof agentMethods>, name: string, input: unknown, agentId: string | null) {
+  const method = methods.get(name);
+  if (!method) throw new Error(`the socket offers no ${name}`);
+  return method(input, { agentId });
+}
 
 describe("approval.request: an agent asks leave for one exact action", () => {
   const ASK = {
@@ -214,18 +227,23 @@ describe("approval.request: an agent asks leave for one exact action", () => {
   test("it raises one approval hold, once, whatever number of times it asks", async () => {
     const { approvals, engine, fake } = await setup();
     const methods = agentMethods(engine, () => fake.paseo, approvals);
-    const request = methods.get("approval.request");
-    const first = (await request?.(ASK, { agentId: "agent-9" })) as { id: string; key: string };
-    const again = (await request?.(ASK, { agentId: "agent-9" })) as { id: string };
+    const first = (await call(methods, "approval.request", ASK, "agent-9")) as { id: string; key: string };
+    const again = (await call(methods, "approval.request", ASK, "agent-9")) as { id: string };
     expect(again.id).toBe(first.id);
     expect(holdOf(first.key)).toEqual({ kind: "approval", id: first.id });
     // Another head is another request.
     tickMs(1000);
-    await request?.({ ...ASK, ref: "aaaaaaa" }, { agentId: "agent-9" });
+    await call(methods, "approval.request", { ...ASK, ref: "aaaaaaa" }, "agent-9");
     const open = await approvals.open();
-    expect(open.map((entry) => entry.action)).toEqual(["gh pr merge 933 --squash @ ce73104", "gh pr merge 933 --squash @ aaaaaaa"]);
+    expect(open.map((entry) => entry.action)).toEqual([
+      "gh pr merge 933 --squash @ ce73104",
+      "gh pr merge 933 --squash @ aaaaaaa",
+    ]);
 
-    const needs = needsOf({ items: [], asks: [], reviews: [], landing: null, workspace: "broomva", approvals: open }, clock);
+    const needs = needsOf(
+      { items: [], asks: [], reviews: [], landing: null, workspace: "broomva", approvals: open },
+      clock,
+    );
     expect(needs.summary.byKind).toEqual({ ask: 0, approval: 2, owner_step: 0 });
     expect(needs.rows[0]).toMatchObject({
       kind: "approval",
@@ -236,7 +254,11 @@ describe("approval.request: an agent asks leave for one exact action", () => {
       blocksWork: true,
       verbs: ["allow", "deny"],
       session: { agentId: "agent-9", waiting: true },
-      body: { action: "gh pr merge 933 --squash @ ce73104", heldBy: "gate", evidence: [{ label: "Checks", value: "9 of 9 passed", tone: "ok" }] },
+      body: {
+        action: "gh pr merge 933 --squash @ ce73104",
+        heldBy: "gate",
+        evidence: [{ label: "Checks", value: "9 of 9 passed", tone: "ok" }],
+      },
     });
   });
 
@@ -244,7 +266,10 @@ describe("approval.request: an agent asks leave for one exact action", () => {
     const { approvals, engine, fake, verbs, timers, decide } = await setup();
     fake.addSession("agent-9");
     const methods = agentMethods(engine, () => fake.paseo, approvals);
-    const { id, key } = (await methods.get("approval.request")?.(ASK, { agentId: "agent-9" })) as { id: string; key: string };
+    const { id, key } = (await call(methods, "approval.request", ASK, "agent-9")) as {
+      id: string;
+      key: string;
+    };
     const action = "gh pr merge 933 --squash @ ce73104";
     const made = await decide({ key, allow: true, action });
     expect(fake.sent).toEqual([]);
@@ -255,14 +280,16 @@ describe("approval.request: an agent asks leave for one exact action", () => {
     expect(fake.sent[0]).toMatchObject({ agentId: "agent-9" });
     expect(fake.sent[0]?.text).toContain(`the owner allowed this exact action: ${action}`);
     expect(await approvals.open()).toEqual([]);
-    expect((await verbs.list()).recent).toMatchObject([{ receipt: made.receipt, outcome: "applied", detail: `Allowed: ${action}` }]);
+    expect((await verbs.list()).recent).toMatchObject([
+      { receipt: made.receipt, outcome: "applied", detail: `Allowed: ${action}` },
+    ]);
   });
 
   test("Deny tells the session, with your note; Undo sends nothing and keeps the hold", async () => {
     const { approvals, engine, fake, verbs, timers, decide } = await setup();
     fake.addSession("agent-9");
     const methods = agentMethods(engine, () => fake.paseo, approvals);
-    const { key } = (await methods.get("approval.request")?.(ASK, { agentId: "agent-9" })) as { key: string };
+    const { key } = (await call(methods, "approval.request", ASK, "agent-9")) as { key: string };
     const action = "gh pr merge 933 --squash @ ce73104";
     const undone = await decide({ key, allow: false, action });
     await verbs.undo(undone.receipt);
@@ -282,15 +309,19 @@ describe("approval.request: an agent asks leave for one exact action", () => {
     const { approvals, engine, fake, verbs, timers, decide } = await setup();
     fake.addSession("agent-9");
     const methods = agentMethods(engine, () => fake.paseo, approvals);
-    const { key } = (await methods.get("approval.request")?.(ASK, { agentId: "agent-9" })) as { key: string };
-    await expect(decide({ key, allow: true, action: "gh pr merge 933 --squash @ 0000000" })).rejects.toThrow("asks for something else");
+    const { key } = (await call(methods, "approval.request", ASK, "agent-9")) as { key: string };
+    await expect(decide({ key, allow: true, action: "gh pr merge 933 --squash @ 0000000" })).rejects.toThrow(
+      "asks for something else",
+    );
     await decide({ key, allow: true, action: "gh pr merge 933 --squash @ ce73104" });
     const agent = fake.agents.get("agent-9");
     if (agent) agent.archivedAt = "2026-10-12T09:00:03.000Z";
     tickMs(UNDO_MS);
     await timers.fire();
     expect(fake.sent).toEqual([]);
-    expect((await verbs.list()).recent).toMatchObject([{ outcome: "dropped", detail: "The session is gone, so it could not be told." }]);
+    expect((await verbs.list()).recent).toMatchObject([
+      { outcome: "dropped", detail: "The session is gone, so it could not be told." },
+    ]);
   });
 
   test("a session may ask and withdraw, never decide; only the asker may withdraw", async () => {
@@ -300,12 +331,16 @@ describe("approval.request: an agent asks leave for one exact action", () => {
       expect(GATE_METHODS.has(name)).toBe(true);
       expect(methods.has(name)).toBe(false);
     }
-    const { id } = (await methods.get("approval.request")?.(ASK, { agentId: "agent-9" })) as { id: string };
-    await expect(methods.get("approval.withdraw")?.({ id }, { agentId: "agent-2" })).rejects.toThrow("Only the session that asked");
-    expect(await methods.get("approval.withdraw")?.({ id }, { agentId: "agent-9" })).toEqual({ withdrawn: true });
+    const { id } = (await call(methods, "approval.request", ASK, "agent-9")) as { id: string };
+    await expect(methods.get("approval.withdraw")?.({ id }, { agentId: "agent-2" })).rejects.toThrow(
+      "Only the session that asked",
+    );
+    expect(await call(methods, "approval.withdraw", { id }, "agent-9")).toEqual({ withdrawn: true });
     expect(await approvals.open()).toEqual([]);
-    await expect(methods.get("approval.request")?.(ASK, { agentId: null })).rejects.toThrow("Say which session");
-    await expect(methods.get("approval.request")?.({ action: "" }, { agentId: "a" })).rejects.toThrow("Name the exact action");
+    await expect(call(methods, "approval.request", ASK, null)).rejects.toThrow("Say which session");
+    await expect(methods.get("approval.request")?.({ action: "" }, { agentId: "a" })).rejects.toThrow(
+      "Name the exact action",
+    );
   });
 });
 

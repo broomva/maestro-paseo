@@ -219,7 +219,8 @@ function work(id: string, state: OrchState, extra: Partial<WorkItem> = {}): Work
     reason: null,
     verdict: null,
     look: null,
-    permission: null,
+    // Work at the gate holds a prompt unless a test says it finished (`permission: null`): only a held action needs you (A1).
+    permission: state === "review" ? { requestId: `req-${id}`, title: "Run a command", detail: "git push" } : null,
     checks: [],
     pending: null,
     flag: null,
@@ -242,6 +243,9 @@ const fixture = (): WorkItem[] => [
   work("f", "done", { initiative: "genesis" }),
   work("g", "review", { worker: worker("g", null), look }),
 ];
+/** The fixture with some work finished at the gate (nothing held), as an older run that ended without asking. */
+const finished = (...ids: string[]): WorkItem[] =>
+  fixture().map((item) => (ids.includes(item.id) ? { ...item, permission: null } : item));
 let items = fixture();
 
 // Work fleet-reconcile raised, as the producer writes it (BRO-2839): an old count title, its brief for the run.
@@ -1021,7 +1025,12 @@ const invoke = async (method: string, input: unknown) => {
     throw new Error(stopRefusal);
   }
   if (method === "loop.get") return loopState;
-  if (method === "loop.wake") return nextWake();
+  if (method === "loop.wake") {
+    // Your wake takes effect 8 s later (B4): its entry is listed once it has run.
+    loopState = { ...loopState, recent: [nextWake(), ...loopState.recent] };
+    return { receipt: "r-wake", appliesAt: new Date(Date.now() + 8_000).toISOString() };
+  }
+  if (method === "verbs.list") return { pending: [], recent: [] };
   if (method === "config.get") return settings;
   if (method === "config.set") return input;
   if (method === "work.list") return { root: "/work", items, warnings: [], scoreboard: board() };
@@ -1420,14 +1429,15 @@ afterAll(async () => {
 
 describe("the changed line", () => {
   test("a surface without client state renders, logs once, and shows no changed stat", async () => {
+    items = finished("a");
     const view = await mount(surface(false));
-    // needs.list's holds: Work a and Work g at your gate (Work b is stuck: watched, A1).
-    expect(view.text()).toContain("2 need you · 1 running");
+    // needs.list's holds: Work g at your gate, holding a prompt (Work a finished, Work b is stuck: watched, A1).
+    expect(view.text()).toContain("1 needs you · 1 running");
     expect(view.text()).toContain("hawthorne · core");
     expect(view.text()).toContain("maestro/a-1");
     expect(view.text()).not.toMatch(/\+\d+ −\d+/);
     expect(probeLogs()).toBe(1);
-    await view.press(view.byLabel("Work a, Needs you, hawthorne · core, updated 12 minutes ago"));
+    await view.press(view.byLabel("Work a, Finished, hawthorne · core, updated 12 minutes ago"));
     expect(view.text()).toContain("Changed");
     await view.press(view.byLabel("Work g, Needs you, updated 12 minutes ago"));
     expect(view.text()).toContain("Approve the branch");
@@ -1485,10 +1495,11 @@ describe("the changed line", () => {
   });
 
   test("with client state, the card and the detail show +a −d", async () => {
+    items = finished("a");
     const view = await mount(surface(false), { state: diffState as unknown as PluginClientStateSource });
     expect(view.text()).toContain("+12 −3");
     expect(view.byLabel("12 lines added, 3 removed")).not.toBeNull();
-    const card = view.byLabel("Work a, Needs you, hawthorne · core, updated 12 minutes ago");
+    const card = view.byLabel("Work a, Finished, hawthorne · core, updated 12 minutes ago");
     expect(card?.getAttribute("aria-current")).toBe("false");
     await view.press(card);
     expect(card?.getAttribute("aria-current")).toBe("true");
@@ -1497,14 +1508,17 @@ describe("the changed line", () => {
   });
 
   test("the server's changed line shows on the card and the detail with no client state", async () => {
-    items = fixture().map((item) => (item.id === "a" ? { ...item, changed: { additions: 5, deletions: 1 } } : item));
+    items = finished("a").map((item) =>
+      item.id === "a" ? { ...item, changed: { additions: 5, deletions: 1 } } : item,
+    );
     const view = await mount(surface(false));
     expect(view.byLabel("5 lines added, 1 removed")).not.toBeNull();
-    await view.press(view.byLabel("Work a, Needs you, hawthorne · core, updated 12 minutes ago"));
+    await view.press(view.byLabel("Work a, Finished, hawthorne · core, updated 12 minutes ago"));
     expect(view.text().match(/\+5 −1/g)).toHaveLength(2);
   });
 
   test("the detail alone, as the agent panel mounts it, survives a host without state", async () => {
+    items = finished("a");
     const view = await mount(
       <WorkDetail id="a" theme={theme} compact={false} navigation={undefined} open={requestIntent} />,
     );
@@ -1685,6 +1699,7 @@ describe("a finished arc at your gate (BRO-2856)", () => {
     items = [
       ...fixture(),
       work("arc", "review", {
+        permission: null,
         worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
         look: arcLook,
       }),
@@ -1716,6 +1731,7 @@ describe("a finished arc at your gate (BRO-2856)", () => {
     items = [
       ...fixture(),
       work("arc", "review", {
+        permission: null,
         worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
         look: arcLook,
       }),
@@ -1740,6 +1756,7 @@ describe("a finished arc at your gate (BRO-2856)", () => {
     items = [
       ...fixture(),
       work("arc", "review", {
+        permission: null,
         worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
         look: arcLook,
         landing: 3,
@@ -1787,11 +1804,16 @@ describe("a finished arc at your gate (BRO-2856)", () => {
   test("a card for a run that asked nothing shows its last words and says what the verbs do, inventing no ask", async () => {
     const said = "Stored it on the Run record. All 40 tests pass and the branch is pushed.";
     const look = { ran: "18m unsupervised · 1 turn · ran to the gate", decided: [], ask: "", arc: null, closing: said };
-    items = [...fixture(), work("plain", "review", { worker: worker("plain", null), look, landing: 3 })];
+    items = [
+      ...fixture(),
+      work("plain", "review", { permission: null, worker: worker("plain", null), look, landing: 3 }),
+    ];
     const text = (await gateCard("plain")).text();
     expect(text).toContain("Its last words");
     expect(text).toContain(said);
-    expect(text).toContain("Approve marks the work done. Send back reopens its session with your note.");
+    expect(text).toContain(
+      "Change course reopens its session with your note. Gates merge finished work; you do not approve it.",
+    );
     expect(text).not.toContain("Ask");
     expect(text).not.toContain("Approve to close it");
     // What it asks comes before how long it ran: the run's meta is the footer.
@@ -1807,7 +1829,10 @@ describe("a finished arc at your gate (BRO-2856)", () => {
       closing: null,
       handed: "| # | ask | unblocks |\n|---|---|---|\n| 1 | Merge #2134 | the deploy |",
     };
-    items = [...fixture(), work("handed", "review", { worker: worker("handed", null), look, landing: 3 })];
+    items = [
+      ...fixture(),
+      work("handed", "review", { permission: null, worker: worker("handed", null), look, landing: 3 }),
+    ];
     const text = (await gateCard("handed")).text();
     expect(text).toContain("⛔ Blocked on you — 1 item, ~2 min");
     expect(text).toContain("What it handed you");
@@ -1818,6 +1843,7 @@ describe("a finished arc at your gate (BRO-2856)", () => {
     items = [
       ...fixture(),
       work("arc", "review", {
+        permission: null,
         worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
         look: arcLook,
       }),
@@ -1855,7 +1881,7 @@ describe("a finished arc at your gate (BRO-2856)", () => {
       archived: false,
       ask: "It reports its arc finished. Approve to close the work, or send it back with a note.",
     };
-    items = [...fixture(), work("arc", "review", { worker: worker("arc", null), look: bare })];
+    items = [...fixture(), work("arc", "review", { permission: null, worker: worker("arc", null), look: bare })];
     const view = await mount(detail("arc"));
     const text = view.text();
     expect(text).toContain("It reports its arc finished.");
@@ -1973,11 +1999,11 @@ describe("Stop run", () => {
     await view.press(view.byLabel("Stop run"));
     await view.press(view.byLabel("Stop run"));
     expect(view.byLabel("Discard and stop")).not.toBeNull();
-    move("k", work("k", "review", { worker: worker("k", "maestro/k-1"), look }));
+    move("k", work("k", "review", { permission: null, worker: worker("k", "maestro/k-1"), look }));
     await view.refetch();
     expect(view.byLabel("Discard and stop")).toBeNull();
     expect(view.all('[role="alert"]').map((el) => el.textContent)).toContain(
-      "The run moved on before you confirmed: it is now in Needs you.Dismiss",
+      "The run moved on before you confirmed: it is now Finished.Dismiss",
     );
   });
 

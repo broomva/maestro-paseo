@@ -238,9 +238,9 @@ test("work.list, work.attention and loops.get, polled 50 times, leave the store,
     };
     const closed = await run("Its session closed");
     const missed = await run("Its end was missed");
-    const approved = await atGate("Approved");
+    const canceled = await atGate("Canceled");
     const revised = await atGate("Sent back");
-    await before.verdict(fake.paseo, approved.id, "approve", "");
+    await before.verdict(fake.paseo, canceled.id, "block", "");
     await before.verdict(fake.paseo, revised.id, "revise", "Rename the flag");
     before.stop();
     const closedAgent = fake.agents.get(closed.agentId);
@@ -309,7 +309,7 @@ test("work.list, work.attention and loops.get, polled 50 times, leave the store,
     const heartbeat = loops.rows.find((row) => row.ref === "103a1850");
     expect(heartbeat?.drift.map((drift) => drift.kind)).toEqual(["unregistered"]);
     expect(attention.loops.length).toBeGreaterThan(0);
-    expect(await state(approved.id)).toBe("review");
+    expect(await state(canceled.id)).toBe("review");
     expect(await state(closed.id)).toBe("running");
 
     const writes = calls.filter((path) => !PASEO_READS.has(path));
@@ -346,7 +346,7 @@ test("work.list, work.attention and loops.get, polled 50 times, leave the store,
     expect(calls).toContain("agents.ref().timeline.append");
     expect(calls).toContain("agents.create");
     expect(fake.created).toHaveLength(startCounts.created + 1);
-    expect(await state(approved.id)).toBe("done");
+    expect(await state(canceled.id)).toBe("canceled");
     expect(await state(revised.id)).toBe("running");
     expect(fake.sent.map((sent) => sent.agentId)).toContain(revised.agentId);
     expect(calls).toContain("agents.ref().send");

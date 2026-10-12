@@ -405,10 +405,14 @@ export const getConfig = defineRpc({
   output: ConfigSchema,
 });
 
+/**
+ * Save Settings, 8 s after the call unless undone (B4). The output is the Settings you asked for, with the
+ * receipt; a newer save before the window closes replaces this one.
+ */
 export const setConfig = defineRpc({
   name: "config.set",
   input: ConfigSchema,
-  output: ConfigSchema,
+  output: ConfigSchema.extend({ receipt: z.string().optional(), appliesAt: z.string().optional() }),
 });
 
 /**
@@ -530,5 +534,12 @@ export const getLoop = defineRpc({
   }),
 });
 
-/** Wake the loop now. Returns this wake's entry, or a skipped one when a wake is already running. */
-export const wakeLoop = defineRpc({ name: "loop.wake", input: z.object({}), output: WakeEntrySchema });
+/**
+ * Wake the loop, 8 s after the call unless undone (B4). The wake's entry is in loop.get's `recent` once it
+ * has run, or a skipped one when a wake is already running.
+ */
+export const wakeLoop = defineRpc({
+  name: "loop.wake",
+  input: z.object({}),
+  output: z.object({ receipt: z.string(), appliesAt: z.string() }),
+});

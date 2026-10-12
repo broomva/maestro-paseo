@@ -18,7 +18,7 @@ import {
   type NeedSummary,
   needsWords,
 } from "../shared/needs";
-import { sectionOf } from "../shared/needs-you";
+import { isFinished, sectionOf } from "../shared/needs-you";
 import { ticketOf } from "../shared/text";
 import { headlineOf, isTriaged, ledgerName, ledgerOf, silenceOf } from "./decisions-model";
 import { ago, plural } from "./format";
@@ -259,7 +259,9 @@ export function cardOf(
       : stuck
         ? { label: "Stuck", tone: "warning" }
         : item.state === "review"
-          ? { label: "Needs you", tone: "success" }
+          ? item.permission
+            ? { label: "Needs you", tone: "success" }
+            : { label: "Finished", tone: "muted" }
           : item.state === "running"
             ? { label: flagged ? "Quiet" : "Running", tone: flagged ? "warning" : "accent" }
             : item.state === "done"
@@ -298,6 +300,8 @@ export function cardHint(card: Pick<CardModel, "action" | "ask">): string {
 export interface FeedSections {
   /** Stuck work: watched (owner answer A1), each with its reason; Unblock is on its card. */
   stuck: WorkItem[];
+  /** Work that finished and waits at the gate: watched (A1), never counted as needing you; Change course is on its card. */
+  finished: WorkItem[];
   running: WorkItem[];
   queued: WorkItem[];
   /** Finished work you closed: how many, today and this week. */
@@ -315,6 +319,7 @@ export function sectionsOf(items: readonly WorkItem[], now: number = Date.now())
     .sort((a, b) => closedAt(b) - closedAt(a));
   return {
     stuck: items.filter((item) => sectionOf(item) === "blocked"),
+    finished: items.filter(isFinished),
     running: items.filter((item) => sectionOf(item) === "running"),
     queued: items.filter((item) => sectionOf(item) === "queued"),
     done: {

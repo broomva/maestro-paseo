@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UNDO_MS } from "../shared/undo";
-import { UserError, type Timer } from "./engine";
+import { type Timer, UserError } from "./engine";
 import { OwnerVerbs } from "./owner-verbs";
 import type { Paseo } from "./runs";
 
@@ -78,7 +78,9 @@ describe("the owner-verb ledger", () => {
     expect(did).toEqual(["a"]);
     const { pending, recent } = await verbs.list();
     expect(pending).toEqual([]);
-    expect(recent).toMatchObject([{ receipt: made.receipt, outcome: "applied", detail: "Canceled a", label: "Canceled a" }]);
+    expect(recent).toMatchObject([
+      { receipt: made.receipt, outcome: "applied", detail: "Canceled a", label: "Canceled a" },
+    ]);
     expect(await readFile(path, "utf8")).toContain('"kind":"verb.applied"');
   });
 
@@ -139,7 +141,13 @@ describe("the owner-verb ledger", () => {
   test("a verb that supersedes replaces the pending one on its key", async () => {
     const { verbs, timers } = await setup();
     const applied: string[] = [];
-    verbs.register<{ n: number }>("config.set", { supersedes: true, apply: async ({ n }) => (applied.push(String(n)), "Saved") });
+    verbs.register<{ n: number }>("config.set", {
+      supersedes: true,
+      apply: async ({ n }) => {
+        applied.push(String(n));
+        return "Saved";
+      },
+    });
     const first = await verbs.schedule("config.set", { key: "config", label: "Saved Settings", args: { n: 1 } });
     tickMs(1000);
     const second = await verbs.schedule("config.set", { key: "config", label: "Saved Settings", args: { n: 2 } });
@@ -158,7 +166,12 @@ describe("the owner-verb ledger", () => {
     // The plugin restarts 3 s in: a new ledger arms the rest of the window.
     tickMs(3000);
     const restarted = build();
-    restarted.register<{ what: string }>("work.cancel", { apply: async ({ what }) => (did.push(`again:${what}`), "Canceled") });
+    restarted.register<{ what: string }>("work.cancel", {
+      apply: async ({ what }) => {
+        did.push(`again:${what}`);
+        return "Canceled";
+      },
+    });
     expect(await restarted.resume()).toBe(false);
     expect(timers.live().filter((entry) => !entry.canceled).length).toBeGreaterThan(0);
     tickMs(UNDO_MS);

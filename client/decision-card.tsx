@@ -15,6 +15,7 @@ import {
   type DecisionAsk,
   type WorkspaceAsksView,
 } from "../shared/fleet";
+import { askHoldKey } from "../shared/needs";
 import { withinTimeout } from "./answer-timeout";
 import {
   answeredLine,
@@ -29,7 +30,8 @@ import {
   writtenTo,
 } from "./decisions-model";
 import { errorText } from "./format";
-import { useRefresh } from "./hooks";
+import { useRefresh, useVerbLedger } from "./hooks";
+import { PendingVerbs, pendingFor } from "./pending-verbs";
 import { Card, focusRing, Kbd, Notice, radius, size, space, usePressScale, useText } from "./ui";
 
 type Navigation = PluginSurfaceProps["navigation"];
@@ -368,7 +370,10 @@ export function DecisionCard({
   const option = ask.options.find((entry) => entry.id === chosen) ?? null;
   const hasOptions = ask.options.length > 0;
   const lead = headlineOf(ask);
-  const canAnswer = open && !ask.refusal && !anyInFlight && (option !== null || note.trim().length > 0);
+  // Your answer, written 8 s after you give it unless undone (B4): until then the ask stays open, and says so.
+  const holdKey = askHoldKey(ask);
+  const waiting = pendingFor(useVerbLedger().data?.pending ?? [], [holdKey]).length > 0;
+  const canAnswer = open && !ask.refusal && !anyInFlight && !waiting && (option !== null || note.trim().length > 0);
   const silence = silenceOf(ask);
   const origin = ask.origin;
   const submit = () => {
@@ -418,6 +423,7 @@ export function DecisionCard({
   const label = `${ask.id}`;
   return (
     <Card theme={theme} style={{ gap: space[4], padding: compact ? space[4] : space[5] }}>
+      <PendingVerbs theme={theme} compact={compact} keys={[holdKey]} />
       <View style={{ gap: space[2] }}>
         <Text style={[text.small, text.tabular, { fontFamily: mono }]} numberOfLines={2}>
           {metaLine(ask)}

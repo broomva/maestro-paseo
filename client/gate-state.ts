@@ -2,13 +2,14 @@
 // as it is now. A card belongs to one landing in one session. Only the card for
 // the work's current landing, in its current worker's session, offers a verb:
 // an older card, or one left in a session the work has moved away from, says
-// so and offers nothing. Pure.
+// so and offers nothing. A card that asks holds one exact action (Allow or Deny,
+// approval.decide); one that finished holds nothing, and offers Change course. Pure.
 
 import type { WorkItem } from "../shared/contracts";
 import type { GateCardData } from "../shared/gate-card";
 import { isTerminal } from "../shared/states";
 
-export type CardView = "asking" | "deciding" | "resolved" | "superseded";
+export type CardView = "asking" | "finished" | "resolved" | "superseded";
 
 type Current = Pick<WorkItem, "state" | "permission" | "landing" | "worker">;
 type Card = Pick<GateCardData, "landing" | "agentId">;
@@ -19,7 +20,7 @@ export function cardView(card: Card, item: Current): CardView {
   if (card.landing === undefined || card.agentId === undefined) return "superseded";
   if (item.landing !== card.landing || item.worker?.agentId !== card.agentId) return "superseded";
   if (item.state !== "review") return "resolved";
-  return item.permission ? "asking" : "deciding";
+  return item.permission ? "asking" : "finished";
 }
 
 /**

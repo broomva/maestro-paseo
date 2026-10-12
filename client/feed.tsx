@@ -561,6 +561,7 @@ export function FeedSectionsView({
   return (
     <>
       {cards("Stuck", sections.stuck, groupHint("blocked", loopOn))}
+      {cards("Finished", sections.finished, "At the gate, nothing asked of you: gates merge it")}
       {cards("Running", sections.running)}
       {cards("Queued", sections.queued, groupHint("queued", loopOn))}
       {count > 0 ? (

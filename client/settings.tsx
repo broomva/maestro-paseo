@@ -19,6 +19,7 @@ import type { MaestroConfig } from "../shared/contracts";
 import { errorText } from "./format";
 import { useConfig, useVerbs } from "./hooks";
 import { LOOP_HINT, loopMinutesOf, loopOptions, loopValue } from "./loop-model";
+import { PendingVerbs } from "./pending-verbs";
 import { Notice, space } from "./ui";
 
 /** The cap as typed: empty is no cap, a whole number from 1 is a cap, anything else is an error to show. */
@@ -130,16 +131,15 @@ export function MaestroSettings({ theme }: PluginSurfaceProps) {
             value={draft.archiveOnApprove}
             onValueChange={(archiveOnApprove) => patch({ archiveOnApprove })}
           />
+          <PendingVerbs theme={theme} compact={false} keys={["config"]} />
           <SettingsAction
             label="Save settings"
             actionLabel={verbs.saveConfig.isPending ? "Saving" : "Save"}
             disabled={verbs.saveConfig.isPending || capError !== null}
             onPress={() =>
               verbs.saveConfig.mutate(draft, {
-                onSuccess: (saved) => {
-                  setDraft(saved);
-                  toast.show("Settings saved", { variant: "success" });
-                },
+                // Saved 8 s from now unless undone (B4): the strip below counts it down.
+                onSuccess: ({ receipt: _receipt, appliesAt: _appliesAt, ...saved }) => setDraft(saved),
                 onError: (error) => toast.error(errorText(error)),
               })
             }

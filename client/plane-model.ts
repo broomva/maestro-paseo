@@ -217,6 +217,8 @@ export function crumb(item: WorkItem): string | null {
 export function stateText(item: WorkItem): string {
   if (item.phase === "asking") return "Question";
   if (item.phase === "checking") return "Checking";
+  // Work that finished and waits at the gate asks nothing of you (A1): it is Finished, not Needs you.
+  if (isFinished(item)) return "Finished";
   return item.state === "canceled" ? "Canceled" : PLAIN_VOICE[item.state].label;
 }
 

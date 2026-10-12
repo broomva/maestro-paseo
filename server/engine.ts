@@ -307,6 +307,16 @@ export const NOT_QUIET = "Only a run the loop flagged as quiet can be left runni
 /** Why Stop is refused while checks run: the session is done, and the checks decide where the work lands. */
 export const CHECKING = "The run already finished and its checks are running. When they report, it lands with you.";
 
+/** Why Stop is refused for this item right now, or null: checking, or not a live run. */
+function stopRefusal(item: StoredWork): string | null {
+  const phase = phaseOf(item.contract.state, item.events);
+  // The session already finished; stopping now would only strand the checks' result.
+  if (phase === "checking") return CHECKING;
+  // Working, or paused on its question at the gate: either way the session is alive, and Stop archives it.
+  if (phase !== "working" && phase !== "asking") return NOT_STOPPABLE;
+  return null;
+}
+
 /** Why Stop is refused outside a live run: only a session that is working, or asking you something, has anything to stop. */
 export const NOT_STOPPABLE = "Only a run that is working, or asking you something, can be stopped.";
 
@@ -1258,7 +1268,9 @@ export class Engine {
       () =>
         paseo.agents.ref(worker.agentId).respondToPermission({
           requestId,
-          response: allow ? { behavior: "allow" } : { behavior: "deny", message: note.trim() || "Declined from Maestro" },
+          response: allow
+            ? { behavior: "allow" }
+            : { behavior: "deny", message: note.trim() || "Declined from Maestro" },
         }),
       this.claimWaitMs,
     );
@@ -1648,6 +1660,50 @@ export class Engine {
     };
   }
 
+  /**
+   * Why a verb of yours on this work is refused now, read at the call so the refusal reaches you at once and
+   * not as a dropped receipt after the undo window (server/owner-verbs.ts check). Each throws a UserError; each
+   * verb checks again when it applies.
+   */
+  async cancelRefusal(id: string): Promise<void> {
+    if (this.dispatching.has(id)) throw new UserError("A run is starting for this work. Cancel it once it is running.");
+    const { store } = await this.store();
+    const current = await store.findById(id);
+    const state = current.contract.state;
+    if (state === "review") throw new UserError("Work at your gate is canceled there.");
+    if (isTerminal(state)) throw new UserError("It is already closed.");
+    if (state === "running" && workerOf(current.events)) {
+      throw new UserError("Stop the run first, then cancel the work.");
+    }
+  }
+
+  async unblockRefusal(id: string): Promise<void> {
+    if (this.dispatching.has(id)) throw new UserError("A run is already starting for this work.");
+    const { store } = await this.store();
+    if ((await store.findById(id)).contract.state !== "blocked")
+      throw new UserError("Only stuck work can be unblocked.");
+  }
+
+  async leaveRunningRefusal(id: string): Promise<void> {
+    const { store } = await this.store();
+    const current = await store.findById(id);
+    if (current.contract.state !== "running" || flagOf(current.events)?.kind !== "quiet")
+      throw new UserError(NOT_QUIET);
+  }
+
+  /** Stop's refusals that need a look at the worktree, read now: the same ones stopRun makes, with nothing changed. */
+  async stopPreflight(paseo: Paseo | null, id: string, { discard = false }: { discard?: boolean } = {}): Promise<void> {
+    if (this.dispatching.has(id)) throw new UserError("A run is starting for this work. Stop it once it is running.");
+    if (!paseo) throw new UserError(NO_HANDLE);
+    const { store } = await this.store();
+    const current = await store.findById(id);
+    const early = stopRefusal(current);
+    if (early) throw new UserError(early);
+    const worker = workerOf(current.events);
+    const checked = worker && !discard ? await this.stopLoss(paseo, current, worker) : null;
+    if (checked && "refusal" in checked) throw new UserError(checked.refusal);
+  }
+
   async unblock(paseo: Paseo, id: string, note: string): Promise<WorkItem> {
     if (this.dispatching.has(id)) throw new UserError("A run is already starting for this work.");
     const { store, config } = await this.store();
@@ -1772,14 +1828,7 @@ export class Engine {
     if (this.dispatching.has(id)) throw new UserError("A run is starting for this work. Stop it once it is running.");
     const { store, config } = await this.store();
     const current = await store.findById(id);
-    const refusal = (item: StoredWork): string | null => {
-      const phase = phaseOf(item.contract.state, item.events);
-      // The session already finished; stopping now would only strand the checks' result.
-      if (phase === "checking") return CHECKING;
-      // Working, or paused on its question at the gate: either way the session is alive, and Stop archives it.
-      if (phase !== "working" && phase !== "asking") return NOT_STOPPABLE;
-      return null;
-    };
+    const refusal = stopRefusal;
     const early = refusal(current);
     if (early) throw new UserError(early);
     const worker = workerOf(current.events);

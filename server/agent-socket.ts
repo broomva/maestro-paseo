@@ -31,8 +31,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { GATE_MODES } from "../shared/states";
 import { TICKET } from "../shared/text";
-import { type Engine, NO_HANDLE, UserError } from "./engine";
 import type { Approvals } from "./approvals";
+import { type Engine, NO_HANDLE, UserError } from "./engine";
 import type { Origin } from "./events";
 import type { Paseo } from "./runs";
 import { WorkNotFoundError } from "./store";
@@ -160,10 +160,7 @@ export function agentMethods(
     ["config.get", method(z.object({}), () => engine.settings())],
     // Ask leave for one exact action a policy layer held (frame C1). It only raises the hold: the decision is yours.
     ["approval.request", async (input, caller) => requireApprovals(approvals).request(caller.agentId, input)],
-    [
-      "approval.withdraw",
-      method(ById, ({ id }, caller) => requireApprovals(approvals).withdraw(caller.agentId, id)),
-    ],
+    ["approval.withdraw", method(ById, ({ id }, caller) => requireApprovals(approvals).withdraw(caller.agentId, id))],
   ]);
 }
 

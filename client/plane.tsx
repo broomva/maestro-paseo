@@ -44,6 +44,7 @@ import { requestIntent, useIntent } from "./intent";
 import { LoopControl, LoopPanel } from "./loop";
 import { LoopsNotices, LoopsView } from "./loops";
 import { NewWork } from "./new-work";
+import { PendingVerbs } from "./pending-verbs";
 import { FilterRow, ScopeRow, ViewPicker, ViewSwitch } from "./plane-controls";
 import {
   applyFilter,
@@ -254,6 +255,10 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
 
       {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
 
+      {/* What you decided that has not taken effect: every verb of yours waits 8 s, with one Undo (B4). A work's
+          own decision at the gate counts down in its detail. */}
+      <PendingVerbs theme={theme} compact={compact} skip={["work.verdict"]} />
+
       {/* What needs you could not be read: said, never shown as nothing. */}
       {needs.isError && !needs.data ? (
         <Notice theme={theme} tone="danger">
@@ -348,6 +353,7 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
               {query &&
               needsEntries.length +
                 sections.stuck.length +
+                sections.finished.length +
                 sections.running.length +
                 sections.queued.length +
                 sections.done.count ===

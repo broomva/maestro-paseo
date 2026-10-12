@@ -38,7 +38,8 @@ function work(id: string, title: string, state: OrchState): WorkItem {
     reason: null,
     verdict: null,
     look: null,
-    permission: null,
+    // At the gate it holds a prompt: only a held action needs you (A1, BRO-2999).
+    permission: state === "review" ? { requestId: `req-${id}`, title: "Run a command", detail: "git push" } : null,
     checks: [],
     pending: null,
     flag: null,

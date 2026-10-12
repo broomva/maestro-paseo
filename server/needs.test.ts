@@ -17,6 +17,7 @@ import {
   handledOf,
   type NeedSources,
   needsOf,
+  type OpenApproval,
   reviewNeed,
   sortNeeds,
   summaryOf,
@@ -107,6 +108,19 @@ const flag = (kind: "yours" | "failed" | "quiet") => ({
   at: "2026-10-10T12:00:00.000Z",
 });
 
+/** An action a session asked leave for, waiting since 09:00 (approval.request). */
+const asked = (id = "gate"): OpenApproval => ({
+  id,
+  at: "2026-10-10T09:00:00.000Z",
+  agentId: "agent-12",
+  action: "gh pr merge 933 --squash @ ce73104",
+  heldBy: "gate",
+  title: "Merge #933",
+  scope: "broomva",
+  evidence: [],
+  after: [],
+});
+
 const sources = (extra: Partial<NeedSources> = {}): NeedSources => ({
   items: [],
   asks: [],
@@ -119,7 +133,8 @@ const sources = (extra: Partial<NeedSources> = {}): NeedSources => ({
 /** Work in every state, and every kind of flag. */
 function everyState(): WorkItem[] {
   return [
-    fakeWork("gate", "review", live, { updatedAt: "2026-10-10T09:00:00.000Z" }),
+    // Finished and waiting at the gate, nothing held: watched, never a need (A1, BRO-2999).
+    fakeWork("gate", "review", live, { updatedAt: "2026-10-10T09:00:00.000Z", permission: null }),
     fakeWork("perm", "review", live, {
       updatedAt: "2026-10-10T11:00:00.000Z",
       permission: { requestId: "r1", title: "Run bash", detail: "git push" },
@@ -136,23 +151,20 @@ function everyState(): WorkItem[] {
 }
 
 describe("needs.list's kinds (owner answer A1)", () => {
-  test("work at your gate is an approval; only you may start it is an owner step; nothing else is a need", () => {
+  test("a held action is an approval; only you may start it is an owner step; nothing else is a need", () => {
     const rows = everyState().map((item) => workNeed(item));
     const byKey = new Map(rows.filter((row): row is NeedRow => row !== null).map((row) => [row.key, row]));
-    expect([...byKey.keys()].sort()).toEqual(["work:failed", "work:gate", "work:perm", "work:yours"]);
-
-    const gate = byKey.get("work:gate");
-    expect(gate?.kind).toBe("approval");
-    if (gate?.kind !== "approval") throw new Error("not an approval");
-    expect(gate.body.heldBy).toBe("gate");
-    expect(gate.verbs).toEqual(["allow", "deny"]);
-    expect(gate.session).toEqual({ agentId: live.agentId, name: "agent-12", waiting: true });
-    expect(gate.blocksWork).toBe(true);
+    // Work that finished and waits at the gate holds nothing: work is never asked to be approved (A1).
+    expect([...byKey.keys()].sort()).toEqual(["work:failed", "work:perm", "work:yours"]);
+    expect(byKey.has("work:gate")).toBe(false);
 
     const perm = byKey.get("work:perm");
     if (perm?.kind !== "approval") throw new Error("not an approval");
     expect(perm.body.heldBy).toBe("permission");
     expect(perm.body.action).toBe("Run bash: git push");
+    expect(perm.verbs).toEqual(["allow", "deny"]);
+    expect(perm.session).toEqual({ agentId: live.agentId, name: "agent-12", waiting: true });
+    expect(perm.blocksWork).toBe(true);
 
     const yours = byKey.get("work:yours");
     if (yours?.kind !== "owner_step") throw new Error("not an owner step");
@@ -300,13 +312,13 @@ describe("needs.list's kinds (owner answer A1)", () => {
       ).toEqual([other, untracked, unnamed].map((id) => id.slice(0, 8)).sort());
     });
 
-    test("work at Maestro's own gate is not the prompt: the session's prompt ask still counts", () => {
-      const gated = fakeWork("g", "review", { agentId: AGENT, workspaceId: "ws1" });
+    test("finished work holds no prompt, so the session's prompt ask is the only hold and still counts", () => {
+      const finished = fakeWork("g", "review", { agentId: AGENT, workspaceId: "ws1" }, { permission: null });
       const needs = needsOf(
-        sources({ items: [gated], asks: [prompt(SESSION)], sessionAgents: new Map([[SESSION, AGENT]]) }),
+        sources({ items: [finished], asks: [prompt(SESSION)], sessionAgents: new Map([[SESSION, AGENT]]) }),
         NOW,
       );
-      expect(needs.summary.byKind).toEqual({ ask: 1, approval: 1, owner_step: 0 });
+      expect(needs.summary.byKind).toEqual({ ask: 1, approval: 0, owner_step: 0 });
     });
 
     test("a key that already names the agent meets it directly; an ask that is not a prompt is never dropped", () => {
@@ -358,7 +370,17 @@ describe("needs.list's kinds (owner answer A1)", () => {
         from: "running",
         to: "review",
         reason: null,
-      }) + event("2026-10-10T14:00:00.000Z", { type: "note", actor: "maestro", text: "A remark" }),
+      }) +
+        // The session asked to run a command as it landed: a held action, so a hold.
+        event("2026-10-10T09:00:00.000Z", {
+          type: "permission.asked",
+          actor: "agent",
+          agentId: "a",
+          requestId: "r",
+          title: "Run",
+          detail: "ls",
+        }) +
+        event("2026-10-10T14:00:00.000Z", { type: "note", actor: "maestro", text: "A remark" }),
     );
     const wire = toWire(await store.load(item.dir), NOW, config);
     expect(wire.landedAt).toBe("2026-10-10T09:00:00.000Z");
@@ -475,6 +497,7 @@ describe("deck order and the summary", () => {
     needsOf(
       sources({
         items: everyState(),
+        approvals: [asked()],
         asks: [ask("A1", { blocking: true, askedAt: "2026-10-09T10:00:00.000Z" }), ask("A2", { blocking: true })],
         reviews: [initiative("skene")],
         landing: landing(),
@@ -485,7 +508,7 @@ describe("deck order and the summary", () => {
   test("what blocks work first, then the longest waiting, ties broken by key", () => {
     expect(rowsOfEveryKind().map((row) => row.key)).toEqual([
       A1KEY, // blocks; waiting since 10-09 10:00
-      "work:gate", // 10-10 09:00
+      "approval:gate", // 10-10 09:00
       A2KEY, // 10:00
       "work:perm", // 11:00
       "work:failed", // 12:00, and its key before work:yours'
@@ -528,15 +551,16 @@ describe("deck order and the summary", () => {
   });
 
   test("a kind narrows the rows, and the summary then describes exactly those", () => {
-    const all = needsOf(sources({ items: everyState(), asks: [ask("A1", { blocking: true })] }), NOW);
-    const approvals = needsOf(sources({ items: everyState(), asks: [ask("A1", { blocking: true })] }), NOW, "approval");
+    const held = { items: everyState(), approvals: [asked()], asks: [ask("A1", { blocking: true })] };
+    const all = needsOf(sources(held), NOW);
+    const approvals = needsOf(sources(held), NOW, "approval");
     expect(approvals.rows.map((row) => row.key)).toEqual(
       all.rows.filter((row) => row.kind === "approval").map((row) => row.key),
     );
     expect(approvals.summary).toEqual({
       total: 2,
       byKind: { ask: 0, approval: 2, owner_step: 0 },
-      oldest: { key: "work:gate", since: "2026-10-10T09:00:00.000Z" },
+      oldest: { key: "approval:gate", since: "2026-10-10T09:00:00.000Z" },
     });
   });
 

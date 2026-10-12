@@ -55,7 +55,8 @@ function work(id: string, state: OrchState, extra: Partial<WorkItem> = {}): Work
     reason: null,
     verdict: null,
     look: null,
-    permission: null,
+    // Work at the gate holds a prompt unless a test says it finished (`permission: null`): only a held action needs you (A1).
+    permission: state === "review" ? { requestId: `req-${id}`, title: "Run a command", detail: "git push" } : null,
     checks: [],
     pending: null,
     flag: null,
