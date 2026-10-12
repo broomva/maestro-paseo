@@ -43,7 +43,8 @@ import type { Approvals } from "./approvals";
 import type { CallerClaim, Callers, VerifiedCaller } from "./callers";
 import { type Engine, NO_HANDLE, UserError } from "./engine";
 import type { Origin } from "./events";
-import type { Paseo } from "./runs";
+import { yoursReason } from "./flags";
+import { HELD_FOR_YOU, type Paseo } from "./runs";
 import { WorkNotFoundError } from "./store";
 
 /** One verb: its input as sent, and who the request line says sent it (unverified until a verb checks it). */
@@ -71,6 +72,12 @@ export const GATE_METHODS: ReadonlySet<string> = new Set([
   "conductor.decide",
   "conductor.undo",
 ]);
+
+/**
+ * Why work filed from outside any session is yours to start, and only yours: an alerter, a cron job or a script has no
+ * session to verify, so it may only queue work, and the work is held for you (BRO-2996).
+ */
+export const EXTERNAL_HOLD = "Filed from outside Maestro, by no session it could verify. Only you start it.";
 
 /** The verbs that start work. They left the socket (A8): named so a session that asks for one is told who starts work. */
 export const LAUNCH_METHODS: ReadonlySet<string> = new Set(["work.dispatch"]);
@@ -115,6 +122,8 @@ export function agentMethods(
   callers: Callers,
 ): ReadonlyMap<string, AgentMethod> {
   const origin = (caller: VerifiedCaller): Origin => ({ actor: "agent", by: caller.agentId });
+  /** Work from a process that names no session: recorded as nobody's, and says so. */
+  const EXTERNAL: Origin = { actor: "agent", by: null, via: "external" };
   const connected = (): Paseo => {
     const handle = paseo();
     if (!handle) throw new UserError(NO_HANDLE);
@@ -151,7 +160,11 @@ export function agentMethods(
     ["work.get", read(ById, ({ id }) => engine.get(id))],
     [
       "work.create",
-      asSession(AgentCreate, async (input, caller) => {
+      async (raw, claim) => {
+        const input = parse(AgentCreate, raw);
+        // A caller that names a session is that session, verified, or is refused. One that names none is a process
+        // outside any session (an alerter, a script): it may only queue work, held for you, as nobody's.
+        const caller = claim.agentId ? await callers.verify(claim) : null;
         if (input.dispatch) throw new UserError(SESSIONS_START_NOTHING);
         if (input.gate === "auto") {
           throw new UserError(
@@ -163,8 +176,13 @@ export function agentMethods(
             "A session cannot write a done check: checks run as you, outside any session's permissions, so they come from the person who owns this Maestro.",
           );
         }
-        return engine.createWork(paseo(), input, origin(caller));
-      }),
+        if (caller) return engine.createWork(paseo(), input, origin(caller));
+        const made = await engine.createWork(paseo(), { ...input, hold: EXTERNAL_HOLD }, EXTERNAL);
+        // Held work is yours to start, in Needs you at once: the loop flags it so on a wake, which may be off or hours
+        // away, and an alert nobody sees is no alert.
+        await engine.flag(made.item, "yours", yoursReason(HELD_FOR_YOU));
+        return { ...made, item: (await engine.get(made.item.id)).item };
+      },
     ],
     [
       "work.adopt",

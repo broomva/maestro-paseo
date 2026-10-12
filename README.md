@@ -121,26 +121,35 @@ maestro mine                   # the work this session is running
   are gone, and the socket refuses `work.dispatch` and `work.create` with `dispatch: true` with
   "A session does not start work: you start it with Dispatch in Maestro, or a lane or the conductor
   does". The client refuses before it sends anything, so nothing is half-made.
-- **The socket checks who is asking** (BRO-2996, `server/callers.ts`). Every verb that writes names
-  the session it acts for, and Maestro checks that session against Paseo's own registry
-  (`~/.paseo/agents/*/<agent id>.json`): it exists, it is live (not archived or closed), and the
-  shell that is asking is in the folder it runs in or under it. So run `maestro` from inside the
-  session. It then acts only for that session: `track` and `mine` take its own session, or one it
-  started (`--agent <id>`, by Paseo's `paseo.parent-agent-id` label), `approval request` is filed
-  under it and counted against its 20, and `approval withdraw` takes back only its own. A session
-  that names another's id from its own folder is refused. `ls`, `show` and `config` stay open to
-  any shell on the socket: the conductor and the lanes read the queue through them, and the files
-  are yours anyway. A work's lineage (which work a tracked session belongs under) is the session
-  that started it by Paseo's record, never the adopter's word.
-- **What the check does not prove.** A process of yours that reads the registry can send a live
-  session's id and folder and be taken for it: the same trust as editing the work folders
-  directly. Peer credentials (the pid on the other end of the socket) would close it, but reading
-  them needs a native `getsockopt` call that Node does not have, and the plugin runs under Paseo's
-  Node, where `bun:ffi` does not exist; a per-session secret would need Paseo to put one in each
-  session's environment.
-- **What a session says of itself closes nothing.** Its own `ARC-STATUS: DONE|CLOSED|MERGED` and its
-  archive no longer close its work: the work waits at your gate. Only an orchestrator that tracked
-  the session and then archived it closes it (a session that tracked itself has no orchestrator).
+- **The socket checks who is asking** (BRO-2996, `server/callers.ts`): Paseo's registry plus a folder the
+  client supplies, not peer credentials. Every verb that writes names the session it acts for, and
+  Maestro checks that session against Paseo's own registry (`~/.paseo/agents/*/<agent id>.json`): it
+  exists, it is live (not archived or closed), and the folder the shell says it is in (an absolute
+  path) is the session's or under it. So run `maestro` from inside the session. It then acts only for
+  that session: `track` and `mine` take its own session, or one it started (`--agent <id>`, by Paseo's
+  `paseo.parent-agent-id` label), `approval request` is filed under it and counted against its 20, and
+  `approval withdraw` takes back only its own. A session that names another's id from its own folder,
+  or a stale or archived id, is refused. `ls`, `show` and `config` stay open to any shell: the
+  conductor and the lanes read the queue through them, and the files are yours anyway. A work's
+  lineage is the session that started it by Paseo's record, never the adopter's word.
+- **What the check does not stop.** The `caller` and the folder are both written by the client, and
+  the registry is readable by every process of yours. A process that reads it and sends a live
+  session's id with that session's folder is taken for that session: a child can be tracked as its
+  parent's, file approvals in its name and spend its cap. That is the same trust as editing the work
+  folders directly. What it cannot do, spoofed or not, is close gated work or start anything (below).
+  Peer credentials (the pid on the other end of the socket) would close the rest, but reading them
+  needs a native `getsockopt` call that Node does not have, and the plugin runs under Paseo's Node,
+  where `bun:ffi` does not exist; a per-session secret would need Paseo to put one in each session's
+  environment (BRO-3086).
+- **Work from outside any session** (an alerter, a cron job, a script: no `PASEO_AGENT_ID`) may only be
+  queued. `maestro new` with no session id files the work with its origin marked "from outside any
+  session, unverified", held for you in Needs you ("Start it yourself"); it has no run, no auto gate,
+  no done check, no lineage, and cannot track, look up or ask leave for anything. A stale or invented
+  id is not "no session": it is refused.
+- **Nothing a session does closes its work.** Its own `ARC-STATUS: DONE|CLOSED|MERGED`, its archive,
+  and the archive of the orchestrator that tracked it all leave the work at your gate with a note
+  that its session is gone: Paseo does not say who archived, and a session's lifecycle is not an
+  owner's verdict. Only a gate or your verdict closes it.
 - **A session cannot write a done check.** Checks run as you, with no session and no permission
   prompt in the loop, so they come from you: add one to the work's `_work.md` (`done.check`).
 - **Work a session creates carries none of the run choices the composer offers you** (provider,

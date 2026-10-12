@@ -2,16 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { groupOf, IllegalTransitionError, landingState, ORCH_STATES, transition, verdictTarget } from "./states";
 
 describe("transition", () => {
-  test("gated work reaches done only through an approve verdict, or an orchestrator that took its arc back", () => {
+  test("gated work reaches done only through an approve verdict; nothing a session does closes it", () => {
     expect(transition("review", "done", { gate: "human", verdict: "approve" })).toBe("done");
-    // An orchestrator that adopted it and archived its session closes gated work too; nothing else does, and
-    // what the session says of itself (its own ARC-STATUS line) is not a way in (BRO-2996).
-    expect(transition("review", "done", { gate: "human", adopterClosed: true })).toBe("done");
-    expect(() => transition("review", "done", { gate: "human", arcFinished: true } as never)).toThrow(
-      IllegalTransitionError,
-    );
     expect(() => transition("review", "done", { gate: "human" })).toThrow(IllegalTransitionError);
     expect(() => transition("review", "done", { gate: "human", verdict: "revise" })).toThrow(IllegalTransitionError);
+    // Not its own words, nor its archive, nor an orchestrator's archive of it (BRO-2996): there is no such way in.
+    for (const ctx of [{ arcFinished: true }, { adopterClosed: true }]) {
+      expect(() => transition("review", "done", { gate: "human", ...ctx } as never)).toThrow(IllegalTransitionError);
+    }
   });
 
   test("a run closes itself only under gate:auto with passing checks", () => {

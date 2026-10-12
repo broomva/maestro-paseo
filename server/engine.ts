@@ -51,8 +51,6 @@ import { runChecks } from "./checks";
 import { loadConfig } from "./config";
 import {
   ARCHIVED_NOTE,
-  adopterClosed,
-  archivedByOrchestrator,
   archivedSince,
   BY_HUMAN,
   checkOutcome,
@@ -1469,7 +1467,7 @@ export class Engine {
   }
 
   /**
-   * After an approval applies, or work an orchestrator took back closed (adopterClosed): archive
+   * After an approval applies: archive
    * the run's workspace, so its worktree goes and its branch stays as the
    * receipt. Best effort: a failure is a receipt and never undoes the close;
    * `stands` says what stands, in the receipt's words. Only a workspace a dispatch
@@ -2166,8 +2164,8 @@ export class Engine {
 
   /**
    * The session was archived: the work notes it (or stops, if it was mid-run
-   * or asking). With the daemon's client, the item is reconciled at once, so
-   * work an orchestrator took back closes now (adopterClosed), not on whoever lists next.
+   * or asking). With the daemon's client, the item is reconciled at once, so a missed note is
+   * written now, not on whoever lists next.
    */
   async onArchived(agent: HookAgent, paseo: Paseo | null = null): Promise<void> {
     await this.route(agent.id, async (store, item) => {
@@ -2181,7 +2179,6 @@ export class Engine {
             return { to: "blocked", reason: ARCHIVED_ASKING };
           }
           if (isTerminal(state)) return null;
-          // Work an orchestrator took back closes in the reconcile below (adopterClosed), which can follow through.
           return { events: [this.note(ARCHIVED_NOTE)] };
         },
         item.dir,
@@ -2566,29 +2563,12 @@ export class Engine {
     if (!agent || agent.archivedAt || agent.status === "closed") {
       if (state === "running") return guarded({ to: "blocked", reason: ENDED_MID_RUN });
       if (permission) return guarded({ to: "blocked", reason: ENDED_ASKING });
-      // Work at your gate is closed by what the session says of itself never (BRO-2996): its own transcript, its own
-      // ARC-STATUS line, is not an owner's verdict, and the session wrote it. Only an orchestrator that took its
-      // child back and archived it closes it here, by its archive (adopterClosed): archived, by its hook's note or
-      // as the daemon now says (a missed hook, whose note is written with it).
-      if (state === "review") {
-        const archived = agent?.archivedAt && !archivedSince(item.events) ? [this.note(ARCHIVED_NOTE)] : [];
-        // An orchestrator's child leaves your gate once the orchestrator took it back and archived it (BRO-2903).
-        const adopter = adopterClosed([...item.events, ...archived]);
-        if (adopter !== null) {
-          const closed = await guarded({
-            to: "done",
-            actor: "maestro",
-            ctx: { adopterClosed: true },
-            reason: archivedByOrchestrator(adopter),
-            events: archived,
-          });
-          // As an approval would: the workspace a run created goes when Settings says archive on approve.
-          const { config } = await this.store();
-          if (closed && config.archiveOnApprove) {
-            await this.archiveWorkspace(paseo, store, await store.findById(item.contract.id), "It stays done.");
-          }
-          return closed;
-        }
+      // Work at your gate stays there when its session ends (BRO-2996): a session's lifecycle is not an owner's
+      // verdict. Not its own ARC-STATUS line, not its archive, and not the archive of the orchestrator that tracked
+      // it, which Paseo does not tell apart from the session archiving itself. All the daemon's archive adds is
+      // the note the hook would have written, so the card says its session is gone.
+      if (state === "review" && agent?.archivedAt && !archivedSince(item.events)) {
+        return guarded({ events: [this.note(ARCHIVED_NOTE)] });
       }
       return false;
     }

@@ -3,17 +3,24 @@
 // this: the session the caller names exists in Paseo's own registry, is live, and the shell asking is inside
 // the folder that session runs in.
 //
-// What this proves, and what it does not. It stops a session that names another's id by mistake or by habit
-// (a PASEO_AGENT_ID inherited by a process started elsewhere, a loop that fills Needs you under invented ids),
-// and it ties every request to one real, live session, so a cap or a withdrawal is that session's. It does not
-// stop a process of yours that reads the registry (`~/.paseo/agents/*/<id>.json`, which any process of this user
-// can) and sends a live session's id and folder: that is the same trust as editing the work folders directly
-// (agent-socket.ts). Peer credentials would close it (LOCAL_PEERPID on a unix socket), but reading them needs a
-// native getsockopt call: Node has none, and the plugin runs under the Paseo host's Node, where bun:ffi does not
-// exist. A per-session secret would need Paseo to put one in each session's environment, which a plugin cannot do.
+// What this is: Paseo's registry plus a folder the client supplies. It is not peer credentials. The `caller` and the
+// `cwd` on a line are both written by the client, and the registry is readable by every process of this user.
+//
+// What it stops: a session that names another's id by mistake or by habit (a PASEO_AGENT_ID inherited by a process
+// started elsewhere, a loop that fills Needs you under invented ids, a stale id of an archived session), and it ties
+// every request to one real, live session, so a cap or a withdrawal is that session's.
+//
+// What it does not stop: a process of this user that reads the registry (`~/.paseo/agents/*/<id>.json`) and sends a
+// live session's id together with that session's folder is taken for that session. A child that does this to its
+// parent is tracked as the parent's, files approvals in the parent's name and burns the parent's cap. It is the
+// same trust as editing the work folders directly (agent-socket.ts). What no session can do on this socket, spoofed
+// or not, is close gated work: that is yours alone (engine.ts reconcileOne). Peer credentials would close the rest
+// (LOCAL_PEERPID on a unix socket), but reading them needs a native getsockopt call: Node has none, and the plugin
+// runs under the Paseo host's Node, where bun:ffi does not exist. A per-session secret would need Paseo to put one
+// in each session's environment, which a plugin cannot do. BRO-3086 tracks it.
 
 import { readdir, readFile, realpath } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { z } from "zod";
 import { UserError } from "./engine";
 import { PARENT_AGENT_LABEL } from "./labels";
@@ -130,6 +137,8 @@ export class Callers {
         "Maestro cannot tell where this shell is: the request carried no folder. Update the maestro command (bin/maestro.ts) to this plugin's version.",
       );
     }
+    // A relative folder means nothing without the process it was relative to.
+    if (!isAbsolute(cwd)) throw new UserError(`The shell's folder must be an absolute path, not ${cwd}.`);
     const agent = await this.find(agentId);
     if (!agent) throw new UserError(`No Paseo session has the id ${agentId}.`);
     if (agent.archivedAt || agent.status === "closed") {

@@ -5,8 +5,7 @@
 // the session, while its own worktree still existed: a PR from it merged after
 // the adoption. The receipt claims only that.
 //
-// Narrow on purpose. Only work an agent adopted closes this way, as only its
-// landings are the orchestrator's to read (events.ts adopterClosed): work you
+// Narrow on purpose. Only work an agent adopted closes this way: work you
 // adopted or dispatched is gated by you and stays Stuck. A branch is recorded
 // only for a separate worktree, never a shared checkout whose branch belongs to
 // whoever switched it last. A branch any PR targets as its base (dev, main) is

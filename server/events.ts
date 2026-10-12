@@ -26,7 +26,10 @@ export type Actor = "human" | "agent" | "maestro";
  * (server/loop.ts), starting queued work on its schedule. Only the first
  * counts as a look: a session or the loop starting work is not you stepping in.
  */
-export type Origin = { actor: "human" } | { actor: "agent"; by: string | null } | { actor: "maestro"; via: "loop" };
+export type Origin =
+  | { actor: "human" }
+  | { actor: "agent"; by: string | null; via?: "external" }
+  | { actor: "maestro"; via: "loop" };
 
 export const BY_HUMAN: Origin = { actor: "human" };
 
@@ -279,7 +282,7 @@ export function checkOutcome(results: readonly CheckResult[]): "passed" | "faile
 
 /**
  * Who closed finished work, and when: you (a verdict, a cancel), or Maestro on
- * its own evidence (adopterClosed, a merged branch). Null while
+ * its own evidence (a merged branch). Null while
  * the work is open. The feed's Handled for you lists Maestro's (BRO-2906).
  */
 export function closedOf(state: OrchState, events: readonly WorkEvent[]): { by: "you" | "maestro"; at: string } | null {
@@ -321,7 +324,7 @@ export function verdictOf(state: OrchState, events: readonly WorkEvent[]): strin
   if (state === "done") {
     const gate = lastOf(events, "gate");
     if (gate?.verdict === "approve") return checks ? `${checks} · you approved` : "You approved";
-    // Closed by Maestro (adopterClosed, a merged branch): its receipt says why, after the checks it passed.
+    // Closed by Maestro (a merged branch): its receipt says why, after the checks it passed.
     const closed = lastOf(events, "state");
     if (closed?.actor === "maestro" && (closed.from === "review" || closed.from === "blocked") && closed.reason) {
       return checks ? `${checks} · ${closed.reason.charAt(0).toLowerCase()}${closed.reason.slice(1)}` : closed.reason;
@@ -497,41 +500,6 @@ export function sessionGoneSince(events: readonly WorkEvent[]): boolean {
     .slice(since + 1)
     .some((e) => e.type === "note" && (e.text === ARCHIVED_NOTE || e.text === SESSION_ENDED_NOTE));
 }
-
-/**
- * Work at your gate that its orchestrator took back (BRO-2903): an agent
- * adopted the session (an orchestrator tracking an arc it started), the turn
- * that landed it was the arc's own (not an answer to a note or an unblock of
- * yours: onItsOwnArc), and the orchestrator archived the session since, with
- * you having done nothing with it. The adopter's session id ("" when
- * unrecorded), else null; never while a question, a decision of yours or checks
- * are open, never over failed checks, and never for a session that tracked
- * itself (BRO-2996: its own archive is not an orchestrator taking it back).
- * A session you adopted is yours to close. Maestro does not judge how the arc
- * ended (finished, or its session died and was replaced): the orchestrator
- * read it, and its archive is the only thing Maestro saw, so the receipt says
- * no more than that.
- */
-export function adopterClosed(events: readonly WorkEvent[]): string | null {
-  if (pendingPermission(events) || pendingDecision(events) || pendingChecks(events)) return null;
-  if (checkOutcome(latestChecks(events)) === "failed" || !archivedSince(events)) return null;
-  const bind = events.findLast((e) => e.type === "dispatched" || e.type === "adopted");
-  // Adopted by an agent: onItsOwnArc, below, is false for a session you adopted.
-  if (bind?.type !== "adopted") return null;
-  const by = "by" in bind ? bind.by : null;
-  // A session that tracked itself has no orchestrator: its own archive closes nothing (BRO-2996).
-  if (by && by === bind.agentId) return null;
-  const landed = events.findLastIndex((e) => e.type === "state" && e.to === "review");
-  if (landed < 0 || events.slice(landed + 1).some((e) => e.actor === "human")) return null;
-  const turn = events.slice(0, landed).findLastIndex((e) => e.type === "turn.ended");
-  // The turn that landed it answered a task of yours (a Send back, an Unblock): that answer is yours to read.
-  if (turn < 0 || !onItsOwnArc(events.slice(0, turn))) return null;
-  return by ?? "";
-}
-
-/** The receipt of work its orchestrator took back (adopterClosed): what Maestro saw, and nothing more. */
-export const archivedByOrchestrator = (by: string) =>
-  `Its orchestrator${by ? ` (session ${by.slice(0, 8)})` : ""} took it back and archived its session`;
 
 /**
  * Whether a turn's text hands something to you: an arc verdict (arcStatus) or
@@ -787,6 +755,7 @@ function byline(origin: Origin): string | null {
     case "maestro":
       return "by the loop";
     case "agent":
+      if (origin.via === "external") return "from outside any session, unverified";
       return origin.by ? `by session ${origin.by.slice(0, 8)}` : "by a session";
   }
 }

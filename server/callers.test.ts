@@ -78,6 +78,9 @@ describe("a caller is the live session whose folder the shell is in", () => {
     await add({ id, cwd });
     expect(await refusal(callers.verify({ agentId: null, cwd }))).toContain("PASEO_AGENT_ID is not set");
     expect(await refusal(callers.verify({ agentId: id, cwd: null }))).toContain("carried no folder");
+    // A relative folder is no folder: it is refused, though it would resolve to the session's own from its own cwd.
+    expect(await refusal(callers.verify({ agentId: id, cwd: "arc-a" }))).toContain("must be an absolute path");
+    expect(await refusal(callers.verify({ agentId: id, cwd: "." }))).toContain("must be an absolute path");
   });
 
   test("an archived or closed session is not live; one that is idle, running or in error still is", async () => {

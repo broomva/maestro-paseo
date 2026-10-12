@@ -6,7 +6,16 @@ import { join } from "node:path";
 import { call, main, Refused, Usage } from "../bin/maestro";
 import type { MaestroConfig, WorkItem } from "../shared/contracts";
 import { SESSIONS_START_NOTHING } from "../shared/text";
-import { type AgentMethod, agentMethods, answer, answers, keepServing, MAX_LINE, serveAgents } from "./agent-socket";
+import {
+  type AgentMethod,
+  agentMethods,
+  answer,
+  answers,
+  EXTERNAL_HOLD,
+  keepServing,
+  MAX_LINE,
+  serveAgents,
+} from "./agent-socket";
 import { Approvals } from "./approvals";
 import { Callers } from "./callers";
 import { defaultConfig } from "./config";
@@ -515,6 +524,8 @@ describe("who is asking (BRO-2996)", () => {
     ];
     for (const [method, input] of writes(repo)) {
       for (const [what, caller, cwd] of spoofs) {
+        // No id at all is no session: work.create alone takes it, as queue-only work from outside (its own tests).
+        if (method === "work.create" && caller === null) continue;
         const refused = await ask(method, input, caller, cwd);
         expect([what, method, refused.ok]).toEqual([what, method, false]);
       }
@@ -547,7 +558,75 @@ describe("who is asking (BRO-2996)", () => {
     ] as const) {
       expect((await ask(method, input, null)).ok).toBe(true);
     }
-    expect((await ask("work.create", { title: "Unsigned", repo }, null)).ok).toBe(false);
+    expect((await ask("work.adopt", {}, null)).ok).toBe(false);
+    expect((await ask("approval.request", { action: "gh pr merge 1" }, null)).ok).toBe(false);
+  });
+
+  describe("work filed from outside any session (an alerter, a script)", () => {
+    const external = (repo: string, extra: Record<string, unknown> = {}) => ({ title: "Alert", repo, ...extra });
+
+    test("it queues, held for you, recorded as nobody's and saying so; nothing starts", async () => {
+      const { repo, ask, events, fake, engine } = await setup();
+      const made = await ask("work.create", external(repo, { brief: "fleet-reconcile alert" }), null, null);
+      if (!made.ok) throw new Error(made.error);
+      const { item } = made.output as { item: WorkItem };
+      expect([item.state, item.group, item.gate]).toEqual(["proposed", "queued", "human"]);
+      expect(item.nextRun?.held).toBe(EXTERNAL_HOLD);
+      // In Needs you at once, as "Start it yourself", not on some later wake of the loop.
+      expect(item.flag).toMatchObject({ kind: "yours", reason: expect.stringContaining("Start it yourself") });
+      const [created] = await events(item);
+      expect(created).toMatchObject({ type: "created", actor: "agent", by: null, via: "external" });
+      expect((await engine.get(item.id)).events[0]?.detail).toBe("from outside any session, unverified");
+      expect(item.parentWork).toBeNull();
+      expect(fake.created).toEqual([]);
+      // Only you start it: your Dispatch does.
+      expect((await engine.dispatch(fake.paseo, item.id)).state).toBe("running");
+    });
+
+    test("it cannot dispatch, close itself by checks, write a done check or choose how runs start", async () => {
+      const { repo, ask, engine, fake, config } = await setup();
+      for (const extra of [{ dispatch: true }, { gate: "auto" }, { check: "true" }]) {
+        expect((await ask("work.create", external(repo, extra), null, null)).ok).toBe(false);
+      }
+      expect((await engine.list()).items).toEqual([]);
+      const made = await ask(
+        "work.create",
+        external(repo, { modeId: "acceptEdits", provider: "codex/gpt-5.5", isolation: "directory", hold: "" }),
+        null,
+        null,
+      );
+      if (!made.ok) throw new Error(made.error);
+      const { item } = made.output as { item: WorkItem };
+      const file = await readFile(join(config.workRoot, item.path, "_work.md"), "utf8");
+      for (const key of ["provider:", "isolation:", "mode:"]) expect(file).not.toContain(key);
+      // The hold is Maestro's, never the input's: asking for none still leaves it held.
+      expect(item.nextRun?.held).toBe(EXTERNAL_HOLD);
+      expect(fake.created).toEqual([]);
+    });
+
+    test("naming a session that is not verified is still refused: only naming none is outside", async () => {
+      const { repo, ask, session, me, engine } = await setup();
+      const other = await session();
+      expect((await ask("work.create", external(repo), newId(), me.cwd)).ok).toBe(false);
+      expect((await ask("work.create", external(repo), me.id, other.cwd)).ok).toBe(false);
+      expect((await engine.list()).items).toEqual([]);
+      // The verified session keeps its scoping: its own work, recorded as its own and not held.
+      const own = await ask("work.create", external(repo));
+      if (!own.ok) throw new Error(own.error);
+      expect((own.output as { item: WorkItem }).item.nextRun?.held ?? null).toBeNull();
+    });
+
+    test("outside any session it can do nothing else: no tracking, no lookup, no request", async () => {
+      const { ask } = await setup();
+      for (const [method, input] of [
+        ["work.adopt", {}],
+        ["work.for-agent", {}],
+        ["approval.request", { action: "gh pr merge 1" }],
+        ["approval.withdraw", { id: "x" }],
+      ] as const) {
+        expect([method, (await ask(method, input, null, null)).ok]).toEqual([method, false]);
+      }
+    });
   });
 
   test("a registry nobody can read refuses every writer: it fails closed", async () => {
@@ -608,6 +687,35 @@ describe("who is asking (BRO-2996)", () => {
     // A session no one started has no parent, whoever it names.
     const loner = await session();
     expect((await ok("work.adopt", {}, loner.id)).item.parentWork).toBeNull();
+  });
+
+  test("a child cannot close its own work by being tracked as its parent's and archiving itself, spoofed or not", async () => {
+    const { ok, engine, fake, session, me, events } = await setup();
+    const handback = [{ type: "assistant_message" as const, text: "Opened the PR.\n\nARC-STATUS: HANDBACK 1" }];
+    const legit = await session({ parent: me.id });
+    const spoofed = await session({ parent: me.id });
+    // The child reads its parent's id and folder from Paseo's registry (any process of the owner can) and sends them:
+    // the parent's folder is the one thing a client supplies and Maestro cannot check against a process (BRO-3086).
+    // The request is the same line the parent itself would send, so the work is tracked as the parent's.
+    for (const [who, child] of [
+      ["the parent, for a child it started", legit],
+      ["the child, claiming to be its parent", spoofed],
+    ] as const) {
+      const { item } = await ok("work.adopt", { agentId: child.id }, me.id);
+      expect(item.worker?.agentId).toBe(child.id);
+      const agent = fake.agents.get(child.id);
+      if (agent) agent.status = "idle";
+      await engine.onTurnEnded({ id: child.id }, { kind: "completed" }, handback, `turn-${child.id}`);
+      expect([who, (await engine.get(item.id)).item.state]).toEqual([who, "review"]);
+      // The child archives itself: Paseo does not say who archived, and no archive is a verdict.
+      const archived = fake.agents.get(child.id);
+      if (archived) archived.archivedAt = new Date().toISOString();
+      await engine.onArchived({ id: child.id }, fake.paseo);
+      await engine.upkeep(fake.paseo);
+      const after = await engine.get(item.id);
+      expect([who, after.item.state, after.item.closed]).toEqual([who, "review", null]);
+      expect((await events(item)).some((event) => event.type === "state" && event.to === "done")).toBe(false);
+    }
   });
 
   describe("approvals are the verified session's own", () => {
@@ -705,9 +813,12 @@ describe("the socket", () => {
       await expect(call("work.create", { title: "Elsewhere", repo }, { ...asMe, cwd: root })).rejects.toThrow(
         "Run maestro from inside that folder",
       );
-      await expect(call("work.create", { title: "Nobody", repo }, { path, caller: null })).rejects.toThrow(
-        "PASEO_AGENT_ID is not set",
-      );
+      await expect(call("work.adopt", {}, { path, caller: null })).rejects.toThrow("PASEO_AGENT_ID is not set");
+      // Naming no session is not a spoof: work.create takes it as queue-only work from outside.
+      const outside = (await call("work.create", { title: "From a script", repo }, { path, caller: null })) as {
+        item: WorkItem;
+      };
+      expect(outside.item.nextRun?.held).toBe(EXTERNAL_HOLD);
     } finally {
       await close();
     }
@@ -996,29 +1107,35 @@ describe("the CLI's exit codes", () => {
     return () => new Promise<void>((resolve) => server.close(() => resolve()));
   };
 
-  test("~ in a repo means home; an empty agent id means no session, which is refused", async () => {
+  test("~ in a repo means home; an empty agent id means no session: queued from outside, held for you", async () => {
     const { root, methods, engine, me } = await setup();
     const path = join(root, "maestro.sock");
     const close = await serveAgents({ path, methods });
     try {
-      const spawn = (agent: string) =>
-        Bun.spawn([process.execPath, cli, "new", "Home", "--repo", "~/repo"], {
+      const spawn = (agent: string, title: string) =>
+        Bun.spawn([process.execPath, cli, "new", title, "--repo", "~/repo"], {
           cwd: me.cwd,
           env: { ...process.env, MAESTRO_PASEO_SOCKET: path, HOME: root, PASEO_AGENT_ID: agent },
           stdout: "pipe",
           stderr: "pipe",
         });
-      const nobody = spawn("");
-      const [refusedCode, refused] = await Promise.all([nobody.exited, new Response(nobody.stderr).text()]);
-      expect(refusedCode).toBe(1);
-      expect(refused).toContain("PASEO_AGENT_ID is not set");
-      expect((await engine.list()).items).toEqual([]);
-      const child = spawn(me.id);
+      const outside = spawn("", "Outside");
+      const [outsideCode, outsideErr] = await Promise.all([outside.exited, new Response(outside.stderr).text()]);
+      expect([outsideCode, outsideErr]).toEqual([0, ""]);
+      // A stale or invented id is not "no session": it is refused.
+      const stale = spawn(newId(), "Stale");
+      const [staleCode, staleErr] = await Promise.all([stale.exited, new Response(stale.stderr).text()]);
+      expect(staleCode).toBe(1);
+      expect(staleErr).toContain("No Paseo session has the id");
+      const child = spawn(me.id, "Home");
       const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
       expect(stderr).toBe("");
       expect(code).toBe(0);
-      const [item] = (await engine.list()).items;
-      expect(item?.repo).toBe(join(root, "repo"));
+      const items = (await engine.list()).items;
+      expect(items.map((item) => [item.title, item.repo, item.nextRun?.held ? "held" : "open"]).sort()).toEqual([
+        ["Home", join(root, "repo"), "open"],
+        ["Outside", join(root, "repo"), "held"],
+      ]);
     } finally {
       await close();
     }

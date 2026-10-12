@@ -3769,7 +3769,7 @@ describe("what a session says of itself never closes its gated work (BRO-2996, w
     expect((await engine.get(item.id)).item.state).toBe("canceled");
   });
 
-  test("a session that tracked itself cannot close its own work by archiving itself; its orchestrator's archive does", async () => {
+  test("neither a session that tracked itself nor one an orchestrator tracked closes its work by being archived", async () => {
     const { engine, fake, repo } = await setup();
     const session = (id: string, title: string) => ({
       id,
@@ -3799,9 +3799,13 @@ describe("what a session says of itself never closes its gated work (BRO-2996, w
     expect((await engine.get(theirs.id)).item.state).toBe("review");
     await archive(engine, fake, "client", selfTracked);
     await archive(engine, fake, "client", taken);
-    // Its own archive is not an orchestrator taking the arc back; another session's adoption plus an archive is.
-    expect((await engine.get(mine.id)).item.state).toBe("review");
-    expect((await engine.get(theirs.id)).item.state).toBe("done");
+    // Paseo does not say who archived, so no archive, the orchestrator's included, is a verdict: both wait for you.
+    for (const item of [mine, theirs]) {
+      const { item: waiting, events } = await engine.get(item.id);
+      expect([waiting.state, waiting.closed]).toEqual(["review", null]);
+      expect(events.some((event) => event.text === "Done")).toBe(false);
+      expect(events.some((event) => event.type === "note" && event.text === ARCHIVED_NOTE)).toBe(true);
+    }
   });
 
   test("a handback from a session you adopted waits on you after its archive (BRO-2903 is only an orchestrator's)", async () => {
@@ -3917,7 +3921,7 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
     return { ...s, item, end };
   }
 
-  test("its orchestrator archiving a handed-back arc closes it, receipted as the orchestrator's (BRO-2903)", async () => {
+  test("its orchestrator archiving a handed-back arc leaves it at your gate, its session noted as gone (BRO-2996)", async () => {
     const { engine, fake, item, end } = await adopted();
     tick(17);
     await end("Merged #2134.\n\nARC-STATUS: HANDBACK 1");
@@ -3925,19 +3929,17 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
     const agent = fake.agents.get("arc");
     if (agent) agent.archivedAt = new Date(clock).toISOString();
     await engine.onArchived({ id: "arc" }, fake.paseo);
-    const { item: closed, events } = await engine.get(item.id);
-    expect(closed.state).toBe("done");
-    expect(events.at(-1)).toMatchObject({
-      type: "state",
-      actor: "maestro",
-      text: "Done",
-      detail: "Its orchestrator (session orchestr) took it back and archived its session",
-    });
+    const { item: waiting, events } = await engine.get(item.id);
+    expect([waiting.state, waiting.closed]).toEqual(["review", null]);
+    expect(events.at(-1)).toMatchObject({ type: "note", actor: "maestro", text: ARCHIVED_NOTE });
+    // A sweep later changes nothing: only a verdict of yours closes it.
+    tick(60);
+    await engine.upkeep(fake.paseo);
+    expect((await engine.get(item.id)).item.state).toBe("review");
   });
 
-  test("its orchestrator archiving an arc whose session died closes it with the same plain receipt (BRO-2903)", async () => {
+  test("an arc whose session died and was archived waits at your gate too, not closed (BRO-2996)", async () => {
     const { engine, fake, item, store } = await adopted();
-    // Landed before the handback rule (or recovered), its last words the error the session died on.
     await store.mutate(item.id, () => ({
       to: "review",
       events: [
@@ -3959,13 +3961,7 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
       agent.archivedAt = new Date(clock).toISOString();
     }
     await engine.onArchived({ id: "arc" }, fake.paseo);
-    const { item: after, events } = await engine.get(item.id);
-    expect(after.state).toBe("done");
-    expect(events.at(-1)).toMatchObject({
-      type: "state",
-      actor: "maestro",
-      detail: "Its orchestrator (session orchestr) took it back and archived its session",
-    });
+    expect((await engine.get(item.id)).item.state).toBe("review");
   });
 
   test("a turn that hands nothing back is the arc between steps: it stays running, and no card is left", async () => {

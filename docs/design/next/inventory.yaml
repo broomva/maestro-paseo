@@ -829,7 +829,7 @@ findings:
     ticket: BRO-2996
     about: [I-work-list, F-agent-cli]
     code: [server/engine.ts, server/events.ts]
-    note: "finishedArc is gone: a session's own ARC-STATUS DONE, CLOSED or MERGED and its archive close nothing, so its work waits at your gate (engine.test.ts 'what a session says of itself never closes its gated work'). Only an orchestrator that adopted the session and archived it closes it (adopterClosed), and a session that tracked itself has no orchestrator (events.test.ts). Residual: when an orchestrator adopted the session, the session's own archive reads as the orchestrator's; Paseo's archive hook does not say who archived."
+    note: "finishedArc and adopterClosed are gone: a session's own ARC-STATUS DONE, CLOSED or MERGED, its archive, and the archive of the orchestrator that tracked it close nothing, so its work waits at your gate with a note that its session is gone (engine.test.ts 'what a session says of itself never closes its gated work'; agent-socket.test.ts 'a child cannot close its own work ... spoofed or not'). Paseo's archive hook does not say who archived, so no archive can be an owner's verdict. Only a gate or your verdict closes gated work."
   FND-socket-caller:
     name: The socket trusts a self-reported caller; adopt any session, dispatch any queued item
     severity: major
@@ -837,7 +837,7 @@ findings:
     ticket: BRO-2996
     about: [I-work-adopt, I-work-create, P-cli]
     code: [server/agent-socket.ts, server/callers.ts, bin/maestro.ts]
-    note: "Every verb that writes checks its caller against Paseo's registry (the agent exists, is live, and the shell is in its folder) and acts only for that session, or one it started by Paseo's own record; approval.request and approval.withdraw are the verified session's own; work.dispatch left the socket. Residual: a process of yours that reads the registry and names a live session and its folder is taken for it (server/callers.ts says why peer credentials are not available to the plugin's Node)."
+    note: "Every verb that writes checks its caller against Paseo's registry plus a client-supplied folder (not peer credentials): the agent exists, is live, and the shell is in its folder. It acts only for that session, or one it started by Paseo's own record; approval.request and approval.withdraw are the verified session's own; work.dispatch left the socket; a caller naming no session may only queue work, held for the owner (origin marked external). Residual (BRO-3086): a process of yours that reads the registry and sends a live session's id and folder is taken for it; it still cannot close or start work."
   FND-agent-dispatch-policy:
     name: maestro dispatch from a session uses a weaker run policy than the loop
     severity: major
