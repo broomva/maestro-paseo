@@ -67,13 +67,22 @@ Where each hold comes from today:
 
 | Kind | Source | Key | `blocksWork` | `since` |
 |---|---|---|---|---|
-| approval | Work at your gate, paused on a permission prompt. `heldBy: permission`; the action is the prompt | `work:<id>` | yes | when it reached your gate (`WorkItem.landedAt`, its move into review) |
-| approval | Work Maestro's human gate holds. `heldBy: gate`, action "Close it as done", until BRO-2999 makes it Allow / Deny on a held action | `work:<id>` | yes | when it reached your gate |
+| approval | A permission prompt a session is paused on: work at your gate holding a prompt. `heldBy: permission`; the action is the prompt, `title: detail` | `work:<id>` | yes | when it reached your gate (`WorkItem.landedAt`, its move into review) |
+| approval | An action an agent asked leave for (`approval.request`, the agent contract C1): `gh pr merge 933 --squash @ ce73104`. `heldBy` is the layer it names (`gate`, `policy`) | `approval:<id>` | yes | when it was asked |
 | ask | A decision ask that waits on you (`isWaiting`: blocking, or recommending what cannot be undone), the workspace's and each fleet root's | `ask:<askKey>` | its `blocking` | `askedAt`, else when first seen |
 | ask, review body | An initiative whose review date passed, or a parked one whose wake date came (B2) | `review:<initiative>` | no | the due date |
 | owner_step | Queued work only you may start ("Start it yourself": the loop's `yours` flag, or a `failed` start from before A8) | `work:<id>` | yes | the flag's time |
 | owner_step | The answers batch while it waits to land or has stopped. Maestro never merges its PR | `answers:batch` | yes | when first seen waiting |
 
+- **An approval is a held action, and only that (A1, BRO-2999).** Work is never asked to be approved: gates merge it.
+  A run that finished and waits at the gate with no prompt pending is **Finished**: watched, listed by the Feed and
+  the Board under Finished, never counted here (`shared/needs-you.ts` `holdsApproval` / `isFinished`). Its card offers
+  Change course (a send back with your note, 8 s undo) and Cancel work. The decision binds to the exact action:
+  `approval.decide({ key, allow, action })` is refused when `action` is not the text the hold carries now, and is
+  dropped, with a receipt that says why, when the prompt or request changed inside the 8 s window. While a decision
+  waits, the row carries `body.pending { receipt, label, appliesAt }` so a card counts down and offers Undo by `key`.
+  Old data still reads: a `gate` event with verdict approve, and a pending approve decision in a store, apply as before;
+  only the verb is refused.
 - **Watched, never a need (A1).** Stuck work (`stuck`), a quiet run (`quiet`), a missed or failing fleet tick
   and any other failed or missed scheduled run (`schedule`), and loop drift (`loop`). So is an open ask that
   does not wait on you; Decisions lists it. So is an idea filed for an initiative: a proposal, which
@@ -177,7 +186,7 @@ writes an owner verb. The checker enforces it.
 | P-header | J1 header, M1 deck header | I-needs-list | | `NeedSummary` for the tab counts |
 | P-feed | J1, M1 | I-needs-list, I-handled-list, I-work-list, I-notices-list, I-sweep-get | I-ask-answer, I-approval-decide, I-owner-step-done, I-session-prompt, I-notice-snooze, I-work-unblock, I-undo | `NeedSummary`; `handled.list.today`; `sweep.get.unsupervisedToday`, `nextWakeAt`. Glance tiles read only these fields |
 | P-briefing | J2–J4, M2–M4 | I-work-get, I-work-files, I-needs-list | I-approval-decide, I-ask-answer, I-work-unblock, I-work-cancel, I-undo | `ApprovalBody.evidence`, `after` |
-| P-approval-card | K0–K2 (session cards) | I-needs-list | I-approval-decide, I-undo | the card reads its hold live by `key` |
+| P-approval-card | K0–K2 (session cards) | I-needs-list, I-verbs-list | I-approval-decide, I-undo | the card reads its hold live by `key`; `body.pending` or `verbs.list` gives its countdown |
 | P-decisions | J5, M5 | I-asks-workspace, I-needs-list, I-answers-status | I-ask-answer, I-fleet-ask-answer, I-conductor-decide, I-undo | **new read** `answers.status` → `{ waitingToLand, landingPr?, routed, acted, held, recent[] }` |
 | P-work | J6, J6b, M6 | I-work-list, I-work-history | I-work-cancel, I-work-stop, I-session-prompt, I-approval-decide, I-undo | `WorkRow.liveTurn`, `lifecycle`, `closedBy`; J6b decides an approval in place |
 | P-health | J7, M7 | I-fleet-get, I-fleet-tick, I-timeline-get, I-loops-get, I-lanes-get, I-needs-list, I-notices-list | I-work-adopt, I-session-prompt, I-work-stop, I-notice-snooze, I-fleet-tick-run, I-fleet-mode-set, I-loop-control, I-undo | **new read** `notices.list` → `{ key, kind: stuck \| quiet \| schedule \| loop \| initiative, title, scope, since, evidence[], closesWhen, verb }`; `fleet.tick.grid` (24 per scope); `loops.get[].recent` (last 16 runs); `lanes.get` liveness |
@@ -196,10 +205,46 @@ rule; Continue is the owner's verb, and auto-continue is A3.
 ## Verbs and undo
 
 Every owner verb returns `{ receipt: string, appliesAt: string }`, with `appliesAt` 8 s after
-the call (`UNDO_MS = 8_000`, BRO-3032). `work.undo(receipt)` before `appliesAt` cancels it. After
+the call (`UNDO_MS = 8_000`, BRO-3032). `verb.undo(receipt)` before it cancels the verb. After
 that, the receipt shows in Handled for you or Health. The toast and the session card both read
 `appliesAt`, so the two surfaces count down together. If one surface answers first, the other
 updates live by `key` (K1, M10).
+
+### The ledger (BRO-2999)
+
+`server/owner-verbs.ts` holds every verb of yours that changes state, in one append-only file (`verbs.jsonl`:
+`verb.pending`, then `verb.undone`, `verb.applied` or `verb.dropped`). The call checks what it can refuse now
+(a stop that would lose uncommitted work, a stuck-only unblock), records, and arms a timer; the plugin sweep applies
+anything overdue after a restart. When the window closes each verb **checks again** and is dropped with a
+receipt when what you decided on has moved. A newer `config.set` replaces a waiting one; any other second verb
+on the same key waits for the first (Undo it first).
+
+| Verb | Acts on (`key`) | When it applies |
+|---|---|---|
+| `approval.decide` | `work:<id>` or `approval:<id>` | answers the held prompt (`Engine.answerPermission`), or tells the requesting session; bound to the exact action |
+| `session.prompt` | `session:<agentId>` | sends the prompt to an existing session; never creates one (A8) |
+| `work.cancel` (queued, stuck) | `work:<id>` | closes the work; at your gate it is a decision with its own window |
+| `work.stop` (`discard`) | `work:<id>` | archives the session; the not-committed check is at the call and again then |
+| `work.unblock`, `work.leave-running` | `work:<id>` | as before; Resume (unblock) for work paused on a usage limit |
+| `ask.answer` | `ask:<askKey>` | writes the answer at its home; the ask stands open until then |
+| `fleet.review` | `fleet:<scope>:<keys>` | writes your verdict into the review file |
+| `config.set` | `config` | saves Settings, then rearms the loop |
+| `loop.wake` | `loop` | wakes the loop; its entry is in `loop.get.recent` once it ran |
+
+A decision at the gate (`work.verdict` revise, cancel at review) keeps its window on the work's own events
+(`gate.pending`, `gate`, `gate.dropped`); its receipt is the decision's token, and `verbs.list` lists it beside the
+ledger's, so one Undo serves them all. **`verbs.list`** → `{ pending[{receipt, verb, key, label, at, appliesAt,
+remainingMs}], recent[{…, outcome, detail, settledAt}] }` is the read behind every countdown (`client/pending-verbs.tsx`).
+The window is 8 s; `MAESTRO_PASEO_VERB_WINDOW_MS` shortens it for a test or a dogfood only.
+
+### An agent asks (C1)
+
+`approval.request({ action, ref?, heldBy?, title?, scope?, ticket?, evidence?, after? })` on the agent socket
+(`maestro approval request <action> --ref <sha>`) raises one hold: the same session asking for the same action at the
+same ref is one request, another ref is another. The request is stored in `approvals.jsonl` (`server/approvals.ts`).
+A session may withdraw its own request; **it can never decide one** (`approval.decide` is not served on the socket).
+Allow or Deny tells the session the exact action in words; whatever was allowed is run by the session or the
+conductor, never by Maestro (A8).
 
 ## Invariants (each one a test)
 

@@ -182,6 +182,7 @@ export function workNeed(item: WorkItem, pending?: ReadonlyMap<string, PendingAp
     const body: ApprovalBody = {
       action: permissionAction(permission),
       heldBy: "permission",
+      requestId: permission.requestId,
       evidence: evidenceOf(item),
       after: [
         `Maestro records your decision and shows Undo for ${UNDO_MS / 1000} s`,

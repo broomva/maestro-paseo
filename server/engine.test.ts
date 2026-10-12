@@ -10,6 +10,7 @@ import type { Verdict } from "../shared/states";
 import { NAME_RETRY_MS } from "./adopter-names";
 import { defaultConfig } from "./config";
 import {
+  APPROVE_RETIRED,
   CHECKING,
   CLIENT_WAIT_MS,
   Engine,
@@ -22,7 +23,7 @@ import {
   type Timer,
   UNDO_MS,
 } from "./engine";
-import { ARCHIVED_NOTE } from "./events";
+import { ARCHIVED_NOTE, type WorkEvent } from "./events";
 import { fakePaseo } from "./fake-paseo";
 import type { Paseo } from "./runs";
 import { EVENTS_FILE, WORK_FILE, WorkStore } from "./store";
@@ -280,6 +281,125 @@ describe("dispatch", () => {
   });
 });
 
+describe("a turn that ends on a usage limit (BRO-3073)", () => {
+  const LIMIT = "You've hit your session limit · resets 11:50pm (America/Bogota)";
+  const PAUSED_AT = "Paused: hit a usage limit; resumes after 11:50pm (America/Bogota)";
+  const said = (text: string) => [
+    { type: "user_message", text: "go" },
+    { type: "assistant_message", text },
+  ];
+
+  test("the work ends Stuck with the reason and its reset, not at your gate", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await endTurn(engine, fake, said(LIMIT) as never);
+    const { item: after } = await engine.get(item.id);
+    expect(after).toMatchObject({ state: "blocked", reason: PAUSED_AT, permission: null });
+    expect(after.state).not.toBe("review");
+    // Nothing was offered to approve: it holds nothing of yours, and its session is not archived.
+    expect(fake.archived).toEqual([]);
+  });
+
+  test("a weekly limit with a date reads as the reset it names; the message twice is still one pause", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    const weekly = "You've hit your weekly limit · resets Oct 15 at 5pm (America/Bogota)";
+    await endTurn(engine, fake, said(`${weekly}${weekly}`) as never);
+    expect((await engine.get(item.id)).item.reason).toBe(
+      "Paused: hit a usage limit; resumes after Oct 15 at 5pm (America/Bogota)",
+    );
+  });
+
+  test("a provider's rate-limit or credit error is a pause too, and any other error is not", async () => {
+    const { create, engine, fake } = await setup();
+    const limited = await create();
+    const agent = fake.agents.get("agent-1");
+    if (agent) agent.status = "idle";
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "failed", error: { message: "429 Too Many Requests: rate limit" } } as never,
+      [],
+    );
+    expect((await engine.get(limited.id)).item.reason).toBe("Paused: hit a usage limit");
+    const broken = await create();
+    const other = fake.agents.get("agent-2");
+    if (other) other.status = "idle";
+    await engine.onTurnEnded({ id: "agent-2" }, { kind: "failed", error: { message: "segfault" } } as never, []);
+    expect((await engine.get(broken.id)).item.reason).toBe("segfault");
+  });
+
+  test("a run that merely talks about a limit finishes as it always did", async () => {
+    const { create, engine, fake } = await setup();
+    const item = await create();
+    await endTurn(
+      engine,
+      fake,
+      said(
+        "Done. The retry handles when you've hit your session limit · resets later.\n## Decided\n- kept it small\n## Ask\nShip it?",
+      ) as never,
+    );
+    expect((await engine.get(item.id)).item.state).toBe("review");
+  });
+
+  test("the paused run keeps its slot of the cap, and Resume sends continue: it never closes by itself", async () => {
+    const { create, engine, fake } = await setup({ concurrencyCap: 1 });
+    const item = await create();
+    await endTurn(engine, fake, said(LIMIT) as never);
+    // Its session is alive, so it still holds the one slot: a second run is refused.
+    await expect(create()).rejects.toThrow("At capacity");
+    // Time passes and the limit resets: nothing closes it, and it stays Stuck until you Resume.
+    tick(24 * 60);
+    await engine.upkeep(fake.paseo);
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "blocked", reason: PAUSED_AT });
+    await engine.unblock(fake.paseo, item.id, "");
+    expect((await engine.get(item.id)).item.state).toBe("running");
+    expect(fake.sent.at(-1)).toMatchObject({ agentId: "agent-1" });
+    expect(fake.sent.at(-1)?.text).toContain("Continue where you stopped");
+  });
+
+  test("work already at your gate on a limit message moves to Stuck once; one that went on since stays", async () => {
+    const { create, engine, fake, store } = await setup();
+    const stale = await create();
+    const alive = await create();
+    // As an older Maestro left them: the limit turn recorded, the work landed at review.
+    const landed = async (id: string, extra: WorkEvent[] = []) => {
+      const current = await store.findById(id);
+      const agentId = id === stale.id ? "agent-1" : "agent-2";
+      await store.mutate(
+        id,
+        () => ({
+          to: "review",
+          actor: "agent",
+          events: [
+            {
+              ts: new Date(clock).toISOString(),
+              type: "turn.ended",
+              actor: "agent",
+              agentId,
+              outcome: "completed",
+              error: null,
+              summary: LIMIT,
+              turnId: null,
+            },
+            ...extra,
+          ],
+        }),
+        current.dir,
+      );
+    };
+    for (const agent of fake.agents.values()) agent.status = "idle";
+    await landed(stale.id);
+    await landed(alive.id, [
+      { ts: new Date(clock + 1000).toISOString(), type: "turn.started", actor: "agent", agentId: "agent-2" },
+    ]);
+    expect(await engine.upkeep(fake.paseo)).toBe(true);
+    expect((await engine.get(stale.id)).item).toMatchObject({ state: "blocked", reason: PAUSED_AT });
+    expect((await engine.get(alive.id)).item.state).toBe("review");
+    // Once: nothing more to move.
+    expect(await engine.upkeep(fake.paseo)).toBe(false);
+  });
+});
+
 describe("the gate", () => {
   test("a clean run under gate:human lands at Needs you, never at done", async () => {
     const { create, engine } = await setup();
@@ -337,6 +457,31 @@ describe("the gate", () => {
     expect(stuck.reason).toBe("Could not reach the session: socket closed");
   });
 
+  test("work.verdict approve is refused: work is never approved, gates merge it (A1, BRO-2999)", async () => {
+    const { create, engine, fake, store } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    expect((await engine.get(item.id)).item.state).toBe("review");
+    await expect(engine.verdict(fake.paseo, item.id, "approve", "")).rejects.toThrow(APPROVE_RETIRED);
+    await expect(engine.verdict(null, item.id, "approve", "ship it")).rejects.toThrow("Work is not approved");
+    // Nothing was recorded, and the work still waits.
+    const { item: still, events } = await engine.get(item.id);
+    expect(still).toMatchObject({ state: "review", pending: null });
+    expect(events.map((event) => event.text)).not.toContain("You approved");
+    expect((await store.findById(item.id)).events.some((event) => event.type === "gate.pending")).toBe(false);
+  });
+
+  test("a decision to approve recorded by an older Maestro still reads, and still applies", async () => {
+    const { create, engine, fake, legacyApprove, timers } = await setup();
+    const item = await create();
+    await endTurn(engine, fake);
+    const pending = await legacyApprove(item.id);
+    expect(pending).toMatchObject({ state: "review", pending: { verdict: "approve" } });
+    tickMs(UNDO_MS);
+    await timers.fire();
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "done", verdict: "You approved" });
+  });
+
   test("verdicts only apply at the gate", async () => {
     const { create, engine, fake } = await setup();
     const item = await create();
@@ -392,8 +537,8 @@ describe("the agent's side", () => {
   test("a failed turn is stuck with the error; unblocking wakes the session", async () => {
     const { create, engine, fake } = await setup();
     const item = await create();
-    await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "rate limited" } }, []);
-    expect((await engine.get(item.id)).item.reason).toBe("rate limited");
+    await engine.onTurnEnded({ id: "agent-1" }, { kind: "failed", error: { message: "the daemon crashed" } }, []);
+    expect((await engine.get(item.id)).item.reason).toBe("the daemon crashed");
     const resumed = await engine.unblock(fake.paseo, item.id, "Try again now");
     expect(resumed.state).toBe("running");
     expect(fake.sent.at(-1)?.text).toBe("Try again now");
@@ -752,11 +897,11 @@ describe("recovery acts only on what it saw", () => {
     if (agent) agent.status = "idle";
     fake.timelines.set("agent-1", [
       { type: "user_message", text: "go" },
-      { type: "error", message: "Provider rate limit" },
+      { type: "error", message: "Provider crashed" },
     ]);
     tick(5);
     await engine.upkeep(fake.paseo);
-    expect((await engine.get(item.id)).item).toMatchObject({ state: "blocked", reason: "Provider rate limit" });
+    expect((await engine.get(item.id)).item).toMatchObject({ state: "blocked", reason: "Provider crashed" });
   });
 
   test("M2: a recovered completion never closes itself, even when the checks pass", async () => {

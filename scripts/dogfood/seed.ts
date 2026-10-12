@@ -2,7 +2,7 @@
 // across two initiatives and four projects. Folders are written in the
 // on-disk contract (`_work.md` frontmatter plus `_events.jsonl`), the same
 // files the engine writes, with event histories the engine could have
-// produced. Two items are dispatched live by up.ts to the stand-in agent, so
+// produced. Three items are dispatched live by up.ts to the stand-in agent, so
 // Running and the gate's "asking" phase come from real sessions.
 
 import { randomUUID } from "node:crypto";
@@ -298,6 +298,19 @@ export function buildSeeds(now: Date, repos: SeedRepos): Seed[] {
       checks: [],
       state: "proposed",
       events: [created(15)],
+      live: "asking",
+      expect: { group: "review", phase: "asking", initiative: "platform", project: "ci" },
+    },
+    {
+      key: "asking-second",
+      folder: ["platform", "ci", "rotate-the-staging-deploy-key"],
+      title: "Rotate the staging deploy key",
+      brief: "Replace the staging deploy key and update the CI secret, so the old one stops working.",
+      repo: repos.infra,
+      gate: "human",
+      checks: [],
+      state: "proposed",
+      events: [created(14)],
       live: "asking",
       expect: { group: "review", phase: "asking", initiative: "platform", project: "ci" },
     },

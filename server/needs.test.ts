@@ -492,6 +492,35 @@ describe("needs.list's kinds (owner answer A1)", () => {
   });
 });
 
+describe("a held action while your decision waits out its window (BRO-2999)", () => {
+  const pending = (key: string) =>
+    new Map([[key, { receipt: "r1", label: "Allowed Run bash: git push", appliesAt: "2026-10-10T15:00:08.000Z" }]]);
+
+  test("the approval says so, with the receipt Undo takes; every other hold is untouched", () => {
+    const needs = needsOf(sources({ items: everyState(), approvals: [asked()], pending: pending("work:perm") }), NOW);
+    const perm = needs.rows.find((row) => row.key === "work:perm");
+    if (perm?.kind !== "approval") throw new Error("not an approval");
+    expect(perm.body.pending).toEqual({
+      receipt: "r1",
+      label: "Allowed Run bash: git push",
+      appliesAt: "2026-10-10T15:00:08.000Z",
+    });
+    const request = needs.rows.find((row) => row.key === "approval:gate");
+    if (request?.kind !== "approval") throw new Error("not an approval");
+    expect(request.body.pending).toBeUndefined();
+    // A decision on a request counts down the same way, and neither leaves needs.list until it takes effect.
+    const both = needsOf(sources({ approvals: [asked()], pending: pending("approval:gate") }), NOW);
+    expect(both.rows).toHaveLength(1);
+    expect(both.rows[0]?.kind === "approval" && both.rows[0].body.pending?.receipt).toBe("r1");
+  });
+
+  test("work that finished and waits at the gate holds nothing, however long it waits", () => {
+    const finished = fakeWork("f", "review", live, { permission: null, updatedAt: "2026-10-01T00:00:00.000Z" });
+    expect(workNeed(finished)).toBeNull();
+    expect(needsOf(sources({ items: [finished] }), NOW).summary.total).toBe(0);
+  });
+});
+
 describe("deck order and the summary", () => {
   const rowsOfEveryKind = () =>
     needsOf(

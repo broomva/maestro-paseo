@@ -35,7 +35,7 @@ const USAGE = `bun scripts/dogfood/up.ts --plugin <dir> [--port N] [--sweep-seco
   --plugin <dir>        The Maestro checkout to install (any worktree with node_modules)
   --port N              Daemon port (default: a free one; never 6767 or 6799)
   --sweep-seconds N     The plugin sweep's period in the sandbox (default 30), for reads-pure.ts
-  --no-live             Skip the two live dispatches to the stand-in agent
+  --no-live             Skip the three live dispatches to the stand-in agent
   --keep-on-failure     Leave the sandbox up when a step fails, to inspect it
 `;
 

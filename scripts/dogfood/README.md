@@ -22,24 +22,24 @@ Requirements: the Paseo desktop app (its `paseo` CLI and bundled web client), Bu
 
 ## What is seeded
 
-Two initiatives (`checkout-v2`, `platform`), four projects, eleven items:
+Two initiatives (`checkout-v2`, `platform`), four projects, twelve items:
 
 | Shows as | Item | How it got there |
 | --- | --- | --- |
-| Needs you | Retry failed card charges with backoff | Seeded history: a look with ran, three decisions, an ask, and a passed check |
-| Needs you (Question) | Publish the build cache to the shared bucket | Live: dispatched to the stand-in agent, which asks to run `git push` |
+| Finished | Retry failed card charges with backoff | Seeded history: a look with ran, three decisions, an ask, and a passed check. Nothing is held, so it is watched, never counted as needing you (A1) |
+| Needs you (Question) | Publish the build cache to the shared bucket, Rotate the staging deploy key | Live: dispatched to the stand-in agent, which asks to run `git push`. Allow or Deny each (approval.decide, 8 s undo) |
 | Running | Add request tracing to the API gateway | Live: dispatched to the stand-in agent, which holds its turn open |
 | Stuck | Migrate webhooks to the v3 signing scheme | Seeded history: the turn failed with a reason |
 | Stuck | Alert on p95 latency regressions | Seeded history: gate auto, one of two checks failed |
 | Queued | Persist the cart across devices, Cache the Rust build in CI | Seeded folders |
 | Queued | Write the Q4 reliability review | Created over `work.create`, as the New work form does |
-| Done | Show tax lines in the order summary, Pin the Node version in CI | Seeded history: you approved; checks decided |
+| Done | Show tax lines in the order summary, Pin the Node version in CI | Seeded history: you approved (a decision recorded before approve was retired); checks decided |
 | Done (canceled) | Try a one-page checkout experiment | Seeded history |
 
 Seeded history is written as `_work.md` plus `_events.jsonl`, the files the engine itself writes. `seed.test.ts`
 reads them back through `server/store.ts` and `server/wire.ts` and checks every state change against the state
 machine, so a change to the on-disk contract fails the tests before it produces a misleading screenshot. Seeded
-items have no live session behind them; the two live items are real sessions of the stand-in agent.
+items have no live session behind them; the three live items are real sessions of the stand-in agent.
 
 ## Isolation
 

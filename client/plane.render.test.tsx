@@ -365,6 +365,16 @@ const loopOff = () => ({
 });
 let loopState = loopOff();
 /** What loop.wake answers next. */
+/** What waits in the ledger (verbs.list), as approval.decide leaves it for 8 s. */
+let pendingVerbs: Array<{
+  receipt: string;
+  verb: string;
+  key: string;
+  label: string;
+  at: string;
+  appliesAt: string;
+  remainingMs: number;
+}> = [];
 let nextWake: () => WakeEntry = () => wakeEntry("w-now", 0, { cause: "manual" });
 const settingsFixture = (): MaestroConfig => ({
   workRoot: "/work",
@@ -1030,7 +1040,26 @@ const invoke = async (method: string, input: unknown) => {
     loopState = { ...loopState, recent: [nextWake(), ...loopState.recent] };
     return { receipt: "r-wake", appliesAt: new Date(Date.now() + 8_000).toISOString() };
   }
-  if (method === "verbs.list") return { pending: [], recent: [] };
+  if (method === "verbs.list") return { pending: pendingVerbs, recent: [] };
+  if (method === "approval.decide") {
+    const { key, allow, action } = input as { key: string; allow: boolean; action: string };
+    const entry = {
+      receipt: `r-${pendingVerbs.length + 1}`,
+      verb: "approval.decide",
+      key,
+      label: `${allow ? "Allowed" : "Denied"} ${action}`,
+      at: new Date().toISOString(),
+      appliesAt: new Date(Date.now() + 8_000).toISOString(),
+      remainingMs: 8_000,
+    };
+    pendingVerbs = [entry, ...pendingVerbs];
+    return { receipt: entry.receipt, appliesAt: entry.appliesAt };
+  }
+  if (method === "verb.undo") {
+    const { receipt } = input as { receipt: string };
+    pendingVerbs = pendingVerbs.filter((entry) => entry.receipt !== receipt);
+    return { undone: true };
+  }
   if (method === "config.get") return settings;
   if (method === "config.set") return input;
   if (method === "work.list") return { root: "/work", items, warnings: [], scoreboard: board() };
@@ -1371,6 +1400,7 @@ afterEach(async () => {
   const failures = await unmountAll();
   takeIntent();
   items = fixture();
+  pendingVerbs = [];
   loopState = loopOff();
   nextWake = () => wakeEntry("w-now", 0, { cause: "manual" });
   settings = settingsFixture();
@@ -1797,7 +1827,13 @@ describe("a finished arc at your gate (BRO-2856)", () => {
       layout: { compact: false },
     } as unknown as ComponentProps<typeof Card>;
     const view = await mount(<Card {...props} />);
-    for (let tries = 0; tries < 100 && !view.text().includes("Approve"); tries += 1) await settle(20);
+    for (
+      let tries = 0;
+      tries < 100 && !view.text().includes("Change course") && !view.text().includes("The agent is asking");
+      tries += 1
+    ) {
+      await settle(20);
+    }
     return view;
   }
 
@@ -4834,5 +4870,96 @@ describe("Loops", () => {
     await view.press(view.byLabel("Open Loops, kg-lint"));
     await until(view, "Session & watchers");
     expect(view.text()).toContain("Session & watchers");
+  });
+});
+
+describe("Allow and Deny, and Change course: approval.decide and its undo (BRO-2999)", () => {
+  const permission = { requestId: "r1", title: "Run a command", detail: "git push origin main" };
+  const ACTION = "Run a command: git push origin main";
+  const asking = (id: string) =>
+    work(id, "review", {
+      worker: worker(id, `maestro/${id}-1`),
+      phase: "asking",
+      landing: 3,
+      permission,
+      look: { ran: "4m unsupervised · 1 turn · paused on a question", decided: [], ask: ACTION },
+    });
+  const detail = (id: string) => (
+    <WorkDetail id={id} theme={theme} compact={false} navigation={undefined} open={requestIntent} />
+  );
+  const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
+  const card = async (id: string) => {
+    const Card = createGateCard(() => undefined);
+    const props = {
+      item: { data: { workId: id, landing: 3, agentId: `ag-${id}` } },
+      theme,
+      layout: { compact: false },
+    } as unknown as ComponentProps<typeof Card>;
+    const view = await mount(<Card {...props} />);
+    for (let tries = 0; tries < 100 && !view.byLabel("Allow"); tries += 1) await settle(20);
+    return view;
+  };
+
+  for (const [where, open] of [
+    ["the work's detail", async () => mount(detail("k"))],
+    ["the card in the session", async () => card("k")],
+  ] as const) {
+    test(`Allow in ${where} is approval.decide on the exact action, with a countdown and an Undo`, async () => {
+      items = [...fixture(), asking("k")];
+      const view = await open();
+      for (let tries = 0; tries < 100 && !view.byLabel("Allow"); tries += 1) await settle(20);
+      await view.press(view.byLabel("Allow"));
+      expect(sent("approval.decide")).toEqual([{ key: "work:k", allow: true, action: ACTION }]);
+      for (let tries = 0; tries < 100 && !view.text().includes("takes effect in"); tries += 1) await settle(20);
+      expect(view.text()).toContain(`Allowed ${ACTION} · takes effect in`);
+      // One decision at a time: both verbs wait while it does, so a second press sends nothing.
+      await view.press(view.byLabel("Deny"));
+      await view.press(view.byLabel("Allow"));
+      expect(sent("approval.decide")).toHaveLength(1);
+      await view.press(view.byLabel(`Undo: Allowed ${ACTION}`));
+      expect(sent("verb.undo")).toEqual([{ receipt: "r-1" }]);
+      for (let tries = 0; tries < 100 && view.text().includes("takes effect in"); tries += 1) await settle(20);
+      expect(view.text()).not.toContain("takes effect in");
+    });
+
+    test(`Deny in ${where} is approval.decide with allow false`, async () => {
+      items = [...fixture(), asking("k")];
+      const view = await open();
+      for (let tries = 0; tries < 100 && !view.byLabel("Deny"); tries += 1) await settle(20);
+      await view.press(view.byLabel("Deny"));
+      expect(sent("approval.decide")).toEqual([{ key: "work:k", allow: false, action: ACTION }]);
+    });
+  }
+
+  test("finished work offers Change course and Cancel work, and never Approve", async () => {
+    items = [...fixture(), work("fin", "review", { permission: null, worker: worker("fin", "maestro/fin-1"), look })];
+    const view = await mount(detail("fin"));
+    for (let tries = 0; tries < 100 && !view.byLabel("Change course"); tries += 1) await settle(20);
+    expect(view.text()).toContain("Finished");
+    expect(view.byLabel("Change course")).not.toBeNull();
+    expect(view.byLabel("Cancel work")).not.toBeNull();
+    expect(view.byLabel("Approve")).toBeNull();
+    expect(view.byLabel("Allow")).toBeNull();
+    await view.press(view.byLabel("Change course"));
+    await view.type(view.byLabel("What should change"), "Use the cache.");
+    await view.press(view.byLabel("Change course"));
+    expect(sent("work.verdict")).toEqual([{ id: "fin", verdict: "revise", note: "Use the cache." }]);
+  });
+
+  test("the session card for finished work says Finished, offers Change course, and no Approve", async () => {
+    items = [
+      ...fixture(),
+      work("fin", "review", { permission: null, worker: worker("fin", "maestro/fin-1"), look, landing: 3 }),
+    ];
+    const Card = createGateCard(() => undefined);
+    const props = {
+      item: { data: { workId: "fin", landing: 3, agentId: "ag-fin" } },
+      theme,
+      layout: { compact: false },
+    } as unknown as ComponentProps<typeof Card>;
+    const view = await mount(<Card {...props} />);
+    for (let tries = 0; tries < 100 && !view.byLabel("Change course"); tries += 1) await settle(20);
+    expect(view.text()).toContain("Finished");
+    expect(view.byLabel("Approve")).toBeNull();
   });
 });

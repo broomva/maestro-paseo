@@ -38,7 +38,7 @@ features:
     answers: [A1, A2]
     pages: [P-feed, P-approval-card, P-briefing, P-phone]
     interfaces: [I-approval-request, I-needs-list, I-approval-decide, I-undo, I-approval-apply]
-    code: [client/gate-card.tsx]
+    code: [client/gate-card.tsx, client/detail.tsx, server/approvals.ts, server/verb-specs.ts]
   F-need-owner-step:
     name: Owner step — something only the owner can do (a login, a key, a sudo); Done or Not now
     status: new
@@ -54,7 +54,8 @@ features:
     kind: watch
     pages: [P-feed]
     interfaces: [I-finished, I-handled-list, I-session-prompt]
-    code: [client/arc-report.tsx]
+    code: [client/arc-report.tsx, client/gate-card.tsx, client/detail.tsx, shared/needs-you.ts]
+    note: "BRO-2999: work that finished and waits at the gate (review with no permission prompt) is Finished, watched and never counted as needing you. Its card offers Change course (a send back with your note, 8 s undo) and Cancel work; there is no Approve."
   F-health-notices:
     name: Health — a fact with evidence that closes itself; Unblock, Snooze, Open log
     status: change
@@ -102,8 +103,9 @@ features:
     status: change
     kind: control
     pages: [P-briefing, P-approval-card, P-feed, P-decisions, P-work, P-health, P-initiatives, P-phone, P-settings-sweep-fleet, P-settings-loops-notices-approvals, P-settings-lanes, P-presence]
-    interfaces: [I-undo]
-    code: [shared/undo.ts, server/engine.ts]
+    interfaces: [I-undo, I-verbs-list]
+    code: [shared/undo.ts, shared/verbs.ts, server/owner-verbs.ts, server/verb-specs.ts, server/engine.ts, client/pending-verbs.tsx]
+    note: "BRO-2999: one ledger (server/owner-verbs.ts) holds every owner verb that changes state: approval.decide, session.prompt, work.cancel (queued or stuck), work.stop, work.unblock, work.leave-running, ask.answer, fleet.review, config.set, loop.wake. Each answers { receipt, appliesAt }, applies 8 s later, is checked again when it applies, leaves a receipt, and verb.undo takes any of them back. A decision at the gate (revise, cancel at review) keeps its own window on the work's events and is listed beside them."
 
   # Doing.
   F-new-work:
@@ -244,10 +246,11 @@ features:
   F-approve-work:
     name: Approve on work (gate card, detail pane)
     status: retire
-    replaced_by: []
+    replaced_by: [F-need-approval, F-finished]
     pages: [P-approval-card]
     interfaces: [I-work-verdict]
-    code: [client/gate-card.tsx, client/detail.tsx]
+    code: [client/gate-card.tsx, client/detail.tsx, server/engine.ts]
+    note: "Retired in BRO-2999: work.verdict approve is refused (APPROVE_RETIRED). A gate card and the detail pane hold a held action (Allow, Deny) or a finished run (Change course); decisions recorded before still read and apply."
   F-plugin-dispatch:
     name: The plugin loop starts queued work
     status: retire
@@ -300,7 +303,7 @@ pages:
     frame: w9zol
     png: k1-session-cards.png
     components: [C-hold-card, C-kbd, C-button]
-    reads: [I-needs-list]
+    reads: [I-needs-list, I-verbs-list]
     writes: [I-approval-decide, I-undo]
     code: [client/gate-card.tsx]
   P-decisions:
@@ -579,15 +582,18 @@ interfaces:
     handler: plugin
     callers: [ui]
     gate: owner
-    stores: [S-ask-receipts]
+    stores: [S-verbs, S-approvals, S-work]
+    code: [server/verb-specs.ts, server/owner-verbs.ts, server/engine.ts]
+    note: "Binds to the exact action text (a permission prompt's title and detail, or a request's action @ ref). Recorded now, applied 8 s later: the engine answers the held prompt (Engine.answerPermission) or tells the requesting session. A prompt that changed in the window drops the decision, with its reason in the receipt."
   I-owner-step-done: { name: "owner_step.done", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-ask-receipts] }
-  I-undo: { name: "work.undo (and every verb's undo)", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
-  I-verb-apply: { name: "apply a pending owner verb once its 8 s undo window passes (the owner already chose)", status: change, handler: plugin, callers: [plugin], stores: [S-work], code: [server/engine.ts] }
-  I-work-unblock: { name: "work.unblock", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
-  I-work-cancel: { name: "work.cancel", status: keep, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
-  I-work-stop: { name: "work.stop", status: keep, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
+  I-undo: { name: "verb.undo (any ledger verb or gate decision, by receipt) and work.undo", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-work, S-verbs], code: [server/engine.ts, server/owner-verbs.ts, index.server.ts] }
+  I-verbs-list: { name: "verbs.list (what waits to take effect, and what settled in the last day)", status: new, handler: plugin, callers: [ui], stores: [S-verbs, S-work], code: [server/owner-verbs.ts, index.server.ts] }
+  I-verb-apply: { name: "apply a pending owner verb once its 8 s undo window passes (the owner already chose)", status: change, handler: plugin, callers: [plugin], stores: [S-work, S-verbs], code: [server/engine.ts, server/owner-verbs.ts] }
+  I-work-unblock: { name: "work.unblock (8 s undo; Resume for work paused on a usage limit)", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-work, S-verbs], code: [server/engine.ts, server/verb-specs.ts] }
+  I-work-cancel: { name: "work.cancel (8 s undo; at your gate it is a decision with its own window)", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-work, S-verbs], code: [server/engine.ts, server/verb-specs.ts] }
+  I-work-stop: { name: "work.stop (8 s undo; the not-committed check is at the call and again when it applies)", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-work, S-verbs], code: [server/engine.ts, server/verb-specs.ts] }
   I-notice-snooze: { name: "notice.snooze", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-notices-state] }
-  I-config-set: { name: "config.set", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-config], code: [server/config.ts] }
+  I-config-set: { name: "config.set (saved 8 s later; a newer save replaces a waiting one)", status: change, handler: plugin, callers: [ui], gate: owner, stores: [S-config, S-verbs], code: [server/config.ts, index.server.ts] }
   I-sweep-wake: { name: "sweep.wake (today loop.wake)", status: change, handler: plugin, callers: [ui, plugin], stores: [S-wake-log, S-work], code: [server/loop.ts] }
   I-presence-set: { name: "presence.set", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-presence] }
   I-session-prompt:
@@ -595,7 +601,8 @@ interfaces:
     status: change
     handler: plugin
     callers: [ui, conductor]
-    code: [server/engine.ts]
+    stores: [S-verbs]
+    code: [server/verb-specs.ts, server/owner-verbs.ts]
     note: "Prompts an existing session; never creates one. A8 forbids creating work by rule; Continue is the owner's verb, auto-continue is A3."
   I-initiatives-file: { name: "initiatives.file", status: keep, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/initiatives.ts] }
 
@@ -605,7 +612,7 @@ interfaces:
 
   # The agent contract (C1): typed reaches, written through the ledger library.
   I-ask-raise: { name: "ask.raise", status: new, handler: bstack, callers: [worker, lane, bstack], stores: [S-asks-ledgers] }
-  I-approval-request: { name: "approval.request", status: new, handler: bstack, callers: [worker, lane], stores: [S-asks-ledgers] }
+  I-approval-request: { name: "approval.request (and approval.withdraw): a session asks leave for one exact action; only the owner decides", status: new, handler: plugin, callers: [worker, lane], stores: [S-approvals], code: [server/approvals.ts, server/agent-socket.ts, bin/maestro.ts] }
   I-owner-step-raise: { name: "owner_step.raise", status: new, handler: bstack, callers: [worker, lane], stores: [S-asks-ledgers] }
   I-finished: { name: "finished", status: new, handler: bstack, callers: [worker], stores: [S-asks-ledgers] }
   I-proposal-file: { name: "proposal.file", status: new, handler: bstack, callers: [worker, lane, bstack], stores: [S-asks-ledgers] }
@@ -616,7 +623,7 @@ interfaces:
   I-notice-resolve: { name: "notice.resolve(key)", status: new, handler: plugin, callers: [plugin, lane, bstack], stores: [S-notices-state] }
 
   # The conductor's hands (D1).
-  I-approval-apply: { name: "approval.apply (runs the allowed exact action)", status: new, handler: plugin, callers: [conductor] }
+  I-approval-apply: { name: "approval.apply (runs the allowed exact action)", status: new, handler: plugin, callers: [conductor], note: "Not built: BRO-2999 tells the requesting session its answer (approval.decide); a session or the conductor runs what was allowed." }
   I-answer-route: { name: "answer.route (to the asker, a sibling, the driver; else a lane.assign candidate for the conductor)", status: change, handler: plugin, callers: [conductor], stores: [S-ask-receipts], code: [server/answer-routes.ts] }
   I-conductor-decide: { name: "conductor.decide and conductor.undo (file an answer that waits for the conductor as queued work, or dismiss it; 8 s undo)", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-ask-receipts, S-work], code: [server/answer-routes.ts, client/conductor-answers.tsx] }
   I-answers-land: { name: "answers.land (one PR for maestro/answers)", status: change, handler: plugin, callers: [conductor], stores: [S-answers-branch], code: [server/answers-landing.ts] }
@@ -644,7 +651,7 @@ interfaces:
 
   # Retired.
   I-work-dispatch: { name: "work.dispatch (the plugin starts a session)", status: retire, handler: plugin, callers: [ui, worker, lane], launches: true, stores: [S-work], code: [server/engine.ts, server/runs.ts] }
-  I-work-verdict: { name: "work.verdict approve, revise, block", status: retire, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
+  I-work-verdict: { name: "work.verdict approve (refused), revise (Change course), block (Cancel work)", status: retire, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
   I-work-attention: { name: "work.attention (the watched notices and the pills' sessions; no count reads it since BRO-3001)", status: retire, handler: plugin, callers: [ui], code: [server/attention.ts] }
 
 stores:
@@ -677,6 +684,8 @@ stores:
     modules: [server/control-asks.ts, bstack ask_ledger.py]
     exception: Maestro writes answers itself instead of through the ledger library, until BRO-2997
     code: [server/control-asks.ts]
+  S-verbs: { name: "~/.local/state/maestro-paseo/verbs.jsonl (the owner-verb ledger: pending, undone, applied, dropped)", status: new, owner: plugin, modules: [server/owner-verbs.ts], code: [server/owner-verbs.ts] }
+  S-approvals: { name: "~/.local/state/maestro-paseo/approvals.jsonl (approval.request and what became of each)", status: new, owner: plugin, modules: [server/approvals.ts], code: [server/approvals.ts] }
   S-notices-state: { name: "notice state (raised, snoozed, resolved by key)", status: new, owner: plugin }
   S-presence: { name: "owner presence (present, away, off)", status: new, owner: plugin }
   S-inbox: { name: "~/.config/maestro-paseo/inbox.json", status: change, owner: plugin, modules: [server/inbox.ts], code: [server/inbox.ts] }
@@ -742,10 +751,10 @@ loops:
   L-undo-window:
     name: The 8 s undo timers that apply a pending owner verb (B4)
     status: keep
-    scheduler: plugin timer, 8 s after the verb
+    scheduler: plugin timer, 8 s after the verb (the ledger's, and the gate decision's own)
     owner: plugin
     calls: [I-verb-apply]
-    code: [shared/undo.ts, server/engine.ts]
+    code: [shared/undo.ts, server/engine.ts, server/owner-verbs.ts]
   L-paseo-events:
     name: Paseo lifecycle hooks
     status: keep
@@ -844,24 +853,35 @@ findings:
   FND-permission-bypass:
     name: Allow and Deny call Paseo straight from the client in two copied handlers; the engine learns late
     severity: major
-    state: open
+    state: fixed
     ticket: BRO-2999
     about: [I-approval-decide, P-approval-card]
-    code: [client/detail.tsx:318, client/gate-card.tsx:256]
+    code: [client/no-direct-permission.test.ts, server/engine.ts, server/verb-specs.ts]
+    note: "Allow and Deny are approval.decide: recorded, applied 8 s later by the engine (Engine.answerPermission), receipted. client/no-direct-permission.test.ts fails on any client file that answers a prompt on Paseo itself."
   FND-approve-on-work:
     name: The gate card and the detail pane still offer Approve on work
     severity: major
-    state: open
+    state: fixed
     ticket: BRO-2999
     about: [F-approve-work, I-work-verdict, P-approval-card]
-    code: [client/gate-card.tsx:187, server/engine.ts:954]
+    code: [server/engine.ts, client/gate-card.tsx, client/detail.tsx]
+    note: "work.verdict approve throws APPROVE_RETIRED; the cards offer Change course and Cancel work. Gap: with approve gone nothing closes plain human-gate work whose branch merged (BRO-3076)."
   FND-no-undo:
     name: Stop, cancel, unblock, answer, review and config.set apply at once, with no undo
     severity: major
-    state: open
+    state: fixed
     ticket: BRO-2999
     about: [I-work-stop, I-work-cancel, I-ask-answer, I-config-set, F-undo]
-    code: [server/engine.ts:1474, index.server.ts]
+    code: [server/owner-verbs.ts, server/verb-specs.ts, index.server.ts]
+    note: "Every verb listed in F-undo waits 8 s in the ledger with a receipt and an Undo; server/work-verbs.test.ts, server/owner-verbs.test.ts and index.server.test.ts prove each window."
+  FND-usage-limit-lands-finished:
+    name: A turn that ended on a usage limit landed at the gate as finished; "Close it as done" would have closed unfinished work (6 of 10 live approvals, 2026-10-10)
+    severity: major
+    state: fixed
+    ticket: BRO-3073
+    about: [I-work-unblock, F-health-notices]
+    code: [server/usage-limit.ts, server/engine.ts, shared/paused.ts, server/usage-limit.test.ts]
+    note: "Such a turn (the message, or a provider's rate-limit or credit error) records the work Stuck, 'Paused: hit a usage limit; resumes after <reset>', its session alive and holding its slot; its card offers Resume (Unblock). The sweep moves work already at the gate on one, once. Nothing closes it by itself."
   FND-multi-writer-stores:
     name: asks.jsonl, the answers branch, the ask ledgers and the fleet's ledgers each have two writer modules
     severity: major
@@ -917,9 +937,10 @@ findings:
     name: A push needs an echo session from a fake provider; waits on Paseo's notify API (A5)
     severity: minor
     state: open
-    ticket: BRO-2999
+    ticket: BRO-3077
     about: [I-inbox-push, F-phone-push, P-phone]
     code: [server/inbox.ts:98, server/inbox.ts:398]
+    note: "BRO-2999 keeps the echo session (A5 is pending upstream). Which landings push, now that Finished work is not a need, is BRO-3077."
   FND-dead-code:
     name: FeedView never renders; WorkspaceDecisions and NewWorkPane have no callers; 20+ test-only exports
     severity: minor

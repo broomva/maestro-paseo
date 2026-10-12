@@ -85,6 +85,8 @@ export const decideApproval = defineRpc({
     key: z.string().min(1),
     allow: z.boolean(),
     action: z.string().min(1),
+    /** For a permission prompt: its request id (`body.requestId`). When given, a different prompt is refused. */
+    requestId: z.string().min(1).optional(),
     /** Why, for a Deny: it reaches the session. */
     note: z.string().optional(),
   }),

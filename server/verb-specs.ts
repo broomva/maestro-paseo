@@ -79,12 +79,18 @@ export function registerApprovalVerbs({ verbs, engine, approvals }: VerbDeps): v
 
 /** approval.decide: Allow or Deny the exact action `action` on the hold `key`, after the undo window. */
 export function decideApprovalHandler({ verbs, engine, approvals }: VerbDeps) {
-  return async (input: { key: string; allow: boolean; action: string; note?: string }): Promise<VerbReceipt> => {
+  return async (input: {
+    key: string;
+    allow: boolean;
+    action: string;
+    requestId?: string;
+    note?: string;
+  }): Promise<VerbReceipt> => {
     const hold = holdOf(input.key);
     const note = input.note?.trim() ?? "";
     const word = input.allow ? "Allowed" : "Denied";
     if (hold?.kind === "work") {
-      const { requestId } = await engine.permissionHold(hold.id, input.action);
+      const { requestId } = await engine.permissionHold(hold.id, input.action, input.requestId);
       return verbs.schedule<ApprovalArgs>("approval.decide", {
         key: input.key,
         label: `${word} ${input.action}`,

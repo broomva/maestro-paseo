@@ -181,6 +181,17 @@ describe("approval.decide on a permission prompt", () => {
     expect((await verbs.list()).pending).toEqual([]);
   });
 
+  test("a decision that names the prompt's request id is refused when another prompt waits", async () => {
+    const { engine, item, ask, decide } = await setup();
+    await ask("p1", "git push");
+    const held = (await engine.get(item.id)).item;
+    const action = permissionAction(held.permission as { title: string; detail: string | null });
+    await expect(decide({ key: workKey(item.id), allow: true, action, requestId: "other" })).rejects.toThrow(
+      "asks something else",
+    );
+    await decide({ key: workKey(item.id), allow: true, action, requestId: "p1" });
+  });
+
   test("a prompt the session no longer holds is dropped, and the work's record catches up", async () => {
     const { engine, fake, verbs, timers, item, ask, decide } = await setup();
     await ask("p1", "git push");

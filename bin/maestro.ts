@@ -27,14 +27,20 @@ const USAGE = `maestro: operate Maestro from a Paseo session
   maestro track [--title <text>] [--ticket <id>]  Track this session as work (or --agent <id>)
   maestro mine                        The work this session is running (or --agent <id>)
   maestro config                      Where work lives and how runs start
+  maestro approval request <action>   Ask leave for one exact action a policy layer held
+      --ref <sha>                     What it is bound to: a head SHA, a version
+      --held-by <layer>               gate, policy, ... (default: policy)
+      --title <text>  --ticket <id>   How the card reads
+  maestro approval withdraw <id>      Take your request back
 
   --json                              Print the raw answer
 
 Exit codes: 0 done · 1 Maestro refused · 2 Maestro is not listening, or bad usage ·
 3 no clear answer (the request may still have been applied: check before retrying).
 
-Approve, send back, unblock and cancel are yours, in Maestro. A session cannot
-pass its own gate, restart stuck work, or write a done check.`;
+Allow, Deny, change of course, unblock and cancel are yours, in Maestro: work is never
+approved, gates merge it. A session can only ask leave for an action (approval request);
+it cannot decide it, pass its own gate, restart stuck work, or write a done check.`;
 
 /** The command line does not say what to do. */
 export class Usage extends Error {}
@@ -155,7 +161,14 @@ function renderDetail(output: { item: WorkItem; brief: string; events: WorkEvent
     ...field("question", item.permission ? `${item.permission.title} ${item.permission.detail ?? ""}`.trim() : null),
     ...item.checks.map((check) => `  check    ${check.name}: ${check.run}`),
   ];
-  if (item.group === "review") lines.push("", "Waiting at your gate: approve or send back in Maestro.");
+  if (item.group === "review") {
+    lines.push(
+      "",
+      item.permission
+        ? "Waiting on a question: Allow or Deny it in Maestro."
+        : "Finished: gates merge it; change its course in Maestro if it is not right.",
+    );
+  }
   if (output.brief.trim()) lines.push("", output.brief.trim());
   if (output.events.length > 0) {
     lines.push("", "Receipts, newest first");
@@ -194,6 +207,8 @@ function parse(argv: string[]) {
         initiative: { type: "string", default: "" },
         dispatch: { type: "boolean", default: false },
         title: { type: "string", default: "" },
+        ref: { type: "string" },
+        "held-by": { type: "string" },
         ticket: { type: "string" },
         agent: { type: "string" },
         help: { type: "boolean", short: "h", default: false },
@@ -259,6 +274,35 @@ export async function main(argv: string[], print: (text: string) => void = conso
     case "config":
       show(await call("config.get"), renderConfig);
       return 0;
+    case "approval": {
+      const [verb, ...words] = rest;
+      if (verb === "request") {
+        const action = words.join(" ").trim();
+        if (!action) throw new Usage("Usage: maestro approval request <action> [--ref <sha>] [--held-by <layer>]");
+        const input = {
+          action,
+          ref: values.ref,
+          heldBy: values["held-by"],
+          title: values.title || undefined,
+          ticket: values.ticket,
+        };
+        show(
+          await call("approval.request", input),
+          (output: { id: string }) =>
+            `Asked: ${action}${values.ref ? ` @ ${values.ref}` : ""}\n  ${output.id}  waiting in Needs you; the answer comes to this session.`,
+        );
+        return 0;
+      }
+      if (verb === "withdraw") {
+        const id = words[0];
+        if (!id) throw new Usage("Usage: maestro approval withdraw <id>");
+        show(await call("approval.withdraw", { id }), (output: { withdrawn: boolean }) =>
+          output.withdrawn ? "Withdrawn." : "Nothing was waiting under that id.",
+        );
+        return 0;
+      }
+      throw new Usage("Usage: maestro approval request <action> | withdraw <id>");
+    }
     default:
       print(USAGE);
       return 2;

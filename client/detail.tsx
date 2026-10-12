@@ -10,6 +10,7 @@ import { ActivityIndicator, Text, View } from "react-native";
 import { type CheckResult, NOT_STOPPED, type Pending, type WorkEventWire, type WorkItem } from "../shared/contracts";
 import { fleetDetail, parseFleetBrief } from "../shared/fleet-item";
 import { permissionAction, workKey } from "../shared/needs";
+import { isPaused } from "../shared/paused";
 import { nextRunCopy } from "../shared/run";
 import { PLAIN_VOICE } from "../shared/states";
 import { ArcReport } from "./arc-report";
@@ -476,7 +477,7 @@ function Verbs({
             theme={theme}
             variant="primary"
             icon="Play"
-            label="Unblock"
+            label={isPaused(item.reason) ? "Resume" : "Unblock"}
             compact={compact}
             busy={verbs.unblock.isPending}
             onPress={() => verbs.unblock.mutate({ id: item.id, note }, { onSuccess: () => setNote(""), onError: fail })}

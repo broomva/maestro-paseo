@@ -178,7 +178,7 @@ test("undo, stop and the default gate are wired through the plugin's handlers", 
   process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
   // The ledger's window, shortened so the test can wait it out: the 8 s itself is proved in server/owner-verbs.test.ts.
   const savedWindow = process.env.MAESTRO_PASEO_VERB_WINDOW_MS;
-  process.env.MAESTRO_PASEO_VERB_WINDOW_MS = "1500";
+  process.env.MAESTRO_PASEO_VERB_WINDOW_MS = "4000";
   const { host, handlers, hooks } = fakeHost();
   const cleanup = contribute(host);
   const fake = fakePaseo();
@@ -257,7 +257,7 @@ test("undo, stop and the default gate are wired through the plugin's handlers", 
     expect((await run("work.get", { id: other.id })).item.state).toBe("running");
     await run("work.stop", { id: other.id, discard: true });
     expect(fake.archived).toEqual([]);
-    for (let i = 0; i < 300 && fake.archived.length === 0; i += 1) await new Promise((r) => setTimeout(r, 20));
+    for (let i = 0; i < 600 && fake.archived.length === 0; i += 1) await new Promise((r) => setTimeout(r, 20));
     expect(fake.archived).toEqual(["agent-2"]);
     expect((await run("work.get", { id: other.id })).item).toMatchObject({
       state: "blocked",

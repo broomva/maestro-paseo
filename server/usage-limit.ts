@@ -5,8 +5,9 @@
 // gate, where "Close it as done" would have closed unfinished work. The session is alive, so it holds its slot
 // (BRO-2990); when the limit resets, Resume (Unblock) tells it to continue, and nothing closes it on its own.
 
-/** The Stuck reason's first words: what the work card keys Resume on. */
-export const PAUSED = "Paused: hit a usage limit";
+import { PAUSED } from "../shared/paused";
+
+export { isPaused, PAUSED } from "../shared/paused";
 
 /** What a turn that ended on a usage limit says: the whole message, never prose that mentions one. */
 const LIMIT_MESSAGE = /^\s*you(?:(?:'|’)ve| have) hit your [a-z0-9 -]{1,40}limit\b/i;
@@ -33,12 +34,13 @@ export function pausedReason(text: string): string {
  * its last words are the limit message itself (short, and starting with it): a run that mentions limits in a
  * report is not paused. A failed turn is one when its error says the provider refused for rate or credit.
  */
-export function pausedBy(outcome: "completed" | "failed" | "canceled", summary: string, error: string | null): string | null {
+export function pausedBy(
+  outcome: "completed" | "failed" | "canceled",
+  summary: string,
+  error: string | null,
+): string | null {
   const text = summary.trim();
   if (outcome === "completed" && text.length <= 400 && LIMIT_MESSAGE.test(text)) return pausedReason(text);
   if (outcome === "failed" && error && LIMIT_ERROR.test(error)) return pausedReason(error);
   return null;
 }
-
-/** Whether a Stuck reason is a pause for a usage limit: its card offers Resume. */
-export const isPaused = (reason: string | null | undefined): boolean => reason?.startsWith(PAUSED) ?? false;

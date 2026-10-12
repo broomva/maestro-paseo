@@ -98,6 +98,8 @@ export const ApprovalBodySchema = z.object({
   action: z.string(),
   /** The layer that held it: `permission` (the session's permission prompt), or the policy an agent names (`gate`, `policy`). */
   heldBy: z.string(),
+  /** For a permission prompt: the prompt's request id, the one the `action` describes. approval.decide binds to it. */
+  requestId: z.string().optional(),
   evidence: z.array(EvidenceSchema),
   /** What happens after you allow it, step by step. */
   after: z.array(z.string()),

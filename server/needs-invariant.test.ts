@@ -66,7 +66,8 @@ const ask = (id: string, extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
 /** Work in every state, every flag, a permission prompt; asks of every kind; a due review; the batch. */
 function everything(): { items: WorkItem[]; asks: DecisionAsk[]; reviews: Initiative[]; landing: AnswersLanding } {
   const items = [
-    fakeWork("gate", "review", live("gate"), { updatedAt: at(50), initiative: "hawthorne" }),
+    // Finished and waiting at the gate with nothing held: watched (A1), so no surface counts it.
+    fakeWork("gate", "review", live("gate"), { updatedAt: at(50), initiative: "hawthorne", permission: null }),
     fakeWork("perm", "review", live("perm"), {
       updatedAt: at(40),
       initiative: "hawthorne",
@@ -249,9 +250,23 @@ test("invariant 1: header total == Σ kinds == the Needs you section == the Feed
   const { items, asks, reviews, landing } = everything();
   // The fleet's report says which Paseo agent that Claude session is.
   const sessionAgents = new Map([["51ba8cdf-claude-session-of-agent-perm", "agent-perm"]]);
-  const needs = needsOf({ items, asks, reviews, landing, sessionAgents, workspace: "broomva" }, NOW);
+  // And an action a session asked leave for (approval.request): a held action, as the prompt is.
+  const approvals = [
+    {
+      id: "merge",
+      at: at(45),
+      agentId: "agent-9",
+      action: "gh pr merge 933 --squash @ ce73104",
+      heldBy: "gate",
+      title: "Merge #933",
+      scope: "broomva",
+      evidence: [],
+      after: [],
+    },
+  ];
+  const needs = needsOf({ items, asks, reviews, landing, sessionAgents, workspace: "broomva", approvals }, NOW);
   const total = needs.summary.total;
-  // What the fixture holds on you: two approvals, three asks (two decisions and the review), three owner steps.
+  // What the fixture holds on you: two approvals (a prompt and a request), three asks (two decisions and the review), three owner steps.
   expect(needs.summary.byKind).toEqual({ ask: 4, approval: 2, owner_step: 3 });
   expect(total).toBe(9);
 
@@ -278,7 +293,7 @@ test("invariant 1: header total == Σ kinds == the Needs you section == the Feed
   const byInitiative = needsByInitiative(needsSection(needs.rows, items, asks));
   expect([...byInitiative].sort()).toEqual([
     ["genesis", 2],
-    ["hawthorne", 2],
+    ["hawthorne", 1],
     ["skene", 1],
   ]);
   for (const scope of initiatives(items, byInitiative)) {

@@ -100,6 +100,7 @@ import {
   WORK_LABEL,
 } from "./runs";
 import { type Mutation, placement, type StoredWork, WorkStore, withLock } from "./store";
+import { pausedBy } from "./usage-limit";
 import { toWire } from "./wire";
 import { type WorktreeStatus, worktreeStatus } from "./worktree";
 
@@ -477,6 +478,27 @@ function startRefusal(item: StoredWork, origin: Origin): string | null {
   }
 }
 
+/** What may follow a turn's end without the run having gone on: its landing, a remark, the loop's flag. */
+const AFTER_A_LIMIT: ReadonlySet<WorkEvent["type"]> = new Set(["state", "note", "loop.flagged", "flag.cleared"]);
+
+/**
+ * The Stuck reason work at your gate (or left running) should have when its last turn ended on a usage limit and
+ * nothing since says the run went on (BRO-3073), else null. Work recorded before such turns were Stuck reads so.
+ */
+function pausedAtGate(item: StoredWork): string | null {
+  const state = item.contract.state;
+  if (state !== "review" && state !== "running") return null;
+  if (pendingPermission(item.events)) return null;
+  const at = item.events.findLastIndex((event) => event.type === "turn.ended");
+  const ended = item.events[at];
+  if (ended?.type !== "turn.ended") return null;
+  const after = item.events.slice(at + 1);
+  if (!after.every((event) => AFTER_A_LIMIT.has(event.type) && (event.type !== "state" || event.to === "review"))) {
+    return null;
+  }
+  return pausedBy(ended.outcome, ended.summary, ended.error);
+}
+
 export class Engine {
   private readonly now: () => Date;
   private readonly readConfig: () => Promise<MaestroConfig>;
@@ -773,6 +795,34 @@ export class Engine {
       this.index(store, items);
     }
     if (await this.sweep(paseo, items)) changed = true;
+    if (await this.reclassifyPaused(store, items)) changed = true;
+    return changed;
+  }
+
+  /**
+   * Work whose last word is a usage-limit message, recorded before turns that end on one were Stuck (BRO-3073): at
+   * your gate or left running, it moves to Stuck with its reset, once, so "Close it as done" is never offered for
+   * work that did not finish. Only work whose newest event is that turn's end moves: a session that went on since
+   * has a newer event, and is left alone. Idempotent: the move is out of the states it reads.
+   */
+  private async reclassifyPaused(store: WorkStore, items: readonly StoredWork[]): Promise<boolean> {
+    let changed = false;
+    for (const item of items) {
+      if (pausedAtGate(item) === null) continue;
+      const moved = await store.mutate(
+        item.contract.id,
+        (fresh) => {
+          // Read again under the work's lock: it may have gone on since the scan.
+          const reason = pausedAtGate(fresh);
+          return reason === null ? null : { to: "blocked", actor: "maestro", reason };
+        },
+        item.dir,
+      );
+      if (moved.contract.state === "blocked") {
+        changed = true;
+        this.log(`${item.contract.id}: its last turn ended on a usage limit, so it is Stuck, not at your gate`);
+      }
+    }
     return changed;
   }
 
@@ -1223,7 +1273,11 @@ export class Engine {
    * session that asked. Your decision binds to `action`, the exact words you saw: a prompt that has changed since
    * (another request, another command) is a different action, and is refused. Throws a UserError otherwise.
    */
-  async permissionHold(id: string, action: string): Promise<{ requestId: string; agentId: string }> {
+  async permissionHold(
+    id: string,
+    action: string,
+    requestId?: string,
+  ): Promise<{ requestId: string; agentId: string }> {
     const { store } = await this.store();
     const item = await store.findById(id);
     const permission = pendingPermission(item.events);
@@ -1231,7 +1285,7 @@ export class Engine {
     if (item.contract.state !== "review" || !permission || !worker) {
       throw new UserError("Nothing is waiting on a question from this session any more.");
     }
-    if (permissionAction(permission) !== action) {
+    if (permissionAction(permission) !== action || (requestId !== undefined && permission.requestId !== requestId)) {
       throw new UserError("The session now asks something else. Read what it asks, then decide again.");
     }
     return { requestId: permission.requestId, agentId: worker.agentId };
@@ -2262,6 +2316,13 @@ export class Engine {
           turnId: options.turnId ?? null,
         };
         const state = fresh.contract.state;
+        // A turn that ended on a usage limit (or a provider's rate-limit or credit error) finished nothing: the run is
+        // paused, and Stuck with the reset, never at your gate where Close it as done would close unfinished work
+        // (BRO-3073). The session is alive, so it keeps its slot.
+        const paused = pausedBy(outcome.kind, ended.summary, ended.error);
+        if (paused && (state === "running" || (state === "review" && !pendingPermission(fresh.events)))) {
+          return { at, to: "blocked", reason: paused, events: [ended] };
+        }
         // A session Maestro adopted runs its own arc over many turns: a turn that hands you nothing (handsBack:
         // no verdict, no ask) is the arc between steps, not work at your gate. It stays running, and the loop
         // names it if it goes quiet. One that failed still stops it: that is something to look at. A turn
