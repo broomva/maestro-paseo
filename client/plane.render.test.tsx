@@ -100,7 +100,10 @@ mock.module(KIT, () => {
     Modal: Object.assign(({ open, children }: { open: boolean; children: ReactNode }) => (open ? children : null), {
       Content: ({ children }: { children: ReactNode }) => children,
     }),
-    useToast: () => ({ show() {}, error() {} }),
+    useToast: () => ({
+      show: (message: string) => void toasts.push(message),
+      error: (message: string) => void toasts.push(message),
+    }),
     useRevealedText: (text: string) => text,
   };
 });
@@ -186,6 +189,8 @@ const { createWorkPanel } = await import("./agent-panel");
 const { requestIntent, resetIntents, takeIntent } = await import("./intent");
 const { MaestroSettings } = await import("./settings");
 const { handledOf, needsOf } = await import("../server/needs");
+const { answersStatus } = await import("../server/answers-status");
+const { askHoldKey } = await import("../shared/needs");
 const { needsYouOf } = await import("../shared/needs-you");
 const { headerFace } = await import("./header-count");
 const { onNeeds, publishNeeds, readTicket, resetNeedsBus } = await import("./needs-bus");
@@ -528,6 +533,8 @@ let workspaceFail: string | null = null;
 /** While set, ask.answer answers only once it resolves: a reply still on its way. */
 let answerHeld: Promise<void> | null = null;
 /** While set, ask.answer fails with it (after any hold). */
+/** While set, ask.answer queues the answer for its undo window (B4): the ask stays open and a receipt comes back. */
+let answerQueued = false;
 let answerFail: string | null = null;
 /** The answers batch as the last wake left it: none unless a test says. */
 let landingNow: AnswersLanding | null = null;
@@ -739,6 +746,8 @@ let reviewsNow: Initiative[] = [];
 let initiativesFail: string | null = null;
 /** URLs the surface asked the host to open. */
 const urls: string[] = [];
+/** What the toast was asked to say, in order. */
+const toasts: string[] = [];
 spyOn(web.Linking, "openURL").mockImplementation(async (url: string) => {
   urls.push(url);
 });
@@ -1088,6 +1097,8 @@ const invoke = async (method: string, input: unknown) => {
     return handledOf(items, allAsks(), Date.now(), day.getTime());
   }
   if (method === "loops.get") return loopsView();
+  // Where your answers went, as the server builds it (server/answers-status.ts) from the same fixtures.
+  if (method === "answers.status") return answersStatus(workspaceNow, landingNow);
   if (method === "asks.workspace") {
     if (workspaceFail) throw new Error(workspaceFail);
     return {
@@ -1190,6 +1201,19 @@ const invoke = async (method: string, input: unknown) => {
     const held = where.kind === "workspace" ? workspaceNow : decisionsNow;
     const ask = held.find((entry) => entry.id === id);
     if (!ask) throw new Error("no such ask");
+    if (answerQueued) {
+      const entry = {
+        receipt: `r-answer-${pendingVerbs.length + 1}`,
+        verb: "ask.answer",
+        key: askHoldKey(ask),
+        label: `Answered ${ask.id}`,
+        at: new Date().toISOString(),
+        appliesAt: new Date(Date.now() + 8_000).toISOString(),
+        remainingMs: 8_000,
+      };
+      pendingVerbs = [entry, ...pendingVerbs];
+      return { ask, warning: null, receipt: entry.receipt, appliesAt: entry.appliesAt };
+    }
     const chosen = ask.options.find((entry) => entry.id === option);
     const answered: DecisionAsk = {
       ...ask,
@@ -1449,6 +1473,7 @@ afterEach(async () => {
   workspaceFail = null;
   answerHeld = null;
   answerFail = null;
+  answerQueued = false;
   loopNoticesNow = [];
   landingNow = null;
   needsFail = null;
@@ -1458,6 +1483,7 @@ afterEach(async () => {
   reviewsNow = [];
   initiativesFail = null;
   urls.length = 0;
+  toasts.length = 0;
   timelineRuns = false;
   calls.length = 0;
   setReduced(true);
@@ -2889,6 +2915,88 @@ describe("J1, the Feed home on the desktop (BRO-3035)", () => {
   });
 });
 
+describe("J2–J4 in the Feed's inspector (BRO-3036)", () => {
+  const panel = (view: Awaited<ReturnType<typeof mount>>) => view.all('[data-testid="inspector-panel"]')[0];
+  const until = async (ok: () => boolean) => {
+    for (let tries = 0; tries < 150 && !ok(); tries += 1) await settle(20);
+  };
+  const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
+  const bar = (view: Awaited<ReturnType<typeof mount>>, label: string) =>
+    view.all(`[data-testid="inspector-bar"] [aria-label="${label}"]`)[0];
+
+  test("an ask answered from its inspector sends the option you chose and the words you typed, as one answer", async () => {
+    workspaceNow = [
+      { ...decisionFixture(), headline: "File or drop the follow-ups?", blocking: true, waiting: true, fallback: null },
+    ];
+    const view = await mount(surface(false));
+    await until(() => view.byLabel("Ask: File or drop the follow-ups?") !== null);
+    await view.press(view.byLabel("Ask: File or drop the follow-ups?"));
+    await until(() => panel(view) !== undefined);
+    const text = panel(view)?.textContent ?? "";
+    // J3: the two tiles, the numbered answers, where it goes; the cost once, not under the title as well.
+    expect(text).toContain("What waiting costsNone blocks a lane; untracked, a test gap stays invisible.");
+    expect(text).toContain("Why youScheduling is yours.");
+    expect(text).toContain("File all fourRecommended");
+    // The recommended one is pre-chosen in the Feed (as J1 draws it): its number is on the primary.
+    expect(bar(view, "Answer with 1")).toBeDefined();
+    await view.press(view.all('[data-testid="inspector-panel"] [aria-label="File all four, recommended"]')[0]);
+    await view.type(view.byLabel("Your words for File or drop the follow-ups?"), "After the release.");
+    calls.length = 0;
+    await view.press(bar(view, "Answer with 1"));
+    await until(() => sent("ask.answer").length > 0);
+    expect(sent("ask.answer")).toEqual([
+      {
+        where: { kind: "workspace", home: "/state/broomva/.control/asks" },
+        ledger: "maestro-paseo-gaps.yaml",
+        uid: null,
+        id: "A10",
+        hash: "0123456789abcdef",
+        option: "ticket-all",
+        note: "After the release.",
+      },
+    ]);
+  });
+
+  test("your words alone answer an ask in your own words; an option that cannot be undone opens Decisions to confirm", async () => {
+    workspaceNow = [{ ...decisionFixture(), headline: "File or drop?", blocking: true, waiting: true }];
+    const view = await mount(surface(false));
+    await until(() => view.byLabel("Ask: File or drop?") !== null);
+    await view.press(view.byLabel("Ask: File or drop?"));
+    await until(() => panel(view) !== undefined);
+    // The irreversible option: its answer is never sent from here.
+    await view.press(view.all('[data-testid="inspector-panel"] [aria-label="Drop all four, cannot be undone"]')[0]);
+    calls.length = 0;
+    await view.press(bar(view, "Answer with 2"));
+    await settle(60);
+    expect(sent("ask.answer")).toEqual([]);
+  });
+
+  test("stuck work is a notice: Cancel work… takes two presses, Unblock sends your prompt, and there is no next hold to walk to", async () => {
+    const view = await mount(surface(false));
+    await until(() => view.byLabel("Health: Work b") !== null);
+    await view.press(view.byLabel("Health: Work b"));
+    await until(() => panel(view) !== undefined);
+    const text = panel(view)?.textContent ?? "";
+    expect(text).toContain("Closes when");
+    expect(text).toContain("Its session takes a turn again");
+    expect(text).toContain("No Approve: a notice is a fact");
+    // A notice is not a hold: J and K walk holds only.
+    expect(view.all('[data-testid="inspector-bar"] [aria-label="Next hold"]')).toHaveLength(0);
+    calls.length = 0;
+    await view.press(bar(view, "Cancel work…"));
+    expect(sent("work.cancel")).toEqual([]);
+    expect(toasts.at(-1)).toContain("Press Cancel work… again");
+    await view.type(view.byLabel("A prompt for the session of Work b"), "retry from the failing test");
+    await view.press(bar(view, "Unblock with a prompt…"));
+    await until(() => sent("work.unblock").length > 0);
+    expect(sent("work.unblock")).toEqual([{ id: "b", note: "retry from the failing test" }]);
+    // The second press on the same item, inside the window, cancels it.
+    await view.press(bar(view, "Cancel work…"));
+    await until(() => sent("work.cancel").length > 0);
+    expect(sent("work.cancel")).toEqual([{ id: "b" }]);
+  });
+});
+
 describe("Settings", () => {
   const settingsScreen = () => (
     <MaestroSettings theme={theme} host={{ id: "h", label: "h" }} layout={{ compact: false, platform: "web" }} />
@@ -3677,9 +3785,10 @@ describe("drilling in", () => {
     fleetHeld = null;
     release();
     await view.goto("Decisions");
-    for (let tries = 0; tries < 100 && !view.text().includes("Recently answered · 1"); tries += 1) await settle(20);
-    await view.press(view.byLabel("Recently answered · 1"));
-    expect(view.text()).toContain("· broomva · maestro-paseo-gaps");
+    for (let tries = 0; tries < 100 && !view.text().includes("Nothing to decide"); tries += 1) await settle(20);
+    // Decisions learned it from the reply, under its scope: the ask is no longer open there.
+    expect(view.text()).toContain("Open0decisions");
+    expect(view.text()).not.toContain("File all four, recommended");
   });
 
   test("a fleet scope's decisions: one that waits on you is its own card; the others fold past ten open", async () => {
@@ -3910,14 +4019,20 @@ describe("the Decisions tab", () => {
       checkedAt: new Date().toISOString(),
     };
     const view = await open();
-    await until(view, "1 answer waits to land: PR #915");
-    expect(view.byLabel("Open the answers PR, #915")).not.toBeNull();
-    await view.press(view.byLabel("Recently answered · 2"));
+    await until(view, "Open the PR");
+    // J5's tile: the batch's own count, the PR opened (never merged), and where each answer went on the right.
     const text = view.text();
-    expect(text).toContain("Ship it.Waits to land: PR #915.");
-    expect(text).toContain("Hold it.Acted on: sent to the session that asked.");
-    // The stranded one is never written as done: no "written to" line stands in for its fate.
-    expect(text).not.toContain("In the answers batch on maestro/answers");
+    expect(text).toContain("Waiting to land1answer");
+    expect(text).toContain("Answered, but still on maestro/answers, not on main.");
+    await view.press(view.byLabel("Open the PR"));
+    expect(urls).toEqual(["https://github.com/broomva/workspace/pull/915"]);
+    expect(sent("work.verdict")).toEqual([]);
+    await until(view, "Where your last answers went");
+    for (let tries = 0; tries < 100 && !view.text().includes("Hold it."); tries += 1) await settle(20);
+    // Each answer's fate, as the rail says it: never "acted" for the stranded one.
+    expect(view.text()).toContain("You: Ship it.Waits to land: PR #915.");
+    expect(view.text()).toContain("You: Hold it.Acted on: sent to the session that asked.");
+    expect(view.text()).not.toContain("In the answers batch on maestro/answers");
   });
 
   test("an answer whose asker is gone waits in view for the conductor; File as work and Dismiss, each with Undo (A8)", async () => {
@@ -3965,7 +4080,7 @@ describe("the Decisions tab", () => {
     await until(view, "Dismissing it: nothing follows from it");
   });
 
-  test("one decision at a time, blocking first: its count and bar, the card's layers, the rail, up next", async () => {
+  test("one decision at a time, blocking first: its count and progress, the tiles, the card's layers, the chips, up next (J5)", async () => {
     workspaceNow = [
       canvas("product-name", { askedAt: days(5) }),
       merge(),
@@ -3982,47 +4097,45 @@ describe("the Decisions tab", () => {
     expect(view.viewNow()).toBe("Decisions");
     expect(view.byLabel("Decisions, 1 waits on you")).not.toBeNull();
     const text = view.text();
-    expect(text).toContain("Decision 1 of 2");
-    expect(text).toContain("2 open · 1 waits on you");
+    expect(text).toContain("Decision 1 of 2 · 1 blocks work");
+    // The Open tile: the queue's length, what blocks, what waits on you (needs.list's), the oldest, and where.
+    expect(text).toContain("Open2decisions1 blocks work · 1 on you · oldest 5d");
+    expect(text).toContain("2026-10-01-auth-preflight-hook-stderr 1 · bro-2795-local-first-agentic-canvas 1");
     // No machine paths on the main surface, and the ask's id only under Details.
     expect(text).not.toContain("/Users/me/broomva");
-    // The card: meta, the question as its headline, the two panels, the options, the default.
-    expect(text).toContain("2026-10-01-auth-preflight-hook-stderr · asked 2h ago · blocking · reversible");
+    // The card: J3's kicker, the question as its headline, the two tiles, the options, the default, where it goes.
+    expect(text).toContain("Ask · 2026-10-01-auth-preflight-hook-stderr · A1 · reversible");
     expect(text).not.toContain("Ask: A1");
     expect(text).toContain("Waits on you: it blocks until you answer.");
     expect(text).toContain("Approve merge of PR #863 touching scripts/auth-preflight-hook.sh?");
     expect(text).toContain("What waiting costsscripts/auth-preflight-hook.sh is in require_human paths.");
     expect(text).toContain("Why youpolicy.yaml asks a human for hook scripts.");
     expect(text).toContain("Merge PR #863RecommendedWarnings go to stderr.");
-    expect(text).toContain("If you say nothing: Hold PR #863differs from the recommendation");
+    expect(text).toContain("If you say nothing: Hold PR #863");
+    expect(text).toContain("Goes to the session that asked");
     // Nothing is chosen for you, the recommendation included: the verb waits.
     expect(view.byLabel("Merge PR #863, recommended")?.getAttribute("aria-checked")).toBe("false");
     expect(view.byLabel("Answer A1")?.getAttribute("aria-disabled")).toBe("true");
-    expect(text).toContain("Choose an option");
     // The jargon stays under Details, as one short line.
     expect(text).not.toContain("§5.5");
-    expect(text).not.toContain("Written to");
     await view.press(view.byLabel("Show the details of A1"));
     expect(view.text()).toContain("Written to the checkout broomva (feat/prompt-cache)");
     expect(view.text()).toContain("Ask: A1");
     expect(view.text()).toContain("Approve merge of PR #863");
-    // The rail: open counts, and a warn count only where an ask waits.
-    expect(view.byLabel("All ledgers: 2 open, 1 waits on you")?.getAttribute("aria-pressed")).toBe("true");
+    // The chips: open counts, and a warn count only where an ask waits.
+    expect(view.byLabel("All ledgers: 2 open, 1 waits on you")?.getAttribute("aria-checked")).toBe("true");
     expect(view.byLabel("2026-10-01-auth-preflight-hook-stderr.yaml: 1 open, 1 waits on you")).not.toBeNull();
     expect(view.byLabel("bro-2795-local-first-agentic-canvas.yaml: 1 open")).not.toBeNull();
-    // Up next, then the answered, folded.
+    // Up next, on the right.
     expect(
       view.byLabel("Go to product-name in bro-2795-local-first-agentic-canvas.yaml: Canvas ask product-name"),
     ).not.toBeNull();
-    expect(view.text()).not.toContain("Keep it.");
-    await view.press(view.byLabel("Recently answered · 1"));
-    expect(view.text()).toContain("Keep it.");
-    expect(view.text()).toContain("In the answers batch on maestro/answers");
     // The order: Oldest puts the five-day-old ask first.
     await view.press(view.byLabel("Oldest"));
     expect(view.byLabel("Oldest")?.getAttribute("aria-checked")).toBe("true");
-    expect(view.text()).toContain("bro-2795-local-first-agentic-canvas · asked 5d ago");
-    // A ledger from the rail: only its asks.
+    expect(view.text()).toContain("Ask · bro-2795-local-first-agentic-canvas · product-name");
+    expect(view.text()).toContain("5d");
+    // A ledger from the chips: only its asks.
     await view.press(view.byLabel("Blocking first"));
     await view.press(view.byLabel("bro-2795-local-first-agentic-canvas.yaml: 1 open"));
     expect(view.text()).toContain("Decision 1 of 1");
@@ -4031,7 +4144,7 @@ describe("the Decisions tab", () => {
     await view.press(view.byLabel("All ledgers: 2 open, 1 waits on you"));
     // Up next goes to the one pressed; going there is not deciding it, so the count holds.
     await view.press(view.all('[aria-label^="Go to product-name"]')[0]);
-    expect(view.text()).toContain("bro-2795-local-first-agentic-canvas · asked 5d ago");
+    expect(view.text()).toContain("Ask · bro-2795-local-first-agentic-canvas · product-name");
     expect(view.text()).toContain("Decision 1 of 2");
   });
 
@@ -4040,7 +4153,7 @@ describe("the Decisions tab", () => {
     const view = await open();
     await view.press(view.byLabel("Merge PR #863, recommended"));
     expect(view.byLabel("Merge PR #863, recommended")?.getAttribute("aria-checked")).toBe("true");
-    expect(view.text()).toContain("Answer with Merge PR #863");
+    expect(view.text()).toContain("Answer with 1");
     await view.press(view.byLabel("Answer A1: Merge PR #863"));
     expect(sent("ask.answer")).toEqual([
       {
@@ -4064,7 +4177,24 @@ describe("the Decisions tab", () => {
     expect(text).not.toContain("/Users/me/broomva");
     expect(text).toContain("Canvas ask product-name");
     expect(view.byLabel("Answer A1: Merge PR #863")).toBeNull();
-    expect(view.byLabel("Recently answered · 1")).not.toBeNull();
+    // Where it went is answers.status's: read again once the answer settles (the server writes the receipt it reads).
+    expect(calls.filter((call) => call.method === "answers.status").length).toBeGreaterThan(1);
+  });
+
+  test("an answer waits out its undo window (B4): the tab says what was queued, and the surface counts it down with one Undo", async () => {
+    answerQueued = true;
+    workspaceNow = [merge(), canvas("product-name")];
+    const view = await open();
+    await view.press(view.byLabel("Merge PR #863, recommended"));
+    await view.press(view.byLabel("Answer A1: Merge PR #863"));
+    // Queued, not written: the ask is still open (and counted), and the line says so instead of "answered".
+    await until(view, "written in 8 s unless you undo it");
+    expect(view.text()).toContain("Answered: “Merge PR #863” · 2026-10-01-auth-preflight-hook-stderr · written in 8 s");
+    expect(view.text()).not.toContain("answers are not undone here");
+    // The card has moved on to the next ask; the surface's pending strip (every verb of yours) counts down and undoes.
+    expect(view.text()).toContain("Canvas ask product-name");
+    expect(view.all('[role="button"][aria-label^="Undo: "]')).toHaveLength(1);
+    expect(sent("ask.answer")).toHaveLength(1);
   });
 
   test("with motion on, the answered card leaves before the next one comes up", async () => {
@@ -4086,8 +4216,8 @@ describe("the Decisions tab", () => {
     workspaceNow = [merge(), canvas("q1"), canvas("q2")];
     const view = await open();
     // The hints sit beside what they drive.
-    expect(view.text()).toContain("Choose an optionEnter");
-    expect(view.text()).toContain("UP NEXTJKmove");
+    expect(view.text()).toContain("1–4 choose · J / K move");
+    expect(view.text()).toContain("Up next2");
     await key(view, "j");
     expect(view.text()).toContain("Canvas ask q1");
     expect(view.text()).toContain("Decision 1 of 3");
@@ -4216,10 +4346,9 @@ describe("the Decisions tab", () => {
     workspaceFail = "asks.workspace timed out";
     await view.press(view.byLabel("File all four, recommended"));
     await view.press(view.byLabel("Answer redeploy: File all four"));
-    await until(view, "Recently answered · 1");
-    expect(view.text()).toContain("Recently answered · 1");
-    expect(view.text()).toContain("0 open");
-    expect(view.text()).toContain("Nothing to decide");
+    await until(view, "Nothing to decide");
+    expect(view.text()).toContain("Open0decisions");
+    expect(view.text()).toContain("Answered just now: “File all four”");
   });
 
   test("an ask with no decision layer: its first sentence leads, the rest behind Full question; answered in words", async () => {
@@ -4291,7 +4420,7 @@ describe("the Decisions tab", () => {
     await until(view, "Decision ");
     expect(view.viewNow()).toBe("Decisions");
     // At the ask it named; the one that does not wait is up next, not on the card.
-    expect(view.text()).toContain("2026-10-01-auth-preflight-hook-stderr · asked 2h ago · blocking");
+    expect(view.text()).toContain("Ask · 2026-10-01-auth-preflight-hook-stderr · A1 · reversible");
     expect(view.byLabel("Go to A2 in other.yaml: Other blocking?")).not.toBeNull();
     expect(view.text()).toContain("Waits on you: it blocks until you answer.");
     // In Decisions the notice is not shown twice.
@@ -4321,7 +4450,7 @@ describe("the Decisions tab", () => {
     await view.press(view.byLabel("Open Decisions, 2 waiting"));
     await until(view, "Decision ");
     // It opens the ask it named, not the first one listed.
-    expect(view.text()).toContain("2026-10-01-auth-preflight-hook-stderr · asked 2h ago · blocking");
+    expect(view.text()).toContain("Ask · 2026-10-01-auth-preflight-hook-stderr · A1 · reversible");
   });
 
   test("an intent opens Decisions at a ledger; with nothing open it says so", async () => {
@@ -4332,7 +4461,7 @@ describe("the Decisions tab", () => {
     );
     await until(view, "Decision ");
     expect(view.viewNow()).toBe("Decisions");
-    expect(view.byLabel("bro-2795-local-first-agentic-canvas.yaml: 1 open")?.getAttribute("aria-pressed")).toBe("true");
+    expect(view.byLabel("bro-2795-local-first-agentic-canvas.yaml: 1 open")?.getAttribute("aria-checked")).toBe("true");
     expect(view.text()).toContain("Decision 1 of 1");
     // Gone from under you: the card stays, says so, and waits for you to go on.
     workspaceNow = [];
@@ -4362,7 +4491,7 @@ describe("the Decisions tab", () => {
     ];
     await view.refetch();
     expect(view.text()).toContain("Approve merge of PR #863 touching");
-    expect(view.text()).toContain("2026-10-01-auth-preflight-hook-stderr · asked 2h ago");
+    expect(view.text()).toContain("Ask · 2026-10-01-auth-preflight-hook-stderr · A1 · reversible");
     // Answered from another client: the card stays, read-only, and says so; nothing moves on by itself.
     workspaceNow = workspaceNow.map((ask) =>
       ask.id === "A1"
@@ -4396,7 +4525,7 @@ describe("the Decisions tab", () => {
     await key(view, "k");
     expect(view.byLabel("Hold PR #863")?.getAttribute("aria-checked")).toBe("true");
     expect((view.byLabel("Your words for A1") as unknown as { value: string }).value).toBe("After the release.");
-    expect(view.text()).toContain("Answer with Hold PR #863");
+    expect(view.text()).toContain("Answer with 2");
   });
 
   test("keys act only inside the tab, never take a key outside it, and leave with it", async () => {
@@ -4492,15 +4621,16 @@ describe("the Decisions tab", () => {
     expect(focusRing(theme as never, true)).toEqual({});
   });
 
-  test("hit areas: 40 pt on a wide window for the order, the rail and the verbs", async () => {
+  test("hit areas on a wide window: the stage's verbs are 36 pt, the order and the ledger chips 28 and 30, Details 40", async () => {
     workspaceNow = [merge(), canvas("q1")];
     const view = await open();
-    const minHeight = (label: string) =>
-      (view.byLabel(label) as unknown as { style: { minHeight: string } }).style.minHeight;
-    expect(minHeight("Oldest")).toBe("40px");
-    expect(minHeight("All ledgers: 2 open, 1 waits on you")).toBe("40px");
-    expect(minHeight("Answer A1")).toBe("40px");
-    expect(minHeight("Show the details of A1")).toBe("40px");
+    const style = (label: string) =>
+      (view.byLabel(label) as unknown as { style: { height: string; minHeight: string } }).style;
+    expect(style("Oldest").height).toBe("28px");
+    expect(style("All ledgers: 2 open, 1 waits on you").height).toBe("30px");
+    expect(style("Answer A1").height).toBe("36px");
+    expect(style("Skip A1 for now").height).toBe("36px");
+    expect(style("Show the details of A1").minHeight).toBe("40px");
   });
   test("Enter or Space on a focused option selects that option, never answers; a fifth option is reachable", async () => {
     const five = ["a", "b", "c", "d", "e"].map((id) => ({
@@ -4522,7 +4652,7 @@ describe("the Decisions tab", () => {
     await key(view, " ", view.byLabel("Option e"));
     expect(view.byLabel("Option e")?.getAttribute("aria-checked")).toBe("true");
     expect(sent("ask.answer")).toEqual([]);
-    expect(view.text()).toContain("Answer with Option e");
+    expect(view.text()).toContain("Answer with 5");
   });
 
   test("while an answer is in flight the tab holds still; a failure lands on the card, which stays answerable", async () => {
@@ -4709,11 +4839,10 @@ describe("the Decisions tab", () => {
     await settle(60);
     await view.goto("Decisions");
     await until(view, "Canvas ask q1");
-    // The reply landed with no card on screen: the list learned it (one open, the answer under Recently answered).
-    expect(view.text()).toContain("1 open");
+    // The reply landed with no card on screen: the list learned it (one open), and the card is the next ask.
+    expect(view.text()).toContain("Open1decision");
     expect(view.text()).not.toContain("answered elsewhere");
-    await view.press(view.byLabel("Recently answered · 1"));
-    expect(view.text()).toContain("Answered just now: “Merge PR #863”");
+    expect(view.text()).not.toContain("Approve merge of PR #863");
     expect(sent("ask.answer")).toHaveLength(1);
   });
 
@@ -4743,7 +4872,7 @@ describe("the Decisions tab", () => {
       requestIntent({ kind: "decisions", ledger: "bro-2795-local-first-agentic-canvas.yaml", id: "late" }),
     );
     await until(view, "Canvas ask late");
-    expect(view.text()).toContain("bro-2795-local-first-agentic-canvas · asked");
+    expect(view.text()).toContain("Ask · bro-2795-local-first-agentic-canvas");
     expect(view.text()).not.toContain("isn't in the list yet");
     await step(generation, () => requestIntent({ kind: "decisions", ledger: null, id: "nowhere" }));
     await until(view, "isn't in the list yet");
@@ -4773,7 +4902,7 @@ describe("the Decisions tab", () => {
     workspaceNow = [merge(), canvas("q1")];
     const view = await open();
     await view.press(view.byLabel("bro-2795-local-first-agentic-canvas.yaml: 1 open"));
-    expect(view.text()).toContain("1 open in bro-2795-local-first-agentic-canvas · 2 in all");
+    expect(view.byLabel("bro-2795-local-first-agentic-canvas.yaml: 1 open")?.getAttribute("aria-checked")).toBe("true");
     await view.press(view.byLabel("File all four, recommended"));
     await view.press(view.byLabel("Answer q1: File all four"));
     await until(view, "Nothing open in");
@@ -4862,7 +4991,7 @@ describe("Initiatives", () => {
     await view.press(view.byLabel("Open maestro-paseo-gaps.yaml#A10 in Decisions"));
     await until(view, "Decision ");
     expect(view.viewNow()).toBe("Decisions");
-    expect(view.byLabel("maestro-paseo-gaps.yaml: 1 open")?.getAttribute("aria-pressed")).toBe("true");
+    expect(view.byLabel("maestro-paseo-gaps.yaml: 1 open")?.getAttribute("aria-checked")).toBe("true");
     expect(view.text()).toContain("Decision 1 of 1");
     expect(view.text()).toContain("Four small review follow-ups");
   });

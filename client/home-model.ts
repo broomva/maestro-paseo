@@ -26,7 +26,7 @@ import {
 import { sectionOf } from "../shared/needs-you";
 import { ticketOf } from "../shared/text";
 import type { TimelineNotice } from "../shared/timeline";
-import { forTheConductor, headlineOf, ledgerName, ledgerOf } from "./decisions-model";
+import { forTheConductor, headlineOf, ledgerName, ledgerOf, silenceOf } from "./decisions-model";
 import {
   type DecideRow,
   decideOf,
@@ -444,6 +444,7 @@ function choicesOf(entry: NeedEntry): { options: Choice[]; chosen?: string } {
       label: option.label,
       note: [option.consequence, option.reversible === false ? "cannot be undone" : null].filter(Boolean).join(" · "),
       recommended: option.recommended,
+      irreversible: option.reversible === false,
     }));
     return { options, chosen: ask.options.find((option) => option.recommended)?.id };
   }
@@ -454,6 +455,65 @@ function choicesOf(entry: NeedEntry): { options: Choice[]; chosen?: string } {
     recommended: option.id === row.body.recommended,
   }));
   return { options, chosen: row.body.recommended };
+}
+
+/** What held an approval, in words (J2's "Held by"). */
+export function heldByWords(heldBy: string): string {
+  if (heldBy === "permission") return "the session's permission prompt";
+  if (heldBy === "gate") return "Maestro's human gate";
+  return heldBy;
+}
+
+/** What Deny does for what held the approval (J2). */
+export function denyWords(heldBy: string): string[] {
+  if (heldBy === "permission") return ["The session is told no and goes on without it; nothing runs."];
+  return ["It goes back to its session; nothing is merged."];
+}
+
+/**
+ * Where an answer goes, as J3 says it: the session that asked gets it verbatim; if that is gone, a sibling on
+ * its arc, then the initiative's driver, and with no one to take it, it waits for the conductor (A8:
+ * answers.routing never starts work). It is written to where the ask lives either way.
+ */
+export function goesLine(goesTo: string, session: string | undefined): string {
+  return session
+    ? `Goes to the session that asked (${session}), verbatim. If it is gone: a sibling, then the initiative's driver; with none, it waits for the conductor. Written to ${goesTo}.`
+    : `Your answer is written to ${goesTo}; a session on its arc or the initiative's driver gets it verbatim, else it waits for the conductor.`;
+}
+
+/** A review's "hanging off it" tiles (J8): its work, its open asks, and whether a driver session runs it. */
+export function hangingTiles(hanging: {
+  work: number;
+  asks: number;
+  driver?: string;
+}): { icon: string; value: string; label: string }[] {
+  return [
+    { icon: "LayoutList", value: String(hanging.work), label: "work" },
+    { icon: "MessagesSquare", value: String(hanging.asks), label: hanging.asks === 1 ? "open ask" : "open asks" },
+    { icon: "Radio", value: hanging.driver ? "1" : "0", label: "driver session" },
+  ];
+}
+
+/**
+ * What happens if you say nothing (J3): the ask's timed default and how far its countdown has run (A4:
+ * reversible asks take their default after 30 min), else the ledger's own words with no countdown, else none.
+ */
+export function fallbackOf(entry: NeedEntry, now: number): { line: string; elapsed?: number } | undefined {
+  const { row, ask } = entry;
+  if (row.kind === "ask" && "default" in row.body && row.body.default) {
+    const taken = row.body.default;
+    const option = row.body.options.find((one) => one.id === taken.option);
+    const start = Date.parse(row.since);
+    const end = Date.parse(taken.appliesAt);
+    const left = end - now;
+    const span = end - start;
+    return {
+      line: `If you say nothing: ${option?.label ?? taken.option}${left > 0 ? `, in ${waitWords(left)}` : ", now"} (A4: reversible asks take their default after 30 min).`,
+      ...(Number.isFinite(span) && span > 0 ? { elapsed: (now - start) / span } : {}),
+    };
+  }
+  const silence = ask ? silenceOf(ask) : null;
+  return silence ? { line: `${silence.text}.` } : undefined;
 }
 
 /** A hold as the inspector shows it: its kind's body, its session, and its verbs' words. Pure. */
@@ -477,8 +537,10 @@ export function holdInspector(entry: NeedEntry, now: number): InspectorItem {
             ? "The session is paused on its permission prompt until you answer."
             : `The ${row.body.heldBy} holds it until you decide.`,
         action: row.body.action,
+        heldBy: heldByWords(row.body.heldBy),
         evidence: row.body.evidence,
         after: row.body.after,
+        afterDeny: denyWords(row.body.heldBy),
       };
     case "owner_step":
       return {
@@ -496,8 +558,11 @@ export function holdInspector(entry: NeedEntry, now: number): InspectorItem {
           kind: "review",
           summary: row.body.intent,
           late: `Review due ${ago(row.since, now)} ago`,
+          since: row.body.since,
+          hanging: hangingTiles(row.body.hanging),
           options,
           chosen,
+          goes: `Goes to ${row.body.goesTo}.`,
         };
       return {
         ...common,
@@ -505,6 +570,10 @@ export function holdInspector(entry: NeedEntry, now: number): InspectorItem {
         kind: "ask",
         why: row.body.why || undefined,
         summary: row.body.cost || undefined,
+        cost: row.body.cost || undefined,
+        whyYou: row.body.why || undefined,
+        goes: goesLine(row.body.goesTo, row.session?.name),
+        fallback: fallbackOf(entry, now),
         options,
         chosen,
       };
@@ -524,7 +593,8 @@ const LIFECYCLE: readonly { label: string; reached: (item: WorkItem) => boolean 
 
 /** Watched work as the inspector shows it: stuck work as a notice (Unblock), the rest as work (Open). Pure. */
 export function workInspector(item: WorkItem, now: number): InspectorItem {
-  const kicker = [workScope(item), item.ticket ?? ticketOf(item.title)].filter((part): part is string => !!part);
+  const owner = item.state === "blocked" && item.adoptedBy?.by ? `owner: ${item.adoptedBy.by}` : null;
+  const kicker = [workScope(item), item.ticket ?? ticketOf(item.title), owner].filter((part): part is string => !!part);
   const session = item.worker
     ? {
         name: item.worker.agentId.slice(0, 8),
@@ -538,13 +608,15 @@ export function workInspector(item: WorkItem, now: number): InspectorItem {
     return {
       ...common,
       kind: "notice",
+      prompt: true,
       summary: placeText(item) ?? undefined,
       log: [{ at: ago(item.updatedAt, now), text: stuckText(item) ?? "It stopped.", tone: "danger" }],
       closesWhen: [
-        { when: "Its session takes a turn", becomes: "Running" },
-        { when: "You unblock it", becomes: "Queued" },
-        { when: "You cancel it", becomes: "Done" },
+        { when: "Its session takes a turn again", becomes: "Running" },
+        ...(item.adoptedBy ? [{ when: "Its orchestrator closes it", becomes: "Handled for you" }] : []),
+        { when: "You cancel it", becomes: "Canceled" },
       ],
+      note: "No Approve: a notice is a fact. Unblock sends your prompt into the session, or starts the work again from its brief if the session is gone; the card stays until the session moves.",
     };
   return {
     ...common,
@@ -610,7 +682,22 @@ export function keyAction(
   if (mod) return null;
   const letter = key.key.toLowerCase();
   if (letter === "s" && (kind === "ask" || kind === "review")) return { verb: "skip" };
+  // J and K walk the holds: a notice or a work item is not one, so they leave it where it is.
+  if (kind === "notice" || kind === "work") return null;
   if (letter === "j") return { step: 1 };
   if (letter === "k") return { step: -1 };
   return null;
+}
+
+// ── Cancel work… ─────────────────────────────────────────────────────────────
+
+/** How long the first press of "Cancel work…" stays armed for a second. */
+export const CANCEL_ARM_MS = 5000;
+
+/**
+ * Cancelling work is the ellipsis verb (J4): the first press on an item arms it, a second on the same item within
+ * CANCEL_ARM_MS does it. Pure: `armed` is the last press that armed, `key` the item pressed now.
+ */
+export function cancelStep(armed: { key: string; at: number } | null, key: string, now: number): "arm" | "go" {
+  return armed !== null && armed.key === key && now - armed.at <= CANCEL_ARM_MS ? "go" : "arm";
 }

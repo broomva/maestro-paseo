@@ -273,44 +273,29 @@ export function answeredColor(theme: PluginTheme, fate: ReturnType<typeof fateLi
   return fate.tone === "waiting" ? theme.colors.statusWarning : theme.colors.foregroundMuted;
 }
 
-export function DecisionCard({
-  theme,
+/**
+ * What a decision card does, apart from how it looks: your choice and words, the answer's flight and failure,
+ * the deliberate confirm for an option that cannot be undone, and the keys the view can drive. Shared by the
+ * card (the phone, the Fleet view's ledgers) and J5's stage (client/decisions-stage.tsx), so the two answer
+ * the same way.
+ */
+export function useDecisionCard({
   ask,
   where,
-  compact,
-  navigation,
   onAnswered,
-  onSkip,
   keys,
-  hints = false,
   draft,
   onDraft,
   frozen = null,
-  onNext,
 }: {
-  theme: PluginTheme;
   ask: DecisionAsk;
-  /** Where the answer goes, as the ask was read. */
   where: AnswerWhere;
-  compact: boolean;
-  navigation: Navigation;
-  /** The host wrote it: the answered ask as written, and what failed after, if anything. */
-  onAnswered: (answered: DecisionAsk, warning: string | null) => void;
-  /** Offers Skip, which leaves the ask open and moves on. */
-  onSkip?: () => void;
-  /** Holds what the keyboard can drive on this card while it is on screen; null once it leaves. */
+  onAnswered: (answered: DecisionAsk, warning: string | null, queued?: boolean) => void;
   keys?: MutableRefObject<CardKeys | null>;
-  /** Shows the keys beside what they drive (the web's triage). */
-  hints?: boolean;
-  /** Your choice and words so far, held by the view so a remount keeps them; the card's own when absent. */
   draft?: Draft;
   onDraft?: (draft: Draft) => void;
-  /** Why this ask can no longer be answered here (answered elsewhere, gone): the card is read-only and says so. */
   frozen?: string | null;
-  /** Offered with `frozen`: go on to the next decision. */
-  onNext?: () => void;
 }) {
-  const text = useText(theme);
   const toast = useToast();
   const refresh = useRefresh();
   const send = useRpc(answerAsk);
@@ -364,8 +349,6 @@ export function DecisionCard({
     setDraft({ ...current, chosen: id });
   };
   const setNote = (value: string) => setDraft({ ...current, note: value });
-  const [fullOpen, setFullOpen] = useState(false);
-  const [detailsOpen, setDetailsOpen] = useState(false);
   const open = ask.state === "open" && !frozen;
   const fate = fateLine(ask);
   const option = ask.options.find((entry) => entry.id === chosen) ?? null;
@@ -393,9 +376,10 @@ export function DecisionCard({
     answer.mutate(
       { where, ledger: ask.ledger, uid: ask.uid, id: ask.id, hash: ask.hash, option: chosen, note },
       {
-        onSuccess: ({ ask: reply, warning }) => {
+        onSuccess: ({ ask: reply, warning, receipt }) => {
           setDraft(EMPTY_DRAFT);
-          onAnswered(withScope(reply, ask), warning);
+          // With a receipt the answer is queued: the ask is still open, written when its undo window closes (B4).
+          onAnswered(withScope(reply, ask), warning, receipt !== undefined);
         },
       },
     );
@@ -420,6 +404,166 @@ export function DecisionCard({
       keys.current = null;
     };
   });
+  return {
+    open,
+    fate,
+    option,
+    hasOptions,
+    lead,
+    canAnswer,
+    holdKey,
+    silence,
+    origin,
+    submit,
+    confirming,
+    failure,
+    pendingHere,
+    anyInFlight,
+    chosen,
+    note,
+    setChosen,
+    setNote,
+    label: ask.id,
+  };
+}
+
+/**
+ * The audit layer under Details: the ask's id, class, gates, ledger, where the answer is written, and the
+ * session that asked. Folded; the card and J5's stage share it.
+ */
+export function DecisionDetails({
+  theme,
+  ask,
+  lead,
+  open,
+  compact,
+  navigation,
+}: {
+  theme: PluginTheme;
+  ask: DecisionAsk;
+  lead: ReturnType<typeof headlineOf>;
+  open: boolean;
+  compact: boolean;
+  navigation: Navigation;
+}) {
+  const text = useText(theme);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const origin = ask.origin;
+  return (
+    <View style={{ gap: space[2], borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: space[3] }}>
+      <Fold
+        theme={theme}
+        compact={compact}
+        label="Details"
+        open={detailsOpen}
+        onToggle={() => setDetailsOpen((now) => !now)}
+        accessibilityLabel={`${detailsOpen ? "Hide" : "Show"} the details of ${ask.id}`}
+      />
+      {detailsOpen ? (
+        <View style={{ gap: space[2], paddingLeft: space[4] }}>
+          <Fact theme={theme} label="Ask">
+            {ask.id}
+          </Fact>
+          {ask.question && !lead.derived && ask.question !== lead.headline ? (
+            <Fact theme={theme} label="The full question">
+              {ask.question}
+            </Fact>
+          ) : null}
+          {ask.audit?.class ? (
+            <Fact theme={theme} label="Class">
+              {ask.audit.class}
+            </Fact>
+          ) : null}
+          {ask.audit && (ask.audit.gates.length > 0 || (ask.audit.withheld ?? 0) > 0) ? (
+            <Fact theme={theme} label="Gates">
+              {[
+                ask.audit.gates.join(", "),
+                (ask.audit.withheld ?? 0) > 0 ? `+${ask.audit.withheld} not shown (free text; see the ledger)` : "",
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </Fact>
+          ) : null}
+          <Fact theme={theme} label="Ledger">
+            {`${ask.scope ? `fleet ${ask.scope} · ` : ""}${ask.ledger}${ask.arc ? ` (arc ${ask.arc})` : ""}${ask.uid ? ` · uid ${ask.uid}` : ""}`}
+          </Fact>
+          {open ? <Text style={text.small}>{writtenTo(ask)}</Text> : null}
+          {origin && navigation ? (
+            <View style={{ flexDirection: "row" }}>
+              <Verb
+                theme={theme}
+                icon="ArrowUpRight"
+                label="Open the session that asked"
+                compact={compact}
+                accessibilityLabel={`Open the session that asked ${ask.id}`}
+                onPress={() => navigation.openAgent({ agentId: origin.agentId })}
+              />
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+export function DecisionCard({
+  theme,
+  ask,
+  where,
+  compact,
+  navigation,
+  onAnswered,
+  onSkip,
+  keys,
+  hints = false,
+  draft,
+  onDraft,
+  frozen = null,
+  onNext,
+}: {
+  theme: PluginTheme;
+  ask: DecisionAsk;
+  /** Where the answer goes, as the ask was read. */
+  where: AnswerWhere;
+  compact: boolean;
+  navigation: Navigation;
+  /** The host wrote it: the answered ask as written, and what failed after, if anything. */
+  onAnswered: (answered: DecisionAsk, warning: string | null, queued?: boolean) => void;
+  /** Offers Skip, which leaves the ask open and moves on. */
+  onSkip?: () => void;
+  /** Holds what the keyboard can drive on this card while it is on screen; null once it leaves. */
+  keys?: MutableRefObject<CardKeys | null>;
+  /** Shows the keys beside what they drive (the web's triage). */
+  hints?: boolean;
+  /** Your choice and words so far, held by the view so a remount keeps them; the card's own when absent. */
+  draft?: Draft;
+  onDraft?: (draft: Draft) => void;
+  /** Why this ask can no longer be answered here (answered elsewhere, gone): the card is read-only and says so. */
+  frozen?: string | null;
+  /** Offered with `frozen`: go on to the next decision. */
+  onNext?: () => void;
+}) {
+  const text = useText(theme);
+  const [fullOpen, setFullOpen] = useState(false);
+  const {
+    open,
+    fate,
+    option,
+    hasOptions,
+    lead,
+    canAnswer,
+    holdKey,
+    silence,
+    submit,
+    confirming,
+    failure,
+    pendingHere,
+    anyInFlight,
+    chosen,
+    note,
+    setChosen,
+    setNote,
+  } = useDecisionCard({ ask, where, onAnswered, keys, draft, onDraft, frozen });
   const showHints = hints && !compact;
   const label = `${ask.id}`;
   return (
@@ -710,59 +854,7 @@ export function DecisionCard({
         </View>
       )}
 
-      <View style={{ gap: space[2], borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: space[3] }}>
-        <Fold
-          theme={theme}
-          compact={compact}
-          label="Details"
-          open={detailsOpen}
-          onToggle={() => setDetailsOpen((now) => !now)}
-          accessibilityLabel={`${detailsOpen ? "Hide" : "Show"} the details of ${ask.id}`}
-        />
-        {detailsOpen ? (
-          <View style={{ gap: space[2], paddingLeft: space[4] }}>
-            <Fact theme={theme} label="Ask">
-              {ask.id}
-            </Fact>
-            {ask.question && !lead.derived && ask.question !== lead.headline ? (
-              <Fact theme={theme} label="The full question">
-                {ask.question}
-              </Fact>
-            ) : null}
-            {ask.audit?.class ? (
-              <Fact theme={theme} label="Class">
-                {ask.audit.class}
-              </Fact>
-            ) : null}
-            {ask.audit && (ask.audit.gates.length > 0 || (ask.audit.withheld ?? 0) > 0) ? (
-              <Fact theme={theme} label="Gates">
-                {[
-                  ask.audit.gates.join(", "),
-                  (ask.audit.withheld ?? 0) > 0 ? `+${ask.audit.withheld} not shown (free text; see the ledger)` : "",
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </Fact>
-            ) : null}
-            <Fact theme={theme} label="Ledger">
-              {`${ask.scope ? `fleet ${ask.scope} · ` : ""}${ask.ledger}${ask.arc ? ` (arc ${ask.arc})` : ""}${ask.uid ? ` · uid ${ask.uid}` : ""}`}
-            </Fact>
-            {open ? <Text style={text.small}>{writtenTo(ask)}</Text> : null}
-            {origin && navigation ? (
-              <View style={{ flexDirection: "row" }}>
-                <Verb
-                  theme={theme}
-                  icon="ArrowUpRight"
-                  label="Open the session that asked"
-                  compact={compact}
-                  accessibilityLabel={`Open the session that asked ${ask.id}`}
-                  onPress={() => navigation.openAgent({ agentId: origin.agentId })}
-                />
-              </View>
-            ) : null}
-          </View>
-        ) : null}
-      </View>
+      <DecisionDetails theme={theme} ask={ask} lead={lead} open={open} compact={compact} navigation={navigation} />
     </Card>
   );
 }

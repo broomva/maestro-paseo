@@ -8,8 +8,15 @@ import { fakeWork } from "./fake-work";
 import { needsSection } from "./feed-model";
 import {
   allowLabel,
+  CANCEL_ARM_MS,
+  cancelStep,
+  denyWords,
   evidenceLine,
+  fallbackOf,
   glanceTiles,
+  goesLine,
+  hangingTiles,
+  heldByWords,
   holdChipWords,
   holdInspector,
   holdKindOf,
@@ -306,9 +313,15 @@ describe("the inspector's keys", () => {
     expect(keyAction("ask", { key: "Enter", meta: true }, false)).toBeNull();
   });
 
-  test("J and K walk on every kind", () => {
-    expect(keyAction("work", { key: "j" }, false)).toEqual({ step: 1 });
-    expect(keyAction("notice", { key: "K" }, false)).toEqual({ step: -1 });
+  test("J and K walk the holds: on a notice or a work item, which is not one, they do nothing", () => {
+    for (const kind of ["approval", "ask", "owner_step", "review"] as const) {
+      expect(keyAction(kind, { key: "j" }, false)).toEqual({ step: 1 });
+      expect(keyAction(kind, { key: "K" }, false)).toEqual({ step: -1 });
+    }
+    for (const kind of ["work", "notice"] as const) {
+      expect(keyAction(kind, { key: "j" }, false)).toBeNull();
+      expect(keyAction(kind, { key: "K" }, false)).toBeNull();
+    }
   });
 
   test("a field being typed in keeps every key", () => {
@@ -371,11 +384,114 @@ describe("what a hold is", () => {
     const notice = workInspector(items[2], NOW);
     expect(notice.kind).toBe("notice");
     if (notice.kind !== "notice") return;
-    expect(notice.closesWhen.map((entry) => entry.becomes)).toEqual(["Running", "Queued", "Done"]);
+    expect(notice.closesWhen.map((entry) => entry.becomes)).toEqual(["Running", "Canceled"]);
     const running = workInspector(items[3], NOW);
     expect(running.kind).toBe("work");
     if (running.kind !== "work") return;
     expect(running.state).toBe("running");
     expect(running.lifecycle.map((step) => step.done)).toEqual([true, true, false, false]);
+  });
+});
+
+describe("J2–J4: what each inspector body says", () => {
+  const entries = needsSection(needs.rows, items, asks);
+  const entryOf = (key: string) => entries.find((entry) => entry.row.key === key);
+
+  test("an approval says what held it, and what each of its two answers does", () => {
+    // Work at the gate with no prompt is Finished, never a hold (BRO-2999): an approval is a session's prompt.
+    const item = holdInspector(entryOf("work:gate") as never, NOW);
+    if (item.kind !== "approval") throw new Error("an approval");
+    expect(item.heldBy).toBe(
+      heldByWords(needs.rows.find((row) => row.key === "work:gate")?.kind === "approval" ? "permission" : ""),
+    );
+    expect(item.afterDeny).toEqual(denyWords("permission"));
+    expect(heldByWords("permission")).toBe("the session's permission prompt");
+    expect(heldByWords("gate")).toBe("Maestro's human gate");
+    expect(denyWords("permission")).toEqual(["The session is told no and goes on without it; nothing runs."]);
+    expect(denyWords("gate")).toEqual(["It goes back to its session; nothing is merged."]);
+  });
+
+  test("an ask says what waiting costs and why it is yours as two tiles, and where the answer goes", () => {
+    const withWords = [ask("A1", { stakes: "x", whyYou: "y" })];
+    const row = needsOf({ items: [], asks: withWords, reviews: [], landing: null, workspace: "broomva" }, NOW).rows[0];
+    const [entry] = needsSection(row ? [row] : [], [], withWords);
+    const item = holdInspector(entry as never, NOW);
+    if (item.kind !== "ask") throw new Error("an ask");
+    expect(item.cost).toBe("x");
+    expect(item.whyYou).toBe("y");
+    expect(item.goes).toContain("Your answer is written to origin/main, through Maestro's answers batch");
+    expect(item.fieldLabel).toBeUndefined();
+  });
+
+  test("a session that asked is named in where the answer goes, and what follows if it is gone (A8)", () => {
+    const line = goesLine("origin/main", "agent-12");
+    expect(line).toContain("Goes to the session that asked (agent-12), verbatim");
+    expect(line).toContain("with none, it waits for the conductor");
+    expect(line).not.toContain("starts");
+  });
+
+  test("a review lists what changed, what hangs off it, and its three answers", () => {
+    const item = holdInspector(entryOf("review:skene") as never, NOW);
+    if (item.kind !== "review") throw new Error("a review");
+    expect(item.options.map((option) => option.id)).toEqual(["keep", "park", "close"]);
+    expect(item.hanging?.map((tile) => tile.label)).toEqual(["work", "open asks", "driver session"]);
+    expect(item.goes).toContain("skene.yaml in the control repo");
+    expect(hangingTiles({ work: 3, asks: 1, driver: "skene-driver" })).toEqual([
+      { icon: "LayoutList", value: "3", label: "work" },
+      { icon: "MessagesSquare", value: "1", label: "open ask" },
+      { icon: "Radio", value: "1", label: "driver session" },
+    ]);
+    expect(hangingTiles({ work: 0, asks: 0 })[2]?.value).toBe("0");
+  });
+
+  test("if you say nothing: a timed default counts down from when it was asked to when it applies (A4)", () => {
+    const entry = entryOf(askHoldKey(asks[0])) as never as {
+      row: { kind: "ask"; since: string; body: Record<string, unknown> };
+    };
+    const since = Date.parse(entry.row.since);
+    const timed = {
+      ...entry,
+      row: {
+        ...entry.row,
+        body: { ...entry.row.body, default: { option: "yes", appliesAt: new Date(since + 30 * 60_000).toISOString() } },
+      },
+    };
+    const half = fallbackOf(timed as never, since + 15 * 60_000);
+    expect(half?.line).toContain("If you say nothing: Yes, in 15 min");
+    expect(half?.line).toContain("A4: reversible asks take their default after 30 min");
+    expect(half?.elapsed).toBeCloseTo(0.5);
+    expect(fallbackOf(timed as never, since + 31 * 60_000)?.line).toContain(", now");
+    // No timed default: the ledger's own words with no countdown, or nothing.
+    expect(fallbackOf({ ...entry, ask: ask("A1", { fallback: "yes" }) } as never, NOW)).toEqual({
+      line: "If you say nothing: Yes.",
+    });
+    expect(fallbackOf({ ...entry, ask: null } as never, NOW)).toBeUndefined();
+  });
+
+  test("stuck work is a notice: what closes it, who owns it, a prompt field, and no Approve", () => {
+    const stuck = fakeWork("s1", "blocked", live, {
+      project: "sri",
+      ticket: "STI-3593",
+      adoptedBy: { by: "SRI Orchestrator" },
+    });
+    const notice = workInspector(stuck, NOW);
+    if (notice.kind !== "notice") throw new Error("a notice");
+    expect(notice.kicker).toEqual(["sri", "STI-3593", "owner: SRI Orchestrator"]);
+    expect(notice.prompt).toBe(true);
+    expect(notice.closesWhen).toEqual([
+      { when: "Its session takes a turn again", becomes: "Running" },
+      { when: "Its orchestrator closes it", becomes: "Handled for you" },
+      { when: "You cancel it", becomes: "Canceled" },
+    ]);
+    expect(notice.note).toContain("No Approve: a notice is a fact");
+  });
+});
+
+describe("Cancel work…: the first press arms it, the second on the same item does it", () => {
+  test("a second press on the same item inside the window cancels; any other press arms", () => {
+    expect(cancelStep(null, "w1", 1000)).toBe("arm");
+    expect(cancelStep({ key: "w1", at: 1000 }, "w1", 1000 + CANCEL_ARM_MS)).toBe("go");
+    expect(cancelStep({ key: "w1", at: 1000 }, "w1", 1001 + CANCEL_ARM_MS)).toBe("arm");
+    expect(cancelStep({ key: "w1", at: 1000 }, "w2", 1500)).toBe("arm");
   });
 });

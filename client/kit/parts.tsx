@@ -7,6 +7,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useRef } from "react";
 import {
+  ActivityIndicator,
   type LayoutChangeEvent,
   Platform,
   Pressable,
@@ -59,6 +60,8 @@ export function Pill({
   grow = false,
   keyCap,
   disabled = false,
+  busy = false,
+  accessibilityLabel,
 }: {
   theme: PluginTheme;
   label: string;
@@ -68,6 +71,10 @@ export function Pill({
   grow?: boolean;
   keyCap?: string;
   disabled?: boolean;
+  /** The call it makes is in flight: a spinner replaces nothing but sits beside the word, and it cannot be pressed again. */
+  busy?: boolean;
+  /** What a screen reader says, when the button's words are not enough ("Answer A1: Merge PR #863"). */
+  accessibilityLabel?: string;
 }) {
   const kit = kitOf(theme);
   const ink = primary ? kit.onInk : kit.fg;
@@ -75,9 +82,9 @@ export function Pill({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled }}
-      disabled={disabled}
+      accessibilityLabel={accessibilityLabel ?? label}
+      accessibilityState={{ disabled: disabled || busy, busy }}
+      disabled={disabled || busy}
       onPress={onPress}
       style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({
         ...focusRing(theme, focused),
@@ -93,9 +100,10 @@ export function Pill({
         alignItems: "center",
         justifyContent: "center",
         gap: 8,
-        opacity: disabled ? 0.5 : pressed ? 0.85 : 1,
+        opacity: disabled || busy ? 0.5 : pressed ? 0.85 : 1,
       })}
     >
+      {busy ? <ActivityIndicator size="small" color={ink} /> : null}
       <Text numberOfLines={1} style={{ color: ink, fontSize: height >= 44 ? 16 : 14, fontWeight: "600" }}>
         {label}
       </Text>

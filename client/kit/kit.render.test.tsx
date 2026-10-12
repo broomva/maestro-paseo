@@ -93,6 +93,7 @@ const { GlanceTile } = await import("./glance-tile");
 const { Deck, DeckHold } = await import("./deck");
 const { KitGalleryScreen } = await import("./gallery");
 type UndoClock = import("./undo-model").UndoClock;
+type InspectorItem = import("./inspector").InspectorItem;
 
 const theme = GALLERY_LIGHT;
 let galleryOn = true;
@@ -635,7 +636,8 @@ describe("the inspector", () => {
       />,
     );
     await view.press(view.label("Install fleet-wide"));
-    await view.press(view.label("Answer"));
+    // The primary names the option it takes by its number (J3).
+    await view.press(view.label("Answer with 3"));
     expect(pressed).toEqual([["answer", "fleet"]]);
   });
   it("an owner step says where it is done and offers Done", async () => {
@@ -671,6 +673,148 @@ describe("the inspector", () => {
     expect(view.text()).toContain("Ask · 3 of 4");
     const bar = view.id("inspector-card-bar");
     expect(bar?.textContent).toBe("SkipAnswer");
+  });
+});
+
+describe("J2–J4: the desktop's bodies (BRO-3036)", () => {
+  /** Types into a field the way a keyboard does: the native setter, then an input event React hears. */
+  const type = async (field: El | null, value: string) => {
+    if (!field) throw new Error("nothing to type in");
+    const target = field as unknown as { tagName: string; dispatchEvent(event: unknown): boolean };
+    const proto = target.tagName === "TEXTAREA" ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(target, value);
+      target.dispatchEvent(new win.Event("input", { bubbles: true }));
+    });
+    await settle();
+  };
+  const ask: Extract<InspectorItem, { kind: "ask" }> = {
+    ...(ASK as Extract<InspectorItem, { kind: "ask" }>),
+    cost: "Nothing blocks; the mods stay unused.",
+    whyYou: "A mod that answers tool.call runs before the P2 gate.",
+    goes: "Goes to the session that asked, verbatim.",
+    fieldLabel: "Your words for A3",
+    optionsLabel: "Options for A3",
+    chosen: undefined,
+  };
+
+  it("an ask: what waiting costs and why you as two tiles, numbered answers, the recommended one named", async () => {
+    const { InspectorBody } = await import("./inspector");
+    const view = await mount(<InspectorBody theme={theme} item={ask} />);
+    const text = view.text();
+    expect(text).toContain("What waiting costsNothing blocks; the mods stay unused.");
+    expect(text).toContain("Why youA mod that answers tool.call runs before the P2 gate.");
+    expect(text).toContain("Keep them offRecommended");
+    expect(text).toContain("Goes to the session that asked, verbatim.");
+    // Numbered caps 1 to 3 on the options, nothing chosen for you.
+    expect(view.label("Options for A3")?.getAttribute("role")).toBe("radiogroup");
+    expect(view.all('[aria-checked="true"]')).toHaveLength(0);
+  });
+
+  it("the phone keeps its single line: no tiles, no numbers, no words field", async () => {
+    const { InspectorBody } = await import("./inspector");
+    const view = await mount(<InspectorBody theme={theme} item={ask} compact />);
+    expect(view.text()).not.toContain("What waiting costs");
+    expect(view.text()).toContain("Rec.");
+    expect(view.text()).not.toContain("Recommended");
+    expect(view.label("Your words for A3")).toBeNull();
+  });
+
+  it("the primary names the option by its number, the words you typed ride the verb, and the option is yours", async () => {
+    const pressed: [string, string | undefined, string | undefined][] = [];
+    const view = await mount(
+      <InspectorPanel
+        theme={theme}
+        item={ask}
+        open
+        onClose={ignore}
+        onVerb={(id, choice, words) => pressed.push([id, choice, words])}
+      />,
+    );
+    // Nothing chosen: the primary says Answer, never "Answer with 1" for a recommendation you did not take.
+    expect(view.label("Answer")).toBeTruthy();
+    await view.press(view.label("Install in one worktree first"));
+    await type(view.label("Your words for A3"), "After the release.");
+    await view.press(view.label("Answer with 2"));
+    expect(pressed).toEqual([["answer", "trial", "After the release."]]);
+  });
+
+  it("your words belong to one ask: the next ask starts with none", async () => {
+    function Host() {
+      const [item, setItem] = useState(ask);
+      return (
+        <>
+          <web.Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Next ask"
+            onPress={() => setItem({ ...ask, key: "ask:next", title: "The next ask" })}
+          />
+          <InspectorPanel theme={theme} item={item} open onClose={ignore} onVerb={ignore} />
+        </>
+      );
+    }
+    const view = await mount(<Host />);
+    await type(view.label("Your words for A3"), "Not now.");
+    expect((view.label("Your words for A3") as unknown as { value: string }).value).toBe("Not now.");
+    await view.press(view.label("Next ask"));
+    expect(view.text()).toContain("The next ask");
+    expect((view.label("Your words for A3") as unknown as { value: string }).value).toBe("");
+  });
+
+  it("choices that are locked cannot be chosen: an answer is in flight", async () => {
+    const { InspectorBody } = await import("./inspector");
+    const view = await mount(<InspectorBody theme={theme} item={{ ...ask, chosen: "off" }} locked />);
+    expect(view.label("Install fleet-wide")?.getAttribute("aria-disabled")).toBe("true");
+    await view.press(view.label("Install fleet-wide"));
+    expect(view.label("Install fleet-wide")?.getAttribute("aria-checked")).not.toBe("true");
+  });
+
+  it("an approval says what held it and what Deny does, under their own labels", async () => {
+    const { InspectorBody } = await import("./inspector");
+    const view = await mount(
+      <InspectorBody
+        theme={theme}
+        item={{
+          ...(APPROVAL as Extract<InspectorItem, { kind: "approval" }>),
+          heldBy: "Maestro's human gate",
+          afterDeny: ["It goes back to its session with your note; nothing is merged."],
+        }}
+      />,
+    );
+    const text = view.text();
+    expect(text).toContain("Held byMaestro's human gate");
+    expect(text).toContain("After you allow");
+    expect(text).toContain("If you deny");
+    expect(text).toContain("nothing is merged");
+  });
+
+  it("a notice: Cancel work… beside Open session and Unblock with a prompt…, and the prompt rides Unblock", async () => {
+    const pressed: [string, string | undefined, string | undefined][] = [];
+    const view = await mount(
+      <InspectorPanel
+        theme={theme}
+        item={{ ...(NOTICE as Extract<InspectorItem, { kind: "notice" }>), prompt: true }}
+        open
+        onClose={ignore}
+        onVerb={(id, choice, words) => pressed.push([id, choice, words])}
+      />,
+    );
+    expect(view.label("Cancel work…")).toBeTruthy();
+    expect(view.label("Open session")).toBeTruthy();
+    expect(view.text().toLowerCase()).not.toContain("approve ");
+    await type(view.label("A prompt for the session of Credits ledger: its session ended mid-turn"), "retry the test");
+    await view.press(view.label("Unblock with a prompt…"));
+    await view.press(view.label("Cancel work…"));
+    expect(pressed).toEqual([
+      ["unblock", undefined, "retry the test"],
+      ["cancel", undefined, "retry the test"],
+    ]);
+  });
+
+  it("a notice without a prompt (the phone's, an old daemon's) shows no field", async () => {
+    const { InspectorBody } = await import("./inspector");
+    const view = await mount(<InspectorBody theme={theme} item={NOTICE} onWords={ignore} />);
+    expect(view.all("textarea")).toHaveLength(0);
   });
 });
 

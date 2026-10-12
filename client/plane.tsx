@@ -71,6 +71,9 @@ import { ScoreboardCard } from "./scoreboard";
 import { TimelineNotices, TimelineView } from "./timeline";
 import { Button, Card, IconButton, Notice, Segmented, space, useText } from "./ui";
 
+/** The views whose desktop screen is J2–J9 (BRO-3036): they carry their own watched things, so no notice band sits above them. */
+const J_SCREENS: readonly PlaneView[] = ["decisions"];
+
 export function MaestroSurface({ theme, layout, navigation, params }: PluginScreenProps) {
   const list = useWorkList();
   // What needs you (needs.list): the subtitle, the tabs and Needs you say the header's number, read once.
@@ -144,6 +147,7 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
   const compact = layout.compact;
   const pad = compact ? space[4] : space[6];
   const view = viewFor(chosenView, compact);
+  const bands = compact || !J_SCREENS.includes(view);
   const tab = tabOfView(view);
 
   const items = list.data?.items ?? [];
@@ -297,19 +301,24 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
         </Notice>
       ) : null}
 
-      {view === "fleet" ? null : <FleetNotices theme={theme} compact={compact} onOpen={openFleet} />}
-      <AnswersNotices theme={theme} compact={compact} />
-      {/* On the Feed, Decide below says the same, inline. */}
-      {view === "decisions" || view === "feed" ? null : (
-        <AskNotices theme={theme} compact={compact} onOpen={(row) => requestIntent(holdTarget(row))} />
-      )}
-      {view === "loops" ? null : <LoopsNotices theme={theme} compact={compact} onOpen={() => setView("loops")} />}
-      {view === "timeline" ? null : (
-        <TimelineNotices theme={theme} compact={compact} onOpen={() => setView("timeline")} />
-      )}
-      {view === "initiatives" ? null : (
-        <InitiativeNotices theme={theme} compact={compact} onOpen={() => chooseView("initiatives")} />
-      )}
+      {/* The desktop's J screens say what they watch themselves (J5's tiles, Health's notices): no band above them. */}
+      {bands ? (
+        <>
+          {view === "fleet" ? null : <FleetNotices theme={theme} compact={compact} onOpen={openFleet} />}
+          <AnswersNotices theme={theme} compact={compact} />
+          {/* On the Feed, Decide below says the same, inline. */}
+          {view === "decisions" || view === "feed" ? null : (
+            <AskNotices theme={theme} compact={compact} onOpen={(row) => requestIntent(holdTarget(row))} />
+          )}
+          {view === "loops" ? null : <LoopsNotices theme={theme} compact={compact} onOpen={() => setView("loops")} />}
+          {view === "timeline" ? null : (
+            <TimelineNotices theme={theme} compact={compact} onOpen={() => setView("timeline")} />
+          )}
+          {view === "initiatives" ? null : (
+            <InitiativeNotices theme={theme} compact={compact} onOpen={() => chooseView("initiatives")} />
+          )}
+        </>
+      ) : null}
 
       {compact ? (
         <ViewPicker theme={theme} view={view} onView={chooseView} views={viewsFor(true)} badges={badges} />

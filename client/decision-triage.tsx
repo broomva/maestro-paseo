@@ -13,6 +13,7 @@ import { useIsMutating, useMutationState, useQuery, useQueryClient } from "@tans
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Easing, Platform, Pressable, Text, View } from "react-native";
 import type { DecisionAsk } from "../shared/fleet";
+import { UNDO_MS } from "../shared/undo";
 import { ConductorAnswers } from "./conductor-answers";
 import {
   ANSWER_KEY,
@@ -46,7 +47,6 @@ import {
   progressOf,
   pruneSkipped,
   railName,
-  railOverflow,
   recentlyAnswered,
   resolveFocus,
   type TriageKey,
@@ -56,7 +56,11 @@ import {
   whereOf,
   writtenTo,
 } from "./decisions-model";
+import { StageCard, StageControls, StageSide, StageTilesRow } from "./decisions-stage";
+import { progressSegments, stageProgress, stageTiles, upNextRow, wentRows } from "./decisions-stage-model";
 import { errorText } from "./format";
+import { useAnswersStatus, useNeeds } from "./hooks";
+import { useOpenUrl } from "./open-url";
 import {
   Card,
   focusRing,
@@ -67,16 +71,18 @@ import {
   Segmented,
   size,
   space,
+  typingIn,
   useReducedMotion,
   useText,
 } from "./ui";
+import { useTick } from "./use-tick";
 
 type Navigation = PluginSurfaceProps["navigation"];
 
 /** Where drafts are kept: outside ["maestro"], so a refresh of every read leaves them be. */
 
 /** The rail lists this many ledgers before "more". */
-const RAIL_SHOWN = 8;
+const _RAIL_SHOWN = 8;
 /** How long an answered card takes to leave. */
 const EXIT_MS = 160;
 /** The tab's root, which takes focus so its keys stay its own. */
@@ -180,13 +186,6 @@ type KeyTarget = {
 };
 type DomNode = { contains?(other: unknown): boolean; focus?(options?: { preventScroll?: boolean }): void };
 
-/** Whether a key press comes from somewhere you type. */
-function typingIn(target: unknown): boolean {
-  const el = target as { tagName?: string; isContentEditable?: boolean } | null;
-  const tag = el?.tagName?.toUpperCase();
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable === true;
-}
-
 /** The option card a key press comes from, by its place among the card's options; null when it is not one. */
 function optionAt(target: unknown): number | null {
   type El = {
@@ -254,7 +253,7 @@ function ExitCard({
 }
 
 type Status =
-  | { kind: "answered"; ask: DecisionAsk; warning: string | null }
+  | { kind: "answered"; ask: DecisionAsk; warning: string | null; queued: string | null }
   | { kind: "skipped"; ask: DecisionAsk }
   | null;
 
@@ -286,6 +285,11 @@ export function DecisionsView({
   const client = useQueryClient();
   const read = useWorkspaceAsks();
   const reduced = useReducedMotion();
+  // J5's tiles and rail (desktop): needs.list and answers.status, each one read, the same ones the header reads.
+  const needs = useNeeds();
+  const answersRead = useAnswersStatus();
+  const openUrl = useOpenUrl();
+  const now = useTick(15_000);
   const [ordering, setOrdering] = useState<Ordering>("blocking");
   const [ledger, setLedger] = useState<string | null>(focus?.ledger ?? null);
   const [pinned, setPinned] = useState<{ key: string; ask: DecisionAsk } | null>(null);
@@ -321,7 +325,6 @@ export function DecisionsView({
   });
   const answeredHere = new Set(answers.filter((one) => one.status === "success").map((one) => one.key));
   const answeringHere = new Set(answers.filter((one) => one.status === "pending").map((one) => one.key));
-  const [railAll, setRailAll] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [answeredOpen, setAnsweredOpen] = useState(false);
   const keys = useRef<CardKeys | null>(null);
@@ -478,10 +481,17 @@ export function DecisionsView({
     setStatus({ kind: "skipped", ask: current });
     leave();
   };
-  const onAnswered = (answered: DecisionAsk, warning: string | null) => {
+  const onAnswered = (answered: DecisionAsk, warning: string | null, queued = false) => {
     if (!current || !currentKey) return;
     const at = index < 0 ? lastIndex : index;
-    setStatus({ kind: "answered", ask: answered, warning });
+    // An answer that waits out its undo window (B4) is still an open ask: say what you chose and that it can be undone.
+    const choice = current.options.find((entry) => entry.id === drafts[currentKey]?.chosen)?.label;
+    setStatus({
+      kind: "answered",
+      ask: answered,
+      warning,
+      queued: queued ? (choice ? `“${choice}”` : "in your words") : null,
+    });
     setDrafts(({ [currentKey]: _gone, ...rest }) => rest);
     // The card that leaves is the one you answered, as it read: a refetch landing mid-exit does not change it.
     setLeaving({ key: currentKey, ask: current, at });
@@ -538,7 +548,8 @@ export function DecisionsView({
       // Escape is the card's only while a confirm is armed; a held Enter (key repeat) never answers.
       if (key.kind === "cancel" && !keys.current?.armed()) return;
       event.preventDefault();
-      if (key.kind === "answer" && event.repeat) return;
+      // A held key acts once: an answer or a skip is a verb, so only the first press counts.
+      if ((key.kind === "answer" || key.kind === "skip") && event.repeat) return;
       act.current(key);
     };
     // In the capture phase, before a focused option takes Enter or Space as a press of itself (it selects that same option).
@@ -580,14 +591,9 @@ export function DecisionsView({
   const progress = progressOf(answeredCount, visit.size, !frozen && Boolean(current));
   const ledgerOpen = queue.length;
   const next = upNext(queue, index < 0 ? lastIndex - 1 : index);
-  const shownRail =
-    railAll || rail.length <= RAIL_SHOWN
-      ? rail
-      : rail.filter((entry, at) => at < RAIL_SHOWN || entry.ledger === ledgerShown);
-  const hidden = rail.filter((entry) => !shownRail.includes(entry));
-
   const statusLine = (
-    <View style={{ minHeight: 18, gap: 2 }} accessibilityLiveRegion="polite">
+    // Mounted from the start, so a screen reader hears what is put in it; on the desktop it takes no room until then.
+    <View style={{ minHeight: compact || status || focusNote ? 18 : 0, gap: 2 }} accessibilityLiveRegion="polite">
       {status ? (
         <View style={{ flexDirection: "row", alignItems: "center", gap: space[2] }}>
           <Icon
@@ -597,7 +603,9 @@ export function DecisionsView({
           />
           <Text style={[text.small, { flex: 1, color: theme.colors.foreground }]}>
             {status.kind === "answered"
-              ? `${answeredLine(status.ask)} · ${ledgerName(ledgerOf(status.ask))} · answers are not undone here`
+              ? status.queued
+                ? `Answered: ${status.queued} · ${ledgerName(ledgerOf(status.ask))} · written in ${UNDO_MS / 1000} s unless you undo it`
+                : `${answeredLine(status.ask)} · ${ledgerName(ledgerOf(status.ask))} · answers are not undone here`
               : `Skipped “${cutAtWord(headlineOf(status.ask).headline, 60)}”: it comes back at the end of the queue`}
             {status.kind === "answered" && status.warning ? (
               <Text style={{ color: theme.colors.statusWarning }}>{` · ${status.warning}`}</Text>
@@ -717,68 +725,6 @@ export function DecisionsView({
       ) : null}
     </View>
   ) : null;
-
-  const railView = compact ? null : (
-    <View style={{ width: 220, gap: 2 }}>
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          gap: space[1],
-          paddingHorizontal: space[2] + 2,
-          paddingBottom: space[1],
-        }}
-      >
-        <Text style={[text.label, { letterSpacing: 0.6, flex: 1 }]}>LEDGERS</Text>
-        {totalWaiting > 0 ? (
-          <>
-            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.statusWarning }} />
-            <Text style={text.small}>waits on you</Text>
-          </>
-        ) : null}
-      </View>
-      <RailRow
-        theme={theme}
-        label="All"
-        open={totalOpen}
-        waiting={totalWaiting}
-        selected={ledgerShown === null}
-        compact={false}
-        accessibilityLabel={railLabel("All ledgers", totalOpen, totalWaiting)}
-        onPress={() => choose(null)}
-      />
-      {shownRail.map((entry) => (
-        <RailRow
-          key={entry.ledger}
-          theme={theme}
-          label={railName(entry.ledger)}
-          open={entry.open}
-          waiting={entry.waiting}
-          selected={entry.ledger === ledgerShown}
-          compact={false}
-          accessibilityLabel={railLabel(entry.ledger, entry.open, entry.waiting)}
-          onPress={() => choose(entry.ledger)}
-        />
-      ))}
-      {hidden.length > 0 || railAll ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={railAll ? "Show fewer ledgers" : `Show ${hidden.length} more ledgers`}
-          onPress={() => setRailAll((now) => !now)}
-          style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({
-            ...focusRing(theme, focused),
-            minHeight: 40,
-            justifyContent: "center",
-            paddingHorizontal: space[2] + 2,
-            borderRadius: radius.control,
-            opacity: pressed ? 0.7 : 1,
-          })}
-        >
-          <Text style={[text.small, text.tabular]}>{railAll ? "Show fewer" : railOverflow(hidden)}</Text>
-        </Pressable>
-      ) : null}
-    </View>
-  );
 
   const upNextView =
     next.length > 0 ? (
@@ -922,6 +868,103 @@ export function DecisionsView({
     </View>
   );
 
+  // The desktop is J5 (docs/design/next/j5-decisions.png): the order and ledger chips, the four tiles, the decision
+  // at full width and the column beside it. The phone keeps the list's own shape.
+  if (!compact) {
+    const nextBase = index < 0 ? lastIndex - 1 : index;
+    const emptyStage = (
+      <Card theme={theme}>
+        <Text style={text.title}>
+          {ledgerShown ? `Nothing open in ${ledgerName(ledgerShown)}` : "Nothing to decide"}
+        </Text>
+        <Text style={text.muted}>
+          {ledgerShown
+            ? "Every ask in this ledger is answered."
+            : "No open asks in your workspace's ledgers or the fleet's. New ones show here as agents write them."}
+        </Text>
+        {ledgerShown && totalOpen > 0 ? (
+          <View style={{ flexDirection: "row" }}>
+            <Verb
+              theme={theme}
+              icon="ArrowLeft"
+              label={`All ledgers · ${totalOpen} open`}
+              compact={false}
+              onPress={() => choose(null)}
+            />
+          </View>
+        ) : null}
+      </Card>
+    );
+    return (
+      <View {...rootProps} style={{ gap: 16, outlineWidth: 0 }}>
+        {stale ? (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space[2] }} accessibilityRole="alert">
+            <Icon name="CloudOff" size={14} color={theme.colors.foregroundMuted} />
+            <Text style={[text.small, { flex: 1 }]}>
+              {`Could not refresh (${errorText(read.error)}): showing what was read before. It tries again on its own.`}
+            </Text>
+          </View>
+        ) : null}
+        {warnings.slice(0, 3).map((warning) => (
+          <Notice key={warning} theme={theme} tone="warn">
+            {warning}
+          </Notice>
+        ))}
+        <StageControls
+          theme={theme}
+          ordering={ordering}
+          onOrdering={reorder}
+          asks={openAll}
+          ledger={ledgerShown}
+          onLedger={choose}
+          progress={stageProgress(progress, queue, skipped.size)}
+          segments={progressSegments(answeredCount, visit.size)}
+        />
+        <StageTilesRow
+          theme={theme}
+          tiles={stageTiles(openAll, needs.data ?? null, answersRead.data ?? null, now)}
+          onOpenPr={openUrl}
+        />
+        {statusLine}
+        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 20 }}>
+          <View style={{ flex: 1, minWidth: 0, gap: 16 }}>
+            {current && currentKey ? (
+              <ExitCard key={currentKey} leaving={leaving?.key === currentKey} reduced={reduced} onDone={exitDone}>
+                <View style={{ flexDirection: "row" }}>
+                  <StageCard
+                    theme={theme}
+                    ask={current}
+                    where={whereOf(current)}
+                    navigation={navigation}
+                    now={now}
+                    onAnswered={onAnswered}
+                    onSkip={canSkip ? skip : undefined}
+                    keys={keys}
+                    draft={drafts[currentKey] ?? EMPTY_DRAFT}
+                    onDraft={(draft) => setDrafts((was) => ({ ...was, [currentKey]: draft }))}
+                    frozen={frozen}
+                    onNext={frozen ? leave : undefined}
+                  />
+                </View>
+              </ExitCard>
+            ) : (
+              emptyStage
+            )}
+            {/* Never folded away: an answer that would once have started work waits here, visibly, for the conductor (A8). */}
+            <ConductorAnswers theme={theme} asks={conductorList} compact={false} />
+          </View>
+          <StageSide
+            theme={theme}
+            next={next.map(upNextRow)}
+            nextTotal={Math.max(queue.length - (nextBase + 1), 0)}
+            went={answersRead.data ? wentRows(answersRead.data.recent) : null}
+            onGo={(at) => go(nextBase + 1 + at)}
+          />
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View {...rootProps}>
       {header}
@@ -938,14 +981,7 @@ export function DecisionsView({
           {warning}
         </Notice>
       ))}
-      {compact ? (
-        main
-      ) : (
-        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space[5] }}>
-          {railView}
-          {main}
-        </View>
-      )}
+      {main}
     </View>
   );
 }

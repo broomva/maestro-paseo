@@ -10,8 +10,10 @@
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { DRAFTS_KEY, type Drafts } from "./decision-card";
 import { useWorkspaceAsks } from "./decisions";
 import { decisionAsks, ledgerOf } from "./decisions-model";
 import { needsSection } from "./feed-model";
@@ -28,6 +30,8 @@ import {
   SectionHeading,
 } from "./home-cards";
 import {
+  CANCEL_ARM_MS,
+  cancelStep,
   glanceTiles,
   holdInspector,
   holdKindOf,
@@ -52,7 +56,8 @@ import { undoEntry } from "./kit/undo-model";
 import { UndoToast, useUndoToast } from "./kit/undo-toast";
 import { useOpenUrl } from "./open-url";
 import { groupHint } from "./plane-model";
-import { Notice } from "./ui";
+import { Notice, typingIn } from "./ui";
+import { useTick } from "./use-tick";
 import { planVerb, useVerbs, type VerbId, type VerbTarget } from "./verbs";
 
 /** Something to open: a hold by its key (Paseo's `params.hold`, a count or a card), or the work item with this id. */
@@ -65,16 +70,6 @@ export interface HomeFocus {
 
 const INSPECTOR_WIDTH = 480;
 
-/** The time now, moved on every `ms` while mounted. */
-function useTick(ms: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), ms);
-    return () => clearInterval(timer);
-  }, [ms]);
-  return now;
-}
-
 type KeyEvent = {
   key: string;
   repeat?: boolean;
@@ -85,12 +80,6 @@ type KeyEvent = {
   target?: unknown;
   preventDefault?: () => void;
 };
-
-function typingIn(target: unknown): boolean {
-  const el = target as { tagName?: string; isContentEditable?: boolean } | null | undefined;
-  const tag = el?.tagName?.toUpperCase();
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!el?.isContentEditable;
-}
 
 export function HomeScreen({
   theme,
@@ -119,6 +108,7 @@ export function HomeScreen({
   const watched = useWatched();
   const asksRead = useWorkspaceAsks();
   const toast = useToast();
+  const client = useQueryClient();
   const openUrl = useOpenUrl();
   const verbs = useVerbs();
   const undo = useUndoToast((receipt) => {
@@ -222,18 +212,24 @@ export function HomeScreen({
   };
   // One verb at a time on a hold: it cannot be acted on again until the call has answered and every read has landed.
   const inFlight = useRef(new Set<string>());
-  const act = async (verb: VerbId, target: VerbTarget, choice?: string) => {
+  const act = async (verb: VerbId, target: VerbTarget, choice?: string, words?: string) => {
     const id = target.row?.key ?? (target.item ? `work:${target.item.id}` : (target.proposal ?? verb));
     if (inFlight.current.has(id)) return;
     inFlight.current.add(id);
     let landed: Promise<void> = Promise.resolve();
     try {
-      const plan = planVerb(verb, target, choice);
+      const plan = planVerb(verb, target, choice, words);
       const out = await verbs.run(plan, env);
       landed = out.settled;
       // Work this screen has no hold or row for opens in its own detail; the rest is for the tab that owns it.
       if (out.go?.kind === "select") onOpenWork(out.go.id);
-      else if (out.go) requestIntent(out.go);
+      else if (out.go) {
+        // An answer that Decisions confirms starts from what you chose and typed here, never from nothing.
+        const { draft } = out;
+        const decided = out.go.kind === "decisions" ? out.go.key : null;
+        if (draft && decided) client.setQueryData<Drafts>(DRAFTS_KEY, (now) => ({ ...now, [decided]: draft }));
+        requestIntent(out.go);
+      }
       if (out.receipt) undo.show(undoEntry(out.receipt, out.done, Date.now(), out.appliesAt, "applies in"));
       else toast.show(out.done);
     } catch (error) {
@@ -249,7 +245,20 @@ export function HomeScreen({
     if (id === "deny" || id === "answer") selectHold(hold.row.key);
     else void act(id as VerbId, targetOf(hold));
   };
-  const onInspectorVerb = (id: string, choice?: string) => void act(id as VerbId, targetOf(entry), choice);
+  const armedCancel = useRef<{ key: string; at: number } | null>(null);
+  const onInspectorVerb = (id: string, choice?: string, words?: string) => {
+    if (id === "cancel" && chosenItem) {
+      // "Cancel work…": the first press arms it, the second on the same item does it.
+      const step = cancelStep(armedCancel.current, chosenItem.id, Date.now());
+      if (step === "arm") {
+        armedCancel.current = { key: chosenItem.id, at: Date.now() };
+        toast.show(`Press Cancel work… again within ${CANCEL_ARM_MS / 1000} s to cancel it`);
+        return;
+      }
+      armedCancel.current = null;
+    }
+    void act(id as VerbId, targetOf(entry), choice, words);
+  };
 
   const walk = (step: 1 | -1) => {
     const next = stepHold(holdKeys, selection?.kind === "hold" ? selection.key : null, step);
@@ -602,7 +611,8 @@ export function HomeScreen({
           open={showing}
           onClose={() => setOpen(false)}
           onVerb={onInspectorVerb}
-          onNext={holdKeys.length > 1 ? () => walk(1) : undefined}
+          // J and K walk the holds: an item that is not one (a notice, a running item) has no next hold.
+          onNext={selection?.kind === "hold" && holdKeys.length > 1 ? () => walk(1) : undefined}
           onOpenSession={() => void act("open", targetOf(entry))}
           width={panelWidth}
           scope={root}

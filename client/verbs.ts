@@ -62,17 +62,23 @@ export type VerbPlan =
   | {
       call: "answer";
       ask: DecisionAsk;
-      option: string;
+      /** The option taken; null when you answered in your own words alone. */
+      option: string | null;
+      /** Your words, with or without an option. */
+      note: string;
       done: string;
     }
   | { call: "dispatch"; id: string; done: string }
-  | { call: "unblock"; id: string; done: string }
+  | { call: "unblock"; id: string; note: string; done: string }
   | { call: "cancel"; id: string; done: string }
   | { call: "conductor"; key: string; verb: "file" | "dismiss"; done: string }
   | { call: "url"; url: string; done: string }
   | { call: "session"; agentId: string; done: string }
-  /** Somewhere else in Maestro does it (Decisions, Initiatives, the item): nothing changes here. */
-  | { call: "go"; intent: MaestroIntent; done: string }
+  /**
+   * Somewhere else in Maestro does it (Decisions, Initiatives, the item): nothing changes here. `draft` is what you
+   * had chosen and typed, carried there so the deliberate confirm starts from it instead of from nothing.
+   */
+  | { call: "go"; intent: MaestroIntent; done: string; draft?: { chosen: string | null; note: string } }
   /** Nothing changes: it stays where it is (Skip, Not now). */
   | { call: "stay"; done: string }
   /** No call exists for it yet; `why` says which ticket brings one. */
@@ -118,10 +124,10 @@ export function promptSession(agentId: string | null, key: string, prompt: strin
 }
 
 /**
- * The call `verb` makes on `target`. `choice` is the option an ask's or a
- * review's inspector holds. Pure.
+ * The call `verb` makes on `target`. `choice` is the option an ask's or a review's inspector holds, and
+ * `words` what you typed beside it (an answer's words, a prompt sent with Unblock). Pure.
  */
-export function planVerb(verb: VerbId, target: VerbTarget, choice?: string): VerbPlan {
+export function planVerb(verb: VerbId, target: VerbTarget, choice?: string, words = ""): VerbPlan {
   const { row = null, item = null, ask = null } = target;
   const hold = row ? holdOf(row.key) : null;
   switch (verb) {
@@ -137,10 +143,23 @@ export function planVerb(verb: VerbId, target: VerbTarget, choice?: string): Ver
         ? { kind: "decisions", ledger: null, id: ask.id, key: hold?.kind === "ask" ? hold.askKey : null }
         : { kind: "decisions" };
       const option = ask?.options.find((entry) => entry.id === choice) ?? null;
-      // An answer that cannot be undone takes Decisions' deliberate confirm; so does one this client cannot send.
-      if (!ask || !option || option.reversible === false)
-        return { call: "go", intent: decisions, done: "Opened it in Decisions" };
-      return { call: "answer", ask, option: option.id, done: `Answered: ${option.label}` };
+      const note = words.trim();
+      // An answer that cannot be undone takes Decisions' deliberate confirm; so does one this client cannot send,
+      // and an answer with nothing chosen and nothing said.
+      if (!ask || option?.reversible === false || (!option && !note))
+        return {
+          call: "go",
+          intent: decisions,
+          done: "Opened it in Decisions",
+          ...(ask && (option || note) ? { draft: { chosen: option?.id ?? null, note } } : {}),
+        };
+      return {
+        call: "answer",
+        ask,
+        option: option?.id ?? null,
+        note,
+        done: option ? `Answered: ${option.label}` : "Answered in your words",
+      };
     }
     case "done": {
       if (row?.kind !== "owner_step") return { call: "unavailable", why: "Only an owner step is done." };
@@ -162,7 +181,7 @@ export function planVerb(verb: VerbId, target: VerbTarget, choice?: string): Ver
     }
     case "unblock":
       if (item?.state !== "blocked") return { call: "unavailable", why: "Only stuck work is unblocked." };
-      return { call: "unblock", id: item.id, done: "Unblocked" };
+      return { call: "unblock", id: item.id, note: words.trim(), done: "Unblocked" };
     case "cancel":
       if (!item) return { call: "unavailable", why: "Only work is canceled." };
       return { call: "cancel", id: item.id, done: "Canceled" };
@@ -187,6 +206,8 @@ export interface VerbOutcome {
   appliesAt?: string;
   /** Somewhere the screen should go (Decisions, the item). */
   go?: MaestroIntent;
+  /** What you had chosen and typed, for the place `go` names to start from. */
+  draft?: { chosen: string | null; note: string };
   /** Resolves once needs.list and every Maestro read have been read again after the call. */
   settled: Promise<void>;
 }
@@ -260,7 +281,7 @@ export function useVerbs() {
           id: plan.ask.id,
           hash: plan.ask.hash,
           option: plan.option,
-          note: "",
+          note: plan.note,
         });
         const done = warning ? `${plan.done} · ${warning}` : plan.done;
         return receipt ? { done, receipt: `verb:${receipt}`, appliesAt } : { done };
@@ -269,7 +290,7 @@ export function useVerbs() {
         await rpc.dispatch({ id: plan.id });
         return { done: plan.done };
       case "unblock": {
-        const { receipt, appliesAt } = await rpc.unblock({ id: plan.id, note: "" });
+        const { receipt, appliesAt } = await rpc.unblock({ id: plan.id, note: plan.note });
         return receipt ? { done: plan.done, receipt: `verb:${receipt}`, appliesAt } : { done: plan.done };
       }
       case "cancel": {
@@ -288,7 +309,7 @@ export function useVerbs() {
         env.openAgent(plan.agentId);
         return { done: plan.done };
       case "go":
-        return { done: plan.done, go: plan.intent };
+        return { done: plan.done, go: plan.intent, ...(plan.draft ? { draft: plan.draft } : {}) };
       case "stay":
         return { done: plan.done };
       case "stale":
