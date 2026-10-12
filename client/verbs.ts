@@ -157,7 +157,7 @@ export function planVerb(verb: VerbId, target: VerbTarget, choice?: string): Ver
       return { call: "unavailable", why: "It has no session." };
     }
     case "unblock":
-      if (!item || item.state !== "blocked") return { call: "unavailable", why: "Only stuck work is unblocked." };
+      if (item?.state !== "blocked") return { call: "unavailable", why: "Only stuck work is unblocked." };
       return { call: "unblock", id: item.id, done: "Unblocked" };
     case "cancel":
       if (!item) return { call: "unavailable", why: "Only work is canceled." };
