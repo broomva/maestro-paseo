@@ -545,7 +545,7 @@ export function HomeHeaderBar({
       workspaces={workspaceOptions(needs.data?.rows ?? [], items)}
       workspace={workspace}
       onWorkspace={onWorkspace}
-      workspaceApplies={tab === "feed"}
+      workspaceApplies={tab === "feed" || tab === "work" || tab === "decisions"}
       presence={presence}
       wake={wakeChip(loop.data ?? null, now)}
       wakeOpen={wakeOpen}

@@ -68,11 +68,13 @@ import {
 } from "./plane-model";
 import { BoardView, FeedView, ListView } from "./plane-views";
 import { ScoreboardCard } from "./scoreboard";
+import { ChipRow } from "./stage-parts";
 import { TimelineNotices, TimelineView } from "./timeline";
-import { Button, Card, IconButton, Notice, Segmented, space, useText } from "./ui";
+import { Button, Card, IconButton, Notice, space, useText } from "./ui";
+import { WorkBoard } from "./work-board";
 
 /** The views whose desktop screen is J2–J9 (BRO-3036): they carry their own watched things, so no notice band sits above them. */
-const J_SCREENS: readonly PlaneView[] = ["decisions"];
+const J_SCREENS: readonly PlaneView[] = ["decisions", "board"];
 
 export function MaestroSurface({ theme, layout, navigation, params }: PluginScreenProps) {
   const list = useWorkList();
@@ -323,9 +325,10 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
       {compact ? (
         <ViewPicker theme={theme} view={view} onView={chooseView} views={viewsFor(true)} badges={badges} />
       ) : TAB_VIEWS[tab].length > 1 ? (
-        <Segmented
+        <ChipRow
           theme={theme}
           label={`${HOME_TABS.find((entry) => entry.id === tab)?.label ?? "Maestro"} views`}
+          variant="segment"
           options={VIEWS.filter((option) => TAB_VIEWS[tab].includes(option.id))}
           value={view}
           onChange={chooseView}
@@ -343,7 +346,13 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
           onSelect={setSelected}
         />
       ) : view === "decisions" ? (
-        <DecisionsView theme={theme} compact={compact} navigation={navigation} focus={decisionsFocus} />
+        <DecisionsView
+          theme={theme}
+          compact={compact}
+          navigation={navigation}
+          focus={decisionsFocus}
+          workspace={compact ? null : workspace}
+        />
       ) : view === "initiatives" ? (
         <InitiativesView
           theme={theme}
@@ -521,6 +530,23 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
               setSelected(id);
             }}
           />
+        ) : view === "board" ? (
+          // J6: Work as five trays, its own filters and its own inspector; the other Work views keep their pane.
+          <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 12 }} keyboardShouldPersistTaps="handled">
+            <WorkBoard
+              theme={theme}
+              navigation={navigation}
+              workspace={workspace}
+              query={query}
+              view={view}
+              views={VIEWS.filter((option) => TAB_VIEWS[tab].includes(option.id))}
+              onView={(next) => chooseView(next as PlaneView)}
+              onOpenWork={(id) => {
+                chooseView("list");
+                setSelected(id);
+              }}
+            />
+          </ScrollView>
         ) : (
           <View style={{ flex: 1, flexDirection: "row" }}>
             <View style={{ flex: 1 }}>{listPane}</View>

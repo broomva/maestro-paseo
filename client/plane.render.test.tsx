@@ -1697,16 +1697,14 @@ describe("work the loop flagged", () => {
     await view.press(view.byLabel("Needs you, 3"));
     expect(view.text()).toContain("Work y");
     expect(view.text()).not.toContain("Work d");
+    // J6: Work y is in the Needs you tray, once, and not in Queued (which still holds Work d).
     await view.goto("Board");
-    const text = view.text();
-    const needsYou = text.indexOf("At your gate, or only you may start it");
-    const done = text.indexOf("The branch is the receipt");
-    expect(needsYou).toBeGreaterThan(-1);
-    expect(text.indexOf("Work y")).toBeGreaterThan(needsYou);
-    expect(text.indexOf("Work y")).toBeLessThan(done);
-    // It left the Queued column: only once on the board.
-    expect(text.match(/Work y/g)).toHaveLength(1);
-    expect(text.indexOf("Work d")).toBeLessThan(needsYou);
+    const lane = (id: string) => view.all(`[data-testid="lane-${id}"]`)[0]?.textContent ?? "";
+    expect(lane("needs")).toContain("Work y");
+    expect(lane("needs")).toContain("owner step");
+    expect(lane("queued")).not.toContain("Work y");
+    expect(lane("queued")).toContain("Work d");
+    expect(view.text().match(/Work y/g)).toHaveLength(1);
   });
 
   test("the Feed home's Needs you lists exactly needs.list's holds: as many as the header, the Feed tab and the tile say (BRO-3001, BRO-3035)", async () => {
@@ -2262,7 +2260,8 @@ describe("views and filters", () => {
     expect(view.pressed("Needs you, 2")).toBe("true");
     expect(view.pressed("All work")).toBe("true");
     expect(view.text()).toContain("Work a");
-    expect(view.text()).not.toContain("Work c");
+    expect(view.text()).toContain("Work c");
+    expect(view.text()).not.toContain("Work d");
   });
 
   test("the board bypasses the state filter, and choosing it clears the filter", async () => {
@@ -2271,16 +2270,21 @@ describe("views and filters", () => {
     await view.press(view.byLabel("Running, 1"));
     expect(view.text()).not.toContain("Work a");
     await view.goto("Board");
-    for (const title of ["Work a", "Work b", "Work c", "Work d", "Work f"]) expect(view.text()).toContain(title);
+    // Stuck work (Work b) is a notice, Health's: it is in no tray; Done keeps only the last 24 h (Work f closed before).
+    for (const title of ["Work a", "Work c", "Work d"]) expect(view.text()).toContain(title);
+    expect(view.text()).not.toContain("Work f");
+    expect(view.text()).not.toContain("Work b");
     await view.goto("List");
     expect(view.pressed("All, 6")).toBe("true");
-    // A search typed in the compact feed while the board is the chosen view: the board has no search field, so it hides nothing.
+    // A search typed in the compact feed while the board is the chosen view: J6's board is narrowed by the header's search.
     await view.goto("Board");
     await view.rerender(surface(true));
     await view.type(view.byLabel("Find work, ticket or branch"), "genesis");
     await view.rerender(surface(false));
     expect(view.viewNow()).toBe("Board");
-    for (const title of ["Work a", "Work b", "Work c", "Work d", "Work f"]) expect(view.text()).toContain(title);
+    expect(view.text()).toContain("1 work item in scope");
+    expect(view.text()).toContain("Work c");
+    expect(view.text()).not.toContain("Work d");
   });
 
   test("a scope whose initiative leaves the list does not come back", async () => {
@@ -2646,14 +2650,18 @@ describe("the Queued hint", () => {
     [false, YOURS_HINT, LOOP_HINT],
     [true, LOOP_HINT, YOURS_HINT],
   ] as const) {
-    test(`with the loop ${on ? "on" : "off"}, the feed, the list and the board say "${shown}"`, async () => {
+    test(`with the loop ${on ? "on" : "off"}, the feed and the list say "${shown}", and the board says who starts it`, async () => {
       if (on) loopState = { ...loopOff(), minutes: 15, nextAt: new Date(Date.now() + 9 * 60_000).toISOString() };
       const view = await mount(surface(false));
-      for (const name of ["Feed", "List", "Board"]) {
+      for (const name of ["Feed", "List"]) {
         await view.goto(name);
         expect(view.text()).toContain(shown);
         expect(view.text()).not.toContain(hidden);
       }
+      // J6's tray says who starts it, which is true whether or not the loop is on: it never does (A8).
+      await view.goto("Board");
+      expect(view.text()).toContain("you or a lane start these");
+      expect(view.text()).not.toContain(hidden);
     });
   }
 });
@@ -2909,10 +2917,12 @@ describe("J1, the Feed home on the desktop (BRO-3035)", () => {
     expect(view.byLabel(`Feed, ${needsNow().summary.total} need you`)).not.toBeNull();
   });
 
-  test("the header's tabs open the views; the Feed tab's workspace menu is the Feed's alone", async () => {
+  test("the header's tabs open the views; the workspace menu is on the tabs it narrows (Feed, Decisions, Work)", async () => {
     const view = await mount(surface(false));
     expect(view.byLabel("Workspace: All workspaces")).not.toBeNull();
     await view.goto("Decisions");
+    expect(view.byLabel("Workspace: All workspaces")).not.toBeNull();
+    await view.goto("Initiatives");
     expect(view.byLabel("Workspace: All workspaces")).toBeNull();
     await view.goto("Feed");
     expect(view.byLabel("Workspace: All workspaces")).not.toBeNull();
@@ -4425,8 +4435,8 @@ describe("the Decisions tab", () => {
       },
     ];
     const view = await mount(surface(false));
-    // Every view but the Feed (Decide, inline) and Decisions shows the notice.
-    await view.goto("Board");
+    // Every view but the Feed (Decide, inline), Decisions and J6's board (a hold in its Needs you tray) shows the notice.
+    await view.goto("List");
     await until(view, "A decision waits on you");
     expect(view.text()).toContain("A decision waits on you: Approve merge of PR #863");
     await view.press(view.byLabel("Open Decisions, 1 waiting"));
@@ -4457,7 +4467,7 @@ describe("the Decisions tab", () => {
     ];
 
     const view = await mount(surface(false));
-    await view.goto("Board");
+    await view.goto("List");
     await until(view, "2 decisions wait on you");
     expect(view.text()).toContain("2 decisions wait on you, 1 blocking: Approve merge of PR #863");
     await view.press(view.byLabel("Open Decisions, 2 waiting"));
@@ -5249,7 +5259,8 @@ describe("the Feed home (BRO-2906)", () => {
     expect(view.text()).not.toContain("Work a");
     await view.type(field, "maestro/a-1");
     expect(view.text()).toContain("Work a");
-    expect(view.text()).not.toContain("Work c");
+    expect(view.text()).toContain("Work c");
+    expect(view.text()).not.toContain("Work d");
     await view.type(field, "nothing like it");
     expect(view.text()).toContain("No work matches “nothing like it”.");
     expect(view.byLabel("Clear the search")?.getAttribute("style")).toContain("min-height: 32px");
