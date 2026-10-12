@@ -11,8 +11,7 @@
 // filters (workspace, kind chip, search) narrow the main column only, never a tile or a tab.
 
 import type { Scoreboard, WorkItem } from "../shared/contracts";
-import type { DecisionAsk, FleetNotice } from "../shared/fleet";
-import type { LoopNotice } from "../shared/loops";
+import type { DecisionAsk } from "../shared/fleet";
 import {
   type Handled,
   holdOf,
@@ -23,9 +22,9 @@ import {
   type Needs,
   workKey,
 } from "../shared/needs";
-import { sectionOf } from "../shared/needs-you";
+import { runningOf, sectionOf } from "../shared/needs-you";
+import type { NoticeRow, Notices } from "../shared/notices";
 import { ticketOf } from "../shared/text";
-import type { TimelineNotice } from "../shared/timeline";
 import { forTheConductor, headlineOf, ledgerName, ledgerOf, silenceOf } from "./decisions-model";
 import {
   type DecideRow,
@@ -67,7 +66,7 @@ export const TAB_VIEWS: Record<HomeTab, readonly PlaneView[]> = {
   feed: ["feed"],
   decisions: ["decisions"],
   work: ["board", "list", "history"],
-  health: ["fleet", "timeline", "loops"],
+  health: ["health", "fleet", "timeline", "loops"],
   initiatives: ["initiatives"],
 };
 
@@ -175,52 +174,38 @@ export interface HealthRow {
   /** Stuck work opens its inspector; a schedule or a loop opens its tab. */
   item: WorkItem | null;
   open: MaestroIntent | null;
+  notice: NoticeRow;
 }
 
-/** Watched notices beside the work (work.attention, until notices.list, BRO-3036). */
-export interface Watched {
-  fleet?: readonly FleetNotice[];
-  timeline?: readonly TimelineNotice[];
-  loops?: readonly LoopNotice[];
-}
-
-/** What you watch that went wrong (A1: never a need): stuck work, then the fleet's ticks, other schedules and loop drift. */
-export function healthRows(items: readonly WorkItem[], watched: Watched | null): HealthRow[] {
-  const stuck: HealthRow[] = items
-    .filter((item) => sectionOf(item) === "blocked")
-    .map((item) => ({
-      key: workKey(item.id),
-      title: titleText(item),
-      detail: stuckText(item) ?? "It stopped.",
-      since: item.updatedAt,
-      item,
-      open: null,
-    }));
-  const fleet: HealthRow[] = (watched?.fleet ?? []).map((notice) => ({
-    key: `fleet:${notice.scope}`,
-    title: `fleet-reconcile ${notice.scope}: tick ${notice.status}`,
-    detail: notice.reason,
-    since: notice.since,
-    item: null,
-    open: { kind: "fleet", scope: notice.scope },
-  }));
-  const timeline: HealthRow[] = (watched?.timeline ?? []).map((notice) => ({
-    key: `timeline:${notice.id}`,
-    title: `${notice.name}: ${notice.status}`,
-    detail: notice.reason,
-    since: notice.since,
-    item: null,
-    open: { kind: "timeline" },
-  }));
-  const loops: HealthRow[] = (watched?.loops ?? []).map((notice) => ({
-    key: `loop:${notice.id}`,
-    title: `${notice.loop}: ${DRIFT_WORDS[notice.kind]}`,
+/** What you watch that went wrong (A1: never a need): each notice of notices.list as a row of the Feed's Health section. */
+export function healthRows(items: readonly WorkItem[], notices: Notices | null): HealthRow[] {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  return (notices?.rows ?? []).map((notice) => ({
+    key: notice.key,
+    title: notice.title,
     detail: notice.detail,
-    since: null,
-    item: null,
-    open: { kind: "loops" },
+    since: notice.since,
+    item: notice.link.kind === "work" ? (byId.get(notice.link.id) ?? null) : null,
+    open: noticeIntent(notice),
+    notice,
   }));
-  return [...stuck, ...fleet, ...timeline, ...loops];
+}
+
+/** Where a notice opens: its work in the inspector (no intent), or the view that handles it. */
+export function noticeIntent(notice: NoticeRow): MaestroIntent | null {
+  const link = notice.link;
+  switch (link.kind) {
+    case "work":
+      return null;
+    case "fleet":
+      return { kind: "fleet", scope: link.scope };
+    case "timeline":
+      return { kind: "timeline" };
+    case "loops":
+      return { kind: "loops" };
+    case "initiatives":
+      return { kind: "initiatives" };
+  }
 }
 
 export interface HomeInput {
@@ -229,7 +214,7 @@ export interface HomeInput {
   items: readonly WorkItem[];
   /** Every decision ask this client reads (asks.workspace: the workspace's and the fleet's). */
   asks: readonly DecisionAsk[];
-  watched: Watched | null;
+  notices: Notices | null;
   workspace: string | null;
   filter: KindFilter;
   query: string;
@@ -257,7 +242,7 @@ export function homeSections(input: HomeInput): HomeSections {
     (entry) => inWorkspace(workspace, entry.row.scope) && (filter === "all" || filter === entry.row.kind),
   );
   const finished = items.filter((item) => item.group === "review" && !held.has(workKey(item.id)) && shown(item));
-  const health = healthRows(items, input.watched).filter((row) =>
+  const health = healthRows(items, input.notices).filter((row) =>
     row.item
       ? shown(row.item)
       : workspace === null && (!query.trim() || row.title.toLowerCase().includes(query.trim().toLowerCase())),
@@ -267,7 +252,7 @@ export function homeSections(input: HomeInput): HomeSections {
     needs: filter === "health" || filter === "finished" ? [] : needs,
     finished: only("finished") ? finished : [],
     health: only("health") ? health : [],
-    running: filter === "all" ? items.filter((item) => item.state === "running" && shown(item)) : [],
+    running: filter === "all" ? runningOf(items).filter(shown) : [],
     queued:
       filter === "all"
         ? items.filter((item) => sectionOf(item) === "queued" && !held.has(workKey(item.id)) && shown(item))
@@ -301,7 +286,7 @@ export function glanceTiles(
   now: number,
 ): Tiles {
   const oldest = needs?.summary.oldest ? needs.rows.find((row) => row.key === needs.summary.oldest?.key) : null;
-  const running = items.filter((item) => item.state === "running");
+  const running = runningOf(items);
   const forYou = handled ? handledForYou(handled.rows) : [];
   const last = forYou[0] ?? null;
   const next = !loop

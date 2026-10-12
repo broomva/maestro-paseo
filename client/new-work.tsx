@@ -32,6 +32,7 @@ import {
   type AgentDraft,
   agentPillLabels,
   canSubmit,
+  contractPromises,
   contractSummary,
   createInput,
   EMPTY_AGENT,
@@ -77,6 +78,14 @@ const MODE_ICONS = new Set([
   "ShieldPlus",
   "ShieldQuestionMark",
 ]);
+
+const PROMISE_ICONS = {
+  deliverable: "Package",
+  checks: "ListChecks",
+  gate: "ShieldCheck",
+  nothing: "Layers",
+  starts: "Radio",
+} as const;
 
 function providerIcon(name: string | null): string {
   if (name === "claude") return "Asterisk";
@@ -1094,6 +1103,52 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
           </Text>
         </View>
       ) : null}
+
+      <View style={{ gap: space[1] }}>
+        <Text style={[text.label, { paddingHorizontal: space[1] }]} accessibilityRole="header">
+          What it must land to reach you
+        </Text>
+        <View
+          testID="promises"
+          style={{
+            borderRadius: radius.card,
+            borderWidth: 1,
+            borderColor: theme.colors.border,
+            backgroundColor: theme.colors.surface1,
+            overflow: "hidden",
+          }}
+        >
+          {contractPromises({ project: projectName, isolation: shownIsolation, check, gate: shownGate }).map(
+            (row, index) => (
+              <View
+                key={row.id}
+                testID={`promise-${row.id}`}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "flex-start",
+                  gap: space[3],
+                  paddingHorizontal: space[3],
+                  paddingVertical: space[2],
+                  borderTopWidth: index === 0 ? 0 : 1,
+                  borderTopColor: theme.colors.border,
+                  backgroundColor: row.id === "starts" ? theme.colors.surface2 : undefined,
+                }}
+              >
+                <Icon name={PROMISE_ICONS[row.id]} size={14} color={theme.colors.foregroundMuted} />
+                <Text style={[text.small, { width: compact ? 96 : 130, color: theme.colors.foreground }]}>
+                  {row.label}
+                </Text>
+                <Text style={[row.id === "checks" && check.trim() ? text.mono : text.small, { flex: 1 }]}>
+                  {row.text}
+                </Text>
+              </View>
+            ),
+          )}
+        </View>
+        <Text style={[text.small, { paddingHorizontal: space[1] }]}>
+          The agent reads the brief; everything else starts at your defaults.
+        </Text>
+      </View>
 
       <View
         style={{

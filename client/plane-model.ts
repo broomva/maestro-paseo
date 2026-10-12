@@ -18,6 +18,8 @@ export const VIEWS = [
   { id: "board", label: "Board", icon: "Columns3", group: "work" },
   { id: "list", label: "List", icon: "List", group: "work" },
   { id: "history", label: "History", icon: "History", group: "work" },
+  // J7 (BRO-3036): the desktop's Health overview. A phone has no such view (viewFor keeps it to the feed).
+  { id: "health", label: "Overview", icon: "Activity", group: "work" },
   { id: "fleet", label: "Fleet", icon: "Activity", group: "system" },
   { id: "decisions", label: "Decisions", icon: "Inbox", group: "system" },
   { id: "timeline", label: "Timeline", icon: "CalendarClock", group: "system" },

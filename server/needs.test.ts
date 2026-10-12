@@ -471,7 +471,23 @@ describe("needs.list's kinds (owner answer A1)", () => {
     expect(row.body.since).toEqual(["Next action: Land the PR", "Waiting on pr skene#4: review"]);
     expect(row.body.options.map((option) => option.id)).toEqual(["keep", "park", "close"]);
     expect(row.body.why).toBe("Its review date, 2026-10-08, has passed.");
+    // The date it answers rides on the row: an answer names it, so it holds for this review only (J8).
+    expect(row.body.date).toBe("2026-10-08");
+    expect(row.session).toBeUndefined();
     expect(reviewNeed(initiative("calm", { stale: null }), items, asks, "broomva")).toBeNull();
+    // A driver whose session is a Paseo agent here is the review's session: "Open the driver" opens it.
+    const driven = reviewNeed(
+      initiative("skene", {
+        sessions: [
+          { id: "deadbeef", agentId: null },
+          { id: "abcd1234", agentId: "abcd1234-full-agent-id" },
+        ],
+      }),
+      items,
+      asks,
+      "broomva",
+    );
+    expect(driven?.session).toEqual({ agentId: "abcd1234-full-agent-id", name: "abcd1234", waiting: false });
     // The wire parses it as a review, not as an ask that drops the review's fields.
     const parsed = NeedRowSchema.parse(row);
     expect(parsed.body).toEqual(row.body);

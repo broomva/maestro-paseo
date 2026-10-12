@@ -198,6 +198,59 @@ export function contractSummary(input: { project: string | null; isolation: Isol
   return `${where}, ${filed}.`;
 }
 
+export interface PromiseRow {
+  id: "deliverable" | "checks" | "gate" | "nothing" | "starts";
+  label: string;
+  text: string;
+}
+
+/**
+ * What the work must land to reach you, said before you send (J9): the five promises the contract makes. The last
+ * one says who starts it, and it is you: Dispatch starts a session now (engine.dispatch → runs.ts), Save to queue
+ * starts nothing, and Maestro never starts work on its own (A8). No lane does it yet (`lanes.get` does not exist);
+ * server/engine.test.ts holds this row against both paths.
+ */
+export function contractPromises(input: {
+  project: string | null;
+  isolation: Isolation;
+  check: string;
+  gate: GateMode;
+}): PromiseRow[] {
+  const check = input.check.trim();
+  const where = input.project ?? "the repository";
+  return [
+    {
+      id: "deliverable",
+      label: "Deliverable",
+      text:
+        input.isolation === "worktree"
+          ? `a branch and a PR from a new worktree of ${where}`
+          : `changes in ${where} itself`,
+    },
+    { id: "checks", label: "Checks", text: check ? check : "none; you read the diff" },
+    {
+      id: "gate",
+      label: "Gate",
+      text:
+        check && input.gate === "auto"
+          ? "the check decides: a pass closes it, a fail marks it stuck for you"
+          : "you approve it at your gate, check or not",
+    },
+    {
+      id: "nothing",
+      label: "If it lands nothing",
+      text: "it ends Finished for you to read, or Stuck in Health when its check fails; it is never closed without its gate",
+    },
+    {
+      id: "starts",
+      label: "Who starts it",
+      text: `You do: Dispatch starts a session ${
+        input.isolation === "worktree" ? "in its own worktree" : `in ${where}`
+      } now. Save to queue starts nothing: it waits in Queued for you. Maestro never starts work on its own (A8).`,
+    },
+  ];
+}
+
 /** Initiatives already in use, busiest first. */
 export function initiativesOf(
   items: ReadonlyArray<{ initiative: string | null }>,

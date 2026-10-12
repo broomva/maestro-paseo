@@ -5,7 +5,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { agentMethods, keepServing } from "./server/agent-socket";
 import { AnswerRouter } from "./server/answer-routes";
 import { AnswersLander, ghForge } from "./server/answers-landing";
-import { answersStatus } from "./server/answers-status";
+import { answersStatus, landingNow } from "./server/answers-status";
 import { Approvals } from "./server/approvals";
 import { attentionOf } from "./server/attention";
 import { loadConfig, saveConfig } from "./server/config";
@@ -23,6 +23,8 @@ import { Loop } from "./server/loop";
 import { homeWriter, Loops } from "./server/loops";
 import { gitLedger, loopPaths, loopReposPath, multiLedger } from "./server/loops-ledger";
 import { firstSeenMemory, handledOf, needsOf } from "./server/needs";
+import { NoticeSnoozes } from "./server/notice-snoozes";
+import { noticesOf } from "./server/notices";
 import { OwnerVerbs } from "./server/owner-verbs";
 import {
   approvalsPath,
@@ -30,6 +32,7 @@ import {
   controlRepoPaths,
   expandHome,
   launchdPrefix,
+  noticeSnoozesPath,
   paseoSchedulesDir,
   socketPath,
   verbsPath,
@@ -37,6 +40,7 @@ import {
   wakeLogPath,
 } from "./server/paths";
 import { Records } from "./server/records";
+import { ReviewReceipts, reviewId } from "./server/reviews";
 import type { Paseo } from "./server/runs";
 import { fetchEvery, Sweep, sweepEvery } from "./server/sweep";
 import { Timeline } from "./server/timeline";
@@ -82,10 +86,19 @@ import {
   type ReviewVerdict,
   reviewProposal,
 } from "./shared/fleet";
-import { fileIdeaWork, getInitiatives, ideaRef, type WorkRef } from "./shared/initiatives";
+import {
+  fileIdeaWork,
+  getInitiatives,
+  type Initiative,
+  ideaRef,
+  type ReviewAnswer,
+  reviewInitiative,
+  type WorkRef,
+} from "./shared/initiatives";
 import { galleryEnabled, kitGallery } from "./shared/kit";
 import { getLoops } from "./shared/loops";
 import { askHoldKey, listHandled, listNeeds, type NeedKind, workKey } from "./shared/needs";
+import { listNotices, snoozeNotice } from "./shared/notices";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
 import { getTimeline, getTimelineLog } from "./shared/timeline";
 import { decideApproval, listVerbs, promptSession, undoVerb } from "./shared/verbs";
@@ -440,6 +453,19 @@ export default function contribute(host: PluginServerContext) {
     ]);
     return [[...mine, ...scoped], read];
   };
+  // Your answers to due reviews are receipts in the asks' log (server/reviews.ts): a review answered for the date it
+  // was due is not due any more, until its date moves.
+  const reviewReceipts = new ReviewReceipts(askPaths.receipts);
+  const dueReviews = async (): Promise<Initiative[]> => {
+    const [due, answered] = await Promise.all([
+      initiatives?.reviews() ?? Promise.resolve([]),
+      reviewReceipts.read().catch(() => new Map()),
+    ]);
+    return due.filter(
+      (initiative) => !initiative.stale || !answered.has(reviewId(initiative.id, initiative.stale.date)),
+    );
+  };
+  const snoozes = new NoticeSnoozes(noticeSnoozesPath());
   // When an undated hold was first seen (an undated ask, the answers batch), in memory only: its `since`
   // holds still across reads, and a hold that went is forgotten, so one that comes back starts again.
   const firstSeen = firstSeenMemory();
@@ -449,7 +475,7 @@ export default function contribute(host: PluginServerContext) {
     const [read, [asks, asksRead], reviews, landing, sessionAgents, open, waiting] = await Promise.all([
       workItems(),
       allAsks(),
-      (initiatives?.reviews() ?? Promise.resolve([])).catch((error) => {
+      dueReviews().catch((error) => {
         partial = true;
         log(`needs: reading the initiatives: ${(error as Error).message}`);
         return [];
@@ -484,7 +510,17 @@ export default function contribute(host: PluginServerContext) {
     const items = read ?? [];
     const now = Date.now();
     const needs = needsOf(
-      { items, asks, reviews, landing, sessionAgents, workspace: workspaceName, approvals: open, pending },
+      {
+        items,
+        asks,
+        reviews,
+        // The batch with the answers given since its last check: the hold, the badge and J5's tile say one number.
+        landing: landingNow(landing, asks, now),
+        sessionAgents,
+        workspace: workspaceName,
+        approvals: open,
+        pending,
+      },
       now,
       kind,
       firstSeen.at,
@@ -504,6 +540,88 @@ export default function contribute(host: PluginServerContext) {
     const dayStart = new Date(now);
     dayStart.setHours(0, 0, 0, 0);
     return handledOf(items, asks, now.getTime(), dayStart.getTime());
+  });
+  // What you watch that went wrong (server/notices.ts): one projection, so the Health tab, the Feed's Health section
+  // and J7 are the same rows. A pure read; a source that cannot be read costs its own rows, never the rest.
+  const noticesNow = async () => {
+    const unread: string[] = [];
+    // Unread work is not no work: the stuck and quiet notices come from it, so the gap is named.
+    const read = await workItems();
+    if (read === null) unread.push("the work");
+    const items = read ?? [];
+    const quietly = <T>(what: string, read: Promise<T[]>): Promise<T[]> =>
+      read.catch((error) => {
+        log(`notices: reading ${what}: ${(error as Error).message}`);
+        unread.push(what);
+        return [];
+      });
+    const [fleetNotices, timelineNotices, loopNotices, reviews, snoozed] = await Promise.all([
+      quietly("the fleet", fleet.notices(items)),
+      quietly("the timeline", timeline.notices()),
+      quietly("the loops", loops.notices()),
+      quietly("the initiatives", dueReviews()),
+      snoozes.read().catch((error) => {
+        log(`notices: reading the snoozes: ${(error as Error).message}`);
+        return new Map<string, string>();
+      }),
+    ]);
+    return noticesOf(
+      { items, fleet: fleetNotices, timeline: timelineNotices, loops: loopNotices, reviews, snoozed, unread },
+      Date.now(),
+    );
+  };
+  server.handle(listNotices, noticesNow);
+  // Snooze takes effect when its undo window closes (B4); a notice that no longer holds cannot be snoozed.
+  // Only a notice whose verb is Snooze can be snoozed (a quiet run): the rest close when their source does, and
+  // snoozing `initiatives:due` would hide every due review. Held to this when it is sent and when the window closes.
+  const snoozable = async (key: string) => {
+    const row = (await noticesNow()).rows.find((one) => one.key === key);
+    if (!row) throw new UserError("That notice no longer holds, so there is nothing to snooze.");
+    if (row.verb.id !== "snooze") throw new UserError("That notice is not snoozed: it closes when its source does.");
+    return row;
+  };
+  verbs.register<{ key: string; hours: number }>("notice.snooze", {
+    check: async ({ key }) => void (await snoozable(key)),
+    apply: async ({ key, hours }) => {
+      // Checked again as the window closes: a notice that went away meanwhile is not snoozed.
+      await snoozable(key);
+      await snoozes.snooze(key, new Date(Date.now() + hours * 3_600_000), new Date());
+      return `Snoozed for ${hours} h.`;
+    },
+  });
+  server.handle(snoozeNotice, async ({ key, hours }) => {
+    const row = await snoozable(key);
+    return verbs.schedule("notice.snooze", { key, label: `Snoozed ${row.title} for ${hours} h`, args: { key, hours } });
+  });
+  // Your answer to a due review: a receipt in the asks' log when the window closes (server/reviews.ts); an
+  // initiative file is never edited here (A8). It is checked now and again then against the date you read.
+  type ReviewArgs = { id: string; date: string; answer: ReviewAnswer; note: string };
+  const stillDue = async ({ id, date }: ReviewArgs) => {
+    const due = (await dueReviews()).find((initiative) => initiative.id === id);
+    if (!due?.stale || due.stale.date !== date)
+      throw new UserError("That review is not due for that date any more: it was answered or its date moved.");
+  };
+  verbs.register<ReviewArgs>("initiative.review", {
+    check: stillDue,
+    apply: async (args) => {
+      await stillDue(args);
+      await reviewReceipts.record({
+        initiative: args.id,
+        date: args.date,
+        answer: args.answer,
+        note: args.note.trim(),
+        at: new Date().toISOString(),
+      });
+      return `Recorded: ${args.answer} ${args.id}; the conductor moves its file.`;
+    },
+  });
+  server.handle(reviewInitiative, async ({ id, date, answer, note }) => {
+    const due = (await dueReviews()).find((initiative) => initiative.id === id);
+    return verbs.schedule<ReviewArgs>("initiative.review", {
+      key: `review:${id}`,
+      label: `Review of ${due?.title ?? id}: ${answer}`,
+      args: { id, date, answer, note },
+    });
   });
   server.handle(getLoops, () => loops.get());
   // The component gallery's flag (shared/kit.ts): read-only, from the daemon's environment.

@@ -3,13 +3,14 @@
 // draws what its screen's model decided; nothing here counts.
 
 import type { PluginTheme } from "@getpaseo/plugin";
-import type { ReactNode } from "react";
+import { Icon } from "@getpaseo/plugin/client/react-native";
+import { type ReactNode, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { GlanceTile } from "./kit/glance-tile";
 import { Pill, TABULAR } from "./kit/parts";
 import type { TileTone } from "./kit/tile-model";
 import { kitOf } from "./kit/tokens";
-import { focusRing, webAria } from "./ui";
+import { CHOICE_ROLE, focusRing, webAria } from "./ui";
 
 export interface ChipOption<T extends string> {
   id: T;
@@ -157,6 +158,116 @@ export function TileWithVerb({
       {verb && onVerb ? (
         <View style={{ position: "absolute", top: 10, right: 12 }}>
           <Pill theme={theme} label={verb} primary height={28} onPress={onVerb} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * A filter's pill and its menu ("Initiative: any ▾"): one choice from a short list, the menu a popover under the
+ * pill that closes when you choose. Its options are radios, so a screen reader says which is chosen.
+ */
+export function FilterMenu({
+  theme,
+  label,
+  noun,
+  options,
+  value,
+  onChange,
+}: {
+  theme: PluginTheme;
+  /** The pill's name for a screen reader and its lead: "Initiative". */
+  label: string;
+  /** What "no filter" is called: "any". */
+  noun: string;
+  options: readonly { id: string; label: string }[];
+  value: string | null;
+  onChange: (id: string | null) => void;
+}) {
+  const kit = kitOf(theme);
+  const [open, setOpen] = useState(false);
+  const chosen = options.find((option) => option.id === value);
+  return (
+    <View style={{ position: "relative", zIndex: open ? 40 : 1 }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${label}: ${chosen?.label ?? noun}`}
+        accessibilityState={{ expanded: open }}
+        {...webAria({ "aria-expanded": open } as never)}
+        onPress={() => setOpen((now) => !now)}
+        style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({
+          ...focusRing(theme, focused),
+          height: 30,
+          paddingHorizontal: 12,
+          borderRadius: 9999,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 6,
+          borderWidth: 1,
+          borderColor: kit.border,
+          backgroundColor: value ? kit.sunken : kit.bg,
+          opacity: pressed ? 0.8 : 1,
+        })}
+      >
+        <Text style={{ color: kit.fg2, fontSize: 13 }}>
+          {label}: {chosen?.label ?? noun}
+        </Text>
+        <Icon name="ChevronDown" size={13} color={kit.muted} />
+      </Pressable>
+      {open ? (
+        <View
+          accessibilityRole="menu"
+          style={{
+            position: "absolute",
+            top: 38,
+            left: 0,
+            minWidth: 200,
+            zIndex: 40,
+            borderRadius: 14,
+            borderWidth: 1,
+            borderColor: kit.hairline,
+            backgroundColor: kit.bg,
+            padding: 6,
+            shadowColor: "#0c101a",
+            shadowOpacity: kit.dark ? 0.5 : 0.14,
+            shadowRadius: 24,
+            shadowOffset: { width: 0, height: 8 },
+          }}
+        >
+          {[{ id: null, label: `${noun[0]?.toUpperCase() ?? ""}${noun.slice(1)}` }, ...options].map((option) => {
+            const on = option.id === value;
+            return (
+              <Pressable
+                key={option.id ?? "any"}
+                role={CHOICE_ROLE}
+                accessibilityLabel={option.label}
+                accessibilityState={{ checked: on }}
+                {...webAria({ "aria-checked": on })}
+                onPress={() => {
+                  onChange(option.id);
+                  setOpen(false);
+                }}
+                style={({ pressed }: { pressed: boolean }) => ({
+                  minHeight: 34,
+                  paddingHorizontal: 10,
+                  borderRadius: 10,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 8,
+                  backgroundColor: on || pressed ? kit.sunken : "transparent",
+                })}
+              >
+                <Text
+                  style={{ flex: 1, color: kit.fg, fontSize: 13.5, fontWeight: on ? "600" : "400" }}
+                  numberOfLines={1}
+                >
+                  {option.label}
+                </Text>
+                {on ? <Icon name="Check" size={14} color={kit.fg} /> : null}
+              </Pressable>
+            );
+          })}
         </View>
       ) : null}
     </View>

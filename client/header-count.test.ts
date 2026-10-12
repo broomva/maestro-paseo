@@ -55,6 +55,7 @@ const review = (id: string): Initiative =>
     nextAction: null,
     driver: null,
     waitingOn: [],
+    sessions: [],
     stale: { kind: "overdue", date: "2026-10-08" },
   }) as unknown as Initiative;
 

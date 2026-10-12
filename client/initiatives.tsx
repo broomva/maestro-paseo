@@ -18,7 +18,7 @@ import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
-import { ANSWER_NOTE_CHARS, answerAsk, type DecisionAsk, homeKey } from "../shared/fleet";
+import { ANSWER_NOTE_CHARS, type DecisionAsk, homeKey } from "../shared/fleet";
 import {
   fileIdeaWork,
   getInitiatives,
@@ -50,6 +50,7 @@ import {
 } from "./initiatives-model";
 import { useOpenUrl } from "./open-url";
 import { Button, Card, Notice, radius, Section, space, useText } from "./ui";
+import { useVerbs } from "./verbs";
 
 /** Files change when a session lands a PR: a read every 60 s is plenty. */
 const POLL_MS = 60_000;
@@ -86,7 +87,8 @@ export function IdeaCard({
   const toast = useToast();
   const refresh = useRefresh();
   const openUrl = useOpenUrl();
-  const send = useRpc(answerAsk);
+  // The answer is sent by the verb adapter (client/verbs.ts), as every answer is.
+  const verbs = useVerbs();
   const fileWork = useRpc(fileIdeaWork);
   // The tab's own read, from its cache: the work item each developed idea has. Never fetched or polled per card.
   const getView = useRpc(getInitiatives);
@@ -107,7 +109,7 @@ export function IdeaCard({
     },
   });
   const answer = useMutation({
-    mutationFn: send,
+    mutationFn: verbs.answer,
     onSuccess: ({ ask: answered, work }) => {
       if (work) setFiled({ id: work.id, title: work.title });
       onAnswered(answered);
@@ -328,7 +330,7 @@ export function IdeaCard({
 }
 
 /** Ideas, open first, then the triaged ones folded behind a button. */
-function IdeaList({
+export function IdeaList({
   theme,
   ideas,
   today,

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { needsOf } from "../server/needs";
+import { noticesOf } from "../server/notices";
 import type { Scoreboard } from "../shared/contracts";
 import type { DecisionAsk } from "../shared/fleet";
 import type { Initiative } from "../shared/initiatives";
@@ -76,6 +77,7 @@ const review = (id: string): Initiative =>
     nextAction: null,
     driver: null,
     waitingOn: [],
+    sessions: [],
     stale: { kind: "overdue", date: "2026-10-08" },
   }) as unknown as Initiative;
 
@@ -112,7 +114,11 @@ const board: Scoreboard = {
   weekByInitiative: [],
 };
 
-const base = { needs, handled, items, asks, watched: null, workspace: null, filter: "all" as const, query: "" };
+const notices = noticesOf(
+  { items, fleet: [], timeline: [], loops: [], reviews: [], snoozed: new Map<string, string>() },
+  NOW,
+);
+const base = { needs, handled, items, asks, notices, workspace: null, filter: "all" as const, query: "" };
 
 describe("the tabs' counts", () => {
   test("Feed, Decisions and Initiatives are needs.list's; Work is the running work; Health the rows listed", () => {
@@ -435,7 +441,7 @@ describe("J2–J4: what each inspector body says", () => {
     if (item.kind !== "review") throw new Error("a review");
     expect(item.options.map((option) => option.id)).toEqual(["keep", "park", "close"]);
     expect(item.hanging?.map((tile) => tile.label)).toEqual(["work", "open asks", "driver session"]);
-    expect(item.goes).toContain("skene.yaml in the control repo");
+    expect(item.goes).toContain("a receipt in Maestro's answers log; skene.yaml is never edited");
     expect(hangingTiles({ work: 3, asks: 1, driver: "skene-driver" })).toEqual([
       { icon: "LayoutList", value: "3", label: "work" },
       { icon: "MessagesSquare", value: "1", label: "open ask" },

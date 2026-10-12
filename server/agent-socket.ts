@@ -60,6 +60,8 @@ export const GATE_METHODS: ReadonlySet<string> = new Set([
   "loop.get",
   "loop.wake",
   "fleet.review",
+  "initiatives.review",
+  "notice.snooze",
   "ask.answer",
   "conductor.decide",
   "conductor.undo",

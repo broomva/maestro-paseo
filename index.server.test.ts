@@ -993,6 +993,19 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
     );
     expect(needs.summary).toMatchObject({ total: 7, byKind: { ask: 3, approval: 2, owner_step: 2 } });
     expect((await needsNow({ kind: "ask" })).rows).toHaveLength(3);
+    // What you watch (notices.list, BRO-3036): the stuck work and the initiative past its review date, a notice
+    // each and never a hold (A1); the rest of Health's sources are quiet in this fixture.
+    type Notices = import("./shared/notices").Notices;
+    const noticesNow = async () => (await run("notices.list", {})) as unknown as Notices;
+    const notices = await noticesNow();
+    expect(notices.rows.map((row) => [row.kind, row.key.split(":")[0], row.title])).toEqual([
+      ["initiative", "initiatives", "1 initiative is past its review date"],
+      ["stuck", "work", "Stuck"],
+      // Loop drift: this fixture registers none of its loops, so Maestro's own is unclaimed. Its age is unknown: last.
+      ["loop", "loop", "Maestro's loop: Unregistered"],
+    ]);
+    expect(notices.summary).toMatchObject({ total: 3, snoozed: 0, byKind: { stuck: 1, initiative: 1, loop: 1 } });
+    expect(needs.rows.some((row) => notices.rows.some((one) => one.key === row.key))).toBe(false);
     expect(queued.state).toBe("proposed");
     const handled = (await run("handled.list", {})) as unknown as { rows: unknown[]; today: Record<string, number> };
     expect(handled).toEqual({ rows: [], today: { closedForYou: 0, byYou: 0, asksAnswered: 0 } });
@@ -1001,11 +1014,19 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
     for (let read = 0; read < 25; read += 1) {
       await needsNow();
       await run("handled.list", {});
+      await noticesNow();
+      // answers.status is a read like the rest: it fetches nothing and writes nothing (the snapshot below).
+      await run("answers.status", {});
     }
     await new Promise((r) => setTimeout(r, 1_000));
     expect(counts()).toEqual(sentBefore);
     expect(await snapshot(root)).toEqual(before);
     expect(await needsNow()).toEqual(needs);
+    expect(await noticesNow()).toEqual(notices);
+    // J5's Waiting to land and the answers hold in Needs you are one number (BRO-3001): the batch's own count.
+    const status = (await run("answers.status", {})) as unknown as import("./shared/answers").AnswersStatus;
+    expect(status.waitingToLand).toBe(1);
+    expect(needs.rows.find((row) => row.key === "answers:batch")?.title).toBe("1 answer waits to land: PR #915");
 
     // Invariant 1, end to end. The header button, as startIntegrations registers it, its reads served by these
     // handlers; the Feed's section and tab from needs.list; the push from a real landing, through the real Inbox.
@@ -1075,13 +1096,98 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
       push: Number(/^\*\*(\d+) needs? you\*\*/.exec(noticeText(notice))?.[1]),
     }).toEqual({ sumOfKinds: total, header: total, section: total, feedTab: total, push: total });
 
+    // Your verbs, now that nothing is being proved pure (the window is 0 here): a snooze quiets its notice, a review
+    // answer is a receipt in the asks' log and ends the review (the date it answered), and neither edits a file
+    // of an initiative or starts a session.
+    // Only a notice offering Snooze can be snoozed: not a stuck run (it closes with a turn or a cancel), and never the
+    // aggregate that stands for every due review.
+    for (const kind of ["stuck", "initiative"] as const) {
+      const key = (await noticesNow()).rows.find((row) => row.kind === kind)?.key ?? "";
+      expect(key).not.toBe("");
+      await expect(run("notice.snooze", { key, hours: 4 })).rejects.toThrow(/closes when its source does/);
+    }
+    // A quiet run can: flagged by the loop, it is standing work's notice.
+    const { item: quietWork } = await run("work.create", { ...base, title: "Quiet" });
+    await run("work.dispatch", { id: quietWork.id });
+    const quietDir = join(root, "work", (quietWork as unknown as { path: string }).path);
+    await writeFile(
+      join(quietDir, "_events.jsonl"),
+      `${await readFile(join(quietDir, "_events.jsonl"), "utf8")}${JSON.stringify({
+        ts: new Date().toISOString(),
+        type: "loop.flagged",
+        actor: "maestro",
+        kind: "quiet",
+        reason: "Quiet for 90 minutes.",
+      })}\n`,
+    );
+    const quietKey = (await noticesNow()).rows.find((row) => row.kind === "quiet")?.key ?? "";
+    expect(quietKey).toBe(`quiet:${quietWork.id}`);
+    const totalBefore = (await noticesNow()).summary.total;
+    await run("notice.snooze", { key: quietKey, hours: 4 });
+    for (let tries = 0; tries < 100 && (await noticesNow()).summary.snoozed === 0; tries += 1)
+      await new Promise((r) => setTimeout(r, 20));
+    expect((await noticesNow()).summary).toMatchObject({ total: totalBefore - 1, snoozed: 1 });
+    await expect(run("notice.snooze", { key: "work:nothing", hours: 4 })).rejects.toThrow(/no longer holds/);
+    const initiativeFile = join(control, ".control", "initiatives", "skene.yaml");
+    const initiativeBefore = await readFile(initiativeFile, "utf8");
+    await expect(
+      run("initiatives.review", { id: "skene", date: "2026-02-02", answer: "keep", note: "" }),
+    ).rejects.toThrow(/not due for that date/);
+    await run("initiatives.review", { id: "skene", date: "2026-01-01", answer: "park", note: "Not this quarter." });
+    for (let tries = 0; tries < 100 && (await needsNow()).rows.some((row) => row.key === "review:skene"); tries += 1)
+      await new Promise((r) => setTimeout(r, 20));
+    expect((await needsNow()).rows.some((row) => row.key === "review:skene")).toBe(false);
+    expect((await noticesNow()).rows.some((row) => row.kind === "initiative")).toBe(false);
+    const receipts = (await readFile(join(state, "asks.jsonl"), "utf8"))
+      .split("\n")
+      .filter((line) => line.includes("initiative.reviewed"));
+    expect(receipts.map((line) => JSON.parse(line))).toMatchObject([
+      {
+        kind: "initiative.reviewed",
+        initiative: "skene",
+        date: "2026-01-01",
+        answer: "park",
+        note: "Not this quarter.",
+      },
+    ]);
+    expect(await readFile(initiativeFile, "utf8")).toBe(initiativeBefore);
+
     // The work cannot be read (a broken config): that costs the work's own rows, never the asks', the review's
     // or the batch's, and the read still answers.
+    const beforeBreak = await needsNow();
     await writeFile(config, "{ not json");
     const unread = await needsNow();
     expect(unread.rows.filter((row) => row.key.startsWith("work:"))).toEqual([]);
-    expect(unread.summary.total).toBe(after.rows.filter((row) => !row.key.startsWith("work:")).length);
+    expect(unread.summary.total).toBe(beforeBreak.rows.filter((row) => !row.key.startsWith("work:")).length);
     expect(unread.summary.total).toBeGreaterThan(0);
+
+    // Answers batched after the landing's last check (it says 1 waits, and is as old as its last wake): the hold in
+    // Needs you and J5's tile both count the two now batched, as one number (landingNow, server/answers-status.ts).
+    type AskRead = { ledger: string; id: string; hash: string };
+    const open = (await run("asks.workspace", {})) as unknown as { decisions: AskRead[] };
+    for (const [id, option] of [
+      ["Q3", "name"],
+      ["Q1", "go"],
+    ] as const) {
+      const ask = open.decisions.find((one) => one.id === id);
+      await run("ask.answer", {
+        where: { kind: "workspace", home: "origin/main" },
+        ledger: ask?.ledger ?? "",
+        uid: null,
+        id,
+        hash: ask?.hash ?? "",
+        option,
+        note: "",
+      });
+    }
+    await settled(run);
+    const afterAnswer = await needsNow();
+    expect(afterAnswer.rows.find((row) => row.key === "answers:batch")?.title).toStartWith("2 answers wait to land");
+    expect(
+      ((await run("answers.status", {})) as unknown as import("./shared/answers").AnswersStatus).waitingToLand,
+    ).toBe(2);
+    // And the notices say so: unread work is named, so Health never says "All clear" over a missing stuck run.
+    expect((await noticesNow()).summary.unread).toContain("the work");
   } finally {
     await cleanup();
     process.env.MAESTRO_PASEO_CONFIG = saved.config;
@@ -1091,6 +1197,143 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
     for (const [key, value] of savedEnv) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
+    }
+  }
+});
+
+test("a snooze and a review answer are checked again when their window closes (B4)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
+  roots.push(root);
+  const repo = join(root, "repo");
+  await mkdir(join(repo, ".git"), { recursive: true });
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+      cwd,
+      stdio: "pipe",
+    });
+  const origin = join(root, "origin.git");
+  const control = join(root, "control");
+  await mkdir(origin);
+  git(origin, "init", "-q", "--bare", "-b", "main");
+  git(root, "clone", "-q", origin, control);
+  await mkdir(join(control, ".control", "asks"), { recursive: true });
+  await mkdir(join(control, ".control", "initiatives"), { recursive: true });
+  await writeFile(
+    join(control, ".control", "initiatives", "skene.yaml"),
+    'id: skene\ntitle: "Skene"\nintent: "Ship the stage."\nintent_source: "owner, 2026-09-01"\nstated: 2026-09-01\nstatus: active\nnext_action: "Land the PR."\ndriver: owner\nlinks:\n  linear: [BRO-2953]\nreview_by: 2026-01-01\nexit: "It ships."\n',
+  );
+  git(control, "add", ".control");
+  git(control, "commit", "-q", "-m", "ledgers");
+  git(control, "push", "-q", "origin", "main");
+  const state = join(root, "state");
+  await mkdir(state, { recursive: true });
+  const config = join(root, "config.json");
+  await writeFile(
+    config,
+    JSON.stringify({
+      workRoot: join(root, "work"),
+      provider: "claude/test-model",
+      modeId: null,
+      isolation: "worktree",
+    }),
+  );
+  const snoozes = join(state, "notice-snoozes.jsonl");
+  const env: Record<string, string> = {
+    // A window long enough to change the world inside it, short enough to wait out.
+    MAESTRO_PASEO_VERB_WINDOW_MS: "700",
+    MAESTRO_PASEO_SWEEP_SECONDS: "3600",
+    MAESTRO_PASEO_FETCH_SECONDS: "0",
+    BROOMVA_HOME: join(root, "home"),
+    MAESTRO_PASEO_LAUNCHD: "off",
+    MAESTRO_PASEO_SCHEDULES: join(root, "schedules"),
+    MAESTRO_PASEO_LOOP_REPOS: "off",
+    MAESTRO_PASEO_FLEET_CONFIG: join(root, "no-fleet", "config"),
+    MAESTRO_PASEO_FLEET_STATE: join(root, "no-fleet", "state"),
+    MAESTRO_PASEO_FLEET_AGENTS: join(root, "no-fleet", "agents"),
+    MAESTRO_PASEO_CONTROL_REPO: control,
+    MAESTRO_PASEO_CONTROL_ANSWERS: join(root, "answers"),
+    MAESTRO_PASEO_ASK_RECEIPTS: join(state, "asks.jsonl"),
+    MAESTRO_PASEO_ASK_LOCKS: join(state, "locks"),
+    MAESTRO_PASEO_NOTICE_SNOOZES: snoozes,
+  };
+  const savedEnv = Object.keys(env).map((key) => [key, process.env[key]] as const);
+  const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
+  Object.assign(process.env, env);
+  process.env.MAESTRO_PASEO_CONFIG = config;
+  process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
+  const { host, handlers } = fakeHost();
+  const cleanup = contribute(host);
+  const fake = fakePaseo();
+  const context = { paseo: fake.paseo, signal: new AbortController().signal };
+  const run = async (name: string, input: unknown) => {
+    const handler = handlers.get(name);
+    if (!handler) throw new Error(`${name} is not handled`);
+    return (await handler(input, context)) as Record<string, unknown> & { item: { id: string; state: string } };
+  };
+  const lines = async (path: string, needle: string) =>
+    (await readFile(path, "utf8").catch(() => "")).split("\n").filter((line) => line.includes(needle));
+  try {
+    // A review answer is checked as it is sent and again when the window closes: answered meanwhile (by a receipt
+    // from elsewhere), it writes nothing a second time.
+    await run("initiatives.review", { id: "skene", date: "2026-01-01", answer: "park", note: "" });
+    await writeFile(
+      join(state, "asks.jsonl"),
+      `${JSON.stringify({ kind: "initiative.reviewed", initiative: "skene", date: "2026-01-01", answer: "keep", note: "", at: new Date().toISOString() })}\n`,
+    );
+    await settled(run);
+    expect(await lines(join(state, "asks.jsonl"), "initiative.reviewed")).toHaveLength(1);
+
+    // A snooze is checked the same way: the run stopped being quiet inside its window, so nothing is snoozed.
+    const { item } = await run("work.create", {
+      title: "Quiet",
+      brief: "",
+      repo,
+      initiative: "",
+      dispatch: true,
+      check: "",
+      gate: "human",
+    });
+    const dir = join(root, "work", (item as unknown as { path: string }).path);
+    await writeFile(
+      join(dir, "_events.jsonl"),
+      `${await readFile(join(dir, "_events.jsonl"), "utf8")}${JSON.stringify({
+        ts: new Date().toISOString(),
+        type: "loop.flagged",
+        actor: "maestro",
+        kind: "quiet",
+        reason: "Quiet for 90 minutes.",
+      })}\n`,
+    );
+    const key = `quiet:${item.id}`;
+    expect(
+      ((await run("notices.list", {})) as unknown as import("./shared/notices").Notices).rows.map((row) => row.key),
+    ).toContain(key);
+    await run("notice.snooze", { key, hours: 4 });
+    // The loop takes the quiet flag down inside the window: nothing to snooze when it closes.
+    await writeFile(
+      join(dir, "_events.jsonl"),
+      `${await readFile(join(dir, "_events.jsonl"), "utf8")}${JSON.stringify({
+        ts: new Date().toISOString(),
+        type: "flag.cleared",
+        actor: "maestro",
+        kind: "quiet",
+        reason: "It worked.",
+      })}\n`,
+    );
+    expect(
+      ((await run("notices.list", {})) as unknown as import("./shared/notices").Notices).rows.map((row) => row.key),
+    ).not.toContain(key);
+    await settled(run);
+    expect(await lines(snoozes, key)).toEqual([]);
+  } finally {
+    await cleanup();
+    process.env.MAESTRO_PASEO_CONFIG = saved.config;
+    process.env.MAESTRO_PASEO_SOCKET = saved.socket;
+    if (saved.config === undefined) delete process.env.MAESTRO_PASEO_CONFIG;
+    if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
+    for (const [name, value] of savedEnv) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
     }
   }
 });

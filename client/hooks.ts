@@ -28,6 +28,7 @@ import {
   workForAgent,
 } from "../shared/contracts";
 import { listHandled, listNeeds, type Needs } from "../shared/needs";
+import { listNotices } from "../shared/notices";
 import { decideApproval, listVerbs, promptSession, undoVerb } from "../shared/verbs";
 import { type LoopState, loopPollMs } from "./loop-model";
 import { latestNeeds, onNeeds, publishNeeds, readTicket, stampNeeds, ticketOf, watchSessions } from "./needs-bus";
@@ -159,6 +160,15 @@ export function useHandled() {
 export function useAnswersStatus() {
   const read = useRpc(getAnswersStatus);
   return useQuery({ queryKey: [...KEY, "answers-status"], queryFn: () => read({}), refetchInterval: NEEDS_POLL_MS });
+}
+
+/**
+ * What you watch that went wrong (notices.list, BRO-3036): the one projection the Health tab's badge, the Feed's
+ * Health section and J7 read. Under ["maestro"], so every verb that settles reads it again.
+ */
+export function useNotices() {
+  const read = useRpc(listNotices);
+  return useQuery({ queryKey: [...KEY, "notices"], queryFn: () => read({}), refetchInterval: NEEDS_POLL_MS });
 }
 
 /** Refetch needs.list and handled.list now. */

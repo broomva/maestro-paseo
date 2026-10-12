@@ -43,6 +43,7 @@ export function matchesQuery(item: WorkItem, query: string): boolean {
     item.title,
     placeText(item),
     item.initiative,
+    item.ticket,
     item.worker?.branch,
     item.path,
     item.id,

@@ -3,6 +3,7 @@ import {
   agentChoices,
   agentPillLabels,
   canSubmit,
+  contractPromises,
   contractSummary,
   createInput,
   EMPTY_AGENT,
@@ -224,5 +225,45 @@ describe("the words around it", () => {
     const fast = { type: "toggle" as const, id: "fast_mode", label: "Fast", value: false };
     expect(featureValue(fast, {})).toBe(false);
     expect(featureValue(fast, { fast_mode: true })).toBe(true);
+  });
+});
+
+describe("what the work must land to reach you (J9)", () => {
+  const base = { project: "maestro-paseo", isolation: "worktree" as const, check: "", gate: "human" as const };
+  const row = (input: Parameters<typeof contractPromises>[0], id: string) =>
+    contractPromises(input).find((r) => r.id === id)?.text ?? "";
+
+  test("five rows, always, the lane's last", () => {
+    expect(contractPromises(base).map((r) => r.id)).toEqual(["deliverable", "checks", "gate", "nothing", "starts"]);
+  });
+
+  test("you start it: Dispatch does, Save to queue does not, and Maestro never does (A8)", () => {
+    const starts = row(base, "starts");
+    expect(starts).toStartWith("You do: Dispatch starts a session in its own worktree now.");
+    expect(starts).toContain("Save to queue starts nothing: it waits in Queued for you.");
+    expect(starts).toContain("Maestro never starts work on its own (A8)");
+    expect(starts).not.toContain("lane");
+    expect(starts).not.toContain("15 min");
+    expect(row({ ...base, isolation: "directory" }, "starts")).toContain("starts a session in maestro-paseo now");
+  });
+
+  test("what it lands nothing says what happens, not a state it is not in", () => {
+    const nothing = row(base, "nothing");
+    expect(nothing).toContain("Finished");
+    expect(nothing).toContain("Stuck in Health");
+    expect(nothing).not.toContain("Standing");
+  });
+
+  test("the deliverable follows where it runs", () => {
+    expect(row(base, "deliverable")).toBe("a branch and a PR from a new worktree of maestro-paseo");
+    expect(row({ ...base, isolation: "directory" }, "deliverable")).toBe("changes in maestro-paseo itself");
+  });
+
+  test("the check decides only when there is a check and the gate is auto", () => {
+    expect(row({ ...base, check: "bun test", gate: "auto" }, "gate")).toContain("the check decides");
+    expect(row({ ...base, check: "bun test", gate: "human" }, "gate")).toContain("you approve");
+    expect(row({ ...base, check: " ", gate: "auto" }, "gate")).toContain("you approve");
+    expect(row({ ...base, check: "bun test" }, "checks")).toBe("bun test");
+    expect(row(base, "checks")).toContain("you read the diff");
   });
 });

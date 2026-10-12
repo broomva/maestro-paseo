@@ -58,7 +58,7 @@ import {
 } from "./decisions-model";
 import { StageCard, StageControls, StageSide, StageTilesRow } from "./decisions-stage";
 import { progressSegments, stageProgress, stageTiles, upNextRow, wentRows } from "./decisions-stage-model";
-import { errorText } from "./format";
+import { basename, errorText } from "./format";
 import { useAnswersStatus, useNeeds } from "./hooks";
 import { useOpenUrl } from "./open-url";
 import {
@@ -85,6 +85,11 @@ type Navigation = PluginSurfaceProps["navigation"];
 const _RAIL_SHOWN = 8;
 /** How long an answered card takes to leave. */
 const EXIT_MS = 160;
+/** The workspace an ask belongs to, as needs.list scopes its hold: its fleet scope, else the control repo's folder. */
+export function askScope(ask: Pick<DecisionAsk, "scope">, controlRepo: string): string {
+  return ask.scope ?? basename(controlRepo) ?? "workspace";
+}
+
 /** The tab's root, which takes focus so its keys stay its own. */
 export const DECISIONS_ROOT_ID = "maestro-decisions";
 
@@ -274,12 +279,15 @@ export function DecisionsView({
   compact,
   navigation,
   focus = null,
+  workspace = null,
 }: {
   theme: PluginTheme;
   compact: boolean;
   navigation: Navigation;
   /** Open at a ledger, and at an ask in it (from an initiative's waiting_on, or Needs you). */
   focus?: DecisionsFocus | null;
+  /** The header's workspace menu (J5): only the asks of that workspace or fleet scope; null for all. */
+  workspace?: string | null;
 }) {
   const text = useText(theme);
   const client = useQueryClient();
@@ -331,7 +339,9 @@ export function DecisionsView({
   const root = useRef<View>(null);
 
   // The workspace's asks and every fleet scope's (each answered where it lives: whereOf), ideas aside.
-  const all = (read.data ? decisionAsks(read.data) : []).filter((ask) => !ask.idea);
+  const all = (read.data ? decisionAsks(read.data) : [])
+    .filter((ask) => !ask.idea)
+    .filter((ask) => workspace === null || askScope(ask, read.data?.controlRepo ?? "") === workspace);
   const rail = ledgerRail(all);
   // A ledger you chose stays chosen when its last ask is answered ("Nothing open in it"); one no read knows is no filter.
   const ledgerShown = ledger !== null && all.some((ask) => ledgerOf(ask) === ledger) ? ledger : null;

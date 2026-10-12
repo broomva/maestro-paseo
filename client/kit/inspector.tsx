@@ -1000,7 +1000,7 @@ export function InspectorPanel({
         ? "Answer in your words"
         : answerLabel(showing.options, sent)
       : showing.primaryLabel;
-  const verbs = panelVerbsFor(showing.kind, primary);
+  const verbs = panelVerbsFor(showing.kind, primary, showing.kind === "review" && showing.session !== undefined);
   const links = verbs.filter((verb) => verb.link);
   const pills = verbs.filter((verb) => !verb.link);
   return (

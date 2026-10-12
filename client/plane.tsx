@@ -38,12 +38,14 @@ import {
 import { FleetNotices, FleetView } from "./fleet";
 import { duration, errorText, plural } from "./format";
 import { holdTarget, tabBadges } from "./header-count";
+import { HealthScreen } from "./health";
 import { HistoryView } from "./history";
 import { type HomeFocus, HomeScreen } from "./home";
 import { HomeHeaderBar } from "./home-header";
 import { HOME_TABS, type HomeTab, TAB_VIEWS, tabOfView } from "./home-model";
 import { useHandled, useLoop, useNeeds, useNeedsEvents, useWorkList } from "./hooks";
 import { InitiativeNotices, InitiativesView } from "./initiatives";
+import { InitiativesBoard } from "./initiatives-board";
 import { requestIntent, useIntent } from "./intent";
 import { LoopControl, LoopPanel } from "./loop";
 import { LoopsNotices, LoopsView } from "./loops";
@@ -68,11 +70,13 @@ import {
 } from "./plane-model";
 import { BoardView, FeedView, ListView } from "./plane-views";
 import { ScoreboardCard } from "./scoreboard";
+import { ChipRow } from "./stage-parts";
 import { TimelineNotices, TimelineView } from "./timeline";
-import { Button, Card, IconButton, Notice, Segmented, space, useText } from "./ui";
+import { Button, Card, IconButton, Notice, space, useText } from "./ui";
+import { WorkBoard } from "./work-board";
 
 /** The views whose desktop screen is J2–J9 (BRO-3036): they carry their own watched things, so no notice band sits above them. */
-const J_SCREENS: readonly PlaneView[] = ["decisions"];
+const J_SCREENS: readonly PlaneView[] = ["decisions", "board", "health", "initiatives"];
 
 export function MaestroSurface({ theme, layout, navigation, params }: PluginScreenProps) {
   const list = useWorkList();
@@ -323,9 +327,10 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
       {compact ? (
         <ViewPicker theme={theme} view={view} onView={chooseView} views={viewsFor(true)} badges={badges} />
       ) : TAB_VIEWS[tab].length > 1 ? (
-        <Segmented
+        <ChipRow
           theme={theme}
           label={`${HOME_TABS.find((entry) => entry.id === tab)?.label ?? "Maestro"} views`}
+          variant="segment"
           options={VIEWS.filter((option) => TAB_VIEWS[tab].includes(option.id))}
           value={view}
           onChange={chooseView}
@@ -343,7 +348,13 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
           onSelect={setSelected}
         />
       ) : view === "decisions" ? (
-        <DecisionsView theme={theme} compact={compact} navigation={navigation} focus={decisionsFocus} />
+        <DecisionsView
+          theme={theme}
+          compact={compact}
+          navigation={navigation}
+          focus={decisionsFocus}
+          workspace={compact ? null : workspace}
+        />
       ) : view === "initiatives" ? (
         <InitiativesView
           theme={theme}
@@ -507,6 +518,10 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
             onNew={() => setCreating(true)}
           />
           {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
+          {/* The toast holds one verb; the ledger holds every one still inside its 8 s (B4), so each keeps its Undo. */}
+          {view === "health" || view === "initiatives" || view === "board" ? (
+            <PendingVerbs theme={theme} compact={false} />
+          ) : null}
         </View>
         {view === "feed" ? (
           <HomeScreen
@@ -521,6 +536,51 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
               setSelected(id);
             }}
           />
+        ) : view === "health" ? (
+          // J7: Health as one sentence, four tiles, the notices with what closes each, and the sessions.
+          <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 12 }} keyboardShouldPersistTaps="handled">
+            <HealthScreen
+              theme={theme}
+              navigation={navigation}
+              view={view}
+              views={VIEWS.filter((option) => TAB_VIEWS[tab].includes(option.id))}
+              onView={(next) => chooseView(next as PlaneView)}
+              onOpenWork={(id) => {
+                chooseView("list");
+                setSelected(id);
+              }}
+            />
+          </ScrollView>
+        ) : view === "initiatives" ? (
+          // J8: lateness first, four tiles, and a due review answered in the inspector (B2).
+          <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 12 }} keyboardShouldPersistTaps="handled">
+            <InitiativesBoard
+              theme={theme}
+              navigation={navigation}
+              onOpenDecision={(ledger, id) => openDecisions(ledger, id ? { ledger, id } : null)}
+              onOpenWork={(id) => {
+                chooseView("list");
+                setSelected(id);
+              }}
+            />
+          </ScrollView>
+        ) : view === "board" ? (
+          // J6: Work as five trays, its own filters and its own inspector; the other Work views keep their pane.
+          <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 12 }} keyboardShouldPersistTaps="handled">
+            <WorkBoard
+              theme={theme}
+              navigation={navigation}
+              workspace={workspace}
+              query={query}
+              view={view}
+              views={VIEWS.filter((option) => TAB_VIEWS[tab].includes(option.id))}
+              onView={(next) => chooseView(next as PlaneView)}
+              onOpenWork={(id) => {
+                chooseView("list");
+                setSelected(id);
+              }}
+            />
+          </ScrollView>
         ) : (
           <View style={{ flex: 1, flexDirection: "row" }}>
             <View style={{ flex: 1 }}>{listPane}</View>

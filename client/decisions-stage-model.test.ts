@@ -102,6 +102,7 @@ describe("J5's tiles", () => {
       title: "skene",
       stale: { kind: "overdue", date: "2026-10-07" },
       waitingOn: [],
+      sessions: [],
     } as unknown as Initiative;
     const needs = needsOf({ items: [], asks: open, reviews: [review], landing: null, workspace: "broomva" }, NOW);
     expect(needs.summary.byKind.ask).toBe(2);

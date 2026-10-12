@@ -6,6 +6,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useEffect, useState } from "react";
 import { Platform, Pressable, Text, TextInput, View } from "react-native";
+import { runningOf } from "../shared/needs-you";
 import type { TabBadge } from "./header-count";
 import {
   HOME_TABS,
@@ -16,7 +17,7 @@ import {
   wakeChip,
   workspaceOptions,
 } from "./home-model";
-import { useLoop, useNeeds, useWatched, useWorkList } from "./hooks";
+import { useLoop, useNeeds, useNotices, useWorkList } from "./hooks";
 import { frostLook } from "./kit/assumptions";
 import { Dot, MONO, TABULAR } from "./kit/parts";
 import { type Kit, kitOf } from "./kit/tokens";
@@ -30,6 +31,7 @@ import {
 } from "./presence";
 import { settingsOpener } from "./settings-link";
 import { CHOICE_ROLE, focusRing, webAria } from "./ui";
+import { useTick } from "./use-tick";
 
 type Menu = "workspace" | "presence" | null;
 
@@ -496,16 +498,6 @@ export function HomeHeader(props: HomeHeaderProps) {
   );
 }
 
-/** The time now, moved on every `ms` while mounted. */
-function useTick(ms: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), ms);
-    return () => clearInterval(timer);
-  }, [ms]);
-  return now;
-}
-
 /**
  * The header with its reads: the tabs' counts are needs.list's (homeBadges), the Work tab's the running work,
  * the Health tab's the rows the Feed lists, the workspace menu's holds are needs.list's rows by scope, and the
@@ -536,13 +528,14 @@ export function HomeHeaderBar({
 }) {
   const needs = useNeeds();
   const list = useWorkList();
-  const watched = useWatched();
+  const notices = useNotices();
   const loop = useLoop();
   const presence = usePresence();
   const now = useTick(15_000);
   const items = list.data?.items ?? [];
-  const running = items.filter((item) => item.state === "running").length;
-  const health = healthRows(items, watched.data ?? null).length;
+  const running = runningOf(items).length;
+  // The Health tab says what the Feed's Health section lists, and J7 lists: notices.list's total.
+  const health = notices.data?.summary.total ?? 0;
   return (
     <HomeHeader
       theme={theme}
@@ -552,7 +545,7 @@ export function HomeHeaderBar({
       workspaces={workspaceOptions(needs.data?.rows ?? [], items)}
       workspace={workspace}
       onWorkspace={onWorkspace}
-      workspaceApplies={tab === "feed"}
+      workspaceApplies={tab === "feed" || tab === "work" || tab === "decisions"}
       presence={presence}
       wake={wakeChip(loop.data ?? null, now)}
       wakeOpen={wakeOpen}

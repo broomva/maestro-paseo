@@ -16,8 +16,10 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { useQueryClient } from "@tanstack/react-query";
 import { decideConductor, undoConductor } from "../shared/answers";
 import { cancelWork, dispatchWork, unblockWork, undoWork, type WorkItem } from "../shared/contracts";
-import { answerAsk, type DecisionAsk } from "../shared/fleet";
+import { type AnswerInput, answerAsk, type DecisionAsk } from "../shared/fleet";
+import { REVIEW_ANSWERS, type ReviewAnswer, reviewInitiative } from "../shared/initiatives";
 import { holdOf, type NeedRow } from "../shared/needs";
+import { SNOOZE_HOURS, snoozeNotice } from "../shared/notices";
 import { decideApproval as decideApprovalRpc, promptSession as promptSessionRpc, undoVerb } from "../shared/verbs";
 import { whereOf } from "./decisions-model";
 import { invalidateNeeds, useRefresh } from "./hooks";
@@ -49,6 +51,8 @@ export interface VerbTarget {
   ask?: DecisionAsk | null;
   /** A proposal's conductor key (DecisionAsk.fate.key). */
   proposal?: string | null;
+  /** A notice (notices.list's row): what Snooze quiets. */
+  notice?: { key: string } | null;
 }
 
 /** The call a verb makes. Pure data: `useVerbs` runs it. */
@@ -72,6 +76,9 @@ export type VerbPlan =
   | { call: "unblock"; id: string; note: string; done: string }
   | { call: "cancel"; id: string; done: string }
   | { call: "conductor"; key: string; verb: "file" | "dismiss"; done: string }
+  | { call: "snooze"; key: string; done: string }
+  /** Your answer to a due initiative review (B2, J8): keep, park or close, recorded as a receipt after the window. */
+  | { call: "review"; id: string; date: string; answer: ReviewAnswer; note: string; done: string }
   | { call: "url"; url: string; done: string }
   | { call: "session"; agentId: string; done: string }
   /**
@@ -136,7 +143,20 @@ export function planVerb(verb: VerbId, target: VerbTarget, choice?: string, word
       if (row?.kind !== "approval") return { call: "unavailable", why: "Only an approval is allowed or denied." };
       return decideApproval(row, item, verb === "allow");
     case "answer": {
-      if (hold?.kind === "review") return { call: "go", intent: { kind: "initiatives" }, done: "Opened Initiatives" };
+      if (hold?.kind === "review") {
+        const answer = REVIEW_ANSWERS.find((one) => one === choice);
+        // With no answer chosen, it opens where the review is handled; chosen, it is the review's answer.
+        if (!answer || row?.kind !== "ask" || !("initiative" in row.body))
+          return { call: "go", intent: { kind: "initiatives" }, done: "Opened Initiatives" };
+        return {
+          call: "review",
+          id: row.body.initiative,
+          date: row.body.date,
+          answer,
+          note: words.trim(),
+          done: `Review of ${row.body.initiative}: ${answer}`,
+        };
+      }
       if (hold?.kind === "answers") return { call: "go", intent: { kind: "decisions" }, done: "Opened Decisions" };
       if (row?.kind !== "ask") return { call: "unavailable", why: "Only an ask is answered." };
       const decisions: MaestroIntent = ask
@@ -172,7 +192,8 @@ export function planVerb(verb: VerbId, target: VerbTarget, choice?: string, word
     case "later":
       return { call: "stay", done: "Left in Needs you" };
     case "snooze":
-      return { call: "unavailable", why: "Snooze lands with notices.list (BRO-3036)." };
+      if (!target.notice) return { call: "unavailable", why: "Only a notice is snoozed." };
+      return { call: "snooze", key: target.notice.key, done: `Snoozed for ${SNOOZE_HOURS} h` };
     case "open": {
       const agentId = item?.worker?.agentId ?? row?.session?.agentId ?? null;
       if (agentId) return { call: "session", agentId, done: "Opened the session" };
@@ -250,6 +271,8 @@ export function useVerbs() {
     cancel: useRpc(cancelWork),
     undo: useRpc(undoWork),
     answer: useRpc(answerAsk),
+    snooze: useRpc(snoozeNotice),
+    review: useRpc(reviewInitiative),
     conductor: useRpc(decideConductor),
     conductorUndo: useRpc(undoConductor),
   };
@@ -298,6 +321,19 @@ export function useVerbs() {
         const { receipt, appliesAt } = await rpc.cancel({ id: plan.id });
         return receipt ? { done: plan.done, receipt: `verb:${receipt}`, appliesAt } : { done: plan.done };
       }
+      case "snooze": {
+        const { receipt, appliesAt } = await rpc.snooze({ key: plan.key, hours: SNOOZE_HOURS });
+        return { done: plan.done, receipt: `verb:${receipt}`, appliesAt };
+      }
+      case "review": {
+        const { receipt, appliesAt } = await rpc.review({
+          id: plan.id,
+          date: plan.date,
+          answer: plan.answer,
+          note: plan.note,
+        });
+        return { done: plan.done, receipt: `verb:${receipt}`, appliesAt };
+      }
       case "conductor": {
         const { receipt, appliesAt } = await rpc.conductor({ key: plan.key, verb: plan.verb });
         return { done: plan.done, receipt: `conductor:${receipt}`, appliesAt };
@@ -319,6 +355,12 @@ export function useVerbs() {
     }
   };
   return {
+    /**
+     * Your answer to a decision ask, as the Decisions tab sends it (the card keeps its own in-flight, confirm and
+     * draft): the one place the call is made, so every answer is the adapter's. Its reply is the ask as it stands
+     * and, with a receipt, when it is written (B4).
+     */
+    answer: (input: AnswerInput) => rpc.answer(input),
     /**
      * Make the plan's call. Rejects with the call's error; `unavailable` rejects with its reason. The outcome's
      * `settled` resolves once everything has been read again, so a screen can hold a hold still until then.

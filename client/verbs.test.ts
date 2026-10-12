@@ -132,8 +132,13 @@ describe("the other verbs", () => {
     expect(planVerb("file", {}).call).toBe("unavailable");
   });
 
-  test("snooze says which ticket brings it", () => {
-    expect(planVerb("snooze", {})).toMatchObject({ call: "unavailable", why: expect.stringContaining("BRO-3036") });
+  test("snooze quiets a notice for four hours, with its receipt; anything else is not snoozed", () => {
+    expect(planVerb("snooze", { notice: { key: "quiet:q1" } })).toMatchObject({
+      call: "snooze",
+      key: "quiet:q1",
+      done: "Snoozed for 4 h",
+    });
+    expect(planVerb("snooze", {}).call).toBe("unavailable");
   });
 
   test("continue prompts the work's session (session.prompt), and a work with no session has nothing to prompt", () => {
@@ -263,5 +268,41 @@ describe("an answer carries your words (J3), a prompt goes with Unblock (J4)", (
       note: "retry with --force",
     });
     expect(planVerb("unblock", { item: stuck })).toMatchObject({ call: "unblock", note: "" });
+  });
+});
+
+describe("a due initiative review is answered through the adapter (B2, J8)", () => {
+  const reviewRow: Extract<NeedRow, { kind: "ask" }> = {
+    ...base,
+    key: "review:skene",
+    kind: "ask",
+    verbs: ["answer", "skip"],
+    body: {
+      why: "Its review date, 2026-10-07, has passed.",
+      cost: "",
+      options: [],
+      goesTo: ".control/initiatives/skene.yaml",
+      initiative: "skene",
+      date: "2026-10-07",
+      intent: "an agentic workspace",
+      since: [],
+      hanging: { work: 3, asks: 1 },
+    },
+  };
+
+  test("keep, park and close are the review's answer, for the date you read, with your words", () => {
+    for (const answer of ["keep", "park", "close"] as const)
+      expect(planVerb("answer", { row: reviewRow }, answer, " next week ")).toMatchObject({
+        call: "review",
+        id: "skene",
+        date: "2026-10-07",
+        answer,
+        note: "next week",
+      });
+  });
+
+  test("with nothing chosen, or an answer that is not one of the three, it opens Initiatives instead of guessing", () => {
+    expect(planVerb("answer", { row: reviewRow })).toMatchObject({ call: "go", intent: { kind: "initiatives" } });
+    expect(planVerb("answer", { row: reviewRow }, "develop")).toMatchObject({ call: "go" });
   });
 });

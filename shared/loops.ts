@@ -194,3 +194,22 @@ export const LoopNoticeSchema = z.object({
   fix: z.string(),
 });
 export type LoopNotice = z.infer<typeof LoopNoticeSchema>;
+
+/** The badge words: the class as the spec names it, in plain case. */
+export const DRIFT_WORDS: Record<DriftClass, string> = {
+  paused_but_running: "Paused but running",
+  orphaned: "Orphaned",
+  active_but_absent: "Active but absent",
+  bound_session_gone: "Bound session gone",
+  duplicate_binding: "Duplicate binding",
+  target_changed: "Target changed",
+  prompt_mismatch: "Prompt mismatch",
+  state_lost: "State lost",
+  tick_missing: "Tick missing",
+  tick_unclosed: "Tick unclosed",
+  failing: "Failing",
+  missed: "Missed",
+  skipped_busy: "Skipped busy",
+  expiring: "Expiring",
+  unregistered: "Unregistered",
+};
