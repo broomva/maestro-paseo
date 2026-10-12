@@ -48,7 +48,7 @@ describe("notices.list", () => {
     const quiet = fakeWork("q1", "running", live, { flag: quietFlag });
     const running = fakeWork("r1", "running", live);
     const { rows } = noticesOf({ ...empty, items: [quiet, running] }, NOW);
-    expect(rows.map((row) => [row.key, row.kind, row.verb.label])).toEqual([["work:q1", "quiet", "Snooze 4h"]]);
+    expect(rows.map((row) => [row.key, row.kind, row.verb.label])).toEqual([["quiet:q1", "quiet", "Snooze 4h"]]);
     expect(rows[0]?.detail).toBe("Quiet for 808 minutes, worth a look.");
   });
 
@@ -85,6 +85,7 @@ describe("notices.list", () => {
     expect(summary).toEqual({
       total: 3,
       snoozed: 0,
+      unread: [],
       byKind: { stuck: 0, quiet: 0, schedule: 2, loop: 1, initiative: 0 },
     });
   });
@@ -105,9 +106,23 @@ describe("notices.list", () => {
     expect(noticesOf(empty, NOW).rows).toEqual([]);
   });
 
+  test("a snooze of a quiet run does not hide the stuck notice that run becomes", () => {
+    const snoozed = new Map([["quiet:q1", new Date(NOW + 3_600_000).toISOString()]]);
+    const stuck = fakeWork("q1", "blocked", null, { reason: "Checks failed" });
+    expect(noticesOf({ ...empty, items: [stuck], snoozed }, NOW).rows.map((row) => row.kind)).toEqual(["stuck"]);
+  });
+
+  test("a source that could not be read is named, so a missing notice is not read as none", () => {
+    expect(noticesOf({ ...empty, unread: ["the loops"] }, NOW).summary).toMatchObject({
+      total: 0,
+      unread: ["the loops"],
+    });
+    expect(noticesOf(empty, NOW).summary.unread).toEqual([]);
+  });
+
   test("a snoozed notice is left out until its time is up, and is counted apart", () => {
     const quiet = fakeWork("q1", "running", live, { flag: quietFlag });
-    const snoozed = new Map([["work:q1", new Date(NOW + 3_600_000).toISOString()]]);
+    const snoozed = new Map([["quiet:q1", new Date(NOW + 3_600_000).toISOString()]]);
     expect(noticesOf({ ...empty, items: [quiet], snoozed }, NOW)).toMatchObject({
       rows: [],
       summary: { total: 0, snoozed: 1 },

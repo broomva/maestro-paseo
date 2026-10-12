@@ -73,6 +73,8 @@ export interface HealthInput {
   reads: readonly ScopeRead[];
   loops: LoopsView | null;
   notices: Notices | null;
+  /** notices.list could not be read at all. */
+  noticesFailed?: boolean;
   items: readonly WorkItem[];
   loop: LoopState | null;
   now: number;
@@ -184,7 +186,15 @@ export function verdictSentence(
 }
 
 /** Health, from what the screen has read. Pure. */
-export function healthModel({ reads, loops, notices, items, loop, now }: HealthInput): HealthModel {
+export function healthModel({
+  reads,
+  loops,
+  notices,
+  noticesFailed = false,
+  items,
+  loop,
+  now,
+}: HealthInput): HealthModel {
   const scopes = reads.map((read) => read.scope);
   const cells = reads.map((read) => ({
     scope: read.scope.id,
@@ -195,15 +205,20 @@ export function healthModel({ reads, loops, notices, items, loop, now }: HealthI
   const featured = reads.find((read) => read.detail)?.detail ?? null;
   const total = notices?.summary.total ?? 0;
   const ticks = { rows: cells, passed, total: counted.length };
-  const tone: Tone = total === 0 ? "ok" : (notices?.summary.byKind.stuck ?? 0) > 0 ? "danger" : "warn";
+  const unread = noticesFailed && !notices ? ["the notices"] : (notices?.summary.unread ?? []);
+  // A notice that could not be read is missing, not none: never say "All clear" over one.
+  const clear = total === 0 && unread.length === 0;
+  const tone: Tone = clear ? "ok" : (notices?.summary.byKind.stuck ?? 0) > 0 ? "danger" : "warn";
 
   const roster = rosterRows(reads);
   const inScope = roster.inScope;
   const running = runningOf(items).length;
-  const idle = inScope.filter((row) => bucketOf(row.state) === "idle").length;
+  // One session is in one segment: an idle session that is not adopted is Unmanaged, not Idle too.
   const unmanaged = inScope.filter((row) => row.classId === UNMANAGED_CLASS).length;
-  const oldestIdle = inScope
-    .filter((row) => bucketOf(row.state) === "idle" && row.activeAt)
+  const idleRows = inScope.filter((row) => bucketOf(row.state) === "idle" && row.classId !== UNMANAGED_CLASS);
+  const idle = idleRows.length;
+  const oldestIdle = idleRows
+    .filter((row) => row.activeAt)
     .map((row) => Date.parse(row.activeAt ?? ""))
     .filter(Number.isFinite);
   const stuck = notices?.summary.byKind.stuck ?? 0;
@@ -269,8 +284,17 @@ export function healthModel({ reads, loops, notices, items, loop, now }: HealthI
       ),
     },
     verdict: {
-      title: total === 0 ? "All clear" : `${plural(total, "thing")} ${total === 1 ? "needs" : "need"} a look`,
-      sentence: verdictSentence(notices, ticks, reads),
+      title: clear
+        ? "All clear"
+        : total === 0
+          ? "Not all clear"
+          : `${plural(total, "thing")} ${total === 1 ? "needs" : "need"} a look`,
+      sentence: [
+        verdictSentence(notices, ticks, reads),
+        unread.length > 0 ? `Could not read ${unread.join(", ")}: what they would say is missing.` : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
       tone,
     },
     ticks: {

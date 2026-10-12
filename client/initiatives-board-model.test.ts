@@ -139,6 +139,14 @@ describe("lateness is the loudest thing", () => {
     expect(rows.map((row) => row.id)).toEqual(["due", "answered"]);
   });
 
+  test("an answered review no longer says how late it was: late follows the hold in needs.list", () => {
+    const answered = initiative("answered", { reviewBy: "2026-10-05", stale: { kind: "overdue", date: "2026-10-05" } });
+    const none = needsOf({ items: [], asks: [], reviews: [], landing: null, workspace: "broomva" }, NOW);
+    const row = initiativeBoard({ ...input, initiatives: [answered], needs: none }).rows[0];
+    expect(row?.due).toBe(false);
+    expect(row?.date).toEqual({ text: "10-05", late: null });
+  });
+
   test("a review's date says how late it is, against the daemon's day", () => {
     expect(dateWords(skene, TODAY)).toEqual({ text: "10-07", late: "2 d late" });
     expect(dateWords(holon, TODAY)).toEqual({ text: "10-08", late: "1 d late" });

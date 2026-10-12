@@ -518,6 +518,10 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
             onNew={() => setCreating(true)}
           />
           {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
+          {/* The toast holds one verb; the ledger holds every one still inside its 8 s (B4), so each keeps its Undo. */}
+          {view === "health" || view === "initiatives" || view === "board" ? (
+            <PendingVerbs theme={theme} compact={false} />
+          ) : null}
         </View>
         {view === "feed" ? (
           <HomeScreen

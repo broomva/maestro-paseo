@@ -231,6 +231,16 @@ export function WorkBoard({
           {errorText(list.error)}
         </Notice>
       ) : null}
+      {needs.isError && !needs.data ? (
+        <Notice theme={theme} tone="danger">
+          {`What needs you could not be read: ${errorText(needs.error)}`}
+        </Notice>
+      ) : null}
+      {handled.isError && !handled.data ? (
+        <Notice theme={theme} tone="danger">
+          {`What was handled for you could not be read: ${errorText(handled.error)}`}
+        </Notice>
+      ) : null}
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap", zIndex: 5 }}>
         <ChipRow theme={theme} label="Work views" variant="segment" options={views} value={view} onChange={onView} />
         <FilterMenu

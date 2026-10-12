@@ -38,6 +38,8 @@ export interface NoticeSources {
   reviews: readonly Initiative[];
   /** Notices snoozed, by key, until when (ISO). */
   snoozed: ReadonlyMap<string, string>;
+  /** Sources that could not be read; the summary says so, so a missing notice is not read as none. */
+  unread?: readonly string[];
 }
 
 const time = (iso: string | null): number => {
@@ -71,7 +73,8 @@ function stuckRow(item: WorkItem): NoticeRow {
 function quietRow(item: WorkItem): NoticeRow {
   const ticket = item.ticket ?? ticketOf(item.title);
   return {
-    key: workKey(item.id),
+    // Not the work's own key: a snooze of the quiet run must not also hide the stuck notice it may become.
+    key: `quiet:${item.id}`,
     kind: "quiet",
     title: titleOf(item),
     scope: scopeOf(item),
@@ -169,5 +172,8 @@ export function noticesOf(sources: NoticeSources, now: number): Notices {
       rows.filter((row) => row.kind === kind).length,
     ]),
   ) as Notices["summary"]["byKind"];
-  return { rows, summary: { total: rows.length, byKind, snoozed: unique.length - shown.length } };
+  return {
+    rows,
+    summary: { total: rows.length, byKind, snoozed: unique.length - shown.length, unread: [...(sources.unread ?? [])] },
+  };
 }

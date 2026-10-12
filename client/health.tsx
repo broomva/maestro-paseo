@@ -316,6 +316,7 @@ export function HealthScreen({
     reads,
     loops: loops.data ?? null,
     notices: notices.data ?? null,
+    noticesFailed: notices.isError,
     items,
     loop: loop.data ?? null,
     now,
@@ -394,10 +395,16 @@ export function HealthScreen({
               Open notices
             </Text>
             <Text style={{ color: kit.fg2, fontSize: 12.5, ...TABULAR }}>{rows.length}</Text>
-            <Text style={{ color: kit.muted, fontSize: 12.5 }}>· each closes when its source does</Text>
+            <Text style={{ color: kit.muted, fontSize: 12.5 }}>
+              {`· each closes when its source does${
+                notices.data?.summary.snoozed ? ` · ${notices.data.summary.snoozed} snoozed` : ""
+              }`}
+            </Text>
           </View>
           {rows.length === 0 ? (
-            <Text style={{ color: kit.muted, fontSize: 13 }}>Nothing is asking for a look.</Text>
+            <Text style={{ color: kit.muted, fontSize: 13 }}>
+              {model.verdict.title === "All clear" ? "Nothing is asking for a look." : "Nothing could be listed."}
+            </Text>
           ) : (
             <Notices theme={theme} rows={rows} onOpen={open} onVerb={verb} />
           )}

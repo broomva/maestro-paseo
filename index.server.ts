@@ -545,9 +545,11 @@ export default function contribute(host: PluginServerContext) {
   // and J7 are the same rows. A pure read; a source that cannot be read costs its own rows, never the rest.
   const noticesNow = async () => {
     const items = (await workItems()) ?? [];
+    const unread: string[] = [];
     const quietly = <T>(what: string, read: Promise<T[]>): Promise<T[]> =>
       read.catch((error) => {
         log(`notices: reading ${what}: ${(error as Error).message}`);
+        unread.push(what);
         return [];
       });
     const [fleetNotices, timelineNotices, loopNotices, reviews, snoozed] = await Promise.all([
@@ -561,7 +563,7 @@ export default function contribute(host: PluginServerContext) {
       }),
     ]);
     return noticesOf(
-      { items, fleet: fleetNotices, timeline: timelineNotices, loops: loopNotices, reviews, snoozed },
+      { items, fleet: fleetNotices, timeline: timelineNotices, loops: loopNotices, reviews, snoozed, unread },
       Date.now(),
     );
   };
@@ -573,6 +575,9 @@ export default function contribute(host: PluginServerContext) {
         throw new UserError("That notice no longer holds, so there is nothing to snooze.");
     },
     apply: async ({ key, hours }) => {
+      // Checked again as the window closes: a notice that went away meanwhile is not snoozed.
+      if (!(await noticesNow()).rows.some((row) => row.key === key))
+        throw new UserError("That notice no longer holds, so there is nothing to snooze.");
       await snoozes.snooze(key, new Date(Date.now() + hours * 3_600_000), new Date());
       return `Snoozed for ${hours} h.`;
     },

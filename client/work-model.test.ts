@@ -207,6 +207,14 @@ describe("the filters narrow the trays, never the counts the tabs say", () => {
     );
   });
 
+  test("the scope line counts work items, each once; an ask has no work and is not one", () => {
+    const board = workBoard(input);
+    const cards = board.lanes.flatMap((lane) => lane.cards);
+    const noWork = cards.filter((card) => !card.item).length;
+    expect(noWork).toBeGreaterThan(0);
+    expect(board.inScope).toBe(cards.length - noWork);
+  });
+
   test("nothing is read yet: empty trays, never a number made up", () => {
     const board = workBoard({ ...input, items: [], needs: null, handled: null, asks: [] });
     expect(board.lanes.every((lane) => lane.cards.length === 0)).toBe(true);

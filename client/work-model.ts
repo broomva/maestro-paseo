@@ -217,13 +217,14 @@ export function workBoard({ items, needs, handled, asks, filters, now }: WorkInp
   ].sort();
   return {
     lanes,
-    inScope: lanes.reduce((sum, lane) => sum + lane.cards.length, 0),
+    // Work items, each once: a hold that is an ask has no work, and a work item with a hold is in one tray.
+    inScope: new Set(lanes.flatMap((lane) => lane.cards.flatMap((card) => (card.item ? [card.item.id] : [])))).size,
     providers,
     initiatives,
   };
 }
 
-/** The line above the trays: how many cards are in scope, and what Done reaches back to. */
+/** The line above the trays: how many work items are in scope, and what Done reaches back to. */
 export function scopeLine(board: WorkBoard): string {
   return `${board.inScope} work ${board.inScope === 1 ? "item" : "items"} in scope · Done shows the last 24 h`;
 }

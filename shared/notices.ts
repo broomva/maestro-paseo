@@ -57,6 +57,8 @@ export const NoticeSummarySchema = z.object({
   }),
   /** Notices you snoozed that would otherwise be listed. */
   snoozed: z.number().int().min(0),
+  /** Sources that could not be read (the fleet, the timeline, the loops, the initiatives): their notices are missing, not none. */
+  unread: z.array(z.string()),
 });
 export type NoticeSummary = z.infer<typeof NoticeSummarySchema>;
 

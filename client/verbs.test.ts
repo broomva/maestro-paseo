@@ -133,9 +133,9 @@ describe("the other verbs", () => {
   });
 
   test("snooze quiets a notice for four hours, with its receipt; anything else is not snoozed", () => {
-    expect(planVerb("snooze", { notice: { key: "work:q1" } })).toMatchObject({
+    expect(planVerb("snooze", { notice: { key: "quiet:q1" } })).toMatchObject({
       call: "snooze",
-      key: "work:q1",
+      key: "quiet:q1",
       done: "Snoozed for 4 h",
     });
     expect(planVerb("snooze", {}).call).toBe("unavailable");

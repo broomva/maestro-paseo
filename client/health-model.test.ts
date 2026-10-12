@@ -172,6 +172,26 @@ describe("the verdict says one thing, and the notices are its count", () => {
     expect(clear.verdict.sentence).not.toContain("stuck");
   });
 
+  test("a notice that could not be read is missing, not none: never All clear over it", () => {
+    const none = noticesOf(
+      { items: [], fleet: [], timeline: [], loops: [], reviews: [], snoozed: new Map(), unread: ["the loops"] },
+      NOW,
+    );
+    const half = healthModel({ reads, loops: loops([]), notices: none, items: [], loop: null, now: NOW });
+    expect(half.verdict).toMatchObject({ title: "Not all clear", tone: "warn" });
+    expect(half.verdict.sentence).toContain("Could not read the loops");
+    const failed = healthModel({
+      reads,
+      loops: loops([]),
+      notices: null,
+      noticesFailed: true,
+      items: [],
+      loop: null,
+      now: NOW,
+    });
+    expect(failed.verdict.title).toBe("Not all clear");
+  });
+
   test("the sentence names the ticks and each kind of notice, in a person's words", () => {
     expect(verdictSentence(notices, { passed: 47, total: 48 }, reads)).toBe(
       "Both scopes tick on time: 47 of 48 ticks passed in 24 h. A run is stuck and one is quiet.",
@@ -214,9 +234,10 @@ describe("the four tiles", () => {
     expect(by.running).toBe(2);
     expect(by.stuck).toBe(notices.summary.byKind.stuck);
     expect(by.quiet).toBe(notices.summary.byKind.quiet);
-    expect(by.idle).toBe(2);
+    // The two idle sessions are the two unmanaged ones: each is in one segment, so none is counted twice.
+    expect(by.idle).toBe(0);
     expect(by.unmanaged).toBe(2);
-    expect(model.sessions.seen).toBe(2 + 2 + 1 + 1 + 2);
+    expect(model.sessions.seen).toBe(2 + 0 + 1 + 1 + 2);
   });
 
   test("schedules: the number is the length of the list beside it, with how they stand", () => {

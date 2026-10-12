@@ -114,18 +114,23 @@ export function initiativeBoard({
   const open = items.filter((item) => !isTerminal(item.state));
   const all: InitiativeRow[] = initiatives
     .filter((initiative) => !initiative.error)
-    .map((initiative) => ({
-      id: initiative.id,
-      name: initiative.title ?? initiative.id,
-      status: initiative.status ? STATUS[initiative.status] : { word: "unknown", tone: "muted" as const },
-      summary: initiative.summary ?? initiative.quote,
-      driver: driverOf(initiative),
-      date: dateWords(initiative, today),
-      work: open.filter((item) => item.initiative === initiative.id).length,
-      asks: asks.filter((ask) => ask.initiative === initiative.id && isTriaged(ask)).length,
-      due: due.has(initiative.id),
-      initiative,
-    }));
+    .map((initiative) => {
+      // Late only while needs.list holds its review: an answered one no longer says how late it was.
+      const holds = due.has(initiative.id);
+      const date = dateWords(initiative, today);
+      return {
+        id: initiative.id,
+        name: initiative.title ?? initiative.id,
+        status: initiative.status ? STATUS[initiative.status] : { word: "unknown", tone: "muted" as const },
+        summary: initiative.summary ?? initiative.quote,
+        driver: driverOf(initiative),
+        date: holds ? date : { ...date, late: null },
+        work: open.filter((item) => item.initiative === initiative.id).length,
+        asks: asks.filter((ask) => ask.initiative === initiative.id && isTriaged(ask)).length,
+        due: holds,
+        initiative,
+      };
+    });
   // Late first, the longest late loudest; then by date; those with none last.
   const lateness = (row: InitiativeRow) => (row.due ? days(row.initiative.stale?.date ?? today, today) : -1);
   const order = (row: InitiativeRow) => row.initiative.reviewBy ?? row.initiative.wake ?? "9999-12-31";

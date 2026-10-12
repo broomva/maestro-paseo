@@ -3076,6 +3076,15 @@ describe("J6 and J6b, Work as five trays (BRO-3036)", () => {
     at: new Date(Date.now() - 808 * 60_000).toISOString(),
   };
 
+  test("while needs.list cannot be read, the board says so and never draws an empty Needs you as the answer", async () => {
+    needsFail = "socket closed";
+    const view = await mount(surface(false));
+    await until(() => view.text().includes("could not be read"));
+    await view.goto("Board");
+    await until(() => view.all('[data-testid="work-board"]').length > 0);
+    expect(view.all('[data-testid="work-board"]')[0]?.textContent).toContain("What needs you could not be read");
+  });
+
   test("five trays in order; Needs you is needs.list's rows, the number the header says; stuck work is in none", async () => {
     const view = await mount(surface(false));
     await until(() => view.byLabel("Feed, 2 need you") !== null);
@@ -3219,10 +3228,32 @@ describe("J7, Health (BRO-3036)", () => {
     await view.press(view.byLabel("Snooze 4h: Work z"));
     await until(() => calls.some((call) => call.method === "notice.snooze"));
     expect(calls.filter((call) => call.method === "notice.snooze").map((call) => call.input)).toEqual([
-      { key: "work:z", hours: 4 },
+      { key: "quiet:z", hours: 4 },
     ]);
     await until(() => view.all('[role="button"][aria-label^="Undo"]').length > 0);
     expect(view.all('[role="button"][aria-label^="Undo"]').length).toBeGreaterThan(0);
+  });
+
+  test("two verbs inside their 8 s each keep an Undo: the toast holds one, the ledger strip holds every one", async () => {
+    items = [
+      ...fixture(),
+      work("z", "running", { worker: worker("z", "maestro/z-1"), phase: "working", flag: quiet }),
+      work("y", "running", { worker: worker("y", "maestro/y-1"), phase: "working", flag: quiet }),
+    ];
+    const view = await mount(surface(false));
+    await view.goto("Health");
+    await until(() => view.byLabel("Snooze 4h: Work z") !== null && view.byLabel("Snooze 4h: Work y") !== null);
+    await view.press(view.byLabel("Snooze 4h: Work z"));
+    await until(() => pendingVerbs.length === 1);
+    await view.press(view.byLabel("Snooze 4h: Work y"));
+    await until(() => pendingVerbs.length === 2);
+    await until(
+      () =>
+        view.byLabel("Undo: Snoozed quiet:z for 4 h") !== null &&
+        view.byLabel("Undo: Snoozed quiet:y for 4 h") !== null,
+    );
+    expect(view.byLabel("Undo: Snoozed quiet:z for 4 h")).not.toBeNull();
+    expect(view.byLabel("Undo: Snoozed quiet:y for 4 h")).not.toBeNull();
   });
 
   test("a failed schedule is a row of the same list: its verb opens the Timeline, where its runs are", async () => {

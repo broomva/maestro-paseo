@@ -384,7 +384,8 @@ export function HomeScreen({
                     selected={item.id === selectedWork}
                     canPrompt={canPrompt}
                     onSelect={() => selectWork(item.id)}
-                    onVerb={(id) => (id === "open" ? selectWork(item.id) : void act("continue", { item }))}
+                    // Change course takes a note: the item's own form has it. Continue prompts the session (session.prompt).
+                    onVerb={(id) => (id === "continue" ? void act("continue", { item }) : selectWork(item.id))}
                   />
                 ))}
               </View>
