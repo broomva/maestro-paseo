@@ -50,6 +50,7 @@ const review = {
   file: "skene.yaml",
   stale: { kind: "overdue", date: "2026-10-07" },
   waitingOn: [],
+  sessions: [],
 } as unknown as Initiative;
 
 const items = [

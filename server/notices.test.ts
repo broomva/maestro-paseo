@@ -14,7 +14,14 @@ const quietFlag = {
 };
 
 const review = (id: string, date: string): Initiative =>
-  ({ id, title: id, file: `${id}.yaml`, stale: { kind: "overdue", date }, waitingOn: [] }) as unknown as Initiative;
+  ({
+    id,
+    title: id,
+    file: `${id}.yaml`,
+    stale: { kind: "overdue", date },
+    waitingOn: [],
+    sessions: [],
+  }) as unknown as Initiative;
 
 const empty = { items: [], fleet: [], timeline: [], loops: [], reviews: [], snoozed: new Map<string, string>() };
 
