@@ -3259,6 +3259,14 @@ describe("J7, Health (BRO-3036)", () => {
     expect(view.byLabel("Undo: Snoozed quiet:y for 4 h")).not.toBeNull();
   });
 
+  test("the Sessions tile counts runs and fleet sessions in two named units, not one sum", async () => {
+    const view = await mount(surface(false));
+    await view.goto("Health");
+    await until(() => /\d+ runs? · \d+ fleet sessions?/.test(view.text()));
+    expect(view.text()).toMatch(/\d+ runs? · \d+ fleet sessions?/);
+    expect(view.text()).not.toContain(" seen");
+  });
+
   test("while work.list cannot be read, Health says so and never says All clear over the missing runs", async () => {
     workFail = "disk gone";
     const view = await mount(surface(false));

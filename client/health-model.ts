@@ -62,7 +62,8 @@ export interface HealthModel {
   header: { mode: string | null; cadence: string | null };
   verdict: { title: string; sentence: string; tone: Tone };
   ticks: { rows: TickRow[]; passed: number; total: number; line: string };
-  sessions: { segments: BarSegment[]; seen: number };
+  /** `runs` are work items (running, stuck, quiet); `fleet` are the fleet's sessions (idle, unmanaged): two units, never one sum. */
+  sessions: { segments: BarSegment[]; runs: number; fleet: number };
   schedules: { total: number; breakdown: string; next: string | null };
   conductor: { on: boolean; cadence: string; words: string };
   schedulesList: ScheduleRow[];
@@ -307,7 +308,7 @@ export function healthModel({
       ...ticks,
       line: `${passed} of ${ticks.total} passed`,
     },
-    sessions: { segments, seen: segments.reduce((sum, segment) => sum + segment.count, 0) },
+    sessions: { segments, runs: running + stuck + quiet, fleet: idle + unmanaged },
     schedules: {
       total: rows.length,
       breakdown,

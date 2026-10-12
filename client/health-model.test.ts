@@ -239,7 +239,7 @@ describe("the four tiles", () => {
     expect(model.ticks.passed).toBeLessThan(48);
   });
 
-  test("sessions: Running is the Running tray's, Stuck and Quiet are notices.list's, and the seen total is their sum", () => {
+  test("sessions: Running is the Running tray's, Stuck and Quiet are notices.list's, and the tile counts runs and fleet sessions apart", () => {
     const by = Object.fromEntries(model.sessions.segments.map((segment) => [segment.id, segment.count]));
     expect(by.running).toBe(runningOf(items).length);
     expect(by.running).toBe(2);
@@ -248,7 +248,8 @@ describe("the four tiles", () => {
     // The two idle sessions are the two unmanaged ones: each is in one segment, so none is counted twice.
     expect(by.idle).toBe(0);
     expect(by.unmanaged).toBe(2);
-    expect(model.sessions.seen).toBe(2 + 0 + 1 + 1 + 2);
+    // Two units, each named: runs are work items; fleet sessions are the roster's. Never one sum of both.
+    expect(model.sessions).toMatchObject({ runs: 2 + 1 + 1, fleet: 0 + 2 });
   });
 
   test("schedules: the number is the length of the list beside it, with how they stand", () => {

@@ -13,7 +13,7 @@ import { useFleet, useScopeReads } from "./fleet";
 import type { Cell } from "./fleet-cockpit-model";
 import { stateTone, stateWord } from "./fleet-cockpit-model";
 import { cellStyle } from "./fleet-health";
-import { errorText } from "./format";
+import { errorText, plural } from "./format";
 import { activeText, type BarSegment, type HealthModel, healthModel, type Tone, whereText } from "./health-model";
 import { noticeIntent } from "./home-model";
 import { useLoop, useNotices, useWorkList } from "./hooks";
@@ -135,10 +135,15 @@ function TicksTile({ theme, model }: { theme: PluginTheme; model: HealthModel })
 
 function SessionsTile({ theme, model }: { theme: PluginTheme; model: HealthModel }) {
   const kit = kitOf(theme);
-  const { segments, seen } = model.sessions;
+  const { segments, runs, fleet } = model.sessions;
   const segmentColor = (segment: BarSegment) => (segment.id === "idle" ? kit.border : toneColor(kit, segment.tone));
   return (
-    <Panel theme={theme} icon="MonitorSmartphone" title="Sessions" aside={`${seen} seen`}>
+    <Panel
+      theme={theme}
+      icon="MonitorSmartphone"
+      title="Sessions"
+      aside={`${plural(runs, "run")} · ${plural(fleet, "fleet session")}`}
+    >
       <View
         accessible
         accessibilityLabel={`Sessions: ${segments.map((s) => `${s.count} ${s.label.toLowerCase()}`).join(", ")}`}
@@ -474,7 +479,7 @@ export function HealthScreen({
       <View style={{ gap: 8 }}>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
           <Text accessibilityRole="header" style={{ color: kit.fg, fontSize: 15, fontWeight: "600" }}>
-            Sessions
+            Fleet sessions
           </Text>
           <Text style={{ color: kit.fg2, fontSize: 12.5, ...TABULAR }}>
             {model.sessionRows.shown} of {model.sessionRows.total}
