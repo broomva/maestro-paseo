@@ -316,7 +316,7 @@ pages:
     components: [C-decision-card, C-progress, C-segmented, C-kbd, C-button, C-glance-tile, C-inspector, C-deck]
     reads: [I-asks-workspace, I-needs-list, I-answers-status]
     writes: [I-ask-answer, I-fleet-ask-answer, I-conductor-decide, I-undo]
-    code: [client/decision-triage.tsx, client/decision-card.tsx, client/conductor-answers.tsx]
+    code: [client/decision-triage.tsx, client/decision-card.tsx, client/decisions-stage.tsx, client/decisions-stage-model.ts, client/conductor-answers.tsx]
   P-work:
     name: J6 Work — five lanes as trays, Undertow on running cards, who closed Done; J6b the inspector over the right-hand lanes (B3). M6 on the phone
     status: change
@@ -566,7 +566,7 @@ interfaces:
   I-policy-get: { name: "policy.get (policy.yaml and preauth, read only)", status: new, handler: plugin, callers: [ui] }
   I-notices-registry-get: { name: "notices.registry", status: new, handler: plugin, callers: [ui] }
   I-notices-list: { name: "notices.list (the Health deck: stuck, quiet, schedule, loop, initiative)", status: new, handler: plugin, callers: [ui, conductor] }
-  I-answers-status: { name: "answers.status (waiting to land, routed, acted, held, recent)", status: new, handler: plugin, callers: [ui] }
+  I-answers-status: { name: "answers.status (waiting to land, routed, acted, held, recent)", status: new, handler: plugin, callers: [ui], code: [server/answers-status.ts] }
 
   # Owner verbs. Each records a receipt and honours the undo window (BRO-2999).
   I-ask-answer:

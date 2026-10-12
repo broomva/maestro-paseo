@@ -193,3 +193,62 @@ export function answersNotice(landing: AnswersLanding | null): AnswersNotice | n
   if (!words) return null;
   return { kind: landing.stage, pending: landing.pending, pr: landing.pr, words };
 }
+
+// ── answers.status (J5, BRO-3036) ────────────────────────────────────────────
+
+/** How many of your latest answers `answers.status` lists, and the J5 rail shows. */
+export const ANSWERS_RECENT = 5;
+
+/** One of your latest answers and where it is: the chip is the stage in a word. */
+export const RecentAnswerSchema = z.object({
+  /** The ask's handle as Decisions keys it (ledger, uid or id). */
+  key: z.string(),
+  ledger: z.string(),
+  id: z.string(),
+  /** What the ask said, as its headline. */
+  title: z.string(),
+  /** What you answered: the option's label, else your words, cut short. */
+  answer: z.string(),
+  stage: z.enum(ANSWER_STAGES),
+  /** The fate in a sentence (AnswerFate.words). */
+  words: z.string(),
+  answeredAt: z.string().nullable(),
+});
+export type RecentAnswer = z.infer<typeof RecentAnswerSchema>;
+
+/**
+ * Where your answers went (J5's tiles and rail): the batch waiting to land
+ * (every answer on maestro/answers that origin/main lacks), and, of the
+ * answers Maestro reads (the workspace's latest), how many are on their way
+ * (`routed`: landed, not acted on), acted on, or held for the conductor.
+ * A pure read, from the answers the Decisions read holds and the batch as the
+ * last wake left it; nothing is recounted on the client.
+ */
+export const AnswersStatusSchema = z.object({
+  /** Answers on maestro/answers that origin/main does not record: the landing's count, or more when answers were batched since its last check. */
+  waitingToLand: z.number().int().min(0),
+  /** The batch's stage and its PR (never merged by Maestro); null when no batch is known. */
+  landing: z
+    .object({
+      stage: z.enum(["none", "waiting", "conflict", "blocked", "failed"]),
+      pr: PrRefSchema.nullable(),
+      words: z.string(),
+    })
+    .nullable(),
+  /** Landed or written where it belongs, not yet acted on. */
+  routed: z.number().int().min(0),
+  acted: z.number().int().min(0),
+  /** Waiting for the conductor to give them to a lane (route `conductor`, A8). */
+  held: z.number().int().min(0),
+  /** How many answers the three counts above are over: those Maestro holds a receipt for (one answered elsewhere has no fate). */
+  window: z.number().int().min(0),
+  /** Your latest answers, newest first (ANSWERS_RECENT). */
+  recent: z.array(RecentAnswerSchema),
+});
+export type AnswersStatus = z.infer<typeof AnswersStatusSchema>;
+
+export const getAnswersStatus = defineRpc({
+  name: "answers.status",
+  input: z.object({}),
+  output: AnswersStatusSchema,
+});

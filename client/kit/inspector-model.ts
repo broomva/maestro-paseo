@@ -33,6 +33,8 @@ export interface VerbSpec {
   primary: boolean;
   /** The key cap shown beside it on the desktop, if any. */
   key?: string;
+  /** Drawn as a plain text link at the bar's left, not a pill (J4's "Cancel work…"). */
+  link?: boolean;
 }
 
 /** Each kind's verbs, secondary first and the one primary last (the order the bar draws them). */
@@ -68,7 +70,27 @@ export function verbsFor(kind: InspectorKind, primaryLabel?: string): VerbSpec[]
   return KIND_VERBS[kind].map((verb) => (verb.primary && primaryLabel ? { ...verb, label: primaryLabel } : verb));
 }
 
+/**
+ * The desktop panel's verbs (J2–J4, J8): the kinds' own, except a notice, which also offers to cancel the
+ * work (a link at the bar's left) and says Unblock sends your prompt into the session. A notice is a fact:
+ * it never offers Approve.
+ */
+export function panelVerbsFor(kind: InspectorKind, primaryLabel?: string): VerbSpec[] {
+  if (kind !== "notice") return verbsFor(kind, primaryLabel);
+  return [
+    { id: "cancel", label: "Cancel work…", primary: false, link: true },
+    { id: "open", label: "Open session", primary: false },
+    { id: "unblock", label: primaryLabel ?? "Unblock with a prompt…", primary: true },
+  ];
+}
+
 /** The inspector's slide, in px: it enters from beyond the right edge (J1, J6b). */
 export function inspectorHidden(width: number): number {
   return width + 24;
+}
+
+/** The primary of an ask or a review: "Answer with 2" names the option the answer takes (J3); "Answer" with none chosen. */
+export function answerLabel(options: readonly { id: string }[], chosen: string | undefined): string {
+  const at = chosen === undefined ? -1 : options.findIndex((option) => option.id === chosen);
+  return at < 0 ? "Answer" : `Answer with ${at + 1}`;
 }

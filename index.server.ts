@@ -5,6 +5,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { agentMethods, keepServing } from "./server/agent-socket";
 import { AnswerRouter } from "./server/answer-routes";
 import { AnswersLander, ghForge } from "./server/answers-landing";
+import { answersStatus } from "./server/answers-status";
 import { Approvals } from "./server/approvals";
 import { attentionOf } from "./server/attention";
 import { loadConfig, saveConfig } from "./server/config";
@@ -47,7 +48,7 @@ import {
   workVerbHandlers,
 } from "./server/verb-specs";
 import { WAKE_LOG_MAX, WakeLog } from "./server/wake-log";
-import { answersNotice, decideConductor, undoConductor } from "./shared/answers";
+import { answersNotice, decideConductor, getAnswersStatus, undoConductor } from "./shared/answers";
 import {
   adoptAgent,
   attentionWork,
@@ -618,6 +619,12 @@ export default function contribute(host: PluginServerContext) {
       ? await router.fates(view.decisions, await (lander?.state() ?? Promise.resolve(null)).catch(() => null))
       : view.decisions;
     return { ...view, decisions, fleet: scoped.asks, warnings: [...view.warnings, ...scoped.warnings] };
+  });
+  // Where your answers went (J5): a pure read of the same fates and the batch as the last wake left it.
+  server.handle(getAnswersStatus, async () => {
+    const landing = await (lander?.state() ?? Promise.resolve(null)).catch(() => null);
+    const view = workspace ? await workspace.read().then((read) => read.all) : [];
+    return answersStatus(router ? await router.fates(view, landing) : view, landing);
   });
   // Your answer to a decision ask, at its home: written under the ledger lock when its undo window closes (B4),
   // and never on the agent socket. An idea answered develop also files its held work item (above); park writes

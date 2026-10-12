@@ -12,15 +12,23 @@
 // 52 pt and pinned at the bottom, its bar solid (no blur on iOS).
 
 import type { PluginTheme } from "@getpaseo/plugin";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, PanResponder, Platform, Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
 import { tint } from "../fleet-color";
-import { useReducedMotion, webAria } from "../ui";
+import { typingIn, useReducedMotion, webAria } from "../ui";
 import { type Directions, DRAG_NATIVE_DRIVER, type FrostLook, frostLook, keysHint, nativeDriver } from "./assumptions";
 import { DECK, deckCaptures, deckRelease } from "./deck-model";
 import { DetailHeader } from "./detail-header";
-import { type InspectorKind, inspectorHidden, KIND_LOOK, type VerbSpec, verbsFor } from "./inspector-model";
+import {
+  answerLabel,
+  type InspectorKind,
+  inspectorHidden,
+  KIND_LOOK,
+  panelVerbsFor,
+  type VerbSpec,
+  verbsFor,
+} from "./inspector-model";
 import { Dot, Kicker, MONO, PASS_THROUGH, Pill, SectionLabel, TABULAR } from "./parts";
 import { type Kit, kitOf } from "./tokens";
 import { TidepoolDot } from "./undertow";
@@ -55,6 +63,8 @@ export interface Choice {
   label: string;
   note?: string;
   recommended?: boolean;
+  /** An answer that cannot be undone: a screen reader says so, and the screen asks twice. */
+  irreversible?: boolean;
 }
 
 export interface LogLine {
@@ -76,14 +86,32 @@ interface Common {
 }
 
 export type InspectorItem =
-  | (Common & { kind: "approval"; action: string; evidence: readonly Evidence[]; after: readonly string[] })
+  | (Common & {
+      kind: "approval";
+      action: string;
+      /** The layer that held it, in words ("the session's permission prompt"): J2's "Held by" box. */
+      heldBy?: string;
+      evidence: readonly Evidence[];
+      after: readonly string[];
+      /** What Deny does (J2's "Deny: …" line); shown under its own label. */
+      afterDeny?: readonly string[];
+    })
   | (Common & {
       kind: "ask";
       why?: string;
+      /** J3's two tiles: what waiting costs, and why it is yours. The desktop shows them in place of `why` and the summary. */
+      cost?: string;
+      whyYou?: string;
+      /** Where your answer is written and acted on, in words. */
+      goes?: string;
+      /** What a screen reader calls the words field; "Your words for <title>" when absent. */
+      fieldLabel?: string;
+      /** What a screen reader calls the options' radio group; "Options" when absent. */
+      optionsLabel?: string;
       options: readonly Choice[];
       chosen?: string;
       /** The silent default: what happens if you say nothing, and how far its countdown has run (0 to 1). */
-      fallback?: { line: string; elapsed: number };
+      fallback?: { line: string; elapsed?: number };
     })
   | (Common & {
       kind: "owner_step";
@@ -97,13 +125,24 @@ export type InspectorItem =
       log: readonly LogLine[];
       closesWhen: readonly { when: string; becomes: string }[];
       note?: string;
+      /** The session can be sent a prompt with Unblock: the desktop shows a field for it (J4). */
+      prompt?: boolean;
     })
   | (Common & {
       kind: "work";
       state: string;
       lifecycle: readonly { label: string; at?: string; done: boolean }[];
     })
-  | (Common & { kind: "review"; late?: string; options: readonly Choice[]; chosen?: string });
+  | (Common & {
+      kind: "review";
+      late?: string;
+      options: readonly Choice[];
+      chosen?: string;
+      /** The review's own text above its three answers (J8): what changed, what hangs off it. */
+      since?: readonly string[];
+      hanging?: readonly { icon: string; value: string; label: string }[];
+      goes?: string;
+    });
 
 const toneColor = (kit: Kit, tone: EvidenceTone | "needs" | undefined) =>
   tone === "ok"
@@ -160,24 +199,36 @@ function Choices({
   options,
   chosen,
   onChoose,
+  compact = false,
+  label,
+  locked = false,
+  keys = false,
 }: {
   theme: PluginTheme;
   options: readonly Choice[];
   chosen: string | undefined;
   onChoose: (id: string) => void;
+  /** The phone's: "Rec." and no key caps. The desktop says Recommended and numbers each answer (1 to 4 choose). */
+  compact?: boolean;
+  label?: string;
+  /** Nothing can be chosen now: an answer is in flight, or the ask is answered. */
+  locked?: boolean;
+  /** Draw the 1–4 key caps: only where those keys choose (J5's tab), never where they would do nothing. */
+  keys?: boolean;
 }) {
   const kit = kitOf(theme);
   return (
-    <View accessibilityRole="radiogroup" style={{ gap: 8 }}>
-      {options.map((option) => {
+    <View accessibilityRole="radiogroup" accessibilityLabel={label} style={{ gap: 8 }}>
+      {options.map((option, at) => {
         const on = option.id === chosen;
         return (
           <Pressable
             key={option.id}
             accessibilityRole="radio"
-            accessibilityState={{ checked: on }}
+            accessibilityState={{ checked: on, disabled: locked }}
+            disabled={locked}
             {...webAria({ "aria-checked": on })}
-            accessibilityLabel={`${option.label}${option.recommended ? ", recommended" : ""}`}
+            accessibilityLabel={`${option.label}${option.recommended ? ", recommended" : ""}${option.irreversible ? ", cannot be undone" : ""}`}
             onPress={() => onChoose(option.id)}
             style={{
               flexDirection: "row",
@@ -196,14 +247,91 @@ function Choices({
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                 <Text style={{ color: kit.fg, fontSize: 14.5, fontWeight: "600" }}>{option.label}</Text>
                 {option.recommended ? (
-                  <Text style={{ color: kit.ok, fontSize: 11.5, fontWeight: "600" }}>Rec.</Text>
+                  <Text style={{ color: kit.ok, fontSize: 11.5, fontWeight: "600" }}>
+                    {compact ? "Rec." : "Recommended"}
+                  </Text>
                 ) : null}
               </View>
               {option.note ? <Text style={{ color: kit.muted, fontSize: 12.5 }}>{option.note}</Text> : null}
             </View>
+            {compact || !keys || at > 3 ? null : (
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: kit.border,
+                  borderRadius: 5,
+                  paddingHorizontal: 6,
+                  paddingVertical: 1,
+                }}
+              >
+                <Text style={{ color: kit.muted, fontSize: 11, fontFamily: MONO }}>{at + 1}</Text>
+              </View>
+            )}
           </Pressable>
         );
       })}
+    </View>
+  );
+}
+
+/** A quiet tile with a small title: what waiting costs, why it is yours (J3). */
+function Tile({ theme, title, children }: { theme: PluginTheme; title: string; children: string }) {
+  const kit = kitOf(theme);
+  return (
+    <View style={{ flex: 1, minWidth: 180, gap: 4, backgroundColor: kit.sunken, borderRadius: 10, padding: 12 }}>
+      <Text style={{ color: kit.muted, fontSize: 11.5 }}>{title}</Text>
+      <Text style={{ color: kit.fg2, fontSize: 13, lineHeight: 18 }}>{children}</Text>
+    </View>
+  );
+}
+
+/** Your words, optional: the field J3 puts under the options, and J4 under a notice for its prompt. */
+function WordsField({
+  theme,
+  value,
+  onChange,
+  placeholder,
+  label,
+}: {
+  theme: PluginTheme;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  label: string;
+}) {
+  const kit = kitOf(theme);
+  return (
+    <TextInput
+      value={value}
+      onChangeText={onChange}
+      multiline
+      maxLength={2000}
+      placeholder={placeholder}
+      placeholderTextColor={kit.muted}
+      accessibilityLabel={label}
+      style={{
+        minHeight: 48,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: kit.border,
+        backgroundColor: kit.bg,
+        color: kit.fg,
+        fontSize: 14,
+        textAlignVertical: "top",
+      }}
+    />
+  );
+}
+
+/** A line with a small icon: where your answer goes, how a notice closes. */
+function IconLine({ theme, icon, children }: { theme: PluginTheme; icon: string; children: string }) {
+  const kit = kitOf(theme);
+  return (
+    <View style={{ flexDirection: "row", gap: 8 }}>
+      <Icon name={icon} size={15} color={kit.muted} />
+      <Text style={{ flex: 1, color: kit.fg2, fontSize: 13, lineHeight: 18 }}>{children}</Text>
     </View>
   );
 }
@@ -284,6 +412,10 @@ export function InspectorBody({
   onChoose,
   onClose,
   choice,
+  words,
+  onWords,
+  locked = false,
+  keys = false,
 }: {
   theme: PluginTheme;
   item: InspectorItem;
@@ -294,6 +426,13 @@ export function InspectorBody({
   onClose?: () => void;
   /** The chosen option when the container holds it (InspectorPanel, InspectorCard); the body's own otherwise. */
   choice?: string;
+  /** Your words, held by the container so a verb carries them; with `onWords` the desktop shows the field (J3, J4). */
+  words?: string;
+  onWords?: (value: string) => void;
+  /** The options cannot be chosen now (J5: an answer is in flight, or the ask is answered). */
+  locked?: boolean;
+  /** The 1–4 keys choose an option here (J5's tab): its answers wear their key caps. */
+  keys?: boolean;
 }) {
   const kit = kitOf(theme);
   const look = KIND_LOOK[item.kind];
@@ -333,36 +472,107 @@ export function InspectorBody({
             {item.action}
           </Text>
         </View>,
-        <EvidenceGrid key="evidence" theme={theme} evidence={item.evidence} columns={compact ? 2 : 4} />,
+        item.heldBy && !compact ? (
+          <View
+            key="held"
+            style={{
+              backgroundColor: kit.sunken,
+              borderRadius: 10,
+              paddingVertical: 10,
+              paddingHorizontal: 12,
+              flexDirection: "row",
+              gap: 8,
+            }}
+          >
+            <Text style={{ color: kit.muted, fontSize: 12.5 }}>Held by</Text>
+            <Text selectable style={{ flex: 1, color: kit.fg, fontSize: 12.5, fontFamily: MONO }}>
+              {item.heldBy}
+            </Text>
+          </View>
+        ) : null,
+        item.evidence.length > 0 ? (
+          <EvidenceGrid key="evidence" theme={theme} evidence={item.evidence} columns={compact ? 2 : 4} />
+        ) : null,
         label("After you allow"),
         <After key="after" theme={theme} lines={item.after} />,
       );
+      if (!compact && item.afterDeny?.length)
+        sections.push(label("If you deny"), <After key="deny" theme={theme} lines={item.afterDeny} />);
       break;
-    case "ask":
-      if (item.why)
+    case "ask": {
+      // The desktop's two tiles (J3) say what waiting costs and why it is yours; the phone keeps its line.
+      const tiles = !compact && (item.cost || item.whyYou);
+      if (tiles)
+        sections.push(
+          <View key="tiles" style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {item.cost ? (
+              <Tile theme={theme} title="What waiting costs">
+                {item.cost}
+              </Tile>
+            ) : null}
+            {item.whyYou ? (
+              <Tile theme={theme} title="Why you">
+                {item.whyYou}
+              </Tile>
+            ) : null}
+          </View>,
+        );
+      else if (item.why)
         sections.push(
           <Text key="why" style={{ color: kit.fg2, fontSize: 14, lineHeight: 20 }}>
             {item.why}
           </Text>,
         );
-      sections.push(<Choices key="choices" theme={theme} options={item.options} chosen={chosen} onChoose={choose} />);
+      sections.push(
+        <Choices
+          key="choices"
+          theme={theme}
+          options={item.options}
+          chosen={chosen}
+          onChoose={choose}
+          compact={compact}
+          label={item.optionsLabel ?? "Options"}
+          locked={locked}
+          keys={keys}
+        />,
+      );
       if (item.fallback)
         sections.push(
           <View key="fallback" style={{ gap: 8 }}>
-            <View accessible={false} style={{ height: 3, borderRadius: 2, backgroundColor: tint(kit.fg, 0.08) }}>
-              <View
-                style={{
-                  width: `${Math.round(Math.min(1, Math.max(0, item.fallback.elapsed)) * 100)}%`,
-                  height: 3,
-                  borderRadius: 2,
-                  backgroundColor: kit.info,
-                }}
-              />
-            </View>
+            {item.fallback.elapsed === undefined ? null : (
+              <View accessible={false} style={{ height: 3, borderRadius: 2, backgroundColor: tint(kit.fg, 0.08) }}>
+                <View
+                  style={{
+                    width: `${Math.round(Math.min(1, Math.max(0, item.fallback.elapsed)) * 100)}%`,
+                    height: 3,
+                    borderRadius: 2,
+                    backgroundColor: kit.info,
+                  }}
+                />
+              </View>
+            )}
             <Text style={{ color: kit.muted, fontSize: 12.5 }}>{item.fallback.line}</Text>
           </View>,
         );
+      if (!compact && onWords)
+        sections.push(
+          <WordsField
+            key="words"
+            theme={theme}
+            value={words ?? ""}
+            onChange={onWords}
+            placeholder="Add words (optional)"
+            label={item.fieldLabel ?? `Your words for ${item.title}`}
+          />,
+        );
+      if (!compact && item.goes)
+        sections.push(
+          <IconLine key="goes" theme={theme} icon="Send">
+            {item.goes}
+          </IconLine>,
+        );
       break;
+    }
     case "owner_step":
       sections.push(
         <View
@@ -434,6 +644,17 @@ export function InspectorBody({
           ))}
         </View>,
       );
+      if (!compact && item.prompt && onWords)
+        sections.push(
+          <WordsField
+            key="prompt"
+            theme={theme}
+            value={words ?? ""}
+            onChange={onWords}
+            placeholder="A prompt for the session (optional)"
+            label={`A prompt for the session of ${item.title}`}
+          />,
+        );
       if (item.note)
         sections.push(
           <View
@@ -472,7 +693,7 @@ export function InspectorBody({
         </View>,
       );
       break;
-    case "review":
+    case "review": {
       if (item.late)
         sections.push(
           <View
@@ -490,8 +711,45 @@ export function InspectorBody({
             <Text style={{ color: kit.warn, fontSize: 13, fontWeight: "600" }}>{item.late}</Text>
           </View>,
         );
-      sections.push(<Choices key="choices" theme={theme} options={item.options} chosen={chosen} onChoose={choose} />);
+      if (!compact && item.since?.length)
+        sections.push(label("Since the last review"), <After key="since" theme={theme} lines={item.since} />);
+      if (!compact && item.hanging?.length)
+        sections.push(
+          <View key="hanging" style={{ flexDirection: "row", gap: 8 }}>
+            {item.hanging.map((tile) => (
+              <View
+                key={tile.label}
+                style={{ flex: 1, gap: 2, backgroundColor: kit.sunken, borderRadius: 10, padding: 12 }}
+              >
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Icon name={tile.icon} size={14} color={kit.muted} />
+                  <Text style={{ color: kit.fg, fontSize: 16, fontWeight: "600", ...TABULAR }}>{tile.value}</Text>
+                </View>
+                <Text style={{ color: kit.muted, fontSize: 11.5 }}>{tile.label}</Text>
+              </View>
+            ))}
+          </View>,
+        );
+      sections.push(
+        <Choices
+          key="choices"
+          theme={theme}
+          options={item.options}
+          chosen={chosen}
+          onChoose={choose}
+          compact={compact}
+          label="Options"
+          locked={locked}
+        />,
+      );
+      if (!compact && item.goes)
+        sections.push(
+          <IconLine key="goes" theme={theme} icon="Send">
+            {item.goes}
+          </IconLine>,
+        );
       break;
+    }
   }
   if (item.session)
     sections.push(
@@ -534,7 +792,10 @@ export function InspectorBody({
       >
         {item.title}
       </Text>
-      {item.summary ? <Text style={{ color: kit.fg2, fontSize: 14.5, lineHeight: 21 }}>{item.summary}</Text> : null}
+      {/* The desktop's ask says what waiting costs in its own tile (J3): once, not twice; the rest of a long question stays. */}
+      {item.summary && !(item.kind === "ask" && !compact && item.summary === item.cost) ? (
+        <Text style={{ color: kit.fg2, fontSize: 14.5, lineHeight: 21 }}>{item.summary}</Text>
+      ) : null}
       {sections}
     </View>
   );
@@ -596,14 +857,28 @@ function Verbs({
  */
 function useChoice(item: InspectorItem | null): {
   choice: string | undefined;
+  /** You picked it yourself: the option an item starts on (a recommendation) is not a pick. */
+  explicit: boolean;
   choose: (id: string) => void;
 } {
   const [picked, setPicked] = useState<{ key: string; id: string } | null>(null);
   const fallback = item && (item.kind === "ask" || item.kind === "review") ? item.chosen : undefined;
   return {
     choice: item && picked?.key === item.key ? picked.id : fallback,
+    explicit: Boolean(item && picked?.key === item.key),
     choose: (id) => {
       if (item) setPicked({ key: item.key, id });
+    },
+  };
+}
+
+/** Your words on the item showing, held by the container so a verb carries them; they belong to one item. */
+function useWords(item: InspectorItem | null): { words: string; setWords: (value: string) => void } {
+  const [typed, setTyped] = useState<{ key: string; text: string } | null>(null);
+  return {
+    words: item && typed?.key === item.key ? typed.text : "",
+    setWords: (text) => {
+      if (item) setTyped({ key: item.key, text });
     },
   };
 }
@@ -630,13 +905,6 @@ function useSlide(shown: boolean, value: Animated.Value, hidden: number, reduced
     return () => slide.stop();
   }, [shown, hidden, reduced, value, native]);
   return present;
-}
-
-/** Whether a key press comes from somewhere you type: it keeps its own Esc (as client/decision-triage.tsx). */
-function typingIn(target: unknown): boolean {
-  const el = target as { tagName?: string; isContentEditable?: boolean } | null;
-  const tag = el?.tagName?.toUpperCase();
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable === true;
 }
 
 /** The width a sideways swipe on the phone card is measured against: the 393 pt column less its margins. */
@@ -670,8 +938,8 @@ export function InspectorPanel({
   item: InspectorItem | null;
   open: boolean;
   onClose: () => void;
-  /** A verb pressed, with the option chosen when the item is an ask or a review. */
-  onVerb: (id: string, choice?: string) => void;
+  /** A verb pressed, with the option chosen when the item is an ask or a review, and the words typed (J3, J4). */
+  onVerb: (id: string, choice?: string, words?: string) => void;
   /** "Next hold J": present when the screen can walk to the next item. */
   onNext?: () => void;
   onOpenSession?: () => void;
@@ -690,6 +958,7 @@ export function InspectorPanel({
   if (item && item !== kept) setKept(item);
   const present = useSlide(shown, x, inspectorHidden(width), reduced, nativeDriver(Platform.OS));
   const picked = useChoice(item ?? kept);
+  const said = useWords(item ?? kept);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   const scopeRef = useRef(scope);
@@ -721,6 +990,19 @@ export function InspectorPanel({
   const showing = item ?? kept;
   if (!showing || !present) return null;
   const hold = KIND_LOOK[showing.kind].hold;
+  // Words typed beside an option you did not pick yourself are an answer in your words: the recommendation an ask
+  // starts on is never sent with them, and the primary says which it is sending.
+  const inWords = showing.kind === "ask" && !picked.explicit && said.words.trim().length > 0;
+  const sent = inWords ? undefined : picked.choice;
+  const primary =
+    showing.kind === "ask" || showing.kind === "review"
+      ? inWords
+        ? "Answer in your words"
+        : answerLabel(showing.options, sent)
+      : showing.primaryLabel;
+  const verbs = panelVerbsFor(showing.kind, primary);
+  const links = verbs.filter((verb) => verb.link);
+  const pills = verbs.filter((verb) => !verb.link);
   return (
     <Animated.View
       testID="inspector-panel"
@@ -751,8 +1033,10 @@ export function InspectorPanel({
           item={showing}
           onOpenSession={onOpenSession}
           onClose={onClose}
-          choice={picked.choice}
+          choice={inWords ? "" : picked.choice}
           onChoose={picked.choose}
+          words={said.words}
+          onWords={showing.kind === "ask" || showing.kind === "notice" ? said.setWords : undefined}
         />
       </ScrollView>
       <View
@@ -795,11 +1079,21 @@ export function InspectorPanel({
             ) : null}
           </Pressable>
         ) : null}
+        {links.map((verb) => (
+          <Pressable
+            key={verb.id}
+            accessibilityRole="button"
+            accessibilityLabel={verb.label}
+            onPress={() => onVerb(verb.id, sent, said.words)}
+          >
+            <Text style={{ color: kit.muted, fontSize: 12.5 }}>{verb.label}</Text>
+          </Pressable>
+        ))}
         <View style={{ flex: 1 }} />
         <Verbs
           theme={theme}
-          verbs={verbsFor(showing.kind, showing.primaryLabel)}
-          onVerb={(id) => onVerb(id, picked.choice)}
+          verbs={pills}
+          onVerb={(id) => onVerb(id, sent, said.words)}
           height={36}
           grow={false}
           keys
@@ -837,8 +1131,8 @@ export function InspectorCard({
   height: number;
   onClose: () => void;
   onMore: () => void;
-  /** A verb pressed, with the option chosen when the item is an ask or a review. */
-  onVerb: (id: string, choice?: string) => void;
+  /** A verb pressed, with the option chosen when the item is an ask or a review, and the words typed (J3, J4). */
+  onVerb: (id: string, choice?: string, words?: string) => void;
   onIndexChange: (index: number) => void;
   onOpenSession?: () => void;
   /** Which ways it swipes to the next hold: the screen passes swipeDirections(layout) (BRO-3033 fact 3). */

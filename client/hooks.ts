@@ -7,6 +7,7 @@
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
+import { getAnswersStatus } from "../shared/answers";
 import {
   adoptAgent,
   attentionWork,
@@ -149,6 +150,15 @@ export function useNeeds() {
 export function useHandled() {
   const read = useRpc(listHandled);
   return useQuery({ queryKey: HANDLED_KEY, queryFn: () => read({}), refetchInterval: NEEDS_POLL_MS });
+}
+
+/**
+ * Where your answers went (answers.status, J5): the batch waiting to land and what became of the latest answers.
+ * Under ["maestro"], so every verb that settles reads it again.
+ */
+export function useAnswersStatus() {
+  const read = useRpc(getAnswersStatus);
+  return useQuery({ queryKey: [...KEY, "answers-status"], queryFn: () => read({}), refetchInterval: NEEDS_POLL_MS });
 }
 
 /** Refetch needs.list and handled.list now. */

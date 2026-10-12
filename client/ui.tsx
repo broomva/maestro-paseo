@@ -39,6 +39,16 @@ export function webAria(props: {
 }
 
 /**
+ * Whether a key press comes from somewhere you type (an input, a textarea, a select, an editable element): it
+ * keeps every key but its own Esc. One test for every Maestro screen's keys, so the Esc policies cannot drift.
+ */
+export function typingIn(target: unknown): boolean {
+  const el = target as { tagName?: string; isContentEditable?: boolean } | null | undefined;
+  const tag = el?.tagName?.toUpperCase();
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable === true;
+}
+
+/**
  * A row that is one choice among several. On the web it is ARIA's
  * `menuitemradio` inside `role="menu"`: react-native-web writes the role as
  * given, though RN's Role type omits it. Native has no such role and logs an

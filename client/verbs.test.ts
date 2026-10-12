@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { NeedRow } from "../shared/needs";
+import type { DecisionAsk } from "../shared/fleet";
+import { askHoldKey, type NeedRow } from "../shared/needs";
 import { fakeWork } from "./fake-work";
 import { decideApproval, planVerb, promptSession, receiptOf, settleDelay } from "./verbs";
 
@@ -173,5 +174,94 @@ describe("when a verb's effect can be read", () => {
     expect(settleDelay("2026-10-12T08:59:00.000Z", now)).toBe(700);
     expect(settleDelay(undefined, now)).toBeNull();
     expect(settleDelay("not a time", now)).toBeNull();
+  });
+});
+
+describe("an answer carries your words (J3), a prompt goes with Unblock (J4)", () => {
+  const decision: DecisionAsk = {
+    ledger: "claude-code-mods.yaml",
+    uid: "u-1",
+    id: "A3",
+    hash: "0123456789abcdef",
+    arc: null,
+    headline: "Install the mods?",
+    question: null,
+    stakes: null,
+    whyYou: null,
+    options: [
+      { id: "off", label: "Keep them off", consequence: null, reversible: true, recommended: true },
+      { id: "all", label: "Install fleet-wide", consequence: null, reversible: false, recommended: false },
+    ],
+    fallback: null,
+    blocking: true,
+    askedAt: null,
+    answeredAt: null,
+    answer: null,
+    answerOption: null,
+    state: "open",
+    origin: null,
+    refusal: null,
+    home: { kind: "main", path: "/ctl", branch: null },
+    batched: false,
+    waiting: true,
+  };
+  const row: Extract<NeedRow, { kind: "ask" }> = {
+    ...base,
+    key: askHoldKey(decision),
+    kind: "ask",
+    verbs: ["answer", "skip"],
+    body: { why: "", cost: "", options: [], goesTo: "origin/main" },
+  };
+
+  test("an option and your words are one answer, the words trimmed", () => {
+    expect(planVerb("answer", { row, ask: decision }, "off", "  after the release \n")).toMatchObject({
+      call: "answer",
+      option: "off",
+      note: "after the release",
+      done: "Answered: Keep them off",
+    });
+  });
+
+  test("your words alone are an answer too: no option is claimed for them", () => {
+    expect(planVerb("answer", { row, ask: decision }, undefined, "same vendor for now")).toMatchObject({
+      call: "answer",
+      option: null,
+      note: "same vendor for now",
+      done: "Answered in your words",
+    });
+  });
+
+  test("nothing chosen and nothing said opens Decisions: no empty answer is ever sent", () => {
+    for (const words of ["", "   "])
+      expect(planVerb("answer", { row, ask: decision }, undefined, words)).toMatchObject({ call: "go" });
+    expect(planVerb("answer", { row, ask: decision }, "missing", "")).toMatchObject({ call: "go" });
+  });
+
+  test("an option that cannot be undone takes Decisions' deliberate confirm, with or without words", () => {
+    expect(planVerb("answer", { row, ask: decision }, "all", "yes")).toMatchObject({ call: "go" });
+  });
+
+  test("what you chose and typed goes to Decisions with the answer it confirms, never lost on the way", () => {
+    expect(planVerb("answer", { row, ask: decision }, "all", " the whole fleet ")).toMatchObject({
+      call: "go",
+      draft: { chosen: "all", note: "the whole fleet" },
+    });
+    // Nothing chosen and nothing said carries nothing; neither does an ask this client has not read.
+    expect(planVerb("answer", { row, ask: decision }, undefined, "")).not.toHaveProperty("draft");
+    expect(planVerb("answer", { row }, "off", "x")).not.toHaveProperty("draft");
+  });
+
+  test("an answer with no ask this client has read opens Decisions: it never guesses the ledger", () => {
+    expect(planVerb("answer", { row }, "off", "x")).toMatchObject({ call: "go" });
+  });
+
+  test("Unblock sends the prompt you typed into the session, trimmed", () => {
+    const stuck = fakeWork("w1", "blocked", live);
+    expect(planVerb("unblock", { item: stuck }, undefined, " retry with --force ")).toMatchObject({
+      call: "unblock",
+      id: "w1",
+      note: "retry with --force",
+    });
+    expect(planVerb("unblock", { item: stuck })).toMatchObject({ call: "unblock", note: "" });
   });
 });

@@ -24,6 +24,7 @@ export function GlanceTile({
   onPress,
   selected = false,
   compact = false,
+  lines = 2,
   children,
 }: {
   theme: PluginTheme;
@@ -37,6 +38,8 @@ export function GlanceTile({
   selected?: boolean;
   /** The phone's 172 pt tile (M/Tile); the desktop's is wider and its number larger. */
   compact?: boolean;
+  /** How many lines the context line may take before it is cut: a tile that says what to do about its number takes three. */
+  lines?: number;
   children?: ReactNode;
 }) {
   const kit = kitOf(theme);
@@ -91,7 +94,7 @@ export function GlanceTile({
       </View>
       {line ? (
         <Text
-          numberOfLines={2}
+          numberOfLines={lines}
           style={{ color: kit.fg2, fontSize: compact ? 11.5 : 12.5, lineHeight: compact ? 16 : 18 }}
         >
           {line}
