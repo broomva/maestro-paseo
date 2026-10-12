@@ -198,6 +198,51 @@ export function contractSummary(input: { project: string | null; isolation: Isol
   return `${where}, ${filed}.`;
 }
 
+export interface PromiseRow {
+  id: "deliverable" | "checks" | "gate" | "nothing" | "starts";
+  label: string;
+  text: string;
+}
+
+/**
+ * What the work must land to reach you, said before you send (J9): the five promises the contract
+ * makes. The last one is always the lane: Maestro never starts work (A8).
+ */
+export function contractPromises(input: {
+  project: string | null;
+  isolation: Isolation;
+  check: string;
+  gate: GateMode;
+}): PromiseRow[] {
+  const check = input.check.trim();
+  const where = input.project ?? "the repository";
+  return [
+    {
+      id: "deliverable",
+      label: "Deliverable",
+      text:
+        input.isolation === "worktree"
+          ? `a branch and a PR from a new worktree of ${where}`
+          : `changes in ${where} itself`,
+    },
+    { id: "checks", label: "Checks", text: check ? check : "none; you read the diff" },
+    {
+      id: "gate",
+      label: "Gate",
+      text:
+        check && input.gate === "auto"
+          ? "the check decides: a pass closes it, a fail marks it stuck for you"
+          : "you approve it at your gate, check or not",
+    },
+    { id: "nothing", label: "If it lands nothing", text: "it stays Standing; questions come to Decisions" },
+    {
+      id: "starts",
+      label: "Who starts it",
+      text: "the Broomva lane: now on Dispatch, or on its next tick (\u2264 15 min) from the queue. Maestro never starts it (A8).",
+    },
+  ];
+}
+
 /** Initiatives already in use, busiest first. */
 export function initiativesOf(
   items: ReadonlyArray<{ initiative: string | null }>,

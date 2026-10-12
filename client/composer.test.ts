@@ -3,6 +3,7 @@ import {
   agentChoices,
   agentPillLabels,
   canSubmit,
+  contractPromises,
   contractSummary,
   createInput,
   EMPTY_AGENT,
@@ -224,5 +225,35 @@ describe("the words around it", () => {
     const fast = { type: "toggle" as const, id: "fast_mode", label: "Fast", value: false };
     expect(featureValue(fast, {})).toBe(false);
     expect(featureValue(fast, { fast_mode: true })).toBe(true);
+  });
+});
+
+describe("what the work must land to reach you (J9)", () => {
+  const base = { project: "maestro-paseo", isolation: "worktree" as const, check: "", gate: "human" as const };
+  const row = (input: Parameters<typeof contractPromises>[0], id: string) =>
+    contractPromises(input).find((r) => r.id === id)?.text ?? "";
+
+  test("five rows, always, the lane's last", () => {
+    expect(contractPromises(base).map((r) => r.id)).toEqual(["deliverable", "checks", "gate", "nothing", "starts"]);
+  });
+
+  test("the lane starts it: never Maestro (A8)", () => {
+    const starts = row(base, "starts");
+    expect(starts).toContain("the Broomva lane");
+    expect(starts).toContain("now on Dispatch");
+    expect(starts).toContain("Maestro never starts it");
+  });
+
+  test("the deliverable follows where it runs", () => {
+    expect(row(base, "deliverable")).toBe("a branch and a PR from a new worktree of maestro-paseo");
+    expect(row({ ...base, isolation: "directory" }, "deliverable")).toBe("changes in maestro-paseo itself");
+  });
+
+  test("the check decides only when there is a check and the gate is auto", () => {
+    expect(row({ ...base, check: "bun test", gate: "auto" }, "gate")).toContain("the check decides");
+    expect(row({ ...base, check: "bun test", gate: "human" }, "gate")).toContain("you approve");
+    expect(row({ ...base, check: " ", gate: "auto" }, "gate")).toContain("you approve");
+    expect(row({ ...base, check: "bun test" }, "checks")).toBe("bun test");
+    expect(row(base, "checks")).toContain("you read the diff");
   });
 });

@@ -332,6 +332,18 @@ afterAll(async () => {
   await win.happyDOM.close();
 });
 
+describe("the promises (J9)", () => {
+  it("say what it must land and that the lane, not Maestro, starts it", async () => {
+    const view = await mount(pane());
+    const rows = view.all('[data-testid^="promise-"]');
+    expect(rows.length).toBe(5);
+    const starts = view.one('[data-testid="promise-starts"]');
+    expect(starts?.textContent).toContain("Who starts it");
+    expect(starts?.textContent).toContain("Maestro never starts it");
+    expect(view.text()).toContain("everything else starts at your defaults");
+  });
+});
+
 describe("the composer's agent pills", () => {
   it("they read the provider: the Settings model, its thinking, the provider's default mode, its features", async () => {
     reads.listModels = async () => ({ provider: "claude", models: [OPUS, HAIKU], fetchedAt: "", requestId: "" });
