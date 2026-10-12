@@ -671,6 +671,27 @@ export class Fleet {
   }
 
   /**
+   * Which Paseo agent each Claude session is, as each scope's newest report
+   * has it (a row's `session_id` and its `paseo_agent`). fleet-reconcile keys
+   * a prompt ask by the Claude session (`prompt:<session_id>:…`, report.py),
+   * while Maestro's work names the Paseo agent, so needs.list joins the two
+   * through this to count one prompt once (BRO-3001). A pure read of the
+   * fleet's files; a scope that cannot be read adds nothing.
+   */
+  async sessionAgents(): Promise<Map<string, string>> {
+    const { scopes } = await this.scopes();
+    const out = new Map<string, string>();
+    const maps = await Promise.all(
+      scopes.map(async (config) => {
+        const read = await this.readScope(config);
+        return (await this.newestReport(read, []))?.sessions ?? new Map();
+      }),
+    );
+    for (const sessions of maps) for (const [session, { agentId }] of sessions) if (agentId) out.set(session, agentId);
+    return out;
+  }
+
+  /**
    * Every scope's own root asks, each tagged with its scope. A root is read
    * once: two scopes configured with one state dir (however reached: the
    * root is resolved) read one set of ledgers, listed under the first scope.

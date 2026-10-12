@@ -5,7 +5,6 @@
 // and tick numbers stay in Details and the inspector's facts. No React here,
 // so every rule is tested (client/fleet-cockpit-model.test.ts).
 
-import type { Attention } from "../shared/contracts";
 import {
   type DecisionAsk,
   FLEET_CLASSES,
@@ -24,7 +23,6 @@ import {
 } from "../shared/fleet";
 import { agoText, tickWhen } from "./fleet-model";
 import { ago, plural } from "./format";
-import { needsYouCount } from "./header-count";
 
 /** One scope as the cockpit reads it: its summary, its detail once read, and why its read failed. */
 export interface ScopeRead {
@@ -191,11 +189,12 @@ export function oldestText(rows: readonly FleetSession[], now: number = Date.now
 // ── Needs you ────────────────────────────────────────────────────────────────
 
 /**
- * One card. Counted cards (Needs you) are exactly the fleet's share of the
- * header's "N need you" (client/header-count.ts): a scope's missed or failing
- * tick, an alert or ask batch the fleet raised as work that needs you
- * (needsHand), and a decision ask that waits on you (shared/fleet.ts
- * `waiting`). Everything else the fleet holds open is shown, uncounted.
+ * One card. The fleet's queue: a scope's missed or failing tick, an alert or
+ * ask batch the fleet raised as work, and a decision ask that waits on you
+ * (shared/fleet.ts `waiting`). What holds on you of these is counted where
+ * needs.list counts it (BRO-3001): the work at your gate and the asks that
+ * wait; a tick and an alert are watched (owner answer A1). Everything else the
+ * fleet holds open is shown, uncounted.
  */
 export type QueueCard =
   | { kind: "health"; key: string; scope: string; health: FleetHealth }
@@ -300,41 +299,6 @@ export function fleetNeedsYou(reads: readonly ScopeRead[]): FleetNeeds {
 }
 
 /**
- * The header's "N need you", split the way the Fleet view says it: the
- * fleet's share (here, its health: the FleetNotices) and each other surface's,
- * from the very pieces the header counts (header-count.ts needsYouCount over
- * work.attention). The fleet's own work items are work at your gate, and a
- * fleet root's decision asks are Decisions', as everywhere else (BRO-2908).
- */
-export interface HeaderShares {
-  total: number;
-  fleet: number;
-  work: number;
-  decisions: number;
-  timeline: number;
-  initiatives: number;
-}
-
-export function headerShares(
-  attention: Pick<Attention, "waiting" | "fleet" | "timeline" | "asks" | "initiatives" | "answers">,
-): HeaderShares {
-  const waiting = attention.waiting;
-  const fleetNotices = attention.fleet ?? [];
-  const timeline = attention.timeline ?? [];
-  const asks = attention.asks ?? [];
-  const initiatives = attention.initiatives ?? [];
-  const answers = attention.answers ?? [];
-  return {
-    total: needsYouCount(waiting, fleetNotices, timeline, asks, initiatives, answers),
-    fleet: fleetNotices.length,
-    work: needsYouCount(waiting),
-    decisions: asks.length + answers.length,
-    timeline: timeline.length,
-    initiatives: initiatives.length,
-  };
-}
-
-/**
  * Teach the fleet: the proposals still waiting on your verdict, and those you
  * gave one in the last hour (so the card can say so). Never counted: under
  * dry run a verdict changes nothing.
@@ -375,7 +339,7 @@ export function needsText(needs: Pick<FleetNeeds, "ticks" | "asks" | "alerts" | 
     needs.alerts > 0 ? plural(needs.alerts, "alert") : null,
     needs.decisions > 0 ? plural(needs.decisions, "decision") : null,
   ].filter(Boolean);
-  return parts.length > 0 ? parts.join(" · ") : "nothing waits on you";
+  return parts.length > 0 ? parts.join(" · ") : "nothing wants a look";
 }
 
 /**
@@ -519,7 +483,7 @@ const RANK: Record<Verdict["tone"], number> = { danger: 3, warn: 2, muted: 1, su
 /**
  * The health band's verdict. It leads with the problem and never overclaims:
  * it is "healthy" (success) only when every scope was read, ticks on time,
- * no scope's tick needs you (fleetNeedsYou) and no session wants a look. Each
+ * no scope's tick wants a look (fleetNeedsYou) and no session does. Each
  * scope that cannot be read, is failing, missed its tick, is paused or is not
  * scheduled is named; sessions that want a look are named whatever the
  * scope's state (a paused scope never hides them); a scope still loading says
@@ -557,8 +521,9 @@ export function verdictOf(
     parts.push({
       tone: "warn",
       icon: "Inbox",
-      title: `${load.needs} ${load.needs === 1 ? "needs" : "need"} you`,
-      sentence: `Needs you: ${load.needsText ?? plural(load.needs, "thing")}.`,
+      // Health is watched (A1): what needs you is needs.list's, which the band's last line says.
+      title: `${plural(load.needs, "tick")} ${load.needs === 1 ? "wants" : "want"} a look`,
+      sentence: `Wants a look: ${load.needsText ?? plural(load.needs, "thing")}.`,
     });
   }
   if (load.sessions > 0) {

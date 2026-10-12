@@ -11,28 +11,27 @@
 //
 // AskNotices is the same where the rest of Maestro shows what needs you: the
 // asks that wait on you (blocking, or recommending what cannot be undone),
-// which the header count counts.
+// needs.list's ask rows, which the header count counts (BRO-3001).
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { type AnswerWhere, type AskNotice, type DecisionAsk, getWorkspaceAsks } from "../shared/fleet";
+import { type AnswerWhere, type DecisionAsk, getWorkspaceAsks } from "../shared/fleet";
+import { holdOf, type NeedRow } from "../shared/needs";
 import { DecisionCard } from "./decision-card";
 import {
   askKey,
   askNoticeText,
   type DecisionGroup,
-  decisionAsks,
   groupDecisions,
   groupMeta,
-  isTriaged,
   ledgerRail,
   noticeAsk,
 } from "./decisions-model";
 import { plural } from "./format";
-import { useAttention } from "./hooks";
+import { useNeeds } from "./hooks";
 import { requestIntent } from "./intent";
 import { useOpenUrl } from "./open-url";
 import { Button, Notice, Section, space, useText } from "./ui";
@@ -181,13 +180,6 @@ export function useWorkspaceAsks() {
   return useQuery({ queryKey: ["maestro", "workspace-asks"], queryFn: () => get({}), refetchInterval: POLL_MS });
 }
 
-/** The open decisions the tab lists (ideas aside: decisionAsks) and how many wait on you: the Decisions tab's badge. */
-export function useDecisionCounts(): { open: number; waiting: number } {
-  const read = useWorkspaceAsks();
-  const open = (read.data ? decisionAsks(read.data) : []).filter(isTriaged);
-  return { open: open.length, waiting: open.filter((ask) => ask.waiting).length };
-}
-
 /**
  * The workspace's decisions in a few lines, for a view that is not Decisions:
  * how many are open across how many ledgers, how many wait on you, and a way
@@ -236,24 +228,25 @@ export function WorkspaceDecisions({
   );
 }
 
+/** The answers batch's PR, read from where its hold says the step is done (server/needs.ts answersNeed). */
+function batchPr(row: NeedRow): { number: number; url: string } | null {
+  if (row.kind !== "owner_step") return null;
+  const number = /\/pull\/(\d+)\/?$/.exec(row.body.where)?.[1];
+  return number ? { number: Number(number), url: row.body.where } : null;
+}
+
 /**
- * The decision asks that wait on you, where Maestro shows what needs you, from
- * work.attention: exactly what the header count counts for them. Open
- * Decisions goes to the Decisions tab at the first one, the workspace's and a
- * fleet scope's alike.
- */
-/**
- * The answers batch in Needs you (shared/answers.ts): answers that wait to
- * land on origin/main through Maestro's PR, which Maestro never merges, or a
- * batch that cannot take main. Shown above every view, Decisions included:
- * no card there stands for the batch itself.
+ * The answers batch while it waits on you: needs.list's own row for it (an
+ * owner step: answers that wait to land through Maestro's PR, which Maestro
+ * never merges, or a batch that cannot take main), with a way to its PR.
+ * Shown above every view, Decisions included: no card there stands for it.
  */
 export function AnswersNotices({ theme, compact }: { theme: PluginTheme; compact: boolean }) {
-  const attention = useAttention();
+  const needs = useNeeds();
   const openUrl = useOpenUrl();
-  const [notice] = attention.data?.answers ?? [];
+  const notice = needs.data?.rows.find((row) => holdOf(row.key)?.kind === "answers");
   if (!notice) return null;
-  const pr = notice.pr;
+  const pr = batchPr(notice);
   return (
     <Notice
       theme={theme}
@@ -271,11 +264,17 @@ export function AnswersNotices({ theme, compact }: { theme: PluginTheme; compact
         ) : undefined
       }
     >
-      {notice.words}
+      {notice.title}
     </Notice>
   );
 }
 
+/**
+ * The decision asks that wait on you, where Maestro shows what needs you:
+ * needs.list's ask rows, exactly what the header counts for them. Open
+ * Decisions goes to the Decisions tab at the one the line names, the
+ * workspace's and a fleet scope's alike.
+ */
 export function AskNotices({
   theme,
   compact,
@@ -283,11 +282,13 @@ export function AskNotices({
 }: {
   theme: PluginTheme;
   compact: boolean;
-  onOpen: (notice: AskNotice) => void;
+  onOpen: (row: NeedRow) => void;
 }) {
-  // The one owner of the work.attention read (client/hooks.ts).
-  const attention = useAttention();
-  const asks = attention.data?.asks ?? [];
+  // needs.list's ask rows (client/hooks.ts useNeeds): the asks the header counts.
+  const needs = useNeeds();
+  const asks = (needs.data?.rows ?? [])
+    .filter((row) => holdOf(row.key)?.kind === "ask")
+    .map((row) => ({ headline: row.title, blocking: row.blocksWork, row }));
   // The ask the line names is the ask the button opens (noticeAsk).
   const first = noticeAsk(asks);
   if (!first) return null;
@@ -302,7 +303,7 @@ export function AskNotices({
           label="Open Decisions"
           compact={compact}
           accessibilityLabel={`Open Decisions, ${asks.length} waiting`}
-          onPress={() => onOpen(first)}
+          onPress={() => onOpen(first.row)}
         />
       }
     >

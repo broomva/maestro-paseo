@@ -171,6 +171,8 @@ export const WorkItemSchema = z.object({
   nextRun: NextRunSchema.nullable().optional(),
   /** The latest move into review, as its index in the event log; kept after the work leaves review. */
   landing: z.number().int().optional(),
+  /** When that move into review happened: when it reached your gate (BRO-3001). Absent from an older daemon. */
+  landedAt: z.string().nullable().optional(),
   pending: PendingSchema.nullable(),
   /**
    * The loop's flag: this work needs you though it is not at your gate or

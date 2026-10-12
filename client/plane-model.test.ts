@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { WorkItem } from "../shared/contracts";
+import { needsYouOf } from "../shared/needs-you";
 import { GROUP_ORDER, groupOf, type OrchState, QUEUED_LOOP_HINT } from "../shared/states";
-import { needsYou } from "./header-count";
 import {
   applyFilter,
   boardColumns,
@@ -11,7 +11,6 @@ import {
   changeText,
   countFilters,
   crumb,
-  decisionsBadge,
   emptyText,
   FILTERS,
   filterLabel,
@@ -112,33 +111,26 @@ describe("views", () => {
     ]);
     expect(SYSTEM_VIEWS).toEqual(["fleet", "decisions", "timeline", "initiatives", "loops"]);
   });
-
-  test("the Decisions badge: the open count, warn only when one waits on you, and none when nothing is open", () => {
-    expect(decisionsBadge(0, 0)).toBeNull();
-    expect(decisionsBadge(49, 0)).toEqual({ count: 49, warn: false, label: "49 open" });
-    expect(decisionsBadge(49, 1)).toEqual({ count: 49, warn: true, label: "49 open, 1 waits on you" });
-    expect(decisionsBadge(3, 2)?.label).toBe("3 open, 2 wait on you");
-  });
 });
 
 describe("filters", () => {
-  test("counts every group and the total; Needs you counts stuck work too", () => {
-    expect(countFilters(plane)).toEqual({ all: 7, review: 2, blocked: 1, running: 1, queued: 2, done: 2 });
+  test("counts every group and the total; stuck work is Stuck's, not Needs you's (A1)", () => {
+    expect(countFilters(plane)).toEqual({ all: 7, review: 1, blocked: 1, running: 1, queued: 2, done: 2 });
   });
 
   test("a state chip keeps its section; Needs you keeps what needs you; Stuck keeps stuck work; All keeps everything", () => {
     expect(applyFilter(plane, "queued").map((item) => item.id)).toEqual(["d", "e"]);
-    expect(applyFilter(plane, "review").map((item) => item.id)).toEqual(["a", "b"]);
+    expect(applyFilter(plane, "review").map((item) => item.id)).toEqual(["a"]);
     expect(applyFilter(plane, "blocked").map((item) => item.id)).toEqual(["b"]);
     expect(applyFilter(plane, "all")).toHaveLength(7);
   });
 
-  test("the Needs you chip counts and lists stuck and flagged work; no state chip does, and Stuck narrows Needs you", () => {
+  test("the Needs you chip lists work only you may start; a quiet run stays Running, stuck work Stuck", () => {
     const flagged = [...plane, work("y", "proposed", { flag: yoursFlag }), work("z", "running", { flag: quietFlag })];
-    expect(countFilters(flagged)).toEqual({ all: 9, review: 4, blocked: 1, running: 1, queued: 2, done: 2 });
-    expect(applyFilter(flagged, "review").map((item) => item.id)).toEqual(["a", "b", "y", "z"]);
+    expect(countFilters(flagged)).toEqual({ all: 9, review: 2, blocked: 1, running: 2, queued: 2, done: 2 });
+    expect(applyFilter(flagged, "review").map((item) => item.id)).toEqual(["a", "y"]);
     expect(applyFilter(flagged, "queued").map((item) => item.id)).toEqual(["d", "e"]);
-    expect(applyFilter(flagged, "running").map((item) => item.id)).toEqual(["c"]);
+    expect(applyFilter(flagged, "running").map((item) => item.id)).toEqual(["c", "z"]);
     expect(applyFilter(flagged, "blocked").map((item) => item.id)).toEqual(["b"]);
   });
 
@@ -159,17 +151,17 @@ describe("filters", () => {
       ["only flagged and stuck work", [work("y", "proposed", { flag: yoursFlag }), work("s", "blocked")]],
       ["nothing", []],
     ];
-    const SECTION_CHIPS = ["review", "running", "queued", "done"] as const;
+    const SECTION_CHIPS = ["review", "blocked", "running", "queued", "done"] as const;
     for (const [name, items] of mixes) {
       test(name, () => {
         const counts = countFilters(items);
         const sections = new Map(groupsOf(items).map((entry) => [entry.group, entry.items.length]));
-        // Needs you, Running, Queued and Done: the count is that section's length in the All view.
+        // Needs you, Stuck, Running, Queued and Done: the count is that section's length in the All view.
         for (const chip of SECTION_CHIPS) expect([chip, counts[chip]]).toEqual([chip, sections.get(chip) ?? 0]);
-        // Every chip, Stuck and All included: the count is what the filter shows.
+        // Every chip, All included: the count is what the filter shows.
         for (const chip of FILTERS) expect([chip, counts[chip]]).toEqual([chip, applyFilter(items, chip).length]);
-        // Stuck narrows Needs you; the four section chips add up to All.
-        expect(applyFilter(items, "blocked").every((item) => inFilter(item, "review"))).toBe(true);
+        // Stuck work is never under Needs you (A1: watched); the five section chips add up to All.
+        expect(applyFilter(items, "blocked").some((item) => inFilter(item, "review"))).toBe(false);
         expect(SECTION_CHIPS.reduce((sum, chip) => sum + counts[chip], 0)).toBe(counts.all);
         expect(counts.all).toBe(items.length);
       });
@@ -200,21 +192,25 @@ describe("filters", () => {
 });
 
 describe("initiative scope", () => {
-  test("open over total, with a badge for work waiting on a person", () => {
+  test("open over total, with a badge that is needs.list's count for the initiative, never a count of its work", () => {
     expect(initiatives(plane)).toEqual([
       { name: "genesis", open: 1, total: 2, needsYou: 0 },
-      { name: "hawthorne", open: 3, total: 4, needsYou: 2 },
+      { name: "hawthorne", open: 3, total: 4, needsYou: 0 },
+    ]);
+    // hawthorne's holds as needs.list has them (its work at your gate, an ask that names it, its review): 3,
+    // though only one of its work items is at your gate.
+    expect(initiatives(plane, new Map([["hawthorne", 3]]))).toEqual([
+      { name: "genesis", open: 1, total: 2, needsYou: 0 },
+      { name: "hawthorne", open: 3, total: 4, needsYou: 3 },
     ]);
   });
 
-  test("the badge counts work the loop flagged, which waits on a person too", () => {
+  test("what needs a hand is work only you may start; a quiet run and stuck work are watched, not waiting (A1)", () => {
     expect(needsHand(work("y", "proposed", { flag: yoursFlag }))).toBe(true);
-    expect(needsHand(work("z", "running", { flag: quietFlag }))).toBe(true);
+    expect(needsHand(work("t", "triggered", { flag: { ...yoursFlag, kind: "failed" } }))).toBe(true);
+    expect(needsHand(work("z", "running", { flag: quietFlag }))).toBe(false);
+    expect(needsHand(work("s", "blocked"))).toBe(false);
     expect(needsHand(work("c", "running"))).toBe(false);
-    expect(initiatives([...plane, work("y", "proposed", { initiative: "genesis", flag: yoursFlag })])).toEqual([
-      { name: "genesis", open: 2, total: 3, needsYou: 1 },
-      { name: "hawthorne", open: 3, total: 4, needsYou: 2 },
-    ]);
   });
 
   test("work without an initiative is in no scope chip", () => {
@@ -241,9 +237,10 @@ describe("initiative scope", () => {
 });
 
 describe("feed and board", () => {
-  test("feed sections are non-empty and attention first; Needs you holds the stuck work", () => {
+  test("feed sections are non-empty and attention first; stuck work is its own section", () => {
     expect(groupsOf(plane).map((entry) => [entry.group, entry.items.map((item) => item.id)])).toEqual([
-      ["review", ["a", "b"]],
+      ["review", ["a"]],
+      ["blocked", ["b"]],
       ["running", ["c"]],
       ["queued", ["d", "e"]],
       ["done", ["f", "g"]],
@@ -254,7 +251,7 @@ describe("feed and board", () => {
     ]);
   });
 
-  test("flagged work is listed in the feed's Needs you, after review and stuck, and not again in its own group", () => {
+  test("work only you may start is listed in Needs you after review, and not again in Queued", () => {
     const sections = groupsOf([
       work("quiet", "running", { flag: quietFlag }),
       work("s", "blocked"),
@@ -264,13 +261,14 @@ describe("feed and board", () => {
       work("c", "running"),
     ]);
     expect(sections.map((entry) => [entry.group, entry.items.map((item) => item.id)])).toEqual([
-      ["review", ["r", "s", "quiet", "yours"]],
-      ["running", ["c"]],
+      ["review", ["r", "yours"]],
+      ["blocked", ["s"]],
+      ["running", ["quiet", "c"]],
       ["queued", ["q"]],
     ]);
   });
 
-  test("one definition: the feed's Needs you, the board's column, the chip and the header count hold the same work", () => {
+  test("one definition: the feed's Needs you, the board's column, the chip and needs.list's work hold the same work", () => {
     const flagged = [...plane, work("y", "proposed", { flag: yoursFlag }), work("z", "running", { flag: quietFlag })];
     const feed = groupsOf(flagged)
       .find((entry) => entry.group === "review")
@@ -278,21 +276,26 @@ describe("feed and board", () => {
     const column = boardColumns(flagged)
       .find((entry) => entry.id === "needs-you")
       ?.items.map((item) => item.id);
-    expect(feed).toEqual(["a", "b", "y", "z"]);
+    expect(feed).toEqual(["a", "y"]);
     expect(column).toEqual(feed);
     expect(applyFilter(flagged, "review").map((item) => item.id)).toEqual(feed ?? []);
     expect(countFilters(flagged).review).toBe(feed?.length ?? -1);
-    expect(needsYou(flagged).map((item) => item.id)).toEqual(feed ?? []);
-    expect(summaryText(flagged)).toBe("4 work items need you · 1 running");
+    expect(needsYouOf(flagged).map((item) => item.id)).toEqual(feed ?? []);
+    expect(summaryText(flagged)).toBe("2 work items need you · 2 running");
   });
 
-  test("four columns, always present; Needs you holds review before stuck", () => {
-    const shuffled = [work("s", "blocked"), work("r", "review"), work("q", "proposed")];
+  test("five columns, always present; stuck work has its own, Needs you holds review then what only you may start", () => {
+    const shuffled = [
+      work("s", "blocked"),
+      work("y", "proposed", { flag: yoursFlag }),
+      work("r", "review"),
+      work("q", "proposed"),
+    ];
     const columns = boardColumns(shuffled);
-    expect(columns.map((column) => column.title)).toEqual(["Queued", "Running", "Needs you", "Done"]);
-    expect(columns.map((column) => column.items.map((item) => item.id))).toEqual([["q"], [], ["r", "s"], []]);
+    expect(columns.map((column) => column.title)).toEqual(["Queued", "Running", "Stuck", "Needs you", "Done"]);
+    expect(columns.map((column) => column.items.map((item) => item.id))).toEqual([["q"], [], ["s"], ["r", "y"], []]);
     expect(columns[1]?.hint).toBe("Dispatched and live in a worktree");
-    expect(columns[2]?.hint).toBe("At your gate, stuck or flagged");
+    expect(columns[3]?.hint).toBe("At your gate, or only you may start it");
   });
 
   test("the Queued hint says the loop never starts that work while the loop is on; no other hint changes", () => {
@@ -305,13 +308,14 @@ describe("feed and board", () => {
     expect(boardColumns([], false).map((column) => column.hint)).toEqual([
       "Ready when you dispatch it",
       "Dispatched and live in a worktree",
-      "At your gate, stuck or flagged",
+      "A worker stopped; Unblock it, or watch it close",
+      "At your gate, or only you may start it",
       "The branch is the receipt",
     ]);
     expect(boardColumns([], true)[0]?.hint).toBe(QUEUED_LOOP_HINT);
   });
 
-  test("work the loop flagged leaves its own column for Needs you, after review and stuck", () => {
+  test("work only you may start leaves Queued for Needs you; a quiet run stays Running, stuck work Stuck", () => {
     const columns = boardColumns([
       work("quiet", "running", { flag: quietFlag }),
       work("s", "blocked"),
@@ -322,8 +326,9 @@ describe("feed and board", () => {
     ]);
     expect(columns.map((column) => column.items.map((item) => item.id))).toEqual([
       ["q"],
-      ["c"],
-      ["r", "s", "quiet", "yours"],
+      ["quiet", "c"],
+      ["s"],
+      ["r", "yours"],
       [],
     ]);
   });
@@ -404,16 +409,20 @@ describe("card words", () => {
 
   test("the header puts what needs a person first", () => {
     // Without the header's count (not read yet, or failed), the subtitle says what it counts: work items.
-    expect(summaryText(plane)).toBe("2 work items need you · 1 running");
-    // A flagged run is counted once, where it is listed: in Needs you.
+    expect(summaryText(plane)).toBe("1 work item needs you · 1 running");
+    // A quiet run is watched: counted once, where it is listed, under Running (A1).
     expect(summaryText([...plane, work("z", "running", { flag: quietFlag })])).toBe(
-      "3 work items need you · 1 running",
+      "1 work item needs you · 2 running",
     );
-    expect(summaryText([work("b", "blocked")])).toBe("1 work item needs you");
+    // Stuck work is watched too: it needs no one by itself. But only needs.list may say nothing needs you:
+    // an ask can wait while no work does, so without its count the subtitle says it has not read it yet.
+    expect(summaryText([work("b", "blocked")])).toBe("What needs you is not read yet");
+    expect(summaryText([work("y", "proposed", { flag: yoursFlag })])).toBe("1 work item needs you");
     expect(summaryText([work("x", "review"), work("y", "review")])).toBe("2 work items need you");
-    expect(summaryText([work("x", "done")])).toBe("Nothing needs you");
+    expect(summaryText([work("x", "done")])).toBe("What needs you is not read yet");
+    expect(summaryText([work("x", "done")], 0)).toBe("Nothing needs you");
     expect(summaryText([])).toBe("No work yet");
-    // With the header's own count, the subtitle says that number: the badge's, Maestro-wide.
+    // With needs.list's total, the subtitle says that number: the badge's, Maestro-wide.
     expect(summaryText(plane, 5)).toBe("5 need you · 1 running");
     expect(summaryText([], 0)).toBe("Nothing needs you");
   });

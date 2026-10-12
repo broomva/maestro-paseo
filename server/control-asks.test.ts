@@ -189,6 +189,8 @@ describe("reading decision asks", () => {
       idea: null,
       audit: { class: "decision", gates: [], withheld: 0 },
       initiative: null,
+      // No fleet-reconcile prompt key: not a prompt ask (BRO-3001).
+      promptSession: null,
       fate: null,
     });
     expect([answer?.uid, answer?.state, answer?.answer]).toEqual([

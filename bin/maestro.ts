@@ -124,7 +124,7 @@ function renderItem(item: WorkItem): string {
 
 function renderList(output: { root: string; items: WorkItem[]; warnings: string[] }): string {
   const lines = [`Work in ${output.root}`];
-  // Grouped as Maestro shows it: Needs you holds stuck and flagged work too (shared/needs-you.ts).
+  // Grouped as Maestro shows it: Needs you holds work only you may start too; Stuck is its own (shared/needs-you.ts).
   for (const group of GROUP_ORDER) {
     const items =
       group === "review" ? needsYouOf(output.items) : output.items.filter((item) => sectionOf(item) === group);

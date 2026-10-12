@@ -672,6 +672,18 @@ export function workspaceInitiatives(options: WorkspaceInitiativesOptions) {
         .map((file) => initiativeNotice(initiativeOf(file.parsed, file.name, file.home, lookups)))
         .filter((notice): notice is InitiativeNotice => notice !== null);
     },
+    /**
+     * The initiatives whose review is due (stale: overdue, or parked and woken), as full records for
+     * needs.list's review asks (B2): the same scan as notices(), with no PR or agent lookups.
+     */
+    async reviews(): Promise<Initiative[]> {
+      const found = await scanned();
+      const today = localDay(new Date(now()));
+      const lookups: Lookups = { today, prStates: new Map(), agents: new Map(), ideas: new Map() };
+      return found.files
+        .map((file) => ({ ...initiativeOf(file.parsed, file.name, file.home, lookups), local: file.locals }))
+        .filter((initiative) => initiative.stale !== null);
+    },
     /** The record for one initiative, as the tab reads it (for a develop brief). */
     async one(id: string): Promise<Initiative | null> {
       const read = await view();

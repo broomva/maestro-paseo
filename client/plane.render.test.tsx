@@ -30,12 +30,10 @@ import { afterAll, afterEach, describe, expect, mock, setDefaultTimeout, spyOn, 
 import type { PluginClientStateSource } from "@getpaseo/plugin/client/host";
 import { Window } from "happy-dom";
 import type { ComponentProps, ReactNode } from "react";
-import type { AnswersNotice } from "../shared/answers";
+import type { AnswersLanding } from "../shared/answers";
 import type { MaestroConfig, Scoreboard, WakeEntry, WorkItem } from "../shared/contracts";
 import {
-  type AskNotice,
   type AskSession,
-  askNotice,
   type DecisionAsk,
   type FleetNotice,
   type FleetProposal,
@@ -43,8 +41,9 @@ import {
   type FleetView,
   groupProposals,
 } from "../shared/fleet";
-import type { Initiative, InitiativeNotice, InitiativesView } from "../shared/initiatives";
+import type { Initiative, InitiativesView } from "../shared/initiatives";
 import type { LoopNotice, LoopRow, LoopsView } from "../shared/loops";
+import type { NeedKind } from "../shared/needs";
 import type { HistoryEvent } from "../shared/records";
 import { groupOf, type OrchState } from "../shared/states";
 import type { TimelineNotice, TimelineRun, TimelineSource, TimelineView } from "../shared/timeline";
@@ -186,8 +185,10 @@ const { createGateCard } = await import("./gate-card");
 const { createWorkPanel } = await import("./agent-panel");
 const { requestIntent, resetIntents, takeIntent } = await import("./intent");
 const { MaestroSettings } = await import("./settings");
-const { attentionOf } = await import("../server/attention");
-const { headerFace, needsYou, needsYouCount } = await import("./header-count");
+const { handledOf, needsOf } = await import("../server/needs");
+const { needsYouOf } = await import("../shared/needs-you");
+const { headerFace } = await import("./header-count");
+const { onNeeds, publishNeeds, readTicket, resetNeedsBus } = await import("./needs-bus");
 const { linkSettings } = await import("./settings-link");
 const { LOOP_HINT: LOOP_SETTINGS_HINT } = await import("./loop-model");
 const { focusRing } = await import("./ui");
@@ -514,10 +515,10 @@ let workspaceFail: string | null = null;
 let answerHeld: Promise<void> | null = null;
 /** While set, ask.answer fails with it (after any hold). */
 let answerFail: string | null = null;
-/** The asks work.attention says wait on you: none unless a test says. */
-let askNoticesNow: AskNotice[] = [];
-/** The answers batch work.attention says waits on you: none unless a test says. */
-let answersNoticesNow: AnswersNotice[] = [];
+/** The answers batch as the last wake left it: none unless a test says. */
+let landingNow: AnswersLanding | null = null;
+/** While set, needs.list fails with it. */
+let needsFail: string | null = null;
 /** Loop drift work.attention says needs you: none unless a test says. */
 let loopNoticesNow: LoopNotice[] = [];
 /** The Loops tab's read (loops.get): two standing rows, one drifting, and a p9 watcher. */
@@ -718,7 +719,8 @@ const initiativesFixture = (): InitiativesView => ({
   warnings: [],
 });
 let initiativesNow = initiativesFixture();
-let initiativeNoticesNow: InitiativeNotice[] = [];
+/** The initiatives whose review is due, as initiatives.reviews() reads them: none unless a test says. */
+let reviewsNow: Initiative[] = [];
 /** While set, initiatives.list fails with it. */
 let initiativesFail: string | null = null;
 /** URLs the surface asked the host to open. */
@@ -1006,6 +1008,11 @@ const timelineView = (): TimelineView => {
   };
 };
 let timelineNotices: TimelineNotice[] = [];
+/** Every ask the daemon reads: the workspace's, and each fleet root's tagged with its scope (as asks.workspace). */
+const allAsks = (): DecisionAsk[] => [...workspaceNow, ...decisionsNow.map((ask) => ({ ...ask, scope: "broomva" }))];
+/** needs.list from the fixtures: the work, every ask, the answers batch and the due reviews. */
+const needsNow = (kind?: NeedKind) =>
+  needsOf({ items, asks: allAsks(), reviews: reviewsNow, landing: landingNow, workspace: "broomva" }, Date.now(), kind);
 const calls: { method: string; input: unknown }[] = [];
 const invoke = async (method: string, input: unknown) => {
   calls.push({ method, input });
@@ -1020,17 +1027,27 @@ const invoke = async (method: string, input: unknown) => {
   if (method === "work.list") return { root: "/work", items, warnings: [], scoreboard: board() };
   if (method === "work.history") return { events: history(), capped: false };
   if (method === "work.attention") {
+    // What you watch (the pills' sessions and the notices above the views); nothing counts from it any more.
     return {
-      // What the header counts as work, as server/attention.ts lists it.
-      waiting: needsYou(items).map(({ id, group, flag }) => ({ id, group, flag })),
+      waiting: needsYouOf(items).map(({ id, group, flag }) => ({ id, group, flag })),
       sessions: [],
       fleet: fleetNotices,
       timeline: timelineNotices,
-      asks: askNoticesNow,
-      initiatives: initiativeNoticesNow,
-      answers: answersNoticesNow,
+      asks: [],
+      initiatives: [],
+      answers: [],
       loops: loopNoticesNow,
     };
+  }
+  // What needs you and what was handled, as the server builds them (server/needs.ts) from the same fixtures.
+  if (method === "needs.list") {
+    if (needsFail) throw new Error(needsFail);
+    return needsNow((input as { kind?: NeedKind }).kind);
+  }
+  if (method === "handled.list") {
+    const day = new Date();
+    day.setHours(0, 0, 0, 0);
+    return handledOf(items, allAsks(), Date.now(), day.getTime());
   }
   if (method === "loops.get") return loopsView();
   if (method === "asks.workspace") {
@@ -1364,13 +1381,13 @@ afterEach(async () => {
   workspaceFail = null;
   answerHeld = null;
   answerFail = null;
-  askNoticesNow = [];
   loopNoticesNow = [];
-  answersNoticesNow = [];
+  landingNow = null;
+  needsFail = null;
   askSessionNow = null;
   opened = [];
   initiativesNow = initiativesFixture();
-  initiativeNoticesNow = [];
+  reviewsNow = [];
   initiativesFail = null;
   urls.length = 0;
   timelineRuns = false;
@@ -1404,7 +1421,8 @@ afterAll(async () => {
 describe("the changed line", () => {
   test("a surface without client state renders, logs once, and shows no changed stat", async () => {
     const view = await mount(surface(false));
-    expect(view.text()).toContain("3 need you · 1 running");
+    // needs.list's holds: Work a and Work g at your gate (Work b is stuck: watched, A1).
+    expect(view.text()).toContain("2 need you · 1 running");
     expect(view.text()).toContain("hawthorne · core");
     expect(view.text()).toContain("maestro/a-1");
     expect(view.text()).not.toMatch(/\+\d+ −\d+/);
@@ -1415,6 +1433,55 @@ describe("the changed line", () => {
     expect(view.text()).toContain("Approve the branch");
     expect(view.text()).not.toContain("Changed");
     expect(probeLogs()).toBe(1);
+  });
+
+  test("while needs.list cannot be read, the subtitle never says nothing needs you, and says why (BRO-3001)", async () => {
+    needsFail = "socket closed";
+    const view = await mount(surface(false));
+    for (let tries = 0; tries < 100 && !view.text().includes("could not be read"); tries += 1) await settle(20);
+    expect(view.text()).toContain("What needs you could not be read");
+    // What the work alone says, in words that say so: never a bare number, never "Nothing needs you".
+    expect(view.text()).toContain("2 work items need you · 1 running");
+    expect(view.text()).not.toContain("Nothing needs you");
+  });
+
+  test("with no work waiting and needs.list unread, it still never says nothing needs you: an ask may wait", async () => {
+    needsFail = "socket closed";
+    items = fixture().filter((item) => item.state !== "review");
+    const view = await mount(surface(false));
+    for (let tries = 0; tries < 100 && !view.text().includes("could not be read"); tries += 1) await settle(20);
+    expect(view.text()).toContain("What needs you could not be read");
+    expect(view.text()).not.toContain("Nothing needs you");
+  });
+
+  test("one snapshot with the header button: the screen's reads reach it, and its reads fill the screen (BRO-3001)", async () => {
+    resetNeedsBus();
+    const toHeader: number[] = [];
+    const stop = onNeeds((next, from) => {
+      if (from === "screen") toHeader.push(next.summary.total);
+    });
+    try {
+      const view = await mount(surface(false));
+      for (let tries = 0; tries < 100 && !view.byLabel("Feed, 2 need you"); tries += 1) await settle(20);
+      expect(toHeader).toEqual([2]);
+      // You act on the screen (a verb settles, every query refetches): the header hears the new number.
+      items = [...fixture(), work("n", "review")];
+      await view.refetch();
+      for (let tries = 0; tries < 100 && toHeader.at(-1) !== 3; tries += 1) await settle(20);
+      expect(toHeader).toEqual([2, 3]);
+      // The header read a newer snapshot first: the open screen says it at once, with no read of its own.
+      const reads = calls.filter((call) => call.method === "needs.list").length;
+      const header = needsNow();
+      const newer = { ...header, rows: header.rows.slice(0, 1), summary: { ...header.summary, total: 1 } };
+      await step(generation, () => publishNeeds(newer, "header", readTicket()));
+      for (let tries = 0; tries < 100 && !view.byLabel("Feed, 1 needs you"); tries += 1) await settle(20);
+      expect(view.byLabel("Feed, 1 needs you")).not.toBeNull();
+      expect(view.text()).toContain("1 needs you · 1 running");
+      expect(calls.filter((call) => call.method === "needs.list").length).toBe(reads);
+    } finally {
+      stop();
+      resetNeedsBus();
+    }
   });
 
   test("with client state, the card and the detail show +a −d", async () => {
@@ -1504,17 +1571,18 @@ describe("work the loop flagged", () => {
   test("is in Needs you: the summary, its chip, and the board's column, with the reason on its card", async () => {
     items = flagged();
     const view = await mount(surface(false));
-    expect(view.text()).toContain("4 need you · 1 running");
+    // An owner step (only you may start it), beside the two at your gate.
+    expect(view.text()).toContain("3 need you · 1 running");
     const card = view.byLabel(`Work y, Queued, ${yours.reason}, updated 12 minutes ago`);
     expect(card?.textContent).toContain(yours.reason);
     // The state chips are the List's (the Feed's sections already put what needs you first).
     await view.press(view.tabs()[2]);
-    await view.press(view.byLabel("Needs you, 4"));
+    await view.press(view.byLabel("Needs you, 3"));
     expect(view.text()).toContain("Work y");
     expect(view.text()).not.toContain("Work d");
     await view.press(view.tabs()[1]);
     const text = view.text();
-    const needsYou = text.indexOf("At your gate, stuck or flagged");
+    const needsYou = text.indexOf("At your gate, or only you may start it");
     const done = text.indexOf("The branch is the receipt");
     expect(needsYou).toBeGreaterThan(-1);
     expect(text.indexOf("Work y")).toBeGreaterThan(needsYou);
@@ -1524,7 +1592,7 @@ describe("work the loop flagged", () => {
     expect(text.indexOf("Work d")).toBeLessThan(needsYou);
   });
 
-  test("the feed's Needs you lists stuck and flagged work with its reasons, as many as the header counts", async () => {
+  test("the feed's Needs you lists exactly needs.list's holds: as many as the header, the Feed tab and the subtitle say (BRO-3001)", async () => {
     const quiet = { kind: "quiet" as const, reason: "Quiet for 41 minutes, worth a look.", at: yours.at };
     items = [
       ...fixture(),
@@ -1532,24 +1600,30 @@ describe("work the loop flagged", () => {
       work("z", "running", { worker: worker("z", "maestro/z-1"), phase: "working", flag: quiet }),
     ];
     const view = await mount(surface(false));
-    // The header count, as Paseo's header shows it: work.attention's waiting, counted by the header.
-    const count = needsYou(attentionOf(items, Date.now()).waiting).length;
-    expect(headerFace(count).label).toBe("5 need you");
-    const heading = view.all('[role="heading"]').find((el) => el.textContent === "At your gate");
+    for (let tries = 0; tries < 100 && !view.byLabel("Feed, 3 need you"); tries += 1) await settle(20);
+    // needs.list as the server builds it: the two at your gate (approvals) and the one only you may start.
+    const needs = needsNow();
+    const count = needs.summary.total;
+    expect(count).toBe(3);
+    // The header (Paseo's), the Feed tab's badge and the subtitle say the same number.
+    expect(headerFace(count).label).toBe("3 need you");
+    expect(view.byLabel(`Feed, ${count} need you`)).not.toBeNull();
+    expect(view.text()).toContain(`${count} need you · 2 running`);
+    // The section lists exactly the rows, in their order.
+    const heading = view.all('[role="heading"]').find((el) => el.textContent === "Needs you");
     const header = heading?.parentElement;
     const section = header?.parentElement;
-    expect(header?.textContent).toBe(`At your gate${count}`);
+    expect(header?.textContent).toBe(`Needs you${count}2 approvals · 1 owner step`);
     const cards = [...(section?.querySelectorAll('[role="button"]') ?? [])].map((el) => el.getAttribute("aria-label"));
     expect(cards).toHaveLength(count);
-    expect(cards.map((label) => label?.split(",")[0])).toEqual(["Work a", "Work g", "Work b", "Work y", "Work z"]);
-    for (const reason of ["Needs a Linear scope", yours.reason, quiet.reason]) {
-      expect(section?.textContent).toContain(reason);
-    }
-    // Listed once: not again under Queued, Running or Stuck.
+    expect(cards.map((label) => label?.split(",")[0])).toEqual(["Work a", "Work g", "Work y"]);
+    expect(section?.textContent).toContain(yours.reason);
+    // Watched, not held (A1): stuck work under Stuck, the quiet run under Running, each listed once.
+    expect(view.all('[role="heading"]').map((el) => el.textContent)).toContain("Stuck");
     for (const title of ["Work y", "Work z", "Work b"])
       expect(view.text().match(new RegExp(title, "g"))).toHaveLength(1);
-    expect(view.all('[role="heading"]').map((el) => el.textContent)).not.toContain("Stuck");
-    expect(view.text()).toContain("5 need you · 1 running");
+    expect(section?.textContent).not.toContain("Needs a Linear scope");
+    expect(section?.textContent).not.toContain(quiet.reason);
     // The List's chip the header opens holds the same work.
     await view.press(view.tabs()[2]);
     expect(view.byLabel(`Needs you, ${count}`)).not.toBeNull();
@@ -1972,33 +2046,62 @@ describe("views and filters", () => {
           .map((el) => [el.textContent ?? "", cards(el.parentElement?.parentElement).length] as const),
       );
     const all = chips();
+    // Needs you: the two at your gate and the one only you may start; stuck and quiet work are watched (A1).
     expect([...all]).toEqual([
       ["All", 9],
-      ["Needs you", 5],
+      ["Needs you", 3],
       ["Stuck", 1],
-      ["Running", 1],
+      ["Running", 2],
       ["Queued", 2],
       ["Done", 1],
     ]);
-    // In the All view, each section chip counts its section; Stuck has no section of its own.
+    // In the All view, each section chip counts its section, Stuck's included.
     const listed = sections();
     expect([...listed]).toEqual([
-      ["Needs you", 5],
-      ["Running", 1],
+      ["Needs you", 3],
+      ["Stuck", 1],
+      ["Running", 2],
       ["Queued", 2],
       ["Done", 1],
     ]);
-    for (const title of ["Needs you", "Running", "Queued", "Done"])
+    for (const title of ["Needs you", "Stuck", "Running", "Queued", "Done"])
       expect([title, all.get(title)]).toEqual([title, listed.get(title)]);
-    expect(["Needs you", "Running", "Queued", "Done"].reduce((sum, title) => sum + (all.get(title) ?? 0), 0)).toBe(
-      all.get("All") ?? -1,
-    );
-    // Every chip, Stuck and All included, shows as many cards as it counts.
+    expect(
+      ["Needs you", "Stuck", "Running", "Queued", "Done"].reduce((sum, title) => sum + (all.get(title) ?? 0), 0),
+    ).toBe(all.get("All") ?? -1);
+    // Every chip, All included, shows as many cards as it counts.
     for (const [title, count] of all) {
       await view.press(view.byLabel(`${title}, ${count}`));
       expect(view.pressed(`${title}, ${count}`)).toBe("true");
       expect([title, view.all('[role="button"]').filter(isCard).length]).toEqual([title, count]);
     }
+  });
+
+  test("the Needs you chip and each initiative's count are needs.list's: asks included, as the header says (BRO-3001)", async () => {
+    workspaceNow = [
+      {
+        ...decisionFixture(),
+        id: "W1",
+        headline: "Ship the hawthorne cut?",
+        blocking: true,
+        waiting: true,
+        initiative: "hawthorne",
+      },
+    ];
+    const view = await mount(surface(false));
+    // needs.list: Work a and Work g at your gate, and the ask: 3, the header's number.
+    for (let tries = 0; tries < 100 && !view.byLabel("Feed, 3 need you"); tries += 1) await settle(20);
+    expect(needsNow().summary.total).toBe(3);
+    await view.press(view.tabs()[2]);
+    for (let tries = 0; tries < 100 && !view.byLabel("Needs you, 3"); tries += 1) await settle(20);
+    // The chip counts what its filter lists, the ask among them, not only the work.
+    await view.press(view.byLabel("Needs you, 3"));
+    expect(view.text()).toContain("Ship the hawthorne cut?");
+    expect(view.text()).toContain("Work a");
+    expect(view.text()).toContain("Work g");
+    // hawthorne's own holds: Work a and the ask that names it.
+    const hawthorne = view.all('[aria-label^="hawthorne, "]').map((el) => el.getAttribute("aria-label"));
+    expect(hawthorne.some((label) => label?.endsWith("2 waiting on you"))).toBe(true);
   });
 
   test("a filter intent opens the feed, drops the scope, and checks its chip on the List", async () => {
@@ -2010,12 +2113,13 @@ describe("views and filters", () => {
     await act(async () => requestIntent({ kind: "filter", group: "review" }));
     await settle();
     expect(view.tabs()[0]?.getAttribute("aria-selected")).toBe("true");
-    // On the Feed, what needs you is its first section, At your gate; the scope menu is back to all.
+    // On the Feed, what needs you is its first section, Needs you; the scope menu is back to all.
     expect(view.byLabel("Scope: all scopes")).not.toBeNull();
     const headings = view.all('[role="heading"]').map((el) => el.textContent);
-    expect(headings.indexOf("At your gate")).toBeLessThan(headings.indexOf("Running"));
+    expect(headings.indexOf("Needs you")).toBeGreaterThan(-1);
+    expect(headings.indexOf("Needs you")).toBeLessThan(headings.indexOf("Running"));
     await view.press(view.tabs()[2]);
-    expect(view.pressed("Needs you, 3")).toBe("true");
+    expect(view.pressed("Needs you, 2")).toBe("true");
     expect(view.pressed("All work")).toBe("true");
     expect(view.text()).toContain("Work a");
     expect(view.text()).not.toContain("Work c");
@@ -2062,8 +2166,9 @@ describe("views and filters", () => {
 
   test("wide: the views in two labelled groups, Work and System, as tabs", async () => {
     const view = await mount(surface(false));
+    // The Feed carries needs.list's total (BRO-3001): Work a and Work g at your gate.
     expect(view.tabs().map((tab) => tab.getAttribute("aria-label"))).toEqual([
-      "Feed",
+      "Feed, 2 need you",
       "Board",
       "List",
       "History",
@@ -2073,7 +2178,7 @@ describe("views and filters", () => {
       "Initiatives",
       "Loops",
     ]);
-    expect(view.text()).toContain("WORKFeedBoardListHistory");
+    expect(view.text()).toContain("WORKFeed2BoardListHistory");
     expect(view.text()).toContain("SYSTEMFleetDecisionsTimelineInitiativesLoops");
   });
 
@@ -2082,11 +2187,11 @@ describe("views and filters", () => {
     // No row of tabs to clip: one button names the view you are on.
     expect(view.tabs()).toEqual([]);
     expect(view.viewNow()).toBe("Feed");
-    const picker = view.byLabel("View: Feed. Change view");
+    const picker = view.byLabel("View: Feed, 2 need you. Change view");
     expect(picker?.getAttribute("aria-expanded")).toBe("false");
     await view.press(picker);
     expect(view.all('[role="menuitem"]').map((item) => item.getAttribute("aria-label"))).toEqual([
-      "Feed",
+      "Feed, 2 need you",
       "History",
       "Fleet",
       "Decisions",
@@ -2094,9 +2199,9 @@ describe("views and filters", () => {
       "Initiatives",
       "Loops",
     ]);
-    expect(view.text()).toContain("WORKFeedHistorySYSTEMFleetDecisionsTimelineInitiativesLoops");
-    expect(view.byLabel("Feed")?.getAttribute("aria-current")).toBe("true");
-    await view.press(view.byLabel("Feed"));
+    expect(view.text()).toContain("WORKFeed2HistorySYSTEMFleetDecisionsTimelineInitiativesLoops");
+    expect(view.byLabel("Feed, 2 need you")?.getAttribute("aria-current")).toBe("true");
+    await view.press(view.byLabel("Feed, 2 need you"));
     expect(view.all('[role="menuitem"]')).toEqual([]);
     expect(view.text()).toContain("claude · own worktree");
     await view.goto("History");
@@ -2464,18 +2569,20 @@ describe("the Fleet view", () => {
     expect(sent("fleet.get")).toEqual([{ ticks: 24 }, { scope: "sri", ticks: 24 }]);
     const text = view.text();
     // Every scope that is not well is named, the worst first, and the session that wants a look too.
-    expect(text).toContain("broomva missed its tick · 1 needs you · 1 session wants a look · sri not scheduled");
+    expect(text).toContain(
+      "broomva missed its tick · 1 tick wants a look · 1 session wants a look · sri not scheduled",
+    );
     expect(text).toContain("No tick for 3h: the last was tick 35. It runs every hour.");
     expect(text).toContain("Dry run · report only");
     // A cell per tick with its words, and the scope's missed cell last.
     expect(starting(view, "Tick 35, passed")).toBeDefined();
     expect(starting(view, "No tick: missed for 3h")).toBeDefined();
     // The tile is health: the missed tick. The ask is counted where it lives, at your gate (BRO-2908).
-    expect(starting(view, "Health: 1, 1 scope whose tick needs you")).toBeDefined();
+    expect(starting(view, "Health: 1, 1 scope whose tick wants a look")).toBeDefined();
     expect(starting(view, "Health: 1")?.getAttribute("aria-label")).toContain("Go to Health");
     expect(text).toContain("Counted where they live");
     // The band says what it counts: the tick, not the ask counted at your gate.
-    expect(text).toContain("Needs you: 1 tick.");
+    expect(text).toContain("Wants a look: 1 tick.");
     expect(starting(view, "Attention: 1, 1 failed")).toBeDefined();
     expect(starting(view, "Running: 1")).toBeDefined();
     expect(starting(view, "Failed: 1")).toBeDefined();
@@ -2721,15 +2828,15 @@ describe("the Fleet view", () => {
       const target = view.byLabel(label) as unknown as { firstElementChild: { style: { backgroundColor: string } } };
       return target.firstElementChild.style.backgroundColor.includes("84, 128, 199");
     };
-    expect(view.text()).toContain("No scope's tick needs you");
+    expect(view.text()).toContain("No scope's tick wants a look");
     expect(view.text()).toContain("A late or failing scope whose alert is at your gate is counted there.");
-    expect(starting(view, "Health: 0, no scope's tick needs you")).toBeDefined();
+    expect(starting(view, "Health: 0, no scope's tick wants a look")).toBeDefined();
     expect(filled("Agree: report only, 4 sessions")).toBe(false);
     // Teach the fleet sits below the sessions.
     expect(view.text().indexOf("Teach the fleet")).toBeGreaterThan(view.text().indexOf("Sessions in scope"));
   });
 
-  test("one number: the band, the tile, the Health cards and the header's fleet share agree (BRO-2908)", async () => {
+  test("one number: the band says needs.list's total, the header's; the fleet's health is its own (BRO-2908, BRO-3001)", async () => {
     // The shared fixture: broomva's missed tick, its ask's raised work (Work a, at your gate), one decision
     // that waits on you and one that does not.
     decisionsNow = [
@@ -2751,42 +2858,35 @@ describe("the Fleet view", () => {
         since: new Date(Date.now() - 3 * H).toISOString(),
       },
     ];
-    askNoticesNow = [askNotice({ ...decisionFixture(), id: "W1", blocking: true, waiting: true }, "broomva")];
     const view = await mount(surface(false));
     await view.goto("Fleet");
     for (let tries = 0; tries < 100 && !view.text().includes("Would list 4 unmanaged"); tries += 1) await settle(20);
-    // The fleet's share is its health: the scope's notice. Its raised work is Work's, its waiting decision
-    // Decisions', counted there once and shown here under "Counted where they live" (BRO-2908).
-    const notices = [{ scope: "broomva" }];
-    const asks = decisionsNow.filter((ask) => ask.waiting).map((ask) => askNotice(ask, "broomva"));
-    const health = needsYouCount([], notices);
-    expect(health).toBe(1);
-    const work = needsYou(items).length;
-    const header = needsYouCount(needsYou(items), notices, [], asks);
-    expect(header).toBe(health + work + asks.length);
+    // The fleet's health is watched (A1): its band counts the scope's tick, and the header never does. What
+    // holds on you is needs.list's: the raised work at your gate (Work), the decision that waits (Decisions).
+    const needs = needsNow();
+    const header = needs.summary.total;
+    const work = needs.rows.filter((row) => row.key.startsWith("work:")).length;
+    const decisions = needs.rows.filter((row) => row.key.startsWith("ask:")).length;
+    expect([header, work, decisions]).toEqual([3, 2, 1]);
     expect(headerFace(header).label).toBe(`${header} need you`);
-    // The band says both numbers, the rest pressable to its view.
-    for (let tries = 0; tries < 100 && !view.text().includes("in all"); tries += 1) await settle(20);
-    expect(view.text()).toContain(
-      `${health} needs you here · ${header} in all (${work} in Work, ${asks.length} in Decisions)`,
-    );
-    // The subtitle under Maestro's title says the same Maestro-wide number as the header and the band's "in all".
-    // The summary sits on its own row under the title and its buttons (the Feed home, BRO-2906).
+    // The band says Maestro's number beside the fleet's health, the rest pressable to its view (BRO-3001).
+    for (let tries = 0; tries < 100 && !view.text().includes("in Maestro"); tries += 1) await settle(20);
+    expect(view.text()).toContain(`${header} need you in Maestro (${work} in Work, ${decisions} in Decisions)`);
+    // The subtitle under Maestro's title says the same Maestro-wide number as the header and the band.
     expect(view.text().startsWith(`MaestroNew work${header} need you · `)).toBe(true);
     expect(view.byLabel(`${work} in Work: open Work`)).not.toBeNull();
-    expect(starting(view, `Health: ${health}, 1 scope whose tick needs you`)).toBeDefined();
-    const section = view.byLabel(`Health: ${health} card`) as unknown as { children: { length: number } };
-    expect(section.children.length).toBe(health);
+    expect(starting(view, "Health: 1, 1 scope whose tick wants a look")).toBeDefined();
+    const section = view.byLabel("Health: 1 card") as unknown as { children: { length: number } };
+    expect(section.children.length).toBe(1);
     // The raised work and the waiting decision are shown, uncounted here.
     expect(view.text()).toContain("Counted where they live");
     // The decision that does not wait on you is listed apart, uncounted.
     expect(view.text()).toContain("Also open");
-    // One scope shown: the fleet's share in the other scopes is named, so the parts still add up.
+    // One scope shown: the band still says Maestro's whole number, not a share of it.
     await view.press(view.byLabel("sri, Not scheduled, 1 proposal to review"));
-    for (let tries = 0; tries < 100 && !view.text().includes("other scopes"); tries += 1) await settle(20);
-    expect(view.text()).toContain(
-      `0 need you here · ${header} in all (${health} in other scopes, ${work} in Work, ${asks.length} in Decisions)`,
-    );
+    for (let tries = 0; tries < 100 && !view.text().includes("No scope's tick wants a look"); tries += 1)
+      await settle(20);
+    expect(view.text()).toContain(`${header} need you in Maestro (${work} in Work, ${decisions} in Decisions)`);
   });
 
   test("an ask the fleet has not raised as work yet says where it is answered, and can still be copied", async () => {
@@ -2810,7 +2910,7 @@ describe("the Fleet view", () => {
     const view = await mount(surface(false));
     await view.goto("Fleet");
     for (let tries = 0; tries < 100 && !view.text().includes("Would list 4 unmanaged"); tries += 1) await settle(20);
-    expect(view.text()).toContain("No scope's tick needs you");
+    expect(view.text()).toContain("No scope's tick wants a look");
     expect(view.text()).toContain("Counted where they live");
     const verb = view.all('[aria-label^="Open the fleet\'s work for ask"]')[0] as unknown as
       | { firstElementChild: { style: { backgroundColor: string } } }
@@ -2819,7 +2919,7 @@ describe("the Fleet view", () => {
     expect(verb?.firstElementChild.style.backgroundColor.includes("84, 128, 199")).toBe(false);
   });
 
-  test("every scope shown: a notice that is no scope's health is named, plain, not a link (BRO-2908)", async () => {
+  test("every scope shown: the fleet's notices, a blind clock's too, are watched; the band's Maestro number never counts them (A1)", async () => {
     const since = new Date(Date.now() - 3 * H).toISOString();
     fleetNotices = [
       { scope: "broomva", status: "missed", reason: "No tick since tick 35.", since },
@@ -2827,9 +2927,10 @@ describe("the Fleet view", () => {
     ];
     const view = await mount(surface(false));
     await view.goto("Fleet");
-    for (let tries = 0; tries < 100 && !view.text().includes("in all"); tries += 1) await settle(20);
-    expect(view.text()).toContain("1 in the clock check");
-    expect(view.byLabel("1 in the clock check: open the clock check")).toBeNull();
+    for (let tries = 0; tries < 100 && !view.text().includes("in Maestro"); tries += 1) await settle(20);
+    // needs.list's total, the header's: Work a and Work g at your gate, and no notice.
+    expect(view.text()).toContain("2 need you in Maestro (2 in Work)");
+    expect(view.text()).not.toContain("clock check");
   });
 
   test("Health jumps to the queue; a filter tile filters exactly what it counts and says Filtering", async () => {
@@ -3057,7 +3158,8 @@ describe("the Fleet view", () => {
 
 describe("the Timeline", () => {
   const tab = (view: Awaited<ReturnType<typeof mount>>, label = "Timeline") =>
-    view.tabs().find((one) => one.getAttribute("aria-label") === label);
+    // By its name: a tab with a badge says it after a comma ("Feed, 2 need you").
+    view.tabs().find((one) => (one.getAttribute("aria-label") ?? "").split(", ")[0] === label);
   const rows = (view: Awaited<ReturnType<typeof mount>>) =>
     view
       .all('[role="button"][aria-expanded]')
@@ -3136,7 +3238,8 @@ describe("the Timeline", () => {
 
 describe("drilling in", () => {
   const tab = (view: Awaited<ReturnType<typeof mount>>, label: string) =>
-    view.tabs().find((one) => one.getAttribute("aria-label") === label);
+    // By its name: a tab with a badge says it after a comma ("Feed, 2 need you").
+    view.tabs().find((one) => (one.getAttribute("aria-label") ?? "").split(", ")[0] === label);
   const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
 
   test("a decision ask shows its stakes and options, and is answered in place: chosen, then Answer", async () => {
@@ -3423,14 +3526,16 @@ describe("the Decisions tab", () => {
         fate: fate("acted", "Acted on: sent to the session that asked."),
       }),
     ];
-    answersNoticesNow = [
-      {
-        kind: "waiting",
-        pending: 1,
-        pr: { number: 915, url: "https://github.com/broomva/workspace/pull/915" },
-        words: "1 answer waits to land: PR #915",
-      },
-    ];
+    landingNow = {
+      stage: "waiting",
+      pending: 1,
+      asks: [],
+      pr: { number: 915, url: "https://github.com/broomva/workspace/pull/915" },
+      conflict: null,
+      error: null,
+      landed: null,
+      checkedAt: new Date().toISOString(),
+    };
     const view = await open();
     await until(view, "1 answer waits to land: PR #915");
     expect(view.byLabel("Open the answers PR, #915")).not.toBeNull();
@@ -3500,9 +3605,9 @@ describe("the Decisions tab", () => {
       }),
     ];
     const view = await open();
-    // The tab's badge: the open count, and that one waits on you, in words.
+    // The tab's badge is needs.list's: the one ask that waits on you (BRO-3001); the open count is the tab's own.
     expect(view.viewNow()).toBe("Decisions");
-    expect(view.byLabel("Decisions, 2 open, 1 waits on you")).not.toBeNull();
+    expect(view.byLabel("Decisions, 1 waits on you")).not.toBeNull();
     const text = view.text();
     expect(text).toContain("Decision 1 of 2");
     expect(text).toContain("2 open · 1 waits on you");
@@ -3790,6 +3895,7 @@ describe("the Decisions tab", () => {
   });
 
   test("an ask that waits on you shows above the work, and opens Decisions at it", async () => {
+    // needs.list holds A1 (blocking); A2 is open but waits on no one (non-blocking, reversible).
     workspaceNow = [
       merge(),
       {
@@ -3799,17 +3905,8 @@ describe("the Decisions tab", () => {
         hash: "cccccccccccccccc",
         headline: "Other blocking?",
         askedAt: days(9),
-      },
-    ];
-    askNoticesNow = [
-      {
-        scope: null,
-        ledger: "2026-10-01-auth-preflight-hook-stderr.yaml",
-        uid: null,
-        id: "A1",
-        headline: "Approve merge of PR #863 touching scripts/auth-preflight-hook.sh?",
-        blocking: true,
-        askedAt: null,
+        blocking: false,
+        waiting: false,
       },
     ];
     const view = await mount(surface(false));
@@ -3820,15 +3917,16 @@ describe("the Decisions tab", () => {
     await view.press(view.byLabel("Open Decisions, 1 waiting"));
     await until(view, "Decision ");
     expect(view.viewNow()).toBe("Decisions");
-    // At the ask it named, though the older one comes first in the order.
+    // At the ask it named; the one that does not wait is up next, not on the card.
     expect(view.text()).toContain("2026-10-01-auth-preflight-hook-stderr · asked 2h ago · blocking");
-    expect(view.byLabel("Go to A2 in other.yaml: Other blocking?")).toBeNull();
+    expect(view.byLabel("Go to A2 in other.yaml: Other blocking?")).not.toBeNull();
     expect(view.text()).toContain("Waits on you: it blocks until you answer.");
     // In Decisions the notice is not shown twice.
     expect(view.text()).not.toContain("A decision waits on you");
   });
 
   test("with a non-blocking ask listed first, the notice names and opens the blocking one (BRO-2852)", async () => {
+    // A2 waits without blocking (it recommends what cannot be undone) and waits longest; A1 blocks.
     workspaceNow = [
       merge(),
       {
@@ -3838,28 +3936,11 @@ describe("the Decisions tab", () => {
         hash: "cccccccccccccccc",
         headline: "Other ask?",
         askedAt: days(9),
-      },
-    ];
-    askNoticesNow = [
-      {
-        scope: null,
-        ledger: "other.yaml",
-        uid: null,
-        id: "A2",
-        headline: "Other ask?",
         blocking: false,
-        askedAt: null,
-      },
-      {
-        scope: null,
-        ledger: "2026-10-01-auth-preflight-hook-stderr.yaml",
-        uid: null,
-        id: "A1",
-        headline: "Approve merge of PR #863 touching scripts/auth-preflight-hook.sh?",
-        blocking: true,
-        askedAt: null,
+        options: [{ id: "go", label: "Go", consequence: "Ships it.", reversible: false, recommended: true }],
       },
     ];
+
     const view = await mount(surface(false));
     await view.press(view.tabs()[1]);
     await until(view, "2 decisions wait on you");
@@ -4331,7 +4412,8 @@ describe("the Decisions tab", () => {
 
 describe("Initiatives", () => {
   const tab = (view: Awaited<ReturnType<typeof mount>>, label: string) =>
-    view.tabs().find((one) => one.getAttribute("aria-label") === label);
+    // By its name: a tab with a badge says it after a comma ("Feed, 2 need you").
+    view.tabs().find((one) => (one.getAttribute("aria-label") ?? "").split(", ")[0] === label);
   const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
   /** The tab loads on its own query once it opens: waited for, never assumed, on a slow runner. */
   const until = async (view: Awaited<ReturnType<typeof mount>>, text: string) => {
@@ -4508,15 +4590,23 @@ describe("Initiatives", () => {
   });
 
   test("an initiative past its date shows where Maestro says what needs you, and opens the tab; ideas stay out of Decisions", async () => {
-    initiativeNoticesNow = [{ id: "mod-anything", title: "mod-anything skill", kind: "overdue", date: "2026-10-01" }];
+    // Due for review (B2): needs.list raises it as an ask, which the band says and the header counts.
+    reviewsNow = [
+      {
+        ...(initiativesNow.initiatives.find((entry) => entry.id === "mod-anything") as Initiative),
+        stale: { kind: "overdue", date: "2026-10-01" },
+      },
+    ];
     workspaceNow = [ideaFixture("I9", { home: { kind: "main", path: "/Users/me/broomva", branch: null } })];
     const view = await mount(surface(true));
-    for (let tries = 0; tries < 150 && !view.text().includes("was due for review"); tries += 1) await settle(20);
-    expect(view.text()).toContain("The initiative mod-anything skill was due for review on 2026-10-01.");
+    for (let tries = 0; tries < 150 && !view.text().includes("has passed"); tries += 1) await settle(20);
+    expect(view.text()).toContain(
+      "Review mod-anything skill: keep, park or close? Its review date, 2026-10-01, has passed.",
+    );
     await view.press(view.byLabel("Open Initiatives, 1 need a look"));
     await until(view, "mod-anything skill");
     expect(view.viewNow()).toBe("Initiatives");
-    expect(view.text()).not.toContain("was due for review on");
+    expect(view.text()).not.toContain("Its review date, 2026-10-01, has passed.");
     // The idea is answered here, never twice: Decisions does not list it.
     await view.goto("Decisions");
     await until(view, "Nothing to decide");
@@ -4563,13 +4653,15 @@ describe("the Feed home (BRO-2906)", () => {
     items = withHandled();
     const view = await mount(surface(false));
     const headings = view.all('[role="heading"]').map((el) => el.textContent);
-    const order = ["At your gate", "Running", "Queued", "Handled for you", "Done"].map((name) =>
+    const order = ["Needs you", "Stuck", "Running", "Queued", "Handled for you", "Done"].map((name) =>
       headings.indexOf(name),
     );
     expect(order.every((at) => at >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
-    expect(view.text()).toContain("3 need you · 1 running · 1 handled for you");
-    expect(view.text()).toContain("From SRI Orchestrator: 1 arc closed");
+    // needs.list's total and handled.list's rows for you (BRO-3001).
+    expect(view.text()).toContain("2 need you · 1 running · 1 handled for you");
+    expect(view.text()).toContain("From their orchestrators: 1 arc closed");
+    expect(view.byLabel("Done: SRI: STI-3569 typography cap. SRI Orchestrator: Done")).not.toBeNull();
     // Maestro's own closes (an auto gate, a finished arc) are handled for you too: not "by their orchestrator".
     expect(view.text()).toContain("closed without you this week");
     expect(view.text()).toContain("STI-3569 typography cap");
@@ -4599,7 +4691,7 @@ describe("the Feed home (BRO-2906)", () => {
     expect(card?.getAttribute("aria-current")).toBe("true");
   });
 
-  test("Decide lists the asks that wait on you, blocking first, and opens Decisions at the one you pick", async () => {
+  test("an ask that waits on you is a hold under Needs you; Decide lists the open ones that do not; each opens Decisions", async () => {
     workspaceNow = [
       { ...decisionFixture(), ledger: "plain.yaml", id: "B1", hash: "bbbbbbbbbbbbbbbb", headline: "A plain ask?" },
       {
@@ -4621,7 +4713,12 @@ describe("the Feed home (BRO-2906)", () => {
     await until(view, "Merge the gate fix?");
     const rows = view.all('[aria-label^="Decide: "]').map((el) => el.getAttribute("aria-label"));
     expect(rows).toEqual(["Decide: Merge the gate fix?", "Decide: A plain ask?"]);
-    expect(view.text()).toContain("1 block running work");
+    // The waiting one is needs.list's row, in Needs you; the plain one is Decide's, said to wait on no one.
+    const needsYou = view.all('[role="heading"]').find((el) => el.textContent === "Needs you")
+      ?.parentElement?.parentElement;
+    expect(needsYou?.textContent).toContain("Merge the gate fix?");
+    expect(needsYou?.textContent).not.toContain("A plain ask?");
+    expect(view.text()).toContain("open, not waiting on you");
     expect(view.text()).toContain("blocks work");
     expect(view.text()).toContain("silent → Hold it");
     // Decide replaces the notice on the Feed: said once.
@@ -4662,7 +4759,8 @@ describe("the Feed home (BRO-2906)", () => {
 
 describe("Loops", () => {
   const tab = (view: Awaited<ReturnType<typeof mount>>, label: string) =>
-    view.tabs().find((one) => one.getAttribute("aria-label") === label);
+    // By its name: a tab with a badge says it after a comma ("Feed, 2 need you").
+    view.tabs().find((one) => (one.getAttribute("aria-label") ?? "").split(", ")[0] === label);
   const until = async (view: Awaited<ReturnType<typeof mount>>, text: string) => {
     for (let tries = 0; tries < 150 && !view.text().includes(text); tries += 1) await settle(20);
   };

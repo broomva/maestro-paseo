@@ -23,6 +23,7 @@ import type {
 } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
 import { GATE_CARD_KIND, GATE_CARD_VERSION, type GateCardData, GateCardSchema } from "../shared/gate-card";
+import { needsWords } from "../shared/needs";
 import { lookOf, onItsOwnArc, workerOf } from "./events";
 import { landingOf } from "./gate-card";
 import { configPath } from "./paths";
@@ -40,6 +41,8 @@ const NoticeSchema = z.object({
   ask: z.string(),
   // A notice is always for one landing in one worker's session: the card's optional fields are required here.
   card: GateCardSchema.extend({ landing: z.number().int().nonnegative(), agentId: z.string() }),
+  /** How many holds need you as it is sent: needs.list's total, the header's number (BRO-3001). */
+  needs: z.number().int().nonnegative().optional(),
 });
 export type InboxNotice = z.infer<typeof NoticeSchema>;
 const PREFIX = "maestro-inbox:";
@@ -58,9 +61,14 @@ export function decodeNotice(text: string): InboxNotice | null {
   }
 }
 
-/** The notice as the inbox says it, and as the push reads it: what needs you first, then what it asks. */
-export const noticeText = (notice: InboxNotice): string =>
-  notice.ask ? `**Needs you** · ${notice.title}\n\n${notice.ask}` : `**Needs you** · ${notice.title}`;
+/**
+ * The notice as the inbox says it, and as the push reads it: how many need you
+ * (needs.list's total, the header's number) first, then this one and what it asks.
+ */
+export const noticeText = (notice: InboxNotice): string => {
+  const head = notice.needs ? `**${needsWords(notice.needs)}** · ${notice.title}` : `**Needs you** · ${notice.title}`;
+  return notice.ask ? `${head}\n\n${notice.ask}` : head;
+};
 
 /**
  * The notice for a change, when it is a landing at your gate (landingOf), else
@@ -268,6 +276,18 @@ export const BURST_MS = 10 * 60_000;
  */
 export const NOTICE_MS = 30_000;
 
+/** How long a push waits for needs.list's total before it goes without it. */
+export const COUNT_MS = 3_000;
+
+/** `work`'s answer, or null once `ms` passes first. */
+function within<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
 export class Inbox {
   /** One notice at a time, so two landings at once open one session, not two. */
   private chain: Promise<unknown> = Promise.resolve();
@@ -288,6 +308,8 @@ export class Inbox {
     /** Whether the work is still at your gate on this landing: an orchestrator's landing pushes only then. */
     private readonly stillWaiting: (workId: string, landing: number) => Promise<boolean> = async () => true,
     private readonly graceMs: number = ORCHESTRATOR_GRACE_MS,
+    /** needs.list's total as the notice goes out, so the push says the header's number; null when unread. */
+    private readonly count: () => Promise<number | null> = async () => null,
   ) {}
 
   /**
@@ -339,9 +361,13 @@ export class Inbox {
     const paseo = this.paseo();
     if (!paseo) throw new Error("Maestro has no connection to Paseo yet");
     const id = await this.session(paseo);
+    // Counted as it goes out, after the landing it tells of: the push says the number the header says now.
+    // A count slower than COUNT_MS is left out ("Needs you"), never waited on.
+    const needs = await within(this.count(), COUNT_MS).catch(() => null);
+    const told = needs === null ? notice : { ...notice, needs };
     // Paseo records the prompt's text as your message; an attachment it keeps out of it (and the provider reads).
     await paseo.agents.ref(id).send(notice.title, {
-      attachments: [{ type: "text", mimeType: "text/plain", title: NOTICE_ATTACHMENT, text: encodeNotice(notice) }],
+      attachments: [{ type: "text", mimeType: "text/plain", title: NOTICE_ATTACHMENT, text: encodeNotice(told) }],
     });
   }
 

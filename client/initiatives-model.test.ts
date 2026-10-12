@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { reviewNeed } from "../server/needs";
 import type { DecisionAsk } from "../shared/fleet";
 import type { Initiative } from "../shared/initiatives";
 import {
@@ -9,8 +10,8 @@ import {
   evidenceUrl,
   ideaOutcome,
   ideasText,
-  initiativeNoticeText,
   initiativesMeta,
+  reviewNoticeText,
   waitingText,
   wakeProblem,
 } from "./initiatives-model";
@@ -73,12 +74,26 @@ describe("the card's words", () => {
     const list = [initiative({ stale: { kind: "overdue", date: "2026-10-01" } }), initiative({ error: "bad" })];
     const ideas = [{ state: "open" }, { state: "answered" }] as DecisionAsk[];
     expect(initiativesMeta(list, ideas)).toBe("2 initiatives · 1 needs you · 1 cannot be read · 1 open idea");
-    expect(
-      initiativeNoticeText([
-        { id: "a", title: "A", kind: "wake", date: "2026-10-31" },
-        { id: "b", title: "B", kind: "overdue", date: "2026-10-01" },
-      ]),
-    ).toBe("2 initiatives need a look: A was parked until 2026-10-31, and 1 more.");
+    // Due reviews, as needs.list raises them (B2): each titled with its initiative and saying why.
+    const due = [
+      reviewNeed(
+        initiative({ id: "a", title: "A", waitingOn: [], stale: { kind: "wake", date: "2026-10-31" } }),
+        [],
+        [],
+        "broomva",
+      ),
+      reviewNeed(
+        initiative({ id: "b", title: "B", waitingOn: [], stale: { kind: "overdue", date: "2026-10-01" } }),
+        [],
+        [],
+        "broomva",
+      ),
+    ].filter((row) => row !== null);
+    expect(reviewNoticeText(due)).toBe("2 initiative reviews are due: Review A: keep, park or close? (+1 more)");
+    expect(reviewNoticeText(due.slice(1))).toBe(
+      "Review B: keep, park or close? Its review date, 2026-10-01, has passed.",
+    );
+    expect(reviewNoticeText([])).toBe("");
     const answered = (option: string) =>
       ({
         state: "answered",

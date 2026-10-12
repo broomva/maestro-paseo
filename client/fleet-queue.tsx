@@ -489,7 +489,7 @@ function HealthCard({
       key: "copy",
       label: "Copy reason",
       icon: "Copy",
-      a11y: `Copy why ${scope} needs you`,
+      a11y: `Copy why ${scope} wants a look`,
       run: () => copyOut(health.reason, "the reason"),
     });
   }
@@ -1045,7 +1045,7 @@ export function NeedsYouQueue({
               backgroundColor: theme.colors.surface1,
             }}
           >
-            <Text style={t.cardTitle}>No scope's tick needs you</Text>
+            <Text style={t.cardTitle}>No scope's tick wants a look</Text>
             <Text style={t.muted}>A late or failing scope whose alert is at your gate is counted there.</Text>
           </View>
         ) : null}

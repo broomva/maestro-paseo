@@ -1,8 +1,13 @@
 // Maestro inside the rest of Paseo: the header count in every workspace and a
 // pill beside the composer of every session Maestro tracks.
 //
-// What they cost, with Maestro closed: they read work.attention, which the
-// daemon answers from the work files alone, with no session reconcile. A read
+// The count is needs.list's total (BRO-3001), the number every other surface
+// says, and the button opens where those holds are (header-count.ts
+// needsTarget). The pills list the sessions of live work (work.attention's
+// sessions; nothing is counted from it).
+//
+// What they cost, with Maestro closed: two pure reads, which the daemon
+// answers from what it holds, with no session reconcile. A read
 // follows a few seconds after a session changes status or a workspace comes or
 // goes (events this client already receives: listening asks the daemon for
 // nothing new), and otherwise every 30 s, slowing to every 60 s once nothing
@@ -13,10 +18,12 @@
 import type { PaseoAgentUpdate, PaseoApi, PaseoWorkspaceUpdate } from "@getpaseo/client";
 import type { PluginButtonContentProps, PluginButtonIcon, PluginClientContext } from "@getpaseo/plugin/client";
 import type { ComponentType } from "react";
-import { type Attention, attentionWork } from "../shared/contracts";
+import { attentionWork } from "../shared/contracts";
+import { listNeeds, type Needs } from "../shared/needs";
 import type { OrchState } from "../shared/states";
-import { type HeaderSpec, headerFace, headerSpecs, needsYouCount, needsYouTarget } from "./header-count";
+import { type HeaderSpec, headerFace, headerSpecs, needsTarget } from "./header-count";
 import { type MaestroIntent, requestIntent } from "./intent";
+import { latestNeeds, onNeeds, publishNeeds, readTicket, sessionSignal } from "./needs-bus";
 import { type PillSpec, pillFace, pillSpecs } from "./pills";
 import { createRegistrations } from "./registrations";
 
@@ -75,14 +82,7 @@ export async function workspaceIds(paseo: Pick<PaseoApi, "workspaces">): Promise
   return ids;
 }
 
-/** What about a session can move the count or a pill: its status, whether it is asking, whether it is archived. */
-export function sessionSignal(agent: {
-  status: string;
-  pendingPermissions?: readonly unknown[];
-  archivedAt?: string | null;
-}): string {
-  return `${agent.status}:${agent.pendingPermissions?.length ?? 0}:${agent.archivedAt ? "archived" : "live"}`;
-}
+export { sessionSignal };
 
 const timeout = (run: () => void, ms: number) => {
   const timer = setTimeout(run, ms);
@@ -97,13 +97,7 @@ export function startIntegrations(
   const log = options.log ?? ((message: string) => console.warn(`[maestro] ${message}`));
   const later = options.later ?? timeout;
   const open = opener(client);
-  let waiting: Attention["waiting"] = [];
-  let fleet: Attention["fleet"] = [];
-  let timeline: Attention["timeline"] = [];
-  let asks: Attention["asks"] = [];
-  let initiatives: Attention["initiatives"] = [];
-  let answers: Attention["answers"] = [];
-  let loops: Attention["loops"] = [];
+  let needs: Needs = { rows: [], summary: { total: 0, byKind: { ask: 0, approval: 0, owner_step: 0 } } };
   let workspaces: string[] = [];
   /** What the last good read showed, and for how many reads in a row it has held. */
   let shown: string | null = null;
@@ -127,7 +121,7 @@ export function startIntegrations(
             ...headerFace(spec.count),
             behavior: {
               kind: "action",
-              onPress: () => open(needsYouTarget(waiting, fleet, timeline, asks, initiatives, answers, loops)),
+              onPress: () => open(needsTarget(needs)),
             },
           },
         }),
@@ -176,31 +170,33 @@ export function startIntegrations(
     if (stopped || busy) return;
     busy = true;
     try {
-      const [read, spaces] = await Promise.allSettled([client.rpc(attentionWork, {}), workspaceIds(client.paseo)]);
+      // Taken before the read: a screen's read that starts after this one and lands first is newer.
+      const ticket = readTicket();
+      const [needed, live, spaces] = await Promise.allSettled([
+        client.rpc(listNeeds, {}),
+        client.rpc(attentionWork, {}),
+        workspaceIds(client.paseo),
+      ]);
       if (stopped) return;
       // A failed read keeps what was last known rather than hiding everything until the next one.
       if (spaces.status === "fulfilled") workspaces = spaces.value;
-      if (read.status === "fulfilled") {
-        waiting = read.value.waiting;
-        // A daemon from before the fleet notices answers without them.
-        fleet = read.value.fleet ?? [];
-        // Nor the timeline's, from a daemon before the Timeline.
-        timeline = read.value.timeline ?? [];
-        // Nor the decision asks that wait on you, from a daemon before them.
-        asks = read.value.asks ?? [];
-        // Nor the stale or overdue initiatives, from a daemon before the Initiatives tab.
-        initiatives = read.value.initiatives ?? [];
-        // Nor the answers batch, from a daemon before it landed answers.
-        answers = read.value.answers ?? [];
-        // Nor loop drift, from a daemon before the Loops tab.
-        loops = read.value.loops ?? [];
-        const next = JSON.stringify(read.value);
+      if (needed.status === "fulfilled") {
+        // An open screen takes the same snapshot (client/needs-bus.ts); one the screen read since is newer, and stays.
+        const verdict = publishNeeds(needed.value, "header", ticket);
+        needs = verdict === "older" ? (latestNeeds() ?? needs) : needed.value;
+      }
+      if (live.status === "fulfilled") pills.sync(pillSpecs(live.value.sessions));
+      if (needed.status === "fulfilled" || live.status === "fulfilled") {
+        const next = JSON.stringify([
+          needed.status === "fulfilled" ? needed.value : null,
+          live.status === "fulfilled" ? live.value.sessions : null,
+        ]);
         calm = next === shown ? calm + 1 : 0;
         shown = next;
-        pills.sync(pillSpecs(read.value.sessions));
       }
-      report(read.status === "rejected" ? read.reason : spaces.status === "rejected" ? spaces.reason : null);
-      headers.sync(headerSpecs(workspaces, needsYouCount(waiting, fleet, timeline, asks, initiatives, answers, loops)));
+      const failed = [needed, live, spaces].find((read) => read.status === "rejected");
+      report(failed?.status === "rejected" ? failed.reason : null);
+      headers.sync(headerSpecs(workspaces, needs.summary.total));
     } finally {
       busy = false;
       if (!stopped) schedule();
@@ -224,6 +220,14 @@ export function startIntegrations(
       log(`Could not listen for session changes; polling only: ${(error as Error).message}`);
     }
   };
+  // A read an open screen made (a verb it settled, its own poll): the header says that number at once.
+  listeners.push(
+    onNeeds((next, from) => {
+      if (from !== "screen" || stopped) return;
+      needs = next;
+      headers.sync(headerSpecs(workspaces, needs.summary.total));
+    }),
+  );
   listen(() =>
     client.paseo.agents.subscribe((update: PaseoAgentUpdate) => {
       if (update.kind === "remove") {

@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { agentMethods, keepServing } from "./server/agent-socket";
 import { AnswerRouter } from "./server/answer-routes";
@@ -19,6 +19,7 @@ import { Launchd, launchdPresence } from "./server/launchd";
 import { Loop } from "./server/loop";
 import { homeWriter, Loops } from "./server/loops";
 import { gitLedger, loopPaths, loopReposPath, multiLedger } from "./server/loops-ledger";
+import { firstSeenMemory, handledOf, needsOf } from "./server/needs";
 import {
   controlAskPaths,
   controlRepoPaths,
@@ -51,6 +52,7 @@ import {
   stopWork,
   unblockWork,
   undoWork,
+  type WorkItem,
   wakeLoop,
   workForAgent,
 } from "./shared/contracts";
@@ -66,6 +68,7 @@ import {
 import { fileIdeaWork, getInitiatives, ideaRef, type WorkRef } from "./shared/initiatives";
 import { galleryEnabled, kitGallery } from "./shared/kit";
 import { getLoops } from "./shared/loops";
+import { listHandled, listNeeds, type NeedKind } from "./shared/needs";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
 import { getTimeline, getTimelineLog } from "./shared/timeline";
 
@@ -102,6 +105,9 @@ export default function contribute(host: PluginServerContext) {
       const { item } = await engine.get(workId);
       return item.state === "review" && item.landing === landing;
     },
+    undefined,
+    // The push says how many need you: needs.list's total, the header's number (BRO-3001).
+    async () => (await needsNow()).summary.total,
   );
   const engine: Engine = new Engine({
     client: () => latest,
@@ -359,6 +365,90 @@ export default function contribute(host: PluginServerContext) {
       ),
       loops: loopNotices,
     };
+  });
+  // What needs you and what was handled for you (server/needs.ts, BRO-3001): the one projection every count,
+  // badge, section and push reads. Pure: the work is read with no client, so no session is reconciled and no
+  // decision applied (BRO-2995); the asks, as every read, with no fetch of origin/main (the sweep fetches);
+  // every other source is a cached read.
+  // A source that cannot be read costs its own rows, never the rest.
+  const workspaceName = control.repo ? basename(control.repo) : "workspace";
+  // A pure read (BRO-2995): no client, so no reconcile; the plugin sweep keeps the work true, at most SWEEP_MS stale.
+  const workItems = (): Promise<WorkItem[] | null> =>
+    engine
+      .list()
+      .then(({ items }) => items)
+      .catch((error) => {
+        log(`needs: reading the work: ${(error as Error).message}`);
+        return null;
+      });
+  /** Every ask read, the workspace's and each fleet root's, and whether both were read. */
+  const allAsks = async (): Promise<[DecisionAsk[], boolean]> => {
+    let read = true;
+    const [mine, scoped] = await Promise.all([
+      (workspace?.read().then((view) => view.all) ?? Promise.resolve([])).catch((error) => {
+        read = false;
+        log(`needs: reading the workspace's asks: ${(error as Error).message}`);
+        return [];
+      }),
+      fleet
+        .scopeDecisions()
+        .then((view) => view.asks)
+        .catch((error) => {
+          read = false;
+          log(`needs: reading the fleet's asks: ${(error as Error).message}`);
+          return [];
+        }),
+    ]);
+    return [[...mine, ...scoped], read];
+  };
+  // When an undated hold was first seen (an undated ask, the answers batch), in memory only: its `since`
+  // holds still across reads, and a hold that went is forgotten, so one that comes back starts again.
+  const firstSeen = firstSeenMemory();
+  const needsNow = async (kind?: NeedKind) => {
+    // A source that cannot be read this time costs its rows, never their first-seen times.
+    let partial = false;
+    const [read, [asks, asksRead], reviews, landing, sessionAgents] = await Promise.all([
+      workItems(),
+      allAsks(),
+      (initiatives?.reviews() ?? Promise.resolve([])).catch((error) => {
+        partial = true;
+        log(`needs: reading the initiatives: ${(error as Error).message}`);
+        return [];
+      }),
+      (lander?.state() ?? Promise.resolve(null)).catch(() => {
+        partial = true;
+        return null;
+      }),
+      // Which Paseo agent each Claude session is, from the fleet's reports: one prompt counts once.
+      fleet.sessionAgents().catch((error) => {
+        log(`needs: reading the fleet's sessions: ${(error as Error).message}`);
+        return new Map<string, string>();
+      }),
+    ]);
+    // The work that could not be read costs its own rows, never the asks', the reviews' or the batch's.
+    const items = read ?? [];
+    const now = Date.now();
+    const needs = needsOf(
+      { items, asks, reviews, landing, sessionAgents, workspace: workspaceName },
+      now,
+      kind,
+      firstSeen.at,
+    );
+    if (!kind)
+      firstSeen.keep(
+        needs.rows.map((row) => row.key),
+        !partial && asksRead && read !== null,
+      );
+    return needs;
+  };
+  server.handle(listNeeds, ({ kind }) => needsNow(kind));
+  server.handle(listHandled, async () => {
+    const [read, [asks]] = await Promise.all([workItems(), allAsks()]);
+    const items = read ?? [];
+    const now = new Date();
+    const dayStart = new Date(now);
+    dayStart.setHours(0, 0, 0, 0);
+    return handledOf(items, asks, now.getTime(), dayStart.getTime());
   });
   server.handle(getLoops, () => loops.get());
   // The component gallery's flag (shared/kit.ts): read-only, from the daemon's environment.

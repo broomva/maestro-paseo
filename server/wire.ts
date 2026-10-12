@@ -36,6 +36,7 @@ export function toWire(item: StoredWork, now: number, config: MaestroConfig): Wo
   const decision = pendingDecision(events);
   const next = nextRun(config, item);
   const heading = fleetHeading(item.title, briefOf(item.work?.body ?? ""));
+  const landing = lastLanding(events);
   return {
     id: contract.id,
     path: item.rel,
@@ -59,7 +60,8 @@ export function toWire(item: StoredWork, now: number, config: MaestroConfig): Wo
     permission: contract.state === "review" ? pendingPermission(events) : null,
     checks: contract.checks.map(({ name, run }) => ({ name, run })),
     nextRun: next,
-    landing: lastLanding(events) ?? undefined,
+    landing: landing ?? undefined,
+    landedAt: landing === null ? null : (events[landing]?.ts ?? null),
     pending: decision
       ? {
           verdict: decision.verdict,

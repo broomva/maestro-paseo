@@ -26,10 +26,11 @@ import {
   type InitiativesView as InitiativesRead,
   ideaRef,
 } from "../shared/initiatives";
+import { holdOf } from "../shared/needs";
 import { sameAsk } from "./decisions";
 import { fateLine, homeText } from "./decisions-model";
 import { errorText } from "./format";
-import { useAttention, useRefresh } from "./hooks";
+import { useNeeds, useRefresh } from "./hooks";
 import {
   dateLine,
   defaultWake,
@@ -40,9 +41,9 @@ import {
   ideaOutcome,
   ideasOf,
   ideasText,
-  initiativeNoticeText,
   initiativesMeta,
   linearUrl,
+  reviewNoticeText,
   STATUS_TEXT,
   waitingText,
   wakeProblem,
@@ -717,7 +718,10 @@ export function InitiativesView({
   );
 }
 
-/** Initiatives past their date, where the rest of Maestro shows what needs you: exactly what the header count counts. */
+/**
+ * Initiatives whose review is due, where the rest of Maestro shows what needs
+ * you: needs.list's review asks (B2), exactly what the header count counts.
+ */
 export function InitiativeNotices({
   theme,
   compact,
@@ -727,9 +731,8 @@ export function InitiativeNotices({
   compact: boolean;
   onOpen: () => void;
 }) {
-  // The one owner of the work.attention read (client/hooks.ts).
-  const attention = useAttention();
-  const notices = attention.data?.initiatives ?? [];
+  const needs = useNeeds();
+  const notices = (needs.data?.rows ?? []).filter((row) => holdOf(row.key)?.kind === "review");
   if (notices.length === 0) return null;
   return (
     <Notice
@@ -746,7 +749,7 @@ export function InitiativeNotices({
         />
       }
     >
-      {initiativeNoticeText(notices)}
+      {reviewNoticeText(notices)}
     </Notice>
   );
 }

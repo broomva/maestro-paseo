@@ -1,7 +1,8 @@
 // The Feed home (BRO-2906), as the chosen design draws it
-// (docs/design/feed/feed-column.png): Decide, At your gate, Running, Queued,
-// Handled for you and Done. client/feed-model.ts decides what each shows;
-// this file only draws it. A card's verb opens the item, where the verbs are.
+// (docs/design/feed/feed-column.png): Needs you (needs.list's holds, BRO-3001),
+// Decide, Stuck, Running, Queued, Handled for you (handled.list) and Done.
+// client/feed-model.ts decides what each shows; this file only draws it. A
+// card's verb opens the item, where the verbs are.
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
@@ -9,6 +10,7 @@ import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { WorkItem } from "../shared/contracts";
 import type { DecisionAsk } from "../shared/fleet";
+import { type HandledRow, KIND_WORDS, kindWords, type NeedRow } from "../shared/needs";
 import { ChangeText, WithChange } from "./changed";
 import { askKey } from "./decisions-model";
 import {
@@ -17,9 +19,15 @@ import {
   cardOf,
   type DecideRow,
   decideOf,
+  decideRowOf,
   type FeedSections,
   HANDLED_NAMED,
+  type HandledGroup,
+  handledForYou,
+  handledGroups,
   handledTitle,
+  kindsOf,
+  type NeedEntry,
   type Tone,
 } from "./feed-model";
 import { ago, plural } from "./format";
@@ -122,7 +130,7 @@ function DecideRowView({ theme, row, onOpen }: { theme: PluginTheme; row: Decide
   );
 }
 
-/** Decide: the asks that wait on you, a few inline, and the way to the rest. */
+/** Decide: the open asks that do not wait on you (those that do are under Needs you), a few inline, and the way to the rest. */
 export function DecideSection({
   theme,
   asks,
@@ -137,12 +145,7 @@ export function DecideSection({
   if (decide.rows.length === 0) return null;
   return (
     <View style={{ gap: space[2] }}>
-      <Header
-        theme={theme}
-        title="Decide"
-        count={decide.rows.length + decide.more}
-        hint={decide.blocking ? `${decide.blocking} block running work` : null}
-      />
+      <Header theme={theme} title="Decide" count={decide.rows.length + decide.more} hint="open, not waiting on you" />
       {decide.rows.map((row) => (
         <DecideRowView key={askKey(row.ask)} theme={theme} row={row} onOpen={() => onOpen(row.ask)} />
       ))}
@@ -310,19 +313,19 @@ function CardBody({
   );
 }
 
-/** Handled for you: what Maestro closed on its own this week, one card per who handed it over. */
+/** Handled for you: handled.list's rows that closed without you this week, one card per who closed them. */
 function HandledCard({
   theme,
   group,
   onSelect,
 }: {
   theme: PluginTheme;
-  group: FeedSections["handled"]["groups"][number];
+  group: HandledGroup;
   onSelect: (id: string) => void;
 }) {
   const text = useText(theme);
   const [open, setOpen] = useState(false);
-  const shown = open ? group.items : group.items.slice(0, HANDLED_NAMED);
+  const shown = open ? group.rows : group.rows.slice(0, HANDLED_NAMED);
   return (
     <View
       style={{
@@ -359,24 +362,122 @@ function HandledCard({
         </View>
         <Icon name={open ? "ChevronUp" : "ChevronRight"} size={16} color={theme.colors.foregroundMuted} />
       </Pressable>
-      {shown.map((item) => (
-        <Pressable
-          key={item.id}
-          accessibilityRole="button"
-          accessibilityLabel={`Done: ${titleText(item)}`}
-          onPress={() => onSelect(item.id)}
-          style={{ flexDirection: "row", alignItems: "center", gap: space[2], paddingLeft: space[2] }}
-        >
-          <Icon name="Check" size={14} color={theme.colors.statusSuccess} />
-          <Text style={[text.body, { flex: 1 }]} numberOfLines={1}>
-            {titleText(item).replace(/^SRI:\s*/, "")}
-          </Text>
-          <Text style={[text.small, text.tabular]}>{ago(item.closed?.at ?? item.updatedAt)}</Text>
-        </Pressable>
+      {shown.map((row) => (
+        <HandledLine key={row.key} theme={theme} row={row} onSelect={onSelect} />
       ))}
-      {!open && group.items.length > HANDLED_NAMED ? (
-        <Text style={[text.small, { paddingLeft: space[2] }]}>and {group.items.length - HANDLED_NAMED} more</Text>
+      {!open && group.rows.length > HANDLED_NAMED ? (
+        <Text style={[text.small, { paddingLeft: space[2] }]}>and {group.rows.length - HANDLED_NAMED} more</Text>
       ) : null}
+    </View>
+  );
+}
+
+/** One closed arc: its title and when; it opens its work item. */
+function HandledLine({
+  theme,
+  row,
+  onSelect,
+}: {
+  theme: PluginTheme;
+  row: HandledRow;
+  onSelect: (id: string) => void;
+}) {
+  const text = useText(theme);
+  const id = row.key.startsWith("work:") ? row.key.slice("work:".length) : null;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Done: ${row.title}. ${row.reason}`}
+      onPress={() => (id ? onSelect(id) : undefined)}
+      style={{ flexDirection: "row", alignItems: "center", gap: space[2], paddingLeft: space[2] }}
+    >
+      <Icon name="Check" size={14} color={theme.colors.statusSuccess} />
+      <Text style={[text.body, { flex: 1 }]} numberOfLines={1}>
+        {row.title.replace(/^SRI:\s*/, "")}
+      </Text>
+      <Text style={[text.small, text.tabular]}>{ago(row.at)}</Text>
+    </Pressable>
+  );
+}
+
+const HOLD_ICON: Record<NeedRow["kind"], string> = {
+  approval: "ShieldCheck",
+  ask: "CircleHelp",
+  owner_step: "Hand",
+};
+
+/** What a hold's card says under its title: the action held, why an ask is yours, where a step is done. */
+function holdLine(row: NeedRow): string {
+  if (row.kind === "approval") return row.body.action;
+  if (row.kind === "ask") return row.body.why || row.body.goesTo;
+  return row.body.where;
+}
+
+/** A hold this client has no work item or ask for: its kind, where it is, its title, and what it holds. */
+function HoldCard({ theme, row, onOpen }: { theme: PluginTheme; row: NeedRow; onOpen: (row: NeedRow) => void }) {
+  const text = useText(theme);
+  const kind = KIND_WORDS[row.kind].one;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${kind}: ${row.title}, ${row.scope}, waiting ${ago(row.since)}`}
+      onPress={() => onOpen(row)}
+      style={({ pressed }) => ({
+        gap: space[2],
+        padding: space[4],
+        borderRadius: radius.card,
+        borderWidth: 1,
+        borderColor: theme.colors.accent,
+        backgroundColor: pressed ? theme.colors.surface2 : theme.colors.surface1,
+      })}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space[2] }}>
+        <Icon name={HOLD_ICON[row.kind]} size={14} color={theme.colors.accent} />
+        <Text style={[text.mono, { color: theme.colors.foregroundMuted, flex: 1 }]} numberOfLines={1}>
+          {[row.scope, row.ticket, kind].filter(Boolean).join(" · ")}
+        </Text>
+        <Text style={[text.small, text.tabular]}>{ago(row.since)}</Text>
+      </View>
+      <Text style={[text.body, { fontWeight: "600" }]} numberOfLines={2}>
+        {row.title}
+      </Text>
+      <Text style={text.small} numberOfLines={2}>
+        {holdLine(row)}
+      </Text>
+    </Pressable>
+  );
+}
+
+/**
+ * Needs you: every hold needs.list holds, in its order, as many as the header
+ * counts. Work at your gate and what only you may start are work cards; an ask
+ * is a Decide row; anything this client cannot join is its own hold card.
+ */
+export function NeedsSection({
+  entries,
+  onOpenAsk,
+  onOpenHold,
+  ...pick
+}: Pick & {
+  entries: readonly NeedEntry[];
+  onOpenAsk: (ask: DecisionAsk) => void;
+  onOpenHold: (row: NeedRow) => void;
+}) {
+  if (entries.length === 0) return null;
+  // Its line says the rows it lists, so a scope or a search never puts a wider number beside them.
+  const kinds = kindWords(kindsOf(entries.map((entry) => entry.row)));
+  return (
+    <View style={{ gap: space[3] }}>
+      <Header theme={pick.theme} title="Needs you" count={entries.length} hint={kinds} />
+      {entries.map(({ row, item, ask }) =>
+        item ? (
+          <FeedCard key={row.key} {...pick} item={item} />
+        ) : ask ? (
+          <DecideRowView key={row.key} theme={pick.theme} row={decideRowOf(ask)} onOpen={() => onOpenAsk(ask)} />
+        ) : (
+          <HoldCard key={row.key} theme={pick.theme} row={row} onOpen={onOpenHold} />
+        ),
+      )}
     </View>
   );
 }
@@ -438,8 +539,13 @@ function DoneSection({
   );
 }
 
-/** The Feed home's work sections, after Decide. */
-export function FeedSectionsView({ sections, loopOn, ...pick }: Pick & { sections: FeedSections; loopOn: boolean }) {
+/** The Feed home's work sections, after Needs you and Decide: Stuck, Running, Queued, Handled for you, Done. */
+export function FeedSectionsView({
+  sections,
+  handled,
+  loopOn,
+  ...pick
+}: Pick & { sections: FeedSections; handled: readonly HandledRow[]; loopOn: boolean }) {
   const cards = (title: string, list: readonly WorkItem[], hint: string | null = null) =>
     list.length === 0 ? null : (
       <View key={title} style={{ gap: space[3] }}>
@@ -449,21 +555,18 @@ export function FeedSectionsView({ sections, loopOn, ...pick }: Pick & { section
         ))}
       </View>
     );
-  const handled = sections.handled;
+  const forYou = handledForYou(handled);
+  const groups = handledGroups(forYou);
+  const count = forYou.length;
   return (
     <>
-      {cards("At your gate", sections.gate)}
+      {cards("Stuck", sections.stuck, groupHint("blocked", loopOn))}
       {cards("Running", sections.running)}
       {cards("Queued", sections.queued, groupHint("queued", loopOn))}
-      {handled.count > 0 ? (
+      {count > 0 ? (
         <View style={{ gap: space[3] }}>
-          <Header
-            theme={pick.theme}
-            title="Handled for you"
-            count={handled.count}
-            hint="closed without you this week"
-          />
-          {handled.groups.map((group) => (
+          <Header theme={pick.theme} title="Handled for you" count={count} hint="closed without you this week" />
+          {groups.map((group) => (
             <HandledCard key={group.by} theme={pick.theme} group={group} onSelect={pick.onSelect} />
           ))}
         </View>

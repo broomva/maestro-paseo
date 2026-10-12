@@ -299,6 +299,15 @@ export const DecisionAskSchema = z.object({
   /** The initiative the ask names (its own `initiative`, else the ledger's); null when none. */
   initiative: z.string().nullable().optional(),
   /**
+   * The Claude session a fleet-reconcile prompt ask is about: its `fleet.key`
+   * is `prompt:<session_id>:<tag>` ("Session … is waiting at a prompt";
+   * fleetlib report.py, written by ledger_ask.py as `fleet: {key: …}`). Not the
+   * Paseo agent id: needs.list joins it to the agent through the fleet's report
+   * (Fleet.sessionAgents) and counts the prompt once, as that agent's work's
+   * approval (BRO-3001). Null for every other ask; absent from an older daemon.
+   */
+  promptSession: z.string().nullable().optional(),
+  /**
    * An answer Maestro wrote, after it: in the batch, landed, or acted on
    * (shared/answers.ts). Null for an open ask, and for one answered elsewhere.
    */

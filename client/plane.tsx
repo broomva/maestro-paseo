@@ -4,14 +4,16 @@
 // the feed and the selected item side by side; the board, the list, History
 // and the Fleet take the width and open the item beside them. Compact windows
 // show the feed, History or the Fleet and push the item over it, with a way
-// back. A fleet tick that is missed or failing shows above every view but the
-// Fleet, as the header count counts it; so does any other scheduled run that
-// failed or was missed, above every view but the Timeline (client/timeline.tsx);
-// so does an initiative past its date, above every view but Initiatives
-// (client/initiatives.tsx), where an ask it waits on opens in Decisions; and so
-// does a decision ask that waits on you, above every view but Decisions
-// (client/decisions.tsx), the workspace's asks one at a time. The views come in
-// two labelled groups, Work and System; a phone picks one from a single menu.
+// back. What needs you is needs.list (BRO-3001): the subtitle, the tab badges
+// and the Feed's Needs you section read it, and nothing here counts on its own.
+// A decision ask that waits on you shows above every view but Decisions and the
+// Feed (client/decisions.tsx), an initiative review that is due above every
+// view but Initiatives (client/initiatives.tsx). What you watch shows the same
+// way: a fleet tick that is missed or failing above every view but the Fleet,
+// any other scheduled run that failed or was missed above every view but the
+// Timeline (client/timeline.tsx), loop drift above every view but Loops. The
+// views come in two labelled groups, Work and System; a phone picks one from a
+// single menu.
 
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
@@ -19,16 +21,24 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { ChangeScope } from "./changed";
 import { type DecisionsFocus, DecisionsView } from "./decision-triage";
-import { AnswersNotices, AskNotices, useDecisionCounts, useWorkspaceAsks } from "./decisions";
+import { AnswersNotices, AskNotices, useWorkspaceAsks } from "./decisions";
 import { decisionAsks, ledgerOf } from "./decisions-model";
 import { WorkDetail } from "./detail";
-import { DecideSection, FeedControls, FeedSectionsView } from "./feed";
-import { headerLine, matchesQuery, sectionsOf } from "./feed-model";
+import { DecideSection, FeedControls, FeedSectionsView, NeedsSection } from "./feed";
+import {
+  handledForYou,
+  handledShown,
+  headerLine,
+  matchesQuery,
+  needsByInitiative,
+  needsSection,
+  sectionsOf,
+} from "./feed-model";
 import { FleetNotices, FleetView } from "./fleet";
 import { duration, errorText, plural } from "./format";
-import { needsYouCount } from "./header-count";
+import { holdTarget, tabBadges } from "./header-count";
 import { HistoryView } from "./history";
-import { useAttention, useLoop, useWorkList } from "./hooks";
+import { useHandled, useLoop, useNeeds, useNeedsEvents, useWorkList } from "./hooks";
 import { InitiativeNotices, InitiativesView } from "./initiatives";
 import { requestIntent, useIntent } from "./intent";
 import { LoopControl, LoopPanel } from "./loop";
@@ -38,7 +48,6 @@ import { FilterRow, ScopeRow, ViewPicker, ViewSwitch } from "./plane-controls";
 import {
   applyFilter,
   countFilters,
-  decisionsBadge,
   emptyText,
   type Filter,
   initiatives,
@@ -58,19 +67,12 @@ import { Button, Card, IconButton, Notice, space, useText } from "./ui";
 
 export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps) {
   const list = useWorkList();
-  // The header's own count, Maestro-wide: the subtitle says the same number as the badge.
-  const attention = useAttention();
-  const needsYouTotal = attention.data
-    ? needsYouCount(
-        attention.data.waiting,
-        attention.data.fleet,
-        attention.data.timeline,
-        attention.data.asks,
-        attention.data.initiatives,
-        attention.data.answers,
-        attention.data.loops,
-      )
-    : null;
+  // What needs you (needs.list): the subtitle, the tabs and Needs you say the header's number, read once.
+  const needs = useNeeds();
+  const handled = useHandled();
+  // A session that changes refetches both, as a verb does when it settles.
+  useNeedsEvents();
+  const needsYouTotal = needs.data ? needs.data.summary.total : null;
   // The same read as the loop control's (one query): whether the loop is on words the Queued hint.
   const loopOn = useLoop().data?.minutes != null;
   const text = useText(theme);
@@ -96,7 +98,6 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     setDecisionsFocus({ ledger, ask, at: Date.now() });
     setView("decisions");
   };
-  const decisionCounts = useDecisionCounts();
   useIntent((intent) => {
     if (intent.kind === "select") setSelected(intent.id);
     else if (intent.kind === "new") setCreating(true);
@@ -123,7 +124,9 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
 
   const items = list.data?.items ?? [];
   const current = selected && items.some((item) => item.id === selected) ? selected : null;
-  const scopes = initiatives(items);
+  // Every hold needs.list holds, joined to the work and asks this client has: each initiative's count is its own.
+  const needsRows = needs.data?.rows ?? [];
+  const scopes = initiatives(items, needsByInitiative(needsSection(needsRows, items, asks)));
   const scope = resolveScope(items, chosenScope);
   const loaded = list.data !== undefined;
   // A scope whose initiative left the list is dropped, so it cannot come back unseen.
@@ -131,11 +134,31 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     if (loaded && chosenScope !== null && scope === null) setScope(null);
   }, [loaded, chosenScope, scope]);
   const scoped = inScope(items, scope);
-  const counts = countFilters(scoped);
+  // The Needs you chip counts and lists needs.list's holds in scope, asks included: the header's number, unscoped.
+  const scopedNeeds = needsSection(needsRows, items, asks, scope);
+  const counts = { ...countFilters(scoped), review: scopedNeeds.length };
   const shown = view === "board" ? scoped : applyFilter(scoped, filter);
   const pick = { theme, selected: current, onSelect: setSelected };
   // The Feed home (client/feed.tsx): sections from the scoped work the search keeps.
   const sections = sectionsOf(scoped.filter((item) => matchesQuery(item, query)));
+  // Needs you: needs.list's rows in their order, joined to the work and asks this client has (scope and search apply).
+  const needsEntries = needsSection(needsRows, items, asks, scope, query);
+  // Handled for you, scoped and searched as the other sections are; the subtitle counts all of it.
+  const allHandled = handled.data?.rows ?? [];
+  const handledRows = handledShown(
+    allHandled,
+    scoped.filter((item) => matchesQuery(item, query)),
+    scope,
+    query,
+  );
+  const needsYou = (
+    <NeedsSection
+      {...pick}
+      entries={needsEntries}
+      onOpenAsk={(ask) => openDecisions(ledgerOf(ask), { ledger: ledgerOf(ask), uid: ask.uid, id: ask.id })}
+      onOpenHold={(row) => requestIntent(holdTarget(row))}
+    />
+  );
   const board = list.data?.scoreboard;
   // Decide (client/feed.tsx): the asks that wait on you, inline at the top of the Feed.
   const decide = (
@@ -156,7 +179,8 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
     setDecisionsFocus(null);
   };
 
-  const badges = { decisions: decisionsBadge(decisionCounts.open, decisionCounts.waiting) };
+  // The tabs' badges, from needs.list alone (header-count.ts tabBadges).
+  const badges = needs.data ? tabBadges(needs.data) : {};
 
   const newWork = (
     <NewWork theme={theme} open={creating} onOpenChange={setCreating} onCreated={setSelected} compact={compact} />
@@ -211,8 +235,9 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
         </View>
         {/* Its own row under the title, as the design has it: beside the buttons it wraps. */}
         <Text style={[text.body, { fontWeight: "500" }]}>
-          {view === "feed" && loaded
-            ? headerLine(needsYouTotal, sectionsOf(scoped))
+          {/* Maestro-wide, as the header button: once needs.list is read; before that, what the work alone says. */}
+          {view === "feed" && loaded && needsYouTotal !== null
+            ? headerLine(needsYouTotal, sectionsOf(items).running.length, handledForYou(allHandled).length)
             : summaryText(items, needsYouTotal)}
         </Text>
         {/* Its own row, the pane's full width: beside the buttons a phone wraps "Next wake in 15 min". */}
@@ -229,15 +254,18 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
 
       {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
 
+      {/* What needs you could not be read: said, never shown as nothing. */}
+      {needs.isError && !needs.data ? (
+        <Notice theme={theme} tone="danger">
+          {`What needs you could not be read (${errorText(needs.error)}); the count and Needs you come back when it reads.`}
+        </Notice>
+      ) : null}
+
       {view === "fleet" ? null : <FleetNotices theme={theme} compact={compact} onOpen={openFleet} />}
       <AnswersNotices theme={theme} compact={compact} />
       {/* On the Feed, Decide below says the same, inline. */}
       {view === "decisions" || view === "feed" ? null : (
-        <AskNotices
-          theme={theme}
-          compact={compact}
-          onOpen={(notice) => openDecisions(null, { ledger: ledgerOf(notice), uid: notice.uid, id: notice.id })}
-        />
+        <AskNotices theme={theme} compact={compact} onOpen={(row) => requestIntent(holdTarget(row))} />
       )}
       {view === "loops" ? null : <LoopsNotices theme={theme} compact={compact} onOpen={() => setView("loops")} />}
       {view === "timeline" ? null : (
@@ -315,22 +343,24 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
                 query={query}
                 onQuery={setQuery}
               />
+              {needsYou}
               {decide}
               {query &&
-              sections.gate.length +
+              needsEntries.length +
+                sections.stuck.length +
                 sections.running.length +
                 sections.queued.length +
-                sections.done.count +
-                sections.handled.count ===
+                sections.done.count ===
                 0 ? (
                 <Text style={text.muted}>No work matches “{query}”.</Text>
               ) : (
-                <FeedSectionsView {...pick} sections={sections} loopOn={loopOn} />
+                <FeedSectionsView {...pick} sections={sections} handled={handledRows} loopOn={loopOn} />
               )}
               <ScoreboardCard theme={theme} board={list.data.scoreboard} onOpenHistory={() => chooseView("history")} />
             </>
           ) : items.length === 0 ? (
             <>
+              {view === "feed" ? needsYou : null}
               {view === "feed" ? decide : null}
               <Card theme={theme}>
                 <Text style={text.title}>No work yet</Text>
@@ -366,6 +396,19 @@ export function MaestroSurface({ theme, layout, navigation }: PluginSurfaceProps
               )}
               {view === "history" ? (
                 <HistoryView {...pick} scope={scope} />
+              ) : filter === "review" && view !== "board" ? (
+                scopedNeeds.length === 0 ? (
+                  <Text style={text.muted}>{emptyText(filter)}</Text>
+                ) : (
+                  <NeedsSection
+                    {...pick}
+                    entries={scopedNeeds}
+                    onOpenAsk={(ask) =>
+                      openDecisions(ledgerOf(ask), { ledger: ledgerOf(ask), uid: ask.uid, id: ask.id })
+                    }
+                    onOpenHold={(row) => requestIntent(holdTarget(row))}
+                  />
+                )
               ) : shown.length === 0 && view !== "board" ? (
                 <Text style={text.muted}>{emptyText(filter)}</Text>
               ) : view === "board" ? (

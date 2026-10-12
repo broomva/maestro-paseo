@@ -388,9 +388,10 @@ describe("a wake", () => {
     const entry = await loop.wake("manual");
     expect(QUIET_MS).toBe(30 * 60_000);
     expect(entry.quiet).toEqual([{ id: item.id, title: item.title, minutes: 30 }]);
+    // A quiet run is watched, not held on you (A1): said under "To watch".
     expect(entry.narrative).toEqual([
       "Woke because you asked.",
-      "Needs you:",
+      "To watch:",
       "  Long one has been quiet 30 minutes, worth a look.",
       "Did nothing new this tick.",
       "Flagged for you:",
@@ -398,7 +399,7 @@ describe("a wake", () => {
     ]);
   });
 
-  test("counts what needs you: at your gate, asking, stuck", async () => {
+  test("counts what needs you (at your gate, asking) apart from what you watch (stuck)", async () => {
     const { loop, queue, engine, fake } = await setup({ concurrencyCap: null });
     for (const title of ["Gate", "Asking", "Stuck"]) await engine.dispatch(fake.paseo, (await queue(title)).id);
     const gate = fake.agents.get("agent-1");
@@ -410,11 +411,12 @@ describe("a wake", () => {
     await engine.onTurnEnded({ id: "agent-3" }, { kind: "failed", error: { message: "boom" } }, []);
     const entry = await loop.wake("manual");
     expect(entry.needsYou).toEqual({ gate: 1, asking: 1, stuck: 1 });
-    expect(entry.narrative.slice(0, 5)).toEqual([
+    expect(entry.narrative.slice(0, 6)).toEqual([
       "Woke because you asked.",
       "Needs you:",
       "  1 waiting at your gate.",
       "  1 asking you a question.",
+      "To watch:",
       "  1 stuck.",
     ]);
   });
@@ -612,7 +614,7 @@ describe("flags in Needs you", () => {
     expect(await engine.flag(read, "quiet", "Quiet for 30 minutes, worth a look.")).toBe(true);
   });
 
-  test("work.attention lists flagged work after the work at your gate or stuck", async () => {
+  test("a quiet flag is raised on the run, which stays watched: neither it nor stuck work waits on you (A1)", async () => {
     const { loop, queue, engine, fake } = await setup({ concurrencyCap: null });
     const stuck = await queue("Stuck");
     await engine.dispatch(fake.paseo, stuck.id);
@@ -622,15 +624,14 @@ describe("flags in Needs you", () => {
     await queue("Plain");
     tickMinutes(30);
     await loop.wake("manual");
-    const { waiting } = attentionOf((await engine.list()).items, clock);
-    expect(waiting).toEqual([
-      { id: stuck.id, group: "blocked", flag: null },
-      {
-        id: long.id,
-        group: "running",
-        flag: { kind: "quiet", reason: "Quiet for 30 minutes, worth a look.", at: new Date(clock).toISOString() },
-      },
-    ]);
+    const { items } = await engine.list();
+    expect(items.find((item) => item.id === long.id)?.flag).toEqual({
+      kind: "quiet",
+      reason: "Quiet for 30 minutes, worth a look.",
+      at: new Date(clock).toISOString(),
+    });
+    expect(items.find((item) => item.id === stuck.id)?.group).toBe("blocked");
+    expect(attentionOf(items, clock).waiting).toEqual([]);
   });
 });
 

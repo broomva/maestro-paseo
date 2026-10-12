@@ -1,17 +1,21 @@
 import { describe, expect, test } from "bun:test";
+import { needsOf } from "../server/needs";
 import type { DecisionAsk } from "../shared/fleet";
+import type { HandledRow } from "../shared/needs";
 import { fakeWork } from "./fake-work";
 import {
   cardHint,
   cardOf,
   DECIDE_INLINE,
   decideOf,
+  handledGroups,
   handledTitle,
   headerLine,
   matchesQuery,
+  needsByInitiative,
+  needsSection,
   sectionsOf,
   ticketOf,
-  UNNAMED,
 } from "./feed-model";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
@@ -44,81 +48,158 @@ const ask = (id: string, extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
 });
 
 describe("the feed's sections", () => {
-  test("Handled for you holds what Maestro closed this week, by who handed it over; Done holds yours", () => {
+  test("stuck work has its own section (watched, A1); Done holds yours and what was handled over a week ago", () => {
     const items = [
       fakeWork("g", "review", live),
       fakeWork("b", "blocked", live),
       fakeWork("r", "running", live),
+      fakeWork("quiet", "running", live, { flag: { kind: "quiet", reason: "Quiet.", at: "2026-10-08T11:00:00Z" } }),
       fakeWork("q", "proposed"),
+      fakeWork("yours", "proposed", null, { flag: { kind: "yours", reason: "Held.", at: "2026-10-08T11:00:00Z" } }),
       fakeWork("h1", "done", null, {
         closed: { by: "maestro", at: "2026-10-08T11:00:00Z" },
         adoptedBy: { by: "SRI Orchestrator" },
       }),
-      fakeWork("h2", "done", null, { closed: { by: "maestro", at: "2026-10-08T10:00:00Z" }, adoptedBy: { by: null } }),
       fakeWork("old", "done", null, { closed: { by: "maestro", at: "2026-09-20T10:00:00Z" } }),
       fakeWork("y1", "done", null, { closed: { by: "you", at: "2026-10-08T09:00:00Z" } }),
       fakeWork("y2", "canceled", null, { closed: { by: "you", at: "2026-10-05T09:00:00Z" } }),
     ];
     const sections = sectionsOf(items, NOW);
-    expect(sections.gate.map((item) => item.id)).toEqual(["g", "b"]);
-    expect([sections.running.map((i) => i.id), sections.queued.map((i) => i.id)]).toEqual([["r"], ["q"]]);
-    expect(sections.handled.count).toBe(2);
-    expect(sections.handled.groups.map((group) => [group.by, group.items.map((i) => i.id)])).toEqual([
-      ["SRI Orchestrator", ["h1"]],
-      ["Their orchestrators", ["h2"]],
-    ]);
+    expect(sections.stuck.map((item) => item.id)).toEqual(["b"]);
+    // A quiet run is watched: it stays under Running. Work only you may start is a hold, not Queued.
+    expect([sections.running.map((i) => i.id), sections.queued.map((i) => i.id)]).toEqual([["r", "quiet"], ["q"]]);
     // A week-old close by Maestro is no longer "handled for you": it is in Done with yours.
     expect([sections.done.count, sections.done.today, sections.done.week]).toEqual([3, 1, 2]);
   });
 
   test("the header says what needs you, what runs, and what was handled for you", () => {
-    const sections = sectionsOf(
-      [
-        fakeWork("r", "running", live),
-        fakeWork("h", "done", null, { closed: { by: "maestro", at: "2026-10-08T11:00:00Z" } }),
-      ],
-      NOW,
-    );
-    expect([headerLine(6, sections), headerLine(0, sectionsOf([], NOW))]).toEqual([
+    expect([headerLine(6, 1, 1), headerLine(0, 0, 0), headerLine(1, 0, 0)]).toEqual([
       "6 need you · 1 running · 1 handled for you",
       "Nothing needs you",
+      "1 needs you",
     ]);
-    expect(handledTitle({ by: "SRI Orchestrator", items: sections.handled.groups[0]?.items ?? [] })).toBe(
-      "From SRI Orchestrator: 1 arc closed",
-    );
   });
 });
 
-describe("Handled for you's group titles (BRO-2928)", () => {
-  test("name who handed the arcs over, never who closed them; Maestro's own read in the singular too", () => {
-    const one = [fakeWork("h", "done", null)];
+describe("Needs you on the Feed (BRO-3001)", () => {
+  const blocking = ask("A1", {
+    blocking: true,
+    waiting: true,
+    askedAt: "2026-10-08T08:00:00Z",
+    initiative: "hawthorne",
+  });
+  const items = [
+    fakeWork("g", "review", live, { initiative: "hawthorne", updatedAt: "2026-10-08T09:00:00Z" }),
+    fakeWork("p", "review", live, { initiative: "genesis", updatedAt: "2026-10-08T10:00:00Z" }),
+    fakeWork("b", "blocked", live, { initiative: "hawthorne" }),
+  ];
+  const needs = needsOf({ items, asks: [blocking], reviews: [], landing: null, workspace: "broomva" }, NOW);
+
+  test("lists every row needs.list holds, in its order, joined to its work or ask: as many as the header counts", () => {
+    const entries = needsSection(needs.rows, items, [blocking]);
+    expect(entries).toHaveLength(needs.summary.total);
+    expect(entries.map((entry) => entry.row.key)).toEqual(needs.rows.map((row) => row.key));
+    expect(entries.map((entry) => [entry.item?.id ?? null, entry.ask?.id ?? null])).toEqual([
+      [null, "A1"],
+      ["g", null],
+      ["p", null],
+    ]);
+  });
+
+  test("each initiative's count is the length of the section its scope lists: its work, its asks, its review", () => {
+    const review = {
+      id: "genesis",
+      file: "genesis.yaml",
+      title: "genesis",
+      quote: null,
+      summary: null,
+      nextAction: null,
+      driver: null,
+      waitingOn: [],
+      stale: { kind: "overdue", date: "2026-10-01" },
+    } as unknown as Parameters<typeof needsOf>[0]["reviews"][number];
+    const all = needsOf({ items, asks: [blocking], reviews: [review], landing: null, workspace: "broomva" }, NOW);
+    const counts = needsByInitiative(needsSection(all.rows, items, [blocking]));
+    expect([...counts].sort()).toEqual([
+      ["genesis", 2],
+      ["hawthorne", 2],
+    ]);
+    for (const [initiative, count] of counts) {
+      expect([initiative, count]).toEqual([initiative, needsSection(all.rows, items, [blocking], initiative).length]);
+    }
+  });
+
+  test("a hold this client cannot join still shows, as its row", () => {
+    const entries = needsSection(needs.rows, [], []);
+    expect(entries.map((entry) => [entry.row.key, entry.item, entry.ask])).toEqual(
+      needs.rows.map((row) => [row.key, null, null]),
+    );
+  });
+
+  test("a scope keeps its initiative's holds; a search keeps the rows it matches", () => {
+    expect(needsSection(needs.rows, items, [blocking], "hawthorne").map((entry) => entry.row.key)).toEqual([
+      needs.rows[0]?.key,
+      "work:g",
+    ]);
+    expect(needsSection(needs.rows, items, [blocking], null, "work p").map((entry) => entry.row.key)).toEqual([
+      "work:p",
+    ]);
+    expect(needsSection(needs.rows, items, [blocking], null, "ask a1").map((entry) => entry.row.key)).toEqual([
+      needs.rows[0]?.key,
+    ]);
+  });
+});
+
+describe("Handled for you (handled.list)", () => {
+  const row = (key: string, closedBy: HandledRow["closedBy"]): HandledRow => ({
+    key,
+    title: key,
+    closedBy,
+    reason: "Done",
+    at: "2026-10-08T10:00:00Z",
+  });
+
+  test("groups what closed without you by who closed it, gates first; yours are not here", () => {
+    const rows = [row("a", "maestro"), row("b", "you"), row("c", "gates"), row("d", "orchestrator"), row("e", "gates")];
+    expect(handledGroups(rows).map((group) => [group.by, group.rows.map((entry) => entry.key)])).toEqual([
+      ["gates", ["c", "e"]],
+      ["orchestrator", ["d"]],
+      ["maestro", ["a"]],
+    ]);
+    expect(handledGroups([row("b", "you")])).toEqual([]);
+  });
+
+  test("each group's title says who closed the arcs, in the singular too", () => {
+    const one = [row("a", "maestro")];
     expect([
-      handledTitle({ by: "Maestro", items: one }),
-      handledTitle({ by: "Maestro", items: [...one, ...one] }),
-      handledTitle({ by: "SRI Orchestrator", items: [...one, ...one] }),
+      handledTitle({ by: "maestro", rows: one }),
+      handledTitle({ by: "maestro", rows: [...one, ...one] }),
+      handledTitle({ by: "orchestrator", rows: [...one, ...one] }),
+      handledTitle({ by: "gates", rows: one }),
     ]).toEqual([
       "Maestro closed 1 arc that finished on its own",
       "Maestro closed 2 arcs that finished on their own",
-      "From SRI Orchestrator: 2 arcs closed",
+      "From their orchestrators: 2 arcs closed",
+      "The gates closed 1 arc",
     ]);
-    // An adopter that gave no name reads in the sentence's case.
-    expect(handledTitle({ by: UNNAMED, items: one })).toBe("From their orchestrators: 1 arc closed");
   });
 });
 
 describe("Decide", () => {
-  test("open asks only, those that block work first, a few inline and how many more", () => {
+  test("open asks that do not wait on you, oldest first, a few inline and how many more", () => {
     const asks = [
       ask("A1", { askedAt: "2026-10-01T00:00Z" }),
-      ask("A2", { blocking: true, askedAt: "2026-10-03T00:00Z" }),
+      ask("A2", { askedAt: "2026-10-03T00:00Z" }),
       ask("A3", { askedAt: "2026-10-02T00:00Z" }),
       ask("A4", { askedAt: "2026-10-04T00:00Z" }),
       ask("A5", { state: "answered" }),
       ask("A6", { idea: { initiative: "x" } as never }),
+      // It waits on you: a hold, under Needs you, never here too.
+      ask("A7", { blocking: true, waiting: true, askedAt: "2026-09-01T00:00Z" }),
     ];
     const decide = decideOf(asks);
-    expect(decide.rows.map((row) => row.ask.id)).toEqual(["A2", "A1", "A3"]);
-    expect([decide.rows.length, decide.more, decide.blocking]).toEqual([DECIDE_INLINE, 1, 1]);
+    expect(decide.rows.map((row) => row.ask.id)).toEqual(["A1", "A3", "A2"]);
+    expect([decide.rows.length, decide.more]).toEqual([DECIDE_INLINE, 1]);
     expect(decide.rows[0]?.where).toBe("bro-2909-r2");
   });
 

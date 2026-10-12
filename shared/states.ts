@@ -102,9 +102,9 @@ export function groupOf(state: OrchState): Group {
 }
 
 export const GROUP_COPY: Record<Group, { title: PlainVoice; hint: string }> = {
-  // Needs you lists stuck work and work the loop flagged too (shared/needs-you.ts).
-  review: { title: "Needs you", hint: "At your gate, stuck or flagged" },
-  blocked: { title: "Stuck", hint: "A worker stopped and needs a hand" },
+  // Needs you lists work only you may start too (shared/needs-you.ts); stuck work is watched, under Stuck (A1).
+  review: { title: "Needs you", hint: "At your gate, or only you may start it" },
+  blocked: { title: "Stuck", hint: "A worker stopped; Unblock it, or watch it close" },
   running: { title: "Running", hint: "Dispatched and live in a worktree" },
   queued: { title: "Queued", hint: "Ready when you dispatch it" },
   done: { title: "Done", hint: "The branch is the receipt" },

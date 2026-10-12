@@ -944,6 +944,41 @@ describe("your verdict", () => {
   });
 });
 
+describe("which Paseo agent each Claude session is (BRO-3001)", () => {
+  test("the newest report's rows, session_id to paseo_agent; a row with no agent and a scope with no report add nothing", async () => {
+    const { paths, fleet } = await setup();
+    const agent = "b76446da-2c1e-4f0b-9a3d-5e8c7a1b2f60";
+    const claude = "51ba8cdf-7d24-4e9a-8b16-0c3f2e9d4a71";
+    await writeFleet(paths, {
+      alpha: {
+        ticks: [
+          {
+            tick: 34,
+            at: ago(1.2),
+            exit: 0,
+            report: report(34, ago(1.2), {
+              sessions: [session(claude, "3", "nothing", { paseo_agent: "stale-agent" })],
+            }),
+          },
+          {
+            tick: 35,
+            at: ago(0.2),
+            exit: 0,
+            report: report(35, ago(0.2), {
+              sessions: [
+                session(claude, "3", "nothing", { paseo_agent: agent }),
+                session("33333333-cccc", "5", "nothing", { paseo_agent: null }),
+              ],
+            }),
+          },
+        ],
+      },
+      beta: { ticks: [] },
+    });
+    expect([...(await fleet.sessionAgents())]).toEqual([[claude, agent]]);
+  });
+});
+
 describe("drilling in", () => {
   test("a proposal names its session's branch and Paseo agent; an ask about a session at a prompt names it", async () => {
     const { paths, fleet } = await setup();
