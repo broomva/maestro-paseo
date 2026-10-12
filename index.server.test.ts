@@ -1099,11 +1099,34 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
     // Your verbs, now that nothing is being proved pure (the window is 0 here): a snooze quiets its notice, a review
     // answer is a receipt in the asks' log and ends the review (the date it answered), and neither edits a file
     // of an initiative or starts a session.
-    const noticeKey = (await noticesNow()).rows.find((row) => row.kind === "stuck")?.key ?? "";
-    await run("notice.snooze", { key: noticeKey, hours: 4 });
+    // Only a notice offering Snooze can be snoozed: not a stuck run (it closes with a turn or a cancel), and never the
+    // aggregate that stands for every due review.
+    for (const kind of ["stuck", "initiative"] as const) {
+      const key = (await noticesNow()).rows.find((row) => row.kind === kind)?.key ?? "";
+      expect(key).not.toBe("");
+      await expect(run("notice.snooze", { key, hours: 4 })).rejects.toThrow(/closes when its source does/);
+    }
+    // A quiet run can: flagged by the loop, it is standing work's notice.
+    const { item: quietWork } = await run("work.create", { ...base, title: "Quiet" });
+    await run("work.dispatch", { id: quietWork.id });
+    const quietDir = join(root, "work", (quietWork as unknown as { path: string }).path);
+    await writeFile(
+      join(quietDir, "_events.jsonl"),
+      `${await readFile(join(quietDir, "_events.jsonl"), "utf8")}${JSON.stringify({
+        ts: new Date().toISOString(),
+        type: "loop.flagged",
+        actor: "maestro",
+        kind: "quiet",
+        reason: "Quiet for 90 minutes.",
+      })}\n`,
+    );
+    const quietKey = (await noticesNow()).rows.find((row) => row.kind === "quiet")?.key ?? "";
+    expect(quietKey).toBe(`quiet:${quietWork.id}`);
+    const totalBefore = (await noticesNow()).summary.total;
+    await run("notice.snooze", { key: quietKey, hours: 4 });
     for (let tries = 0; tries < 100 && (await noticesNow()).summary.snoozed === 0; tries += 1)
       await new Promise((r) => setTimeout(r, 20));
-    expect((await noticesNow()).summary).toMatchObject({ total: 2, snoozed: 1 });
+    expect((await noticesNow()).summary).toMatchObject({ total: totalBefore - 1, snoozed: 1 });
     await expect(run("notice.snooze", { key: "work:nothing", hours: 4 })).rejects.toThrow(/no longer holds/);
     const initiativeFile = join(control, ".control", "initiatives", "skene.yaml");
     const initiativeBefore = await readFile(initiativeFile, "utf8");

@@ -572,22 +572,25 @@ export default function contribute(host: PluginServerContext) {
   };
   server.handle(listNotices, noticesNow);
   // Snooze takes effect when its undo window closes (B4); a notice that no longer holds cannot be snoozed.
+  // Only a notice whose verb is Snooze can be snoozed (a quiet run): the rest close when their source does, and
+  // snoozing `initiatives:due` would hide every due review. Held to this when it is sent and when the window closes.
+  const snoozable = async (key: string) => {
+    const row = (await noticesNow()).rows.find((one) => one.key === key);
+    if (!row) throw new UserError("That notice no longer holds, so there is nothing to snooze.");
+    if (row.verb.id !== "snooze") throw new UserError("That notice is not snoozed: it closes when its source does.");
+    return row;
+  };
   verbs.register<{ key: string; hours: number }>("notice.snooze", {
-    check: async ({ key }) => {
-      if (!(await noticesNow()).rows.some((row) => row.key === key))
-        throw new UserError("That notice no longer holds, so there is nothing to snooze.");
-    },
+    check: async ({ key }) => void (await snoozable(key)),
     apply: async ({ key, hours }) => {
       // Checked again as the window closes: a notice that went away meanwhile is not snoozed.
-      if (!(await noticesNow()).rows.some((row) => row.key === key))
-        throw new UserError("That notice no longer holds, so there is nothing to snooze.");
+      await snoozable(key);
       await snoozes.snooze(key, new Date(Date.now() + hours * 3_600_000), new Date());
       return `Snoozed for ${hours} h.`;
     },
   });
   server.handle(snoozeNotice, async ({ key, hours }) => {
-    const row = (await noticesNow()).rows.find((one) => one.key === key);
-    if (!row) throw new UserError("That notice no longer holds, so there is nothing to snooze.");
+    const row = await snoozable(key);
     return verbs.schedule("notice.snooze", { key, label: `Snoozed ${row.title} for ${hours} h`, args: { key, hours } });
   });
   // Your answer to a due review: a receipt in the asks' log when the window closes (server/reviews.ts); an
