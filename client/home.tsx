@@ -10,10 +10,8 @@
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
-import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from "react-native";
-import { DRAFTS_KEY, type Drafts } from "./decision-card";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import { useWorkspaceAsks } from "./decisions";
 import { decisionAsks, ledgerOf } from "./decisions-model";
 import { needsSection } from "./feed-model";
@@ -29,36 +27,19 @@ import {
   RunningRow,
   SectionHeading,
 } from "./home-cards";
-import {
-  CANCEL_ARM_MS,
-  cancelStep,
-  glanceTiles,
-  holdInspector,
-  holdKindOf,
-  holdParam,
-  homeSections,
-  type KindFilter,
-  keyAction,
-  kindChips,
-  needsHint,
-  railOf,
-  type Selection,
-  stepHold,
-  workInspector,
-} from "./home-model";
+import { glanceTiles, holdParam, homeSections, type KindFilter, kindChips, needsHint, railOf } from "./home-model";
 import { useHandled, useLoop, useNeeds, useWatched, useWorkList } from "./hooks";
 import { requestIntent } from "./intent";
 import { GlanceTile } from "./kit/glance-tile";
 import { InspectorPanel } from "./kit/inspector";
 import { Dot, PASS_THROUGH, TABULAR } from "./kit/parts";
 import { kitOf } from "./kit/tokens";
-import { undoEntry } from "./kit/undo-model";
-import { UndoToast, useUndoToast } from "./kit/undo-toast";
-import { useOpenUrl } from "./open-url";
+import { UndoToast } from "./kit/undo-toast";
 import { groupHint } from "./plane-model";
-import { Notice, typingIn } from "./ui";
+import { Notice } from "./ui";
+import { useInspector } from "./use-inspector";
 import { useTick } from "./use-tick";
-import { planVerb, useVerbs, type VerbId, type VerbTarget } from "./verbs";
+import { planVerb } from "./verbs";
 
 /** Something to open: a hold by its key (Paseo's `params.hold`, a count or a card), or the work item with this id. */
 export interface HomeFocus {
@@ -69,17 +50,6 @@ export interface HomeFocus {
 }
 
 const INSPECTOR_WIDTH = 480;
-
-type KeyEvent = {
-  key: string;
-  repeat?: boolean;
-  metaKey?: boolean;
-  ctrlKey?: boolean;
-  shiftKey?: boolean;
-  altKey?: boolean;
-  target?: unknown;
-  preventDefault?: () => void;
-};
 
 export function HomeScreen({
   theme,
@@ -108,18 +78,9 @@ export function HomeScreen({
   const watched = useWatched();
   const asksRead = useWorkspaceAsks();
   const toast = useToast();
-  const client = useQueryClient();
-  const openUrl = useOpenUrl();
-  const verbs = useVerbs();
-  const undo = useUndoToast((receipt) => {
-    verbs.undo(receipt).catch((error: unknown) => toast.error(errorText(error)));
-  });
   const now = useTick(15_000);
-  const root = useRef<unknown>(null);
   const [width, setWidth] = useState(0);
   const [filter, setFilter] = useState<KindFilter>("all");
-  const [selection, setSelection] = useState<Selection | null>(null);
-  const [open, setOpen] = useState(false);
   const [gone, setGone] = useState<string | null>(null);
   const [scrollY, setScrollY] = useState(0);
   const [columnsTop, setColumnsTop] = useState(0);
@@ -163,23 +124,8 @@ export function HomeScreen({
   );
   const rail = railOf(asks, handled.data ?? null);
 
-  const entry = selection?.kind === "hold" ? (everyHold.find((one) => one.row.key === selection.key) ?? null) : null;
-  const chosenItem = selection?.kind === "work" ? (items.find((one) => one.id === selection.id) ?? null) : null;
-  const inspected = entry ? holdInspector(entry, now) : chosenItem ? workInspector(chosenItem, now) : null;
-  const kind: Parameters<typeof keyAction>[0] = entry
-    ? holdKindOf(entry.row)
-    : chosenItem?.state === "blocked"
-      ? "notice"
-      : "work";
-
-  const selectHold = (key: string) => {
-    setSelection({ kind: "hold", key });
-    setOpen(true);
-  };
-  const selectWork = (id: string) => {
-    setSelection({ kind: "work", id });
-    setOpen(true);
-  };
+  const inspector = useInspector({ items, entries: everyHold, holdKeys, navigation, onOpenWork, now });
+  const { root, selection, entry, inspected, selectHold, selectWork, onCardVerb, act } = inspector;
 
   // Opening on `params.hold` (BRO-3033 fact 2) or a count or card elsewhere: that hold's inspector, once needs.list is read.
   // Only a read made since this screen mounted is the truth about a hold: a cached one may predate it.
@@ -206,103 +152,8 @@ export function HomeScreen({
     else if (target.kind === "gone") setGone(target.key);
   });
 
-  const env = {
-    openUrl,
-    openAgent: (agentId: string) => navigation?.openAgent({ agentId }),
-  };
-  // One verb at a time on a hold: it cannot be acted on again until the call has answered and every read has landed.
-  const inFlight = useRef(new Set<string>());
-  const act = async (verb: VerbId, target: VerbTarget, choice?: string, words?: string) => {
-    const id = target.row?.key ?? (target.item ? `work:${target.item.id}` : (target.proposal ?? verb));
-    if (inFlight.current.has(id)) return;
-    inFlight.current.add(id);
-    let landed: Promise<void> = Promise.resolve();
-    try {
-      const plan = planVerb(verb, target, choice, words);
-      const out = await verbs.run(plan, env);
-      landed = out.settled;
-      // Work this screen has no hold or row for opens in its own detail; the rest is for the tab that owns it.
-      if (out.go?.kind === "select") onOpenWork(out.go.id);
-      else if (out.go) {
-        // An answer that Decisions confirms starts from what you chose and typed here, never from nothing.
-        const { draft } = out;
-        const decided = out.go.kind === "decisions" ? out.go.key : null;
-        if (draft && decided) client.setQueryData<Drafts>(DRAFTS_KEY, (now) => ({ ...now, [decided]: draft }));
-        requestIntent(out.go);
-      }
-      if (out.receipt) undo.show(undoEntry(out.receipt, out.done, Date.now(), out.appliesAt, "applies in"));
-      else toast.show(out.done);
-    } catch (error) {
-      toast.error(errorText(error));
-    } finally {
-      void landed.catch(() => undefined).then(() => inFlight.current.delete(id));
-    }
-  };
-  const targetOf = (hold: typeof entry): VerbTarget =>
-    hold ? { row: hold.row, item: hold.item, ask: hold.ask } : { item: chosenItem };
-
-  const onCardVerb = (hold: NonNullable<typeof entry>, id: string) => {
-    if (id === "deny" || id === "answer") selectHold(hold.row.key);
-    else void act(id as VerbId, targetOf(hold));
-  };
-  const armedCancel = useRef<{ key: string; at: number } | null>(null);
-  const onInspectorVerb = (id: string, choice?: string, words?: string) => {
-    if (id === "cancel" && chosenItem) {
-      // "Cancel work…": the first press arms it, the second on the same item does it.
-      const step = cancelStep(armedCancel.current, chosenItem.id, Date.now());
-      if (step === "arm") {
-        armedCancel.current = { key: chosenItem.id, at: Date.now() };
-        toast.show(`Press Cancel work… again within ${CANCEL_ARM_MS / 1000} s to cancel it`);
-        return;
-      }
-      armedCancel.current = null;
-    }
-    void act(id as VerbId, targetOf(entry), choice, words);
-  };
-
-  const walk = (step: 1 | -1) => {
-    const next = stepHold(holdKeys, selection?.kind === "hold" ? selection.key : null, step);
-    if (next) selectHold(next);
-  };
-  const walkRef = useRef(walk);
-  walkRef.current = walk;
-  const keyRef = useRef({ kind, open, inspected: inspected !== null, onVerb: onInspectorVerb });
-  keyRef.current = { kind, open, inspected: inspected !== null, onVerb: onInspectorVerb };
-  useEffect(() => {
-    if (Platform.OS !== "web") return;
-    const doc = (
-      globalThis as {
-        document?: {
-          addEventListener(type: "keydown", fn: (event: KeyEvent) => void): void;
-          removeEventListener(type: "keydown", fn: (event: KeyEvent) => void): void;
-          body?: unknown;
-        };
-      }
-    ).document;
-    if (!doc) return;
-    const onHomeKey = (event: KeyEvent) => {
-      if (!keyRef.current.open || !keyRef.current.inspected) return;
-      // Maestro's keys are Maestro's only while focus is inside its screen: the page's body is not Maestro's.
-      const within = root.current as { contains?: (other: unknown) => boolean } | null;
-      const target = event.target;
-      if (!target || !within?.contains?.(target)) return;
-      const action = keyAction(
-        keyRef.current.kind,
-        { key: event.key, meta: event.metaKey, ctrl: event.ctrlKey, shift: event.shiftKey, alt: event.altKey },
-        typingIn(target),
-      );
-      if (!action) return;
-      event.preventDefault?.();
-      if ("step" in action) walkRef.current(action.step);
-      // A held key sends a verb once: only the first press acts.
-      else if (!event.repeat) keyRef.current.onVerb(action.verb);
-    };
-    doc.addEventListener("keydown", onHomeKey);
-    return () => doc.removeEventListener("keydown", onHomeKey);
-  }, []);
-
   const wide = width === 0 || width >= 1060;
-  const showing = open && inspected !== null;
+  const showing = inspector.showing;
   const panelWidth = width > 0 ? Math.min(INSPECTOR_WIDTH, width - 32) : INSPECTOR_WIDTH;
   const panelTop = Math.max(0, columnsTop - scrollY - 16);
   const railNodes = (
@@ -533,8 +384,7 @@ export function HomeScreen({
                     selected={item.id === selectedWork}
                     canPrompt={canPrompt}
                     onSelect={() => selectWork(item.id)}
-                    // Change course takes a note: the item's own form has it. Continue prompts the session (session.prompt).
-                    onVerb={(id) => (id === "continue" ? void act("continue", { item }) : selectWork(item.id))}
+                    onVerb={(id) => (id === "open" ? selectWork(item.id) : void act("continue", { item }))}
                   />
                 ))}
               </View>
@@ -609,16 +459,16 @@ export function HomeScreen({
           theme={theme}
           item={inspected}
           open={showing}
-          onClose={() => setOpen(false)}
-          onVerb={onInspectorVerb}
+          onClose={() => inspector.setOpen(false)}
+          onVerb={inspector.onVerb}
           // J and K walk the holds: an item that is not one (a notice, a running item) has no next hold.
-          onNext={selection?.kind === "hold" && holdKeys.length > 1 ? () => walk(1) : undefined}
-          onOpenSession={() => void act("open", targetOf(entry))}
+          onNext={selection?.kind === "hold" && holdKeys.length > 1 ? () => inspector.walk(1) : undefined}
+          onOpenSession={() => void act("open", inspector.targetOf(entry))}
           width={panelWidth}
           scope={root}
         />
       </View>
-      <UndoToast theme={theme} entry={undo.entry} onUndo={undo.undo} bottom={20} />
+      <UndoToast theme={theme} entry={inspector.undo.entry} onUndo={inspector.undo.undo} bottom={20} />
     </View>
   );
 }
