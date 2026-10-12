@@ -36,6 +36,16 @@ Part 1 (J2–J5) is in `README.md`.
 - **J9.** The composer says, before you send, what the work must land to reach you; the last row says the lane starts
   it (A8). `contractPromises` in `client/composer.ts` is pure.
 
+## Found by a pre-review and fixed
+
+- A notice source that cannot be read (`summary.unread`) is named; Health says "Not all clear", never "All clear", over a gap.
+- The Work board says when `needs.list` or `handled.list` could not be read, instead of drawing an empty tray.
+- A quiet run's notice has its own key (`quiet:<id>`), so snoozing it cannot hide the stuck notice the run may become;
+  the snooze is checked again when its window closes, and Health says how many are snoozed.
+- Every verb still inside its 8 s keeps its Undo on Work, Health and Initiatives (the ledger strip, not only the one toast).
+- Each session is in one sessions-bar segment (an idle session that is not adopted is Unmanaged, not Idle too).
+- An answered review no longer reads "N d late"; "work items in scope" counts work items, each once.
+
 ## Differences from the frames
 
 Left, and why:
