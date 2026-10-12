@@ -333,7 +333,7 @@ afterAll(async () => {
 });
 
 describe("the promises (J9)", () => {
-  it("say what it must land and that the lane, not Maestro, starts it", async () => {
+  it("say what it must land and that you start it: Dispatch does, Save to queue does not", async () => {
     const view = await mount(pane());
     const rows = view.all('[data-testid^="promise-"]');
     expect(rows.length).toBe(5);
