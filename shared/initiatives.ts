@@ -9,6 +9,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { DecisionAskSchema } from "./fleet";
+import { VerbReceiptSchema } from "./verbs";
 
 export const INITIATIVE_STATUSES = ["active", "blocked_on_owner", "parked", "done", "killed"] as const;
 export type InitiativeStatus = (typeof INITIATIVE_STATUSES)[number];
@@ -155,4 +156,26 @@ export const fileIdeaWork = defineRpc({
   /** `home`: the idea's home as ask.answer names it (shared/fleet.ts homeKey): the same ledger can sit at two. */
   input: z.object({ ledger: z.string().min(1), id: z.string().min(1), home: z.string().min(1) }),
   output: z.object({ work: WorkRefSchema.nullable(), warning: z.string().nullable() }),
+});
+
+/** What you can answer a due review with (J8): keep driving, park it, or close it. The ids are the review's options'. */
+export const REVIEW_ANSWERS = ["keep", "park", "close"] as const;
+export type ReviewAnswer = (typeof REVIEW_ANSWERS)[number];
+
+/**
+ * Your answer to a due review (B2, J8), recorded as a receipt in the asks' receipt log when its undo window
+ * closes (B4): `date` is the review date it answers, so the answer holds only for that review, and a later
+ * date raises a new one. Maestro never edits an initiative file (A8): the conductor and the owner's own
+ * tooling read the receipt and move the file. Yours alone: never on the agent socket.
+ */
+export const reviewInitiative = defineRpc({
+  name: "initiatives.review",
+  input: z.object({
+    id: z.string().min(1),
+    /** The review date as you read it (Initiative.stale.date): an answer to another date is refused. */
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    answer: z.enum(REVIEW_ANSWERS),
+    note: z.string().max(2000).default(""),
+  }),
+  output: VerbReceiptSchema,
 });

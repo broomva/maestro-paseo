@@ -127,10 +127,10 @@ export interface OpenApproval {
 }
 
 const shortId = (id: string) => id.slice(0, 8);
-const titleOf = (item: WorkItem) => item.display?.title || withoutMarker(item.title);
+export const titleOf = (item: WorkItem) => item.display?.title || withoutMarker(item.title);
 
 /** The workspace or lane work belongs to: its fleet scope, its project, its repo's folder, else its initiative. */
-function scopeOf(item: WorkItem): string {
+export function scopeOf(item: WorkItem): string {
   return (
     item.display?.fleet?.scope ??
     item.project ??

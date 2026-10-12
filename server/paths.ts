@@ -50,6 +50,16 @@ export function verbsPath(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
+ * What you snoozed in Health (server/notice-snoozes.ts, `notice.snooze`): one line per snooze, the key and until
+ * when. Under `bun test` a test that names none gets a scratch file of its own.
+ */
+export function noticeSnoozesPath(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.MAESTRO_PASEO_NOTICE_SNOOZES) return env.MAESTRO_PASEO_NOTICE_SNOOZES;
+  if (env.NODE_ENV === "test") return join(scratch("notice-snoozes"), "notice-snoozes.jsonl");
+  return join(homedir(), ".local", "state", "maestro-paseo", "notice-snoozes.jsonl");
+}
+
+/**
  * The actions agents asked leave for (server/approvals.ts, `approval.request`): each request, and what became
  * of it. Under `bun test` a test that names none gets a scratch file of its own.
  */

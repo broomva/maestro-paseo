@@ -23,6 +23,8 @@ export const OWNER_VERBS = [
   "work.leave-running",
   "ask.answer",
   "fleet.review",
+  "initiative.review",
+  "notice.snooze",
   "config.set",
   "loop.wake",
 ] as const;

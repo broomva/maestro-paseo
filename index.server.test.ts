@@ -993,6 +993,19 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
     );
     expect(needs.summary).toMatchObject({ total: 7, byKind: { ask: 3, approval: 2, owner_step: 2 } });
     expect((await needsNow({ kind: "ask" })).rows).toHaveLength(3);
+    // What you watch (notices.list, BRO-3036): the stuck work and the initiative past its review date, a notice
+    // each and never a hold (A1); the rest of Health's sources are quiet in this fixture.
+    type Notices = import("./shared/notices").Notices;
+    const noticesNow = async () => (await run("notices.list", {})) as unknown as Notices;
+    const notices = await noticesNow();
+    expect(notices.rows.map((row) => [row.kind, row.key.split(":")[0], row.title])).toEqual([
+      ["initiative", "initiatives", "1 initiative is past its review date"],
+      ["stuck", "work", "Stuck"],
+      // Loop drift: this fixture registers none of its loops, so Maestro's own is unclaimed. Its age is unknown: last.
+      ["loop", "loop", "Maestro's loop: maestro-loop runs wake and no ledger row claims it."],
+    ]);
+    expect(notices.summary).toMatchObject({ total: 3, snoozed: 0, byKind: { stuck: 1, initiative: 1, loop: 1 } });
+    expect(needs.rows.some((row) => notices.rows.some((one) => one.key === row.key))).toBe(false);
     expect(queued.state).toBe("proposed");
     const handled = (await run("handled.list", {})) as unknown as { rows: unknown[]; today: Record<string, number> };
     expect(handled).toEqual({ rows: [], today: { closedForYou: 0, byYou: 0, asksAnswered: 0 } });
@@ -1001,11 +1014,13 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
     for (let read = 0; read < 25; read += 1) {
       await needsNow();
       await run("handled.list", {});
+      await noticesNow();
     }
     await new Promise((r) => setTimeout(r, 1_000));
     expect(counts()).toEqual(sentBefore);
     expect(await snapshot(root)).toEqual(before);
     expect(await needsNow()).toEqual(needs);
+    expect(await noticesNow()).toEqual(notices);
 
     // Invariant 1, end to end. The header button, as startIntegrations registers it, its reads served by these
     // handlers; the Feed's section and tab from needs.list; the push from a real landing, through the real Inbox.
@@ -1075,12 +1090,46 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
       push: Number(/^\*\*(\d+) needs? you\*\*/.exec(noticeText(notice))?.[1]),
     }).toEqual({ sumOfKinds: total, header: total, section: total, feedTab: total, push: total });
 
+    // Your verbs, now that nothing is being proved pure (the window is 0 here): a snooze quiets its notice, a review
+    // answer is a receipt in the asks' log and ends the review (the date it answered), and neither edits a file
+    // of an initiative or starts a session.
+    const noticeKey = (await noticesNow()).rows.find((row) => row.kind === "stuck")?.key ?? "";
+    await run("notice.snooze", { key: noticeKey, hours: 4 });
+    for (let tries = 0; tries < 100 && (await noticesNow()).summary.snoozed === 0; tries += 1)
+      await new Promise((r) => setTimeout(r, 20));
+    expect((await noticesNow()).summary).toMatchObject({ total: 2, snoozed: 1 });
+    await expect(run("notice.snooze", { key: "work:nothing", hours: 4 })).rejects.toThrow(/no longer holds/);
+    const initiativeFile = join(control, ".control", "initiatives", "skene.yaml");
+    const initiativeBefore = await readFile(initiativeFile, "utf8");
+    await expect(
+      run("initiatives.review", { id: "skene", date: "2026-02-02", answer: "keep", note: "" }),
+    ).rejects.toThrow(/not due for that date/);
+    await run("initiatives.review", { id: "skene", date: "2026-01-01", answer: "park", note: "Not this quarter." });
+    for (let tries = 0; tries < 100 && (await needsNow()).rows.some((row) => row.key === "review:skene"); tries += 1)
+      await new Promise((r) => setTimeout(r, 20));
+    expect((await needsNow()).rows.some((row) => row.key === "review:skene")).toBe(false);
+    expect((await noticesNow()).rows.some((row) => row.kind === "initiative")).toBe(false);
+    const receipts = (await readFile(join(state, "asks.jsonl"), "utf8"))
+      .split("\n")
+      .filter((line) => line.includes("initiative.reviewed"));
+    expect(receipts.map((line) => JSON.parse(line))).toMatchObject([
+      {
+        kind: "initiative.reviewed",
+        initiative: "skene",
+        date: "2026-01-01",
+        answer: "park",
+        note: "Not this quarter.",
+      },
+    ]);
+    expect(await readFile(initiativeFile, "utf8")).toBe(initiativeBefore);
+
     // The work cannot be read (a broken config): that costs the work's own rows, never the asks', the review's
     // or the batch's, and the read still answers.
+    const beforeBreak = await needsNow();
     await writeFile(config, "{ not json");
     const unread = await needsNow();
     expect(unread.rows.filter((row) => row.key.startsWith("work:"))).toEqual([]);
-    expect(unread.summary.total).toBe(after.rows.filter((row) => !row.key.startsWith("work:")).length);
+    expect(unread.summary.total).toBe(beforeBreak.rows.filter((row) => !row.key.startsWith("work:")).length);
     expect(unread.summary.total).toBeGreaterThan(0);
   } finally {
     await cleanup();
