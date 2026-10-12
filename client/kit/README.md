@@ -49,15 +49,17 @@ input; the M9 composer (BRO-3037) lifts itself from `keyboardWillShow`/`keyboard
 
 `gallery.tsx` shows every part in every state, light and dark (the active theme for its own appearance,
 broomva's palette for the other). It is a development screen: registered with `addScreen` as `kit`, with no
-sidebar row or command, at `/h/<server>/plugin/maestro/surface/kit?param.section=desktop|phone|undertow|m1`
+sidebar row or command, at `/h/<server>/plugin/maestro/surface/kit?param.section=phone|undertow|m1`
 (and `param.hold=<key>` to open the M1 deck on a hold),
 and off unless the daemon runs with `MAESTRO_KIT_GALLERY=1` (`shared/kit.ts`). To shoot it:
 
 ```sh
 MAESTRO_KIT_GALLERY=1 bun scripts/dogfood/up.ts --plugin "$PWD"
 bun scripts/dogfood/shot.ts --out /tmp/kit --no-open --wait-for "Component kit" \
-  --path "/h/{server}/plugin/maestro/surface/kit?param.section=desktop" --height 2300
+  --path "/h/{server}/plugin/maestro/surface/kit?param.section=phone" --height 2300
 ```
+
+J1 (BRO-3035, `client/home.tsx`) adopted the desktop parts: `InspectorPanel` (scoped to the screen's root, so Esc is Maestro's only while Maestro has focus), `GlanceTile`, `UndoToast` and `Undertow` on running rows. Its entries left the gallery's Desktop section, which is gone; the phone's inspector card, toast and Undertow stay until M1–M4.
 
 A screen ticket that adopts a part (BRO-3035 J1, BRO-3036 J2–J9, BRO-3037 M1–M11) deletes that part's
 entries from the gallery and from `P-kit-gallery` in `docs/design/next/inventory.yaml`; the gallery goes with

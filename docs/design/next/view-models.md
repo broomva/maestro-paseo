@@ -39,7 +39,8 @@ interface NeedRow {
 
 interface AskBody { why: string; cost: string; options: Option[]; recommended?: string;
                     default?: { option: string; appliesAt: string }; goesTo: string }
-interface ApprovalBody { action: string; heldBy: string; evidence: Evidence[]; after: string[] }
+interface ApprovalBody { action: string; heldBy: string; requestId?: string;   // the permission prompt shown; an answer names it
+                         evidence: Evidence[]; after: string[] }
 interface OwnerStepBody { where: string; doneCheck: string; waitingSessions: number }
 interface ReviewBody extends AskBody { initiative: string; intent: string; since: string[];
                                        hanging: { work: number; asks: number; driver?: string } }

@@ -155,6 +155,7 @@ export function workNeed(item: WorkItem): NeedRow | null {
       ? {
           action: permission.detail ? `${permission.title}: ${permission.detail}` : permission.title,
           heldBy: "permission",
+          requestId: permission.requestId,
           evidence: evidenceOf(item),
           after: ["Your answer goes to the session's permission prompt", "The session goes on with its turn"],
         }
