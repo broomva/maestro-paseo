@@ -1002,7 +1002,7 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
       ["initiative", "initiatives", "1 initiative is past its review date"],
       ["stuck", "work", "Stuck"],
       // Loop drift: this fixture registers none of its loops, so Maestro's own is unclaimed. Its age is unknown: last.
-      ["loop", "loop", "Maestro's loop: maestro-loop runs wake and no ledger row claims it."],
+      ["loop", "loop", "Maestro's loop: Unregistered"],
     ]);
     expect(notices.summary).toMatchObject({ total: 3, snoozed: 0, byKind: { stuck: 1, initiative: 1, loop: 1 } });
     expect(needs.rows.some((row) => notices.rows.some((one) => one.key === row.key))).toBe(false);

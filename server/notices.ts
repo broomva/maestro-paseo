@@ -12,7 +12,7 @@
 import type { WorkItem } from "../shared/contracts";
 import type { FleetNotice } from "../shared/fleet";
 import type { Initiative } from "../shared/initiatives";
-import type { LoopNotice } from "../shared/loops";
+import { DRIFT_WORDS, type LoopNotice } from "../shared/loops";
 import { workKey } from "../shared/needs";
 import { isStanding, sectionOf } from "../shared/needs-you";
 import { type NoticeKind, type NoticeRow, type Notices, SNOOZE_HOURS } from "../shared/notices";
@@ -116,7 +116,7 @@ function loopRow(notice: LoopNotice): NoticeRow {
   return {
     key: `loop:${notice.id}`,
     kind: "loop",
-    title: `${notice.loop}: ${notice.detail}`,
+    title: `${notice.loop}: ${DRIFT_WORDS[notice.kind]}`,
     scope: notice.loop,
     since: null,
     detail: notice.detail,

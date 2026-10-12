@@ -190,6 +190,7 @@ const { requestIntent, resetIntents, takeIntent } = await import("./intent");
 const { MaestroSettings } = await import("./settings");
 const { handledOf, needsOf } = await import("../server/needs");
 const { answersStatus } = await import("../server/answers-status");
+const { noticesOf } = await import("../server/notices");
 const { askHoldKey } = await import("../shared/needs");
 const { needsYouOf } = await import("../shared/needs-you");
 const { headerFace } = await import("./header-count");
@@ -1096,6 +1097,18 @@ const invoke = async (method: string, input: unknown) => {
     day.setHours(0, 0, 0, 0);
     return handledOf(items, allAsks(), Date.now(), day.getTime());
   }
+  if (method === "notices.list")
+    return noticesOf(
+      {
+        items,
+        fleet: fleetNotices,
+        timeline: timelineNotices,
+        loops: loopNoticesNow,
+        reviews: reviewsNow,
+        snoozed: new Map<string, string>(),
+      },
+      Date.now(),
+    );
   if (method === "loops.get") return loopsView();
   // Where your answers went, as the server builds it (server/answers-status.ts) from the same fixtures.
   if (method === "answers.status") return answersStatus(workspaceNow, landingNow);

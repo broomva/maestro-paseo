@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { needsOf } from "../server/needs";
+import { noticesOf } from "../server/notices";
 import type { Scoreboard } from "../shared/contracts";
 import type { DecisionAsk } from "../shared/fleet";
 import type { Initiative } from "../shared/initiatives";
@@ -112,7 +113,11 @@ const board: Scoreboard = {
   weekByInitiative: [],
 };
 
-const base = { needs, handled, items, asks, watched: null, workspace: null, filter: "all" as const, query: "" };
+const notices = noticesOf(
+  { items, fleet: [], timeline: [], loops: [], reviews: [], snoozed: new Map<string, string>() },
+  NOW,
+);
+const base = { needs, handled, items, asks, notices, workspace: null, filter: "all" as const, query: "" };
 
 describe("the tabs' counts", () => {
   test("Feed, Decisions and Initiatives are needs.list's; Work is the running work; Health the rows listed", () => {

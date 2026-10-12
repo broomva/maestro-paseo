@@ -28,7 +28,7 @@ import {
   SectionHeading,
 } from "./home-cards";
 import { glanceTiles, holdParam, homeSections, type KindFilter, kindChips, needsHint, railOf } from "./home-model";
-import { useHandled, useLoop, useNeeds, useWatched, useWorkList } from "./hooks";
+import { useHandled, useLoop, useNeeds, useNotices, useWorkList } from "./hooks";
 import { requestIntent } from "./intent";
 import { GlanceTile } from "./kit/glance-tile";
 import { InspectorPanel } from "./kit/inspector";
@@ -75,7 +75,7 @@ export function HomeScreen({
   const needs = useNeeds();
   const handled = useHandled();
   const loop = useLoop();
-  const watched = useWatched();
+  const notices = useNotices();
   const asksRead = useWorkspaceAsks();
   const toast = useToast();
   const now = useTick(15_000);
@@ -93,7 +93,7 @@ export function HomeScreen({
     handled: handled.data ?? null,
     items,
     asks,
-    watched: watched.data ?? null,
+    notices: notices.data ?? null,
     workspace,
     filter,
     query,
@@ -108,7 +108,7 @@ export function HomeScreen({
     handled: handled.data ?? null,
     items,
     asks,
-    watched: watched.data ?? null,
+    notices: notices.data ?? null,
     workspace: null,
     filter: "all",
     query: "",

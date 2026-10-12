@@ -4,6 +4,7 @@
 // per drift class. No React here, so every rule is tested.
 
 import {
+  DRIFT_WORDS,
   type DriftClass,
   driftName,
   type LoopDrift,
@@ -26,24 +27,7 @@ export const KIND_WORDS: Record<SubstrateKind, string> = {
   p9: "p9",
 };
 
-/** The badge words: the class as the spec names it, in plain case. */
-export const DRIFT_WORDS: Record<DriftClass, string> = {
-  paused_but_running: "Paused but running",
-  orphaned: "Orphaned",
-  active_but_absent: "Active but absent",
-  bound_session_gone: "Bound session gone",
-  duplicate_binding: "Duplicate binding",
-  target_changed: "Target changed",
-  prompt_mismatch: "Prompt mismatch",
-  state_lost: "State lost",
-  tick_missing: "Tick missing",
-  tick_unclosed: "Tick unclosed",
-  failing: "Failing",
-  missed: "Missed",
-  skipped_busy: "Skipped busy",
-  expiring: "Expiring",
-  unregistered: "Unregistered",
-};
+export { DRIFT_WORDS };
 
 /** A drift that needs you is a danger badge; one that is only shown (an sri row's, one the Timeline raises) is a warning. */
 export const driftTone = (drift: Pick<LoopDrift, "needsYou">): "danger" | "warn" =>

@@ -17,7 +17,7 @@ import {
   wakeChip,
   workspaceOptions,
 } from "./home-model";
-import { useLoop, useNeeds, useWatched, useWorkList } from "./hooks";
+import { useLoop, useNeeds, useNotices, useWorkList } from "./hooks";
 import { frostLook } from "./kit/assumptions";
 import { Dot, MONO, TABULAR } from "./kit/parts";
 import { type Kit, kitOf } from "./kit/tokens";
@@ -528,13 +528,14 @@ export function HomeHeaderBar({
 }) {
   const needs = useNeeds();
   const list = useWorkList();
-  const watched = useWatched();
+  const notices = useNotices();
   const loop = useLoop();
   const presence = usePresence();
   const now = useTick(15_000);
   const items = list.data?.items ?? [];
   const running = runningOf(items).length;
-  const health = healthRows(items, watched.data ?? null).length;
+  // The Health tab says what the Feed's Health section lists, and J7 lists: notices.list's total.
+  const health = notices.data?.summary.total ?? 0;
   return (
     <HomeHeader
       theme={theme}
