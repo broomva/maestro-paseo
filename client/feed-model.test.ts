@@ -116,6 +116,7 @@ describe("Needs you on the Feed (BRO-3001)", () => {
       nextAction: null,
       driver: null,
       waitingOn: [],
+      sessions: [],
       stale: { kind: "overdue", date: "2026-10-01" },
     } as unknown as Parameters<typeof needsOf>[0]["reviews"][number];
     const all = needsOf({ items, asks: [blocking], reviews: [review], landing: null, workspace: "broomva" }, NOW);
