@@ -130,6 +130,15 @@ describe("lateness is the loudest thing", () => {
     ]);
   });
 
+  test("lateness outranks the date: an answered review with an earlier date waits behind a due one", () => {
+    // `answered` has the earlier review date but needs.list holds no review for it (its answer is a receipt).
+    const answered = initiative("answered", { reviewBy: "2026-10-01" });
+    const due = initiative("due", { reviewBy: "2026-10-05", stale: { kind: "overdue", date: "2026-10-05" } });
+    const held = needsOf({ items: [], asks: [], reviews: [due], landing: null, workspace: "broomva" }, NOW);
+    const rows = initiativeBoard({ ...input, initiatives: [answered, due], needs: held }).rows;
+    expect(rows.map((row) => row.id)).toEqual(["due", "answered"]);
+  });
+
   test("a review's date says how late it is, against the daemon's day", () => {
     expect(dateWords(skene, TODAY)).toEqual({ text: "10-07", late: "2 d late" });
     expect(dateWords(holon, TODAY)).toEqual({ text: "10-08", late: "1 d late" });
