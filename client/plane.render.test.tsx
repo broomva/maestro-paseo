@@ -2633,6 +2633,36 @@ describe("J1, the Feed home on the desktop (BRO-3035)", () => {
     expect(panel(gone)).toBeUndefined();
   });
 
+  test("a hold opened from a push is acted on once: another tab and back does not reopen it", async () => {
+    const view = await mount(surface(false, { hold: "work:g" }));
+    await until(() => panel(view) !== undefined);
+    await press("Escape");
+    await until(() => panel(view) === undefined);
+    await view.goto("Decisions");
+    await view.goto("Feed");
+    await settle(60);
+    expect(panel(view)).toBeUndefined();
+  });
+
+  test("work that holds nothing opens in the Feed's inspector from an intent, not into a pane that is not there", async () => {
+    const view = await mount(surface(false));
+    await until(() => holds(view).length === 2);
+    await step(generation, () => requestIntent({ kind: "select", id: "d" }));
+    await until(() => panel(view) !== undefined);
+    expect(panel(view)?.textContent).toContain("Work d");
+  });
+
+  test("the Needs you tile opens the first hold even under a chip that hides it", async () => {
+    const view = await mount(surface(false));
+    await until(() => holds(view).length === 2);
+    await view.press(view.byLabel("1 health"));
+    expect(holds(view)).toHaveLength(0);
+    await view.press(view.all('[aria-label^="Needs you, 2, holds"]')[0]);
+    await until(() => panel(view) !== undefined);
+    expect(panel(view)?.textContent).toContain("Work a");
+    expect(holds(view)).toHaveLength(2);
+  });
+
   test("the counts are one number: the header tab, the tile, the section and needs.list's total", async () => {
     const view = await mount(surface(false));
     await until(() => holds(view).length === 2);

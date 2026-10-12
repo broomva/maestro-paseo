@@ -97,6 +97,7 @@ export function HomeScreen({
   workspace,
   query,
   focus,
+  onFocusHandled,
   onOpenWork,
 }: {
   theme: PluginTheme;
@@ -104,6 +105,8 @@ export function HomeScreen({
   workspace: string | null;
   query: string;
   focus: HomeFocus | null;
+  /** Said once `focus` has been acted on, so a remount (another tab and back) does not act on it again. */
+  onFocusHandled: () => void;
   /** Work this screen cannot show as a hold or a row: it opens in the work's own detail. */
   onOpenWork: (id: string) => void;
 }) {
@@ -186,21 +189,26 @@ export function HomeScreen({
   };
 
   // Opening on `params.hold` (BRO-3033 fact 2) or a count or card elsewhere: that hold's inspector, once needs.list is read.
+  // Only a read made since this screen mounted is the truth about a hold: a cached one may predate it.
+  const fresh = needs.isFetchedAfterMount || needs.isError ? rows : null;
   const handledFocus = useRef(-1);
   useEffect(() => {
     if (!focus || handledFocus.current === focus.at) return;
     if (focus.work) {
-      const held = (rows ?? []).find((row) => row.key === `work:${focus.work}`);
-      if (rows === null && !held) return;
+      const held = (fresh ?? []).find((row) => row.key === `work:${focus.work}`);
+      if (fresh === null && !held) return;
+      if (!held && !list.data) return;
       handledFocus.current = focus.at;
+      onFocusHandled();
       if (held) selectHold(held.key);
       else if (items.some((one) => one.id === focus.work)) selectWork(focus.work);
-      else if (list.data) onOpenWork(focus.work);
+      else onOpenWork(focus.work);
       return;
     }
-    const target = holdParam(focus.hold, rows);
+    const target = holdParam(focus.hold, fresh);
     if (target.kind === "wait") return;
     handledFocus.current = focus.at;
+    onFocusHandled();
     if (target.kind === "open") selectHold(target.key);
     else if (target.kind === "gone") setGone(target.key);
   });
@@ -213,7 +221,9 @@ export function HomeScreen({
     try {
       const plan = planVerb(verb, target, choice);
       const out = await verbs.run(plan, env);
-      if (out.go) requestIntent(out.go);
+      // Work this screen has no hold or row for opens in its own detail; the rest is for the tab that owns it.
+      if (out.go?.kind === "select") onOpenWork(out.go.id);
+      else if (out.go) requestIntent(out.go);
       if (out.receipt) undo.show(undoEntry(out.receipt, out.done, Date.now(), out.appliesAt, "applies in"));
       else toast.show(out.done);
     } catch (error) {
@@ -373,7 +383,7 @@ export function HomeScreen({
             tone={tiles.needs.value > 0 ? "needs" : "plain"}
             onPress={() => {
               setFilter("all");
-              const first = stepHold(holdKeys, null, 1);
+              const first = everyHold[0]?.row.key;
               if (first) selectHold(first);
             }}
           >

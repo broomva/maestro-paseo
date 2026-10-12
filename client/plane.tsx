@@ -114,8 +114,8 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
   }, [holdParam]);
   useIntent((intent) => {
     if (intent.kind === "select") {
-      // A hold's work opens its inspector on the Feed home; any other work opens in its own detail.
-      if (!layout.compact && needs.data?.rows.some((row) => row.key === `work:${intent.id}`)) {
+      // On the desktop the Feed home opens it: a hold in its inspector, other work in its own detail.
+      if (!layout.compact) {
         setView("feed");
         setHomeFocus({ work: intent.id, at: Date.now() });
       } else setSelected(intent.id);
@@ -494,6 +494,7 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
             workspace={workspace}
             query={query}
             focus={homeFocus}
+            onFocusHandled={() => setHomeFocus(null)}
             onOpenWork={(id) => {
               chooseView("list");
               setSelected(id);

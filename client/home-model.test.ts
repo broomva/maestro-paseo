@@ -297,10 +297,10 @@ describe("walking the holds and opening on one", () => {
 });
 
 describe("the inspector's keys", () => {
-  test("⌘↵ allows an approval, ↵ answers an ask or a review, S skips them", () => {
+  test("⌘↵ allows an approval; S skips an ask or a review; ↵ is left to the button that has focus", () => {
     expect(keyAction("approval", { key: "Enter", meta: true }, false)).toEqual({ verb: "allow" });
     expect(keyAction("approval", { key: "Enter" }, false)).toBeNull();
-    expect(keyAction("ask", { key: "Enter" }, false)).toEqual({ verb: "answer" });
+    expect(keyAction("ask", { key: "Enter" }, false)).toBeNull();
     expect(keyAction("review", { key: "s" }, false)).toEqual({ verb: "skip" });
     expect(keyAction("owner_step", { key: "s" }, false)).toBeNull();
     expect(keyAction("ask", { key: "Enter", meta: true }, false)).toBeNull();

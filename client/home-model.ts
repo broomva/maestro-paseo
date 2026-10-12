@@ -594,7 +594,8 @@ export function holdChipWords(row: NeedRow): string {
 
 /**
  * What a key does in the inspector, by the caps its action bar shows (client/kit/inspector-model.ts):
- * ⌘↵ allows an approval; on an ask or a review ↵ answers and S skips; J and K walk the holds.
+ * ⌘↵ allows an approval; on an ask or a review S skips; J and K walk the holds. ↵ on an ask is the focused
+ * Answer button's own: the option picked lives in the inspector, and a key here would answer without it.
  * Pure: `typing` is whether the key went to a field, which keeps every key but Esc for itself.
  */
 export function keyAction(
@@ -606,7 +607,6 @@ export function keyAction(
   const mod = key.meta || key.ctrl;
   if (key.alt) return null;
   if (key.key === "Enter" && mod && kind === "approval") return { verb: "allow" };
-  if (key.key === "Enter" && !mod && !key.shift && (kind === "ask" || kind === "review")) return { verb: "answer" };
   if (mod) return null;
   const letter = key.key.toLowerCase();
   if (letter === "s" && (kind === "ask" || kind === "review")) return { verb: "skip" };

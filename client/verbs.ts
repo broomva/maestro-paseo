@@ -254,9 +254,13 @@ export function useVerbs() {
           case "unblock":
             await rpc.unblock({ id: plan.id, note: "" });
             return { done: plan.done };
-          case "cancel":
-            await rpc.cancel({ id: plan.id });
-            return { done: plan.done };
+          case "cancel": {
+            // Work at review holds its cancel for UNDO_MS; queued work is canceled at once, with nothing to take back.
+            const { item } = await rpc.cancel({ id: plan.id });
+            return item.pending
+              ? { done: plan.done, receipt: `work:${plan.id}`, appliesAt: item.pending.effectiveAt }
+              : { done: plan.done };
+          }
           case "conductor": {
             const { receipt, appliesAt } = await rpc.conductor({ key: plan.key, verb: plan.verb });
             return { done: plan.done, receipt: `conductor:${receipt}`, appliesAt };
