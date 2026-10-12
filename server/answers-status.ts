@@ -27,12 +27,53 @@ function answerOf(ask: DecisionAsk): string {
 
 const keyOf = (ask: Pick<DecisionAsk, "ledger" | "uid" | "id">) => `${ask.ledger}#${ask.uid ?? ask.id}`;
 
+/** Answers on maestro/answers that origin/main lacks, as the asks list them: batched, answered here, not an idea's or a scope's. */
+export function batchedCount(asks: readonly DecisionAsk[]): number {
+  return asks.filter((ask) => ask.state === "answered" && ask.batched && !ask.idea && !ask.scope).length;
+}
+
+/**
+ * The answers batch as it stands: the landing's last check, and any answer batched since (the landing is as old
+ * as its last wake). One function for both readers, needs.list's answers hold and answers.status's tile, so the
+ * badge, the hold and the tile cannot say different numbers (BRO-3001). With nothing waiting it is the landing
+ * as it was, or none.
+ */
+export function landingNow(
+  landing: AnswersLanding | null,
+  asks: readonly DecisionAsk[],
+  now: number,
+): AnswersLanding | null {
+  const batched = batchedCount(asks);
+  const pending = Math.max(landing?.pending ?? 0, batched);
+  if (pending === 0 || (landing && landing.pending >= pending && landing.stage !== "none")) return landing;
+  if (!landing)
+    return {
+      stage: "waiting",
+      pending,
+      asks: [],
+      pr: null,
+      conflict: null,
+      error: null,
+      landed: null,
+      checkedAt: new Date(now).toISOString(),
+    };
+  return { ...landing, stage: landing.stage === "none" ? "waiting" : landing.stage, pending };
+}
+
+/** The stages an answer can still be acted on from: the ones before routing began, or superseded, never are. */
+const ACTIONABLE: readonly string[] = ["unlanded", "unrouted", "acted", "conductor"];
+
 /**
  * Where your answers went: `asks` as the workspace read has them (every ask, with its fate), `landing` as the
  * last wake left it. Only an answer Maestro holds a receipt for has a fate; one answered elsewhere has none and
- * is in no count (`window` is how many are).
+ * is in no count. `window` is the answers the three counts are over: those that can still be acted on, never the
+ * ones given before Maestro routed answers or closed another way.
  */
-export function answersStatus(asks: readonly DecisionAsk[], landing: AnswersLanding | null): AnswersStatus {
+export function answersStatus(
+  asks: readonly DecisionAsk[],
+  landing: AnswersLanding | null,
+  now = Date.now(),
+): AnswersStatus {
   const tracked = asks
     .filter((ask) => ask.state === "answered" && !ask.idea && !ask.scope)
     .flatMap((ask) => {
@@ -51,17 +92,14 @@ export function answersStatus(asks: readonly DecisionAsk[], landing: AnswersLand
     words: ask.fate?.words ?? "In the answers batch on maestro/answers: not on origin/main until it lands.",
     answeredAt: ask.answeredAt,
   }));
-  // The landing's count is as old as its last check; an answer batched since is already in the list. The two
-  // measure one thing (answers on maestro/answers that origin/main lacks), so the tile never says "all landed"
-  // while the rail below it says an answer waits.
-  const batched = tracked.filter((one) => one.stage === "unlanded").length;
+  const batch = landingNow(landing, asks, now);
   return {
-    waitingToLand: Math.max(landing?.pending ?? 0, batched),
-    landing: landing ? { stage: landing.stage, pr: landing.pr, words: landingWords(landing) ?? "" } : null,
+    waitingToLand: batch?.pending ?? 0,
+    landing: batch ? { stage: batch.stage, pr: batch.pr, words: landingWords(batch) ?? "" } : null,
     routed: count("unrouted"),
     acted: count("acted"),
     held: count("conductor"),
-    window: tracked.length,
+    window: tracked.filter((one) => ACTIONABLE.includes(one.stage)).length,
     recent,
   };
 }

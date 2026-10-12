@@ -111,7 +111,7 @@ export function stageTiles(
       held > 0
         ? `${plural(held, "more answer")} held for the conductor: nothing starts until a lane takes ${held === 1 ? "it" : "them"} (A8).`
         : status && status.window > 0
-          ? `of the ${plural(status.window, "answer")} Maestro holds a receipt for.`
+          ? `of the ${plural(status.window, "answer")} Maestro can act on.`
           : status
             ? "Nothing you answered has been acted on yet."
             : "",

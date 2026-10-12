@@ -1015,12 +1015,18 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
       await needsNow();
       await run("handled.list", {});
       await noticesNow();
+      // answers.status is a read like the rest: it fetches nothing and writes nothing (the snapshot below).
+      await run("answers.status", {});
     }
     await new Promise((r) => setTimeout(r, 1_000));
     expect(counts()).toEqual(sentBefore);
     expect(await snapshot(root)).toEqual(before);
     expect(await needsNow()).toEqual(needs);
     expect(await noticesNow()).toEqual(notices);
+    // J5's Waiting to land and the answers hold in Needs you are one number (BRO-3001): the batch's own count.
+    const status = (await run("answers.status", {})) as unknown as import("./shared/answers").AnswersStatus;
+    expect(status.waitingToLand).toBe(1);
+    expect(needs.rows.find((row) => row.key === "answers:batch")?.title).toBe("1 answer waits to land: PR #915");
 
     // Invariant 1, end to end. The header button, as startIntegrations registers it, its reads served by these
     // handlers; the Feed's section and tab from needs.list; the push from a real landing, through the real Inbox.

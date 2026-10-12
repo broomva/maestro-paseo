@@ -5,7 +5,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { agentMethods, keepServing } from "./server/agent-socket";
 import { AnswerRouter } from "./server/answer-routes";
 import { AnswersLander, ghForge } from "./server/answers-landing";
-import { answersStatus } from "./server/answers-status";
+import { answersStatus, landingNow } from "./server/answers-status";
 import { Approvals } from "./server/approvals";
 import { attentionOf } from "./server/attention";
 import { loadConfig, saveConfig } from "./server/config";
@@ -510,7 +510,17 @@ export default function contribute(host: PluginServerContext) {
     const items = read ?? [];
     const now = Date.now();
     const needs = needsOf(
-      { items, asks, reviews, landing, sessionAgents, workspace: workspaceName, approvals: open, pending },
+      {
+        items,
+        asks,
+        reviews,
+        // The batch with the answers given since its last check: the hold, the badge and J5's tile say one number.
+        landing: landingNow(landing, asks, now),
+        sessionAgents,
+        workspace: workspaceName,
+        approvals: open,
+        pending,
+      },
       now,
       kind,
       firstSeen.at,

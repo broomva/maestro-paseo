@@ -761,6 +761,65 @@ describe("J2–J4: the desktop's bodies (BRO-3036)", () => {
     expect((view.label("Your words for A3") as unknown as { value: string }).value).toBe("");
   });
 
+  it("words typed beside an option you did not pick send words alone: the recommendation is never sent with them", async () => {
+    const pressed: [string, string | undefined, string | undefined][] = [];
+    const recommended = { ...ask, chosen: "off" };
+    const view = await mount(
+      <InspectorPanel
+        theme={theme}
+        item={recommended}
+        open
+        onClose={ignore}
+        onVerb={(id, choice, words) => pressed.push([id, choice, words])}
+      />,
+    );
+    // Started on its recommendation, the primary says which option it takes.
+    expect(view.label("Answer with 1")).toBeTruthy();
+    await type(view.label("Your words for A3"), "Not before the release.");
+    // With words and no pick of yours, it says what it sends, and the recommendation is not checked.
+    expect(view.label("Answer in your words")).toBeTruthy();
+    expect(view.all('[aria-checked="true"]')).toHaveLength(0);
+    await view.press(view.label("Answer in your words"));
+    expect(pressed).toEqual([["answer", undefined, "Not before the release."]]);
+    // Picking an option yourself sends it with your words.
+    await view.press(view.label("Install in one worktree first"));
+    expect(view.label("Answer with 2")).toBeTruthy();
+    await view.press(view.label("Answer with 2"));
+    expect(pressed.at(-1)).toEqual(["answer", "trial", "Not before the release."]);
+  });
+
+  it("the choice you made belongs to one item: the next starts from its own", async () => {
+    const pressed: [string, string | undefined][] = [];
+    function Host() {
+      const [item, setItem] = useState({ ...ask, chosen: "off" });
+      return (
+        <>
+          <web.Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Next ask"
+            onPress={() => setItem({ ...ask, key: "ask:next", title: "The next ask", chosen: "off" })}
+          />
+          <InspectorPanel
+            theme={theme}
+            item={item}
+            open
+            onClose={ignore}
+            onVerb={(id, choice) => pressed.push([id, choice])}
+          />
+        </>
+      );
+    }
+    const view = await mount(<Host />);
+    await view.press(view.label("Install fleet-wide"));
+    expect(view.label("Answer with 3")).toBeTruthy();
+    await view.press(view.label("Next ask"));
+    // The next ask is on its own recommendation again, not on the third option of the last.
+    expect(view.text()).toContain("The next ask");
+    expect(view.label("Answer with 1")).toBeTruthy();
+    await view.press(view.label("Answer with 1"));
+    expect(pressed).toEqual([["answer", "off"]]);
+  });
+
   it("choices that are locked cannot be chosen: an answer is in flight", async () => {
     const { InspectorBody } = await import("./inspector");
     const view = await mount(<InspectorBody theme={theme} item={{ ...ask, chosen: "off" }} locked />);

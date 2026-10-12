@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { AnswerFate, AnswersLanding } from "../shared/answers";
 import { landingWords } from "../shared/answers";
 import type { DecisionAsk } from "../shared/fleet";
-import { answersStatus } from "./answers-status";
+import { answersStatus, batchedCount, landingNow } from "./answers-status";
 
 const ask = (id: string, extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
   ledger: "claude-code-mods.yaml",
@@ -100,7 +100,7 @@ describe("answers.status: where your answers went", () => {
     ];
     for (const order of [asks, [...asks].reverse()]) {
       const status = answersStatus(order, null);
-      expect([status.acted, status.routed, status.held, status.window]).toEqual([2, 1, 1, 6]);
+      expect([status.acted, status.routed, status.held, status.window]).toEqual([2, 1, 1, 5]);
     }
   });
 
@@ -145,5 +145,54 @@ describe("answers.status: where your answers went", () => {
     expect(status.recent[0]?.answer.length).toBeLessThanOrEqual(90);
     expect(status.recent[0]?.answer.endsWith("…")).toBe(true);
     expect(status.recent[0]?.title).toBe("Long?");
+  });
+});
+
+describe("the batch waiting to land is one function for needs.list's hold and J5's tile", () => {
+  const NOW = Date.parse("2026-10-12T15:00:00.000Z");
+  const batchedAsk = (id: string, extra: Partial<DecisionAsk> = {}) =>
+    answered(id, "2026-10-01T01:00:00Z", "unlanded", { batched: true, ...extra });
+
+  test("with no landing yet, answers batched since still wait: a waiting batch with no PR", () => {
+    const batch = landingNow(null, [batchedAsk("1"), batchedAsk("2")], NOW);
+    expect(batch).toMatchObject({ stage: "waiting", pending: 2, pr: null, checkedAt: new Date(NOW).toISOString() });
+    expect(batchedCount([batchedAsk("1"), answered("2", "2026-10-01T02:00:00Z", "acted")])).toBe(1);
+  });
+
+  test("the landing's own count stands when it is larger or equal, and its PR and stage with it; nothing waiting is the landing as it was", () => {
+    const l = landing({ pending: 27 });
+    expect(landingNow(l, [batchedAsk("1")], NOW)).toBe(l);
+    expect(landingNow(null, [], NOW)).toBeNull();
+    const none = landing({ stage: "none", pending: 0, pr: null });
+    expect(landingNow(none, [], NOW)).toBe(none);
+    // An older landing that says none, with an answer batched since: waiting, its PR kept (it is the same batch).
+    expect(landingNow(none, [batchedAsk("1")], NOW)).toMatchObject({ stage: "waiting", pending: 1 });
+    // More batched than it counted: the larger count, the stage it had.
+    expect(
+      landingNow(landing({ pending: 1, stage: "conflict" }), [batchedAsk("1"), batchedAsk("2")], NOW),
+    ).toMatchObject({
+      stage: "conflict",
+      pending: 2,
+    });
+  });
+
+  test("an idea's or a fleet scope's batched answer is not Maestro's to land here", () => {
+    expect(batchedCount([batchedAsk("1", { scope: "sri" })])).toBe(0);
+  });
+
+  test("what the tile counts against is what can still be acted on: answers from before routing, or closed another way, are not", () => {
+    const status = answersStatus(
+      [
+        answered("1", "2026-10-01T01:00:00Z", "acted"),
+        answered("2", "2026-10-01T02:00:00Z", "unrouted"),
+        answered("3", "2026-10-01T03:00:00Z", "before"),
+        answered("4", "2026-10-01T04:00:00Z", "before"),
+        answered("5", "2026-10-01T05:00:00Z", "superseded"),
+      ],
+      null,
+    );
+    expect(status.window).toBe(2);
+    // They still say where they went.
+    expect(status.recent.map((one) => one.stage)).toEqual(["superseded", "before", "before", "unrouted", "acted"]);
   });
 });
