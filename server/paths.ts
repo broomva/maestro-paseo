@@ -20,6 +20,13 @@ export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.MAESTRO_PASEO_SOCKET ?? join(dirname(configPath(env)), "maestro.sock");
 }
 
+let scratches = 0;
+/** A folder of a test's own for one plugin instance: two plugins in one test process never share a ledger. */
+function scratch(kind: string): string {
+  scratches += 1;
+  return join(tmpdir(), `maestro-test-${kind}-${process.pid}-${scratches}`);
+}
+
 /**
  * How long the owner-verb ledger holds a verb before it takes effect: MAESTRO_PASEO_VERB_WINDOW_MS when a test
  * or a dogfood sets it (0 or more), else the owner's 8 s (shared/undo.ts, B4).
@@ -36,7 +43,7 @@ export function verbWindowMs(env: NodeJS.ProcessEnv = process.env): number | und
  */
 export function verbsPath(env: NodeJS.ProcessEnv = process.env): string {
   if (env.MAESTRO_PASEO_VERBS) return env.MAESTRO_PASEO_VERBS;
-  if (env.NODE_ENV === "test") return join(tmpdir(), `maestro-test-verbs-${process.pid}`, "verbs.jsonl");
+  if (env.NODE_ENV === "test") return join(scratch("verbs"), "verbs.jsonl");
   return join(homedir(), ".local", "state", "maestro-paseo", "verbs.jsonl");
 }
 
@@ -46,7 +53,7 @@ export function verbsPath(env: NodeJS.ProcessEnv = process.env): string {
  */
 export function approvalsPath(env: NodeJS.ProcessEnv = process.env): string {
   if (env.MAESTRO_PASEO_APPROVALS) return env.MAESTRO_PASEO_APPROVALS;
-  if (env.NODE_ENV === "test") return join(tmpdir(), `maestro-test-verbs-${process.pid}`, "approvals.jsonl");
+  if (env.NODE_ENV === "test") return join(scratch("approvals"), "approvals.jsonl");
   return join(homedir(), ".local", "state", "maestro-paseo", "approvals.jsonl");
 }
 
