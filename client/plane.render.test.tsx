@@ -2605,6 +2605,12 @@ describe("J1, the Feed home on the desktop (BRO-3035)", () => {
     expect(view.byLabel("Approval: Work a")?.getAttribute("aria-current")).toBe("false");
     await press("k");
     expect(panel(view)?.textContent).toContain("Work a");
+    // Esc from Paseo's own chrome (outside Maestro's screen) is not Maestro's: the inspector stays.
+    const outside = win.document.createElement("button");
+    win.document.body.appendChild(outside);
+    await press("Escape", {}, outside);
+    expect(panel(view)).toBeDefined();
+    outside.remove();
     // Esc closes it.
     await press("Escape");
     await until(() => panel(view) === undefined);

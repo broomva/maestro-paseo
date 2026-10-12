@@ -69,7 +69,7 @@ function Tab({
       style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({
         ...focusRing(theme, focused),
         height: FIELD_HEIGHT - 6,
-        paddingHorizontal: 12,
+        paddingHorizontal: 8,
         borderRadius: 10,
         flexDirection: "row",
         alignItems: "center",
@@ -125,7 +125,7 @@ function HeaderPill({
       style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({
         ...focusRing(theme, focused),
         height: FIELD_HEIGHT,
-        paddingHorizontal: 12,
+        paddingHorizontal: 10,
         borderRadius: 9999,
         flexDirection: "row",
         alignItems: "center",
@@ -349,10 +349,10 @@ export function HomeHeader(props: HomeHeaderProps) {
         backgroundColor: kit.dark ? "rgba(24, 26, 32, 0.78)" : "rgba(255, 255, 255, 0.78)",
         ...(frosted ? ({ backdropFilter: "blur(18px) saturate(1.4)" } as object) : null),
         paddingVertical: 8,
-        paddingHorizontal: 10,
+        paddingHorizontal: 8,
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
+        gap: 8,
         flexWrap: "wrap",
       }}
     >
@@ -390,7 +390,7 @@ export function HomeHeader(props: HomeHeaderProps) {
           />
         ))}
       </View>
-      <View style={{ flex: 1 }} />
+      <View style={{ flexGrow: 1, flexBasis: 0, minWidth: 0 }} />
       {props.workspaceApplies ? (
         <View style={{ zIndex: 38 }}>
           <HeaderPill
@@ -438,7 +438,11 @@ export function HomeHeader(props: HomeHeaderProps) {
       />
       <View
         style={{
-          width: 220,
+          flexGrow: 1,
+          flexShrink: 1,
+          flexBasis: 100,
+          minWidth: 100,
+          maxWidth: 240,
           height: FIELD_HEIGHT,
           borderRadius: 9999,
           borderWidth: 1,
@@ -476,7 +480,7 @@ export function HomeHeader(props: HomeHeaderProps) {
         style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({
           ...focusRing(theme, focused),
           height: FIELD_HEIGHT,
-          paddingHorizontal: 16,
+          paddingHorizontal: 14,
           borderRadius: 9999,
           flexDirection: "row",
           alignItems: "center",

@@ -7,6 +7,7 @@ import { askHoldKey, type Handled, type Needs } from "../shared/needs";
 import { fakeWork } from "./fake-work";
 import { needsSection } from "./feed-model";
 import {
+  allowLabel,
   evidenceLine,
   glanceTiles,
   holdChipWords,
@@ -329,6 +330,12 @@ describe("what a hold is", () => {
     expect(holdChipWords(needs.rows.find((row) => row.key === "work:step") as never)).toBe("owner step");
   });
 
+  test("an approval's Allow names the action when it is one people know by its verb", () => {
+    expect(allowLabel("gh pr merge 933 --squash @ ce73104")).toBe("Allow merge");
+    expect(allowLabel("git push origin HEAD")).toBe("Allow push");
+    expect(allowLabel("Close it as done")).toBeUndefined();
+  });
+
   test("an owner step on work says what Done does", () => {
     expect(primaryLabel(needs.rows.find((row) => row.key === "work:step") as never)).toBe("Start it");
     expect(primaryLabel(needs.rows.find((row) => row.key === "work:gate") as never)).toBeUndefined();
@@ -348,6 +355,7 @@ describe("what a hold is", () => {
   test("the inspector gets the kind's body: an approval its action, an ask its options with the recommended one chosen", () => {
     const approval = holdInspector(entryOf("work:gate") as never, NOW);
     expect(approval.kind).toBe("approval");
+    expect(approval.primaryLabel).toBeUndefined();
     expect(approval.key).toBe("work:gate");
     const one = holdInspector(entryOf(askHoldKey(asks[0])) as never, NOW);
     if (one.kind !== "ask") throw new Error("expected an ask");

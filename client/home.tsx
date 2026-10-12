@@ -46,7 +46,7 @@ import { useHandled, useLoop, useNeeds, useWatched, useWorkList } from "./hooks"
 import { requestIntent } from "./intent";
 import { GlanceTile } from "./kit/glance-tile";
 import { InspectorPanel } from "./kit/inspector";
-import { Dot, TABULAR } from "./kit/parts";
+import { Dot, PASS_THROUGH, TABULAR } from "./kit/parts";
 import { kitOf } from "./kit/tokens";
 import { undoEntry } from "./kit/undo-model";
 import { UndoToast, useUndoToast } from "./kit/undo-toast";
@@ -62,6 +62,8 @@ export interface HomeFocus {
   /** When it was asked: a later one is a new request even for the same hold. */
   at: number;
 }
+
+const INSPECTOR_WIDTH = 480;
 
 /** The time now, moved on every `ms` while mounted. */
 function useTick(ms: number): number {
@@ -125,6 +127,8 @@ export function HomeScreen({
   const [selection, setSelection] = useState<Selection | null>(null);
   const [open, setOpen] = useState(false);
   const [gone, setGone] = useState<string | null>(null);
+  const [scrollY, setScrollY] = useState(0);
+  const [columnsTop, setColumnsTop] = useState(0);
 
   const items = list.data?.items ?? [];
   const asks = asksRead.data ? decisionAsks(asksRead.data) : [];
@@ -266,6 +270,9 @@ export function HomeScreen({
   }, []);
 
   const wide = width === 0 || width >= 1060;
+  const showing = open && inspected !== null;
+  const panelWidth = width > 0 ? Math.min(INSPECTOR_WIDTH, width - 32) : INSPECTOR_WIDTH;
+  const panelTop = Math.max(0, columnsTop - scrollY - 16);
   const railNodes = (
     <View style={{ gap: 12 }}>
       <DecideRail
@@ -300,7 +307,12 @@ export function HomeScreen({
       onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
       style={{ flex: 1 }}
     >
-      <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 12, gap: 16 }} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={{ padding: 20, paddingTop: 12, gap: 16 }}
+        keyboardShouldPersistTaps="handled"
+        scrollEventThrottle={32}
+        onScroll={(event) => setScrollY(event.nativeEvent.contentOffset.y)}
+      >
         {needs.isError && !needs.data ? (
           <Notice theme={theme} tone="danger">
             {`What needs you could not be read (${errorText(needs.error)}); the count and Needs you come back when it reads.`}
@@ -433,7 +445,15 @@ export function HomeScreen({
           </GlanceTile>
         </View>
 
-        <View style={{ flexDirection: "row", gap: 16, alignItems: "flex-start" }}>
+        <View
+          onLayout={(event) => setColumnsTop(event.nativeEvent.layout.y)}
+          style={{
+            flexDirection: "row",
+            gap: 16,
+            alignItems: "flex-start",
+            paddingRight: showing ? panelWidth + 16 : 0,
+          }}
+        >
           <View style={{ flex: 1, gap: 20, minWidth: 0 }}>
             {list.isPending || needs.isPending ? <ActivityIndicator color={kit.muted} /> : null}
             {list.isError ? (
@@ -544,20 +564,24 @@ export function HomeScreen({
               </View>
             ) : null}
           </View>
-          {wide ? <View style={{ width: 340 }}>{railNodes}</View> : null}
+          {wide && !showing ? <View style={{ width: 340 }}>{railNodes}</View> : null}
         </View>
-        {wide ? null : railNodes}
+        {wide || showing ? null : railNodes}
       </ScrollView>
-      <InspectorPanel
-        theme={theme}
-        item={inspected}
-        open={open && inspected !== null}
-        onClose={() => setOpen(false)}
-        onVerb={onInspectorVerb}
-        onNext={holdKeys.length > 1 ? () => walk(1) : undefined}
-        onOpenSession={() => void act("open", targetOf(entry))}
-        scope={root}
-      />
+      {/* From the right over the rail, below the tiles: the card you opened stays lit in the stream. */}
+      <View style={[PASS_THROUGH, { position: "absolute", top: panelTop, left: 0, right: 0, bottom: 0 }]}>
+        <InspectorPanel
+          theme={theme}
+          item={inspected}
+          open={showing}
+          onClose={() => setOpen(false)}
+          onVerb={onInspectorVerb}
+          onNext={holdKeys.length > 1 ? () => walk(1) : undefined}
+          onOpenSession={() => void act("open", targetOf(entry))}
+          width={panelWidth}
+          scope={root}
+        />
+      </View>
       <UndoToast theme={theme} entry={undo.entry} onUndo={undo.undo} bottom={20} />
     </View>
   );

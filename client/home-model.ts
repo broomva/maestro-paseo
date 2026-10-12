@@ -406,8 +406,16 @@ function sessionOf(row: NeedRow, item: WorkItem | null, now: number): SessionRef
   };
 }
 
-/** The primary's own words: an owner step says what Done does here. */
+/** What Allow names when the action is one a person knows by its verb ("Allow merge", J1); plain Allow otherwise. */
+export function allowLabel(action: string): string | undefined {
+  if (/^gh pr merge\b/.test(action)) return "Allow merge";
+  if (/^git push\b/.test(action)) return "Allow push";
+  return undefined;
+}
+
+/** The primary's own words: an approval names what it allows, an owner step says what Done does here. */
 export function primaryLabel(row: NeedRow): string | undefined {
+  if (row.kind === "approval") return allowLabel(row.body.action);
   if (row.kind !== "owner_step") return undefined;
   const hold = holdOf(row.key);
   if (hold?.kind === "work") return "Start it";
@@ -463,6 +471,7 @@ export function holdInspector(entry: NeedEntry, now: number): InspectorItem {
       return {
         ...common,
         kind: "approval",
+        primaryLabel: primaryLabel(row),
         summary:
           row.body.heldBy === "permission"
             ? "The session is paused on its permission prompt until you answer."
