@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { agentMethods, keepServing } from "./server/agent-socket";
@@ -33,6 +32,7 @@ import {
   expandHome,
   launchdPrefix,
   noticeSnoozesPath,
+  p9Dir,
   paseoAgentsDir,
   paseoSchedulesDir,
   socketPath,
@@ -358,7 +358,7 @@ export default function contribute(host: PluginServerContext) {
     schedulesDir: paseoSchedulesDir(),
     presence: prefix ? (labels) => launchdPresence(labels) : null,
     gha: control.repo ? new GhaSchedules() : null,
-    p9Dir: join(homedir(), ".config", "broomva", "p9"),
+    p9Dir: p9Dir(),
     streams: loopHome.streams,
     notes: loopHome.notes,
     // A bound loop's session, as Paseo has it now: one that will not read is not judged (no false gone).

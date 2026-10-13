@@ -14,13 +14,21 @@
 // window still applies it. Every guard is checked again when it applies: the
 // verb is about the thing you saw, and when that has moved the verb is dropped,
 // with a receipt that says why, never applied to something else.
+//
+// Applied once, across processes (BRO-3080): two daemons can read one ledger (a reload that overlaps the old
+// daemon), and both would find the same verb due. Every write here is made under the ledger's file lock
+// (server/locks.ts), and a verb about to apply is first claimed with a `verb.claimed` line carrying the claimant's
+// pid and start. A process that reads a claim by a live process leaves the verb to it; one by a dead process
+// settles it as dropped, since whether it took effect is not known and a second prompt is worse than none.
 
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { UNDO_MS } from "../shared/undo";
 import { ALREADY_PENDING, type OwnerVerb, type PendingVerb, RECENT_VERBS_MS, type SettledVerb } from "../shared/verbs";
 import { CLIENT_WAIT_MS, realTimer, type Timer, UserError } from "./engine";
-import { appendJsonLine } from "./jsonl";
+import { appendLinesLocked } from "./jsonl";
+import { holderAlive, started, withFileLock } from "./locks";
+import { lockRootBeside } from "./paths";
 import type { Paseo } from "./runs";
 
 /** What a verb's apply needs, and says. */
@@ -54,6 +62,7 @@ type Line =
       appliesAt: string;
       args: unknown;
     }
+  | { kind: "verb.claimed"; receipt: string; at: string; pid: number; start: number }
   | { kind: "verb.undone" | "verb.applied" | "verb.dropped"; receipt: string; at: string; detail: string };
 
 interface Entry {
@@ -64,6 +73,8 @@ interface Entry {
   at: string;
   appliesAt: string;
   args: unknown;
+  /** The process taking it into effect, once one has claimed it. */
+  claim: { pid: number; start: number } | null;
   settled: { outcome: "applied" | "undone" | "dropped"; at: string; detail: string } | null;
 }
 
@@ -81,6 +92,9 @@ export interface OwnerVerbsOptions {
 
 /** What a settled verb's text says when apply returned nothing. */
 const DID = "Done.";
+/** What a verb says when the process that was applying it is gone: whether it took effect is not known. */
+const CLAIMANT_GONE =
+  "Maestro stopped while it was taking effect, so it is not known whether it did. It was not applied again.";
 
 export class OwnerVerbs {
   private readonly path: string;
@@ -93,8 +107,6 @@ export class OwnerVerbs {
   /** Windows armed, by receipt, to the timer's cancel. */
   private readonly armed = new Map<string, () => void>();
   private readonly applying = new Set<string>();
-  /** One writer at a time: a verb is read, decided and recorded without another between. */
-  private chain: Promise<unknown> = Promise.resolve();
   private closed = false;
 
   constructor(options: OwnerVerbsOptions) {
@@ -118,11 +130,12 @@ export class OwnerVerbs {
     this.armed.clear();
   }
 
-  /** Run `work` after every write before it. */
+  /**
+   * Run `work` holding the ledger's lock, after every writer before it, in this process and in any other: a verb is
+   * read, decided and recorded without another writer between. Every `write` is made inside one.
+   */
   private serial<T>(work: () => Promise<T>): Promise<T> {
-    const run = this.chain.then(work);
-    this.chain = run.catch(() => undefined);
-    return run;
+    return withFileLock(this.path, lockRootBeside(this.path), work, { what: "the verbs ledger" });
   }
 
   /** Protected so a test can hold a read open: the race with another process's write is its to stage. */
@@ -144,12 +157,16 @@ export class OwnerVerbs {
       }
       if (line.kind === "verb.pending") {
         if (typeof line.receipt === "string" && !entries.has(line.receipt)) {
-          entries.set(line.receipt, { ...line, settled: null });
+          entries.set(line.receipt, { ...line, claim: null, settled: null });
         }
         continue;
       }
       const entry = entries.get(line.receipt);
       if (!entry || entry.settled) continue;
+      if (line.kind === "verb.claimed") {
+        entry.claim = { pid: line.pid, start: line.start };
+        continue;
+      }
       entry.settled = {
         outcome: line.kind.slice("verb.".length) as "applied" | "undone" | "dropped",
         at: line.at,
@@ -159,8 +176,15 @@ export class OwnerVerbs {
     return entries;
   }
 
+  /** Only inside `serial`, which holds the ledger's lock. */
   private async write(line: Line): Promise<void> {
-    await appendJsonLine(this.path, line);
+    await appendLinesLocked(this.path, [line]);
+  }
+
+  /** Whether the process that claimed a verb is still taking it into effect. */
+  private async claimLive(receipt: string, claim: { pid: number; start: number }): Promise<boolean> {
+    if (claim.pid === process.pid) return this.applying.has(receipt);
+    return holderAlive(`${claim.pid} ${claim.start}`);
   }
 
   /**
@@ -182,7 +206,9 @@ export class OwnerVerbs {
         if (entry.settled || entry.verb !== verb || entry.key !== request.key) continue;
         if (!spec.supersedes) throw new UserError(ALREADY_PENDING);
         // One taking effect this moment cannot be replaced: it applies, and the newer one waits its own window.
-        if (this.applying.has(entry.receipt)) continue;
+        if (this.applying.has(entry.receipt) || (entry.claim && (await this.claimLive(entry.receipt, entry.claim)))) {
+          continue;
+        }
         await this.write({
           kind: "verb.undone",
           receipt: entry.receipt,
@@ -222,8 +248,10 @@ export class OwnerVerbs {
       if (entry.settled?.outcome === "undone") return { undone: true };
       if (entry.settled?.outcome === "applied") throw new UserError("Too late to undo: it already took effect.");
       if (entry.settled) throw new UserError(`There is nothing to undo: ${entry.settled.detail}`);
-      // Being applied this moment: the window has closed.
-      if (this.applying.has(receipt)) throw new UserError("Too late to undo: it is taking effect.");
+      // Being applied this moment, here or by another process: the window has closed.
+      if (this.applying.has(receipt) || (entry.claim && (await this.claimLive(receipt, entry.claim)))) {
+        throw new UserError("Too late to undo: it is taking effect.");
+      }
       await this.write({ kind: "verb.undone", receipt, at: this.stamp(), detail: "You undid it." });
       this.disarm(receipt);
       return { undone: true };
@@ -298,6 +326,22 @@ export class OwnerVerbs {
     this.armed.delete(receipt);
   }
 
+  /** Take a due verb for this process: "claimed", or why not ("settled" for another's, or its own undo). */
+  private claim(receipt: string): Promise<"claimed" | "settled" | "dropped"> {
+    return this.serial(async () => {
+      const entry = (await this.read()).get(receipt);
+      if (!entry || entry.settled) return "settled";
+      if (entry.claim) {
+        // Another process is taking it into effect: leave it. A claimant that is gone left it unknown: settled, not repeated.
+        if (await this.claimLive(receipt, entry.claim)) return "settled";
+        await this.write({ kind: "verb.dropped", receipt, at: this.stamp(), detail: CLAIMANT_GONE });
+        return "dropped";
+      }
+      await this.write({ kind: "verb.claimed", receipt, at: this.stamp(), pid: process.pid, start: await started() });
+      return "claimed";
+    });
+  }
+
   /** Apply one verb once it is due, re-checking every guard, and record how it ended. */
   private async applyDue(receipt: string): Promise<"applied" | "dropped" | "early" | "waiting" | "settled"> {
     // Claimed first, before any await: the window's timer and the sweep both reach a due verb, and only one of them
@@ -313,9 +357,10 @@ export class OwnerVerbs {
       // Read the client now, not when the timer was armed: one may have arrived since.
       const paseo = this.client();
       if (spec.client && !paseo) return "waiting";
-      // Read again in line with the writers: an undo, or a write of another process, may have settled it since.
-      const confirmed = await this.serial(async () => !(await this.read()).get(receipt)?.settled);
-      if (!confirmed) return "settled";
+      // Claimed under the ledger's lock, in line with every writer: an undo, or another process that found it due,
+      // may have settled or claimed it since, and only one claimant takes it into effect.
+      const claimed = await this.claim(receipt);
+      if (claimed !== "claimed") return claimed;
       let detail: string;
       let outcome: "applied" | "dropped";
       try {

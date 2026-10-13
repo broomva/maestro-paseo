@@ -1,12 +1,16 @@
 // The work store: folders under the work root, each holding `_work.md` (the
 // contract, the source of truth for state) and `_events.jsonl` (the receipts).
-// Every mutation of one item runs under that item's lock, re-reads the files,
-// validates the transition, writes the contract, then appends the events.
+// The one writer of both (BRO-2997). Every mutation of one item runs under that
+// item's lock, which is a file lock in `<work root>/.locks` (server/locks.ts), so a
+// second daemon on the same root waits its turn. Under it the files are re-read, the
+// transition validated, the contract replaced through a temp file and a rename
+// (server/atomic.ts), and the events appended whole.
 
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { basename, join, relative, sep } from "node:path";
 import { type GateMode, type Kind, type OrchState, type TransitionContext, transition } from "../shared/states";
+import { writeFileAtomic } from "./atomic";
 import { BY_HUMAN, type Origin, parseEvents, type WorkEvent } from "./events";
 import {
   type Contract,
@@ -19,10 +23,15 @@ import {
   titleOf,
   type WorkDoc,
 } from "./frontmatter";
+import { appendLinesLocked } from "./jsonl";
+import { awaitUnlocked, withFileLock } from "./locks";
+import { workLockRoot } from "./paths";
 
 export const WORK_FILE = "_work.md";
 export const EVENTS_FILE = "_events.jsonl";
 const MAX_DEPTH = 5;
+/** A change waits this long for another writer of the same item (a claim under daemon calls can hold it a while). */
+const LOCK_WAIT_MS = 20_000;
 
 export interface StoredWork {
   dir: string;
@@ -43,20 +52,6 @@ export class WorkNotFoundError extends Error {
   }
 }
 
-const locks = new Map<string, Promise<unknown>>();
-
-/** Serialize work on one item: hooks and RPCs can race on the same files. */
-export async function withLock<T>(key: string, run: () => Promise<T>): Promise<T> {
-  const previous = locks.get(key) ?? Promise.resolve();
-  const next = previous.catch(() => undefined).then(run);
-  locks.set(key, next);
-  try {
-    return await next;
-  } finally {
-    if (locks.get(key) === next) locks.delete(key);
-  }
-}
-
 export function slugify(text: string): string {
   return (
     text
@@ -69,39 +64,6 @@ export function slugify(text: string): string {
       .slice(0, 48)
       .replace(/-$/, "") || "work"
   );
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Whether the file ends with a newline (or is empty or missing), so an append never joins a torn last line. */
-export async function endsWithNewline(path: string): Promise<boolean> {
-  let handle: import("node:fs/promises").FileHandle | undefined;
-  try {
-    handle = await open(path, "r");
-    const { size } = await handle.stat();
-    if (size === 0) return true;
-    const byte = Buffer.alloc(1);
-    await handle.read(byte, 0, 1, size - 1);
-    return byte[0] === 0x0a;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
-    throw error;
-  } finally {
-    await handle?.close();
-  }
-}
-
-async function writeAtomic(path: string, content: string): Promise<void> {
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, content, "utf8");
-  await rename(tmp, path);
 }
 
 export interface Mutation {
@@ -123,16 +85,24 @@ export class WorkStore {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
+  /** Where this root's item locks are taken: one per item id, shared by every process on the root. */
+  private get lockRoot(): string {
+    return workLockRoot(this.root);
+  }
+
+  /** Serialize work on one item: hooks, RPCs and a second daemon can race on the same files. */
+  withLock<T>(id: string, run: () => Promise<T>): Promise<T> {
+    return withFileLock(join(this.lockRoot, id), this.lockRoot, run, { waitMs: LOCK_WAIT_MS, what: `work item ${id}` });
+  }
+
   /**
-   * One item as it stands once any change to it in flight has finished. A
-   * change renames `_work.md` and then appends to `_events.jsonl`; a read in
-   * between would pair the new state with the old receipts.
+   * One item as it stands once any change to it in flight, in this process or another, has finished. A change
+   * replaces `_work.md` and then appends to `_events.jsonl`; a read in between would pair the new state with the
+   * old receipts.
    */
   async load(dir: string): Promise<StoredWork> {
     const first = await this.read(dir);
-    const pending = locks.get(first.contract.id);
-    if (!pending) return first;
-    await pending.catch(() => undefined);
+    await awaitUnlocked(join(this.lockRoot, first.contract.id), this.lockRoot).catch(() => undefined);
     return this.read(dir);
   }
 
@@ -245,40 +215,52 @@ export class WorkStore {
     const parent = input.initiative.trim() ? join(this.root, slugify(input.initiative)) : this.root;
     await mkdir(parent, { recursive: true });
     const base = slugify(input.title);
-    let dir = join(parent, base);
-    for (let n = 2; await exists(dir); n += 1) dir = join(parent, `${base}-${n}`);
-    await mkdir(dir);
     const id = randomUUID();
-    await writeFile(
-      join(dir, WORK_FILE),
-      newWorkSource({
-        id,
-        title: input.title.trim(),
-        brief: input.brief,
-        kind: input.kind ?? "task",
-        state: input.state ?? "proposed",
-        gate: input.gate,
-        repo: input.repo,
-        check: input.check,
-        date: now.toISOString().slice(0, 10),
-        run: input.run,
-        hold: input.hold,
-        idea: input.idea,
-        answer: input.answer,
-      }),
-      "utf8",
-    );
-    await this.append(dir, [{ ts: now.toISOString(), type: "created", ...(input.origin ?? BY_HUMAN) }]);
-    return this.read(dir);
+    // The folder is claimed by making it: of two writers (two daemons) filing one title, the second takes the next name.
+    let dir = join(parent, base);
+    for (let n = 2; ; n += 1) {
+      try {
+        await mkdir(dir);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        dir = join(parent, `${base}-${n}`);
+      }
+    }
+    return this.withLock(id, async () => {
+      await writeFileAtomic(
+        join(dir, WORK_FILE),
+        newWorkSource({
+          id,
+          title: input.title.trim(),
+          brief: input.brief,
+          kind: input.kind ?? "task",
+          state: input.state ?? "proposed",
+          gate: input.gate,
+          repo: input.repo,
+          check: input.check,
+          date: now.toISOString().slice(0, 10),
+          run: input.run,
+          hold: input.hold,
+          idea: input.idea,
+          answer: input.answer,
+        }),
+      );
+      await this.appendLocked(dir, [{ ts: now.toISOString(), type: "created", ...(input.origin ?? BY_HUMAN) }]);
+      return this.read(dir);
+    });
   }
 
+  /** Add receipts to one item's `_events.jsonl`, under the item's lock. */
   async append(dir: string, events: readonly WorkEvent[]): Promise<void> {
     if (events.length === 0) return;
-    const path = join(dir, EVENTS_FILE);
-    const lines = events.map((event) => `${JSON.stringify(event)}\n`).join("");
-    // A torn last line (a crash mid-write) must not swallow the next event.
-    const lead = (await endsWithNewline(path)) ? "" : "\n";
-    await appendFile(path, lead + lines, "utf8");
+    const { contract } = await this.read(dir);
+    await this.withLock(contract.id, () => this.appendLocked(dir, events));
+  }
+
+  /** For code already holding the item's lock. A torn last line (a crash mid-write) never swallows the next event. */
+  private appendLocked(dir: string, events: readonly WorkEvent[]): Promise<void> {
+    return appendLinesLocked(join(dir, EVENTS_FILE), events);
   }
 
   /**
@@ -290,7 +272,7 @@ export class WorkStore {
     decide: (item: StoredWork) => Mutation | null | Promise<Mutation | null>,
     dir?: string,
   ): Promise<StoredWork> {
-    return withLock(id, async () => {
+    return this.withLock(id, async () => {
       const item = await this.fresh(id, dir);
       const change = await decide(item);
       if (!change) return item;
@@ -314,9 +296,9 @@ export class WorkStore {
       if (Object.keys(patch).length > 0) {
         patch.updated = at.toISOString().slice(0, 10);
         setFields(item.work, patch);
-        await writeAtomic(join(item.dir, WORK_FILE), renderWorkDoc(item.work));
+        await writeFileAtomic(join(item.dir, WORK_FILE), renderWorkDoc(item.work));
       }
-      await this.append(item.dir, events);
+      await this.appendLocked(item.dir, events);
       return this.read(item.dir);
     });
   }

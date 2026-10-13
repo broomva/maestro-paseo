@@ -17,10 +17,10 @@ import { join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "./index.server";
 import { loadConfig } from "./server/config";
-import { acquireLock, releaseLock } from "./server/control-asks";
 import { Engine } from "./server/engine";
 import { fakePaseo } from "./server/fake-paseo";
 import { LOOPS_VIEW_MS } from "./server/loops";
+import { acquireLock, releaseLock } from "./server/locks";
 import type { Paseo } from "./server/runs";
 
 setDefaultTimeout(120_000);

@@ -26,9 +26,9 @@
 // you and Decisions to read without asking git.
 
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { type AnswersLanding, AnswersLandingSchema, type AskRef, answersWord, type PrRef } from "../shared/answers";
+import { writeFileAtomic } from "./atomic";
 import { parsed, type Row, rowsOf, stateOf, text } from "./control-asks";
 import {
   ANSWERS_BRANCH,
@@ -357,10 +357,7 @@ export class AnswersLander {
     this.last = state;
     const file = this.options.statePath;
     try {
-      await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-      const temp = `${file}.tmp-${process.pid}`;
-      await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-      await rename(temp, file);
+      await writeFileAtomic(file, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600, dirMode: 0o700 });
     } catch (error) {
       this.options.log?.(`answers: keeping the landing state: ${(error as Error).message}`);
     }

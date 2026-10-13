@@ -4,6 +4,41 @@
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+/** A `.control/asks` folder: where a checkout's, or the fleet's state dir's, ask ledgers live. Defined once. */
+export const ASKS_DIR = join(".control", "asks");
+
+/**
+ * Where the locks of a file Maestro shares sit: beside it, in a hidden folder, so every process that opens the file
+ * from wherever it was told to finds the same lock. Nothing is left in it once its writer is done.
+ */
+export function lockRootBeside(path: string): string {
+  return join(dirname(path), ".locks");
+}
+
+/** The work root's locks, one per item (server/store.ts): in the root itself, so two daemons on one root share them. */
+export function workLockRoot(workRoot: string): string {
+  return join(workRoot, ".locks");
+}
+
+/** p9's shared folder of CI waits (server/p9.ts, read only). MAESTRO_PASEO_P9_DIR names another, as a test or a sandbox does. */
+export function p9Dir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.MAESTRO_PASEO_P9_DIR ? expandHome(env.MAESTRO_PASEO_P9_DIR) : join(homedir(), ".config", "broomva", "p9");
+}
+
+/** The LaunchAgents folder the Timeline and Fleet read: MAESTRO_PASEO_FLEET_AGENTS, else ~/Library/LaunchAgents. */
+export function launchAgentsDir(env: NodeJS.ProcessEnv = process.env): string {
+  return expandHome(env.MAESTRO_PASEO_FLEET_AGENTS ?? join(homedir(), "Library", "LaunchAgents"));
+}
+
+/**
+ * The loop layer's home (BROOMVA_HOME, else ~/.broomva), as scripts/broomva_home.py resolves it: the drift ledger
+ * and the loops' notes sit under it.
+ */
+export function broomvaHome(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.BROOMVA_HOME?.trim();
+  return raw ? raw.replace(/^~(?=$|\/)/, homedir()) : join(homedir(), ".broomva");
+}
+
 /** `~` and `~/x` name the home folder; anything else is returned as written. */
 export function expandHome(path: string): string {
   if (path === "~") return homedir();
@@ -87,7 +122,7 @@ export function fleetPaths(env: NodeJS.ProcessEnv = process.env): {
   return {
     config: env.MAESTRO_PASEO_FLEET_CONFIG ?? env.FLEET_CONFIG ?? join(homedir(), ".config", "ctx", "fleet.json"),
     stateRoot: env.MAESTRO_PASEO_FLEET_STATE ?? join(homedir(), ".local", "state", "fleet-reconcile"),
-    agents: env.MAESTRO_PASEO_FLEET_AGENTS ?? join(homedir(), "Library", "LaunchAgents"),
+    agents: launchAgentsDir(env),
   };
 }
 

@@ -18,7 +18,6 @@
 // repo's intent-less mirror of such a row yields to the owner's row.
 
 import { readdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, posix } from "node:path";
 import { parseDocument } from "yaml";
 import {
@@ -32,7 +31,7 @@ import {
   type SubstrateKind,
 } from "../shared/loops";
 import { catFiles, git } from "./control-home";
-import { configPath, expandHome } from "./paths";
+import { broomvaHome, configPath, expandHome } from "./paths";
 
 /** The ledger folder, repo-relative. */
 export const LEDGER_DIR = ".broomva/loops";
@@ -50,8 +49,7 @@ const ROW_LIMIT = 64 * 1024;
  * as scripts/broomva_home.py resolves it.
  */
 export function loopPaths(env: NodeJS.ProcessEnv = process.env) {
-  const raw = env.BROOMVA_HOME?.trim();
-  const home = raw ? raw.replace(/^~(?=$|\/)/, homedir()) : join(homedir(), ".broomva");
+  const home = broomvaHome(env);
   return {
     home,
     intent: LEDGER_DIR,

@@ -23,9 +23,8 @@
 // is routed by the loop (server/answer-routes.ts); a fleet root's writer reads
 // the answer from its own file, the spec's "Record only".
 
-import { execFile } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { appendFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { isMap, isSeq, parseDocument, type YAMLMap } from "yaml";
 import {
@@ -36,7 +35,9 @@ import {
   type Idea,
   isWaiting,
 } from "../shared/fleet";
+import { appendAskReceipt } from "./ask-receipts";
 import { UserError } from "./engine";
+import { acquireLock, exclusive, LockBusyError, releaseLock, stillOurs } from "./locks";
 
 /** A ledger is read up to this size; past it it is refused, not cut. */
 const LEDGER_LIMIT = 1024 * 1024;
@@ -339,223 +340,6 @@ export async function readLedger(path: string): Promise<string> {
   return readFile(path, "utf8");
 }
 
-// ── The lock (§5.5) ──────────────────────────────────────────────────────────
-
-/** A lock this old whose holder is dead is reclaimed; one with no pid yet counts as live until then. */
-export const LOCK_STALE_MS = 120_000;
-/** The reclaim mutex is broken past this, as tick.sh does. */
-const RECLAIM_STALE_MS = 60_000;
-
-/** `<k>`: the first 16 hex of the SHA-256 of realpath(dirname(L)) + "/" + basename(L). */
-export async function lockKey(ledgerPath: string): Promise<string> {
-  const dir = await realpath(dirname(ledgerPath));
-  return createHash("sha256")
-    .update(`${dir}/${basename(ledgerPath)}`, "utf8")
-    .digest("hex")
-    .slice(0, 16);
-}
-
-/**
- * This process's start, in whole seconds since the epoch. A holder's pid file
- * is `<pid> <start>\n`, both decimal, the start in seconds since the epoch, so a
- * reused pid with another start is not the holder. Other writers taking this
- * lock write the same grammar; a file without a start is judged by its pid alone.
- */
-let ownStart: number | null = null;
-/**
- * Read from ps, as other writers will read it: Node's uptime stops while the
- * Mac sleeps, ps's does not. Kept once ps answers; until then each take asks it
- * again, and uptime stands in.
- */
-async function started(): Promise<number> {
-  ownStart ??= await startOf(process.pid);
-  return ownStart ?? Math.round(Date.now() / 1000 - process.uptime());
-}
-
-/** `ps -o etime=`'s `[[dd-]hh:]mm:ss` in seconds: elapsed time, which no time zone shifts (lstart's local time does). */
-export function etimeSeconds(etime: string): number | null {
-  const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(etime.trim());
-  if (!match) return null;
-  const [, days, hours, minutes, seconds] = match;
-  return ((Number(days ?? 0) * 24 + Number(hours ?? 0)) * 60 + Number(minutes)) * 60 + Number(seconds);
-}
-
-/** When a pid's process started (whole seconds), from ps; null when it cannot be told. */
-function startOf(pid: number): Promise<number | null> {
-  return new Promise((resolve) => {
-    execFile("/bin/ps", ["-o", "etime=", "-p", String(pid)], { timeout: 2000 }, (error, stdout) => {
-      const elapsed = error ? null : etimeSeconds(stdout);
-      resolve(elapsed === null ? null : Math.round(Date.now() / 1000 - elapsed));
-    });
-  });
-}
-
-function pidOf(pidFile: string): { pid: number; start: number | null } | null {
-  const [pidText, startText] = pidFile.trim().split(/\s+/);
-  const pid = Number(pidText);
-  if (!Number.isInteger(pid) || pid <= 0) return null;
-  const start = Number(startText);
-  return { pid, start: startText !== undefined && Number.isFinite(start) ? start : null };
-}
-
-/** Whether the holder a pid file names is alive: its pid answers, and it started when it said. */
-export async function holderAlive(pidFile: string): Promise<boolean> {
-  const holder = pidOf(pidFile);
-  if (!holder) return false;
-  try {
-    process.kill(holder.pid, 0);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
-  }
-  if (holder.start === null) return true;
-  const actual = await startOf(holder.pid);
-  return actual === null || Math.abs(actual - holder.start) <= 2;
-}
-
-export interface Lock {
-  dir: string;
-  token: string;
-}
-
-/** The locks this process holds now. One of its own it does not hold was left behind (§5.5: dropped at once). */
-const held = new Set<string>();
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function ageOf(path: string, now: number): Promise<number | null> {
-  try {
-    return now - (await stat(path)).mtimeMs;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Whether a lock may be taken away, and by whom it is held: null when it is gone.
- * Stale: its holder is dead and it is 120 s old (one with no pid yet is live for
- * its first 120 s), or it is this process's own and this process holds it no more.
- * A live holder is never stale, however old.
- */
-async function staleness(dir: string, now: number): Promise<{ stale: boolean; holder: string } | null> {
-  const age = await ageOf(dir, now);
-  if (age === null) return null;
-  const pidFile = await readFile(join(dir, "pid"), "utf8").catch(() => null);
-  const holder = pidFile ? pidOf(pidFile) : null;
-  const words = holder ? `pid ${holder.pid}` : "a writer starting up";
-  if (holder?.pid === process.pid && holder.start !== null && Math.abs(holder.start - (await started())) <= 2) {
-    return { stale: !held.has(dir), holder: words };
-  }
-  const alive = pidFile === null ? age < LOCK_STALE_MS : await holderAlive(pidFile);
-  return { stale: !alive && age >= LOCK_STALE_MS, holder: words };
-}
-
-/**
- * Takes a stale lock away under its reclaim mutex, judging it again once the
- * mutex is held (as tick.sh does): another writer may have reclaimed it and
- * taken a fresh one meanwhile, which is live and stays.
- */
-async function reclaim(dir: string, now: () => number): Promise<void> {
-  const mutex = `${dir.replace(/\.d$/, "")}.reclaim.d`;
-  try {
-    await mkdir(mutex);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const age = await ageOf(mutex, now());
-    if (age !== null && age >= RECLAIM_STALE_MS) await rm(mutex, { recursive: true, force: true });
-    return;
-  }
-  try {
-    if (!(await staleness(dir, now()))?.stale) return;
-    const aside = `${dir}.stale-${randomBytes(4).toString("hex")}`;
-    await rename(dir, aside).then(
-      () => rm(aside, { recursive: true, force: true }),
-      () => undefined,
-    );
-  } finally {
-    await rm(mutex, { recursive: true, force: true });
-  }
-}
-
-export async function acquireLock(
-  ledgerPath: string,
-  lockRoot: string,
-  options: { waitMs?: number; now?: () => number } = {},
-): Promise<Lock> {
-  const now = options.now ?? Date.now;
-  const deadline = now() + (options.waitMs ?? 5000);
-  await mkdir(lockRoot, { recursive: true, mode: 0o700 });
-  const dir = join(lockRoot, `${await lockKey(ledgerPath)}.d`);
-  let holder = "another writer";
-  for (;;) {
-    let made = false;
-    try {
-      await mkdir(dir);
-      made = true;
-      // Held from the moment it is made: a pid of ours on a lock not yet marked held would read as left behind.
-      held.add(dir);
-      const token = randomBytes(16).toString("hex");
-      await writeFile(join(dir, "pid"), `${process.pid} ${await started()}\n`);
-      await writeFile(join(dir, "token"), `${token}\n`);
-      return { dir, token };
-    } catch (error) {
-      // Made but not finished: taken back, so no half-written lock is left to wedge the ledger.
-      if (made) {
-        held.delete(dir);
-        await rm(dir, { recursive: true, force: true });
-        throw error;
-      }
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-    const state = await staleness(dir, now());
-    if (state?.stale) await reclaim(dir, now);
-    else if (state) holder = state.holder;
-    if (now() >= deadline) {
-      throw new UserError(
-        `Another writer holds this ledger's lock (${holder}), so nothing was written. Try again in a moment.`,
-      );
-    }
-    await sleep(50 + Math.floor(Math.random() * 50));
-  }
-}
-
-/**
- * Drops every lock in the root that this process left behind: its own pid and
- * start, not held now. Run by each plugin sweep (§5.5's "at each scan"; server/sweep.ts), so another
- * writer is never kept
- * waiting on a lock of Maestro's that only Maestro's next answer would clear.
- * It runs between this process's answers, never during one (exclusive): a lock
- * released and taken again meanwhile would otherwise read as left behind.
- */
-export function dropLeftovers(lockRoot: string): Promise<void> {
-  return exclusive(() => dropNow(lockRoot));
-}
-
-async function dropNow(lockRoot: string): Promise<void> {
-  const names = await readdir(lockRoot).catch(() => [] as string[]);
-  for (const name of names.filter((entry) => entry.endsWith(".d") && !entry.endsWith(".reclaim.d"))) {
-    const dir = join(lockRoot, name);
-    if (held.has(dir)) continue;
-    const holder = pidOf((await readFile(join(dir, "pid"), "utf8").catch(() => "")) ?? "");
-    if (holder?.pid === process.pid && holder.start !== null && Math.abs(holder.start - (await started())) <= 2) {
-      await rm(dir, { recursive: true, force: true });
-    }
-  }
-}
-
-async function stillOurs(lock: Lock): Promise<boolean> {
-  const token = await readFile(join(lock.dir, "token"), "utf8").catch(() => null);
-  return token?.trim() === lock.token;
-}
-
-export async function releaseLock(lock: Lock): Promise<void> {
-  // No longer held here, whatever follows: a lock of ours left behind is then stale to our next write.
-  held.delete(lock.dir);
-  if (!(await stillOurs(lock))) return;
-  await rm(join(lock.dir, "token"), { force: true });
-  await rm(join(lock.dir, "pid"), { force: true });
-  await rm(lock.dir, { recursive: true, force: true });
-}
-
 // ── The answer (§5.5) ────────────────────────────────────────────────────────
 
 /** The column a key sits at: an ask is a sequence item, so its first key follows `  - `. */
@@ -818,19 +602,6 @@ export interface AnswerOptions {
 }
 
 /**
- * Every lock step of this process, one at a time: an answer (take, write,
- * release) and a sweep of leftovers. The Fleet view and the workspace's asks
- * each queue their own writes, and share this, so a sweep never reads a lock
- * released and taken again meanwhile as left behind.
- */
-let lockSteps: Promise<unknown> = Promise.resolve();
-function exclusive<T>(run: () => Promise<T>): Promise<T> {
-  const next = lockSteps.catch(() => undefined).then(run);
-  lockSteps = next;
-  return next;
-}
-
-/**
  * Writes your answer into the ledger at `path` under the lock, and returns the
  * ask as it now reads, with a warning when the answer is in but its receipt is not.
  */
@@ -852,7 +623,9 @@ async function answerNow(
   const now = options.now ?? Date.now;
   const gone = () => new UserError(`${ledger} is gone or not a regular file, so nothing was written.`);
   if (!(await lstat(path).catch(() => null))?.isFile()) throw gone();
-  const lock = await acquireLock(path, options.lockRoot, { now, waitMs: options.waitMs });
+  const lock = await acquireLock(path, options.lockRoot, { now, waitMs: options.waitMs }).catch((error) => {
+    throw error instanceof LockBusyError ? new UserError(error.message) : error;
+  });
   let written: ReturnType<typeof withAnswer>;
   try {
     const info = await lstat(path).catch(() => null);
@@ -891,8 +664,7 @@ async function answerNow(
   };
   // The answer is in the ledger already: a receipt that cannot be written is said, not thrown.
   try {
-    await mkdir(dirname(options.receipts), { recursive: true, mode: 0o700 });
-    await appendFile(options.receipts, `${JSON.stringify(receipt)}\n`, { mode: 0o600 });
+    await appendAskReceipt(options.receipts, receipt);
     return { ask, warning: null };
   } catch (error) {
     const message = `Your answer is in ${ledger}, but its receipt was not written (${(error as Error).message}).`;

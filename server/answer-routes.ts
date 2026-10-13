@@ -35,8 +35,7 @@
 // verbatim, held work waits for you, and a candidate waits for the conductor.
 
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile, stat } from "node:fs/promises";
 import {
   type AnswerFate,
   type AnswersLanding,
@@ -49,6 +48,7 @@ import {
 } from "../shared/answers";
 import type { DecisionAsk } from "../shared/fleet";
 import { UNDO_MS } from "../shared/undo";
+import { appendAskReceipt } from "./ask-receipts";
 import { isRow, text } from "./control-asks";
 import { homeWords, type WorkspaceRead } from "./control-home";
 import { type Engine, realTimer, type Timer, UserError, within } from "./engine";
@@ -1064,8 +1064,7 @@ export class AnswerRouter {
   }
 
   private async append(line: object): Promise<void> {
-    await mkdir(dirname(this.options.receipts), { recursive: true, mode: 0o700 });
-    await appendFile(this.options.receipts, `${JSON.stringify(line)}\n`, { mode: 0o600 });
+    await appendAskReceipt(this.options.receipts, line);
     this.cached = null;
   }
 

@@ -41,7 +41,7 @@ import {
   type ReviewVerdict,
   TICK_LOG_BYTES,
 } from "../shared/fleet";
-import { answerDecision, dropLeftovers, readDecisions } from "./control-asks";
+import { answerDecision, readDecisions } from "./control-asks";
 import { UserError } from "./engine";
 import {
   type AwakeFor,
@@ -66,6 +66,7 @@ import {
   tickRows,
   withReviews,
 } from "./fleet-model";
+import { dropLeftovers } from "./locks";
 import { controlAskPaths, expandHome, fleetPaths } from "./paths";
 
 export const REVIEWS_FILE = "proposal-reviews.jsonl";

@@ -4,15 +4,16 @@
 //
 // A torn or garbage line is skipped with a warning, never fatal. The file is
 // bounded: past WAKE_LOG_MAX lines it is rewritten, through a temporary file
-// and a rename, to the newest WAKE_LOG_KEEP entries. Appends in this process
-// run one at a time, so a trim never drops one; a second process writing the
-// same file (a second daemon on the same config) can lose an entry to a trim.
+// and a rename, to the newest WAKE_LOG_KEEP entries. An append and a trim run
+// under the file's lock (server/locks.ts), in this process and in a second
+// daemon on the same config alike, so a trim never drops an entry.
 
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { type WakeEntry, WakeEntrySchema } from "../shared/contracts";
-import { wakeLogPath } from "./paths";
-import { endsWithNewline } from "./store";
+import { writeFileAtomic } from "./atomic";
+import { appendLinesLocked } from "./jsonl";
+import { withFileLock } from "./locks";
+import { lockRootBeside, wakeLogPath } from "./paths";
 
 /** Lines the file may hold before it is trimmed. */
 export const WAKE_LOG_MAX = 1000;
@@ -20,7 +21,6 @@ export const WAKE_LOG_MAX = 1000;
 export const WAKE_LOG_KEEP = 500;
 
 export class WakeLog {
-  private chain: Promise<unknown> = Promise.resolve();
   /** The unreadable-line count last warned about, so a poll does not repeat the same warning. */
   private warned = 0;
 
@@ -76,22 +76,14 @@ export class WakeLog {
     return null;
   }
 
-  /** Add one entry; appends in this process run in order, one at a time. */
+  /** Add one entry, and trim the file when it is long: under the file's lock, in order. */
   append(entry: WakeEntry): Promise<void> {
-    const next = this.chain.catch(() => undefined).then(() => this.appendNow(entry));
-    this.chain = next;
-    return next;
-  }
-
-  private async appendNow(entry: WakeEntry): Promise<void> {
-    await mkdir(dirname(this.path), { recursive: true });
-    const lead = (await endsWithNewline(this.path)) ? "" : "\n";
-    await appendFile(this.path, `${lead}${JSON.stringify(entry)}\n`, "utf8");
-    const { entries, lines } = await this.readAll();
-    if (lines <= WAKE_LOG_MAX) return;
-    const kept = entries.slice(-WAKE_LOG_KEEP);
-    const tmp = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmp, kept.map((one) => `${JSON.stringify(one)}\n`).join(""), "utf8");
-    await rename(tmp, this.path);
+    return withFileLock(this.path, lockRootBeside(this.path), async () => {
+      await appendLinesLocked(this.path, [entry]);
+      const { entries, lines } = await this.readAll();
+      if (lines <= WAKE_LOG_MAX) return;
+      const kept = entries.slice(-WAKE_LOG_KEEP);
+      await writeFileAtomic(this.path, kept.map((one) => `${JSON.stringify(one)}\n`).join(""));
+    });
   }
 }
