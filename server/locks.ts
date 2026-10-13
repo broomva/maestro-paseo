@@ -289,25 +289,29 @@ export async function withFileLock<T>(
   run: (lock: Lock) => Promise<T>,
   options: AcquireOptions = {},
 ): Promise<T> {
-  // Queued before anything is awaited, so writers run in the order they asked.
-  const queue = `${lockRoot}|${path}`;
-  const previous = queues.get(queue) ?? Promise.resolve();
-  const next = previous
-    .catch(() => undefined)
-    .then(async () => {
-      await mkdir(dirname(path), { recursive: true });
-      const lock = await acquireLock(path, lockRoot, { staleMs: PLUGIN_LOCK_STALE_MS, ...options });
-      try {
-        return await run(lock);
-      } finally {
-        await releaseLock(lock);
-      }
-    });
-  queues.set(queue, next);
+  return inOrder(`${lockRoot}|${path}`, async () => {
+    await mkdir(dirname(path), { recursive: true });
+    const lock = await acquireLock(path, lockRoot, { staleMs: PLUGIN_LOCK_STALE_MS, ...options });
+    try {
+      return await run(lock);
+    } finally {
+      await releaseLock(lock);
+    }
+  });
+}
+
+/**
+ * Runs `run` after every earlier call with the same key, in the order they were made, whatever each awaits first:
+ * queued before anything is awaited. The one in-memory queue, under withFileLock and for what must keep a caller's order.
+ */
+export async function inOrder<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const previous = queues.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(run);
+  queues.set(key, next);
   try {
     return await next;
   } finally {
-    if (queues.get(queue) === next) queues.delete(queue);
+    if (queues.get(key) === next) queues.delete(key);
   }
 }
 

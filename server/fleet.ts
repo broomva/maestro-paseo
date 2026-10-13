@@ -67,7 +67,7 @@ import {
   withReviews,
 } from "./fleet-model";
 import { appendReviews } from "./fleet-reviews";
-import { dropLeftovers } from "./locks";
+import { dropLeftovers, inOrder } from "./locks";
 import { ASKS_DIR, controlAskPaths, expandHome, fleetPaths } from "./paths";
 
 export const REVIEWS_FILE = "proposal-reviews.jsonl";
@@ -944,7 +944,17 @@ export class Fleet {
    * you decide changes nothing a verdict says. Written under the file's lock
    * (server/fleet-reviews.ts), so two verdicts never interleave.
    */
-  async review(input: {
+  review(input: {
+    scope: string;
+    keys: readonly string[];
+    verdict: ReviewVerdict;
+    note: string;
+  }): Promise<{ proposals: FleetProposal[] }> {
+    // Verdicts reach the file in the order they were made, though each reads before it writes.
+    return inOrder(`fleet-review:${input.scope}`, () => this.reviewNow(input));
+  }
+
+  private async reviewNow(input: {
     scope: string;
     keys: readonly string[];
     verdict: ReviewVerdict;
