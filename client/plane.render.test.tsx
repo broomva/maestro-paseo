@@ -1318,12 +1318,15 @@ const diffState = {
   getWorkspace: (id: string) => (id === "ws-a" ? { id, diffStat: { additions: 12, deletions: 3 } } : null),
   getAgent: () => null,
 };
+// On the phone these tests open on the Work tab: until M6 and M7 replace them, Work and Health show the views
+// the phone had before M1 (BRO-3037), and what they prove is those views. The phone's own tabs have their tests in
+// client/phone/shell.render.test.tsx.
 const surface = (compact: boolean, params: Record<string, string> = {}) => (
   <MaestroSurface
     theme={theme}
     host={{ id: "h", label: "h" }}
     layout={{ compact, platform: "web" }}
-    params={params}
+    params={compact ? { tab: "work", ...params } : params}
     navigation={{
       openAgent({ agentId }: { agentId: string }) {
         opened.push(agentId);
@@ -1433,6 +1436,12 @@ async function mount(node: ReactNode, options: { state?: PluginClientStateSource
         const name = el.getAttribute("aria-label") ?? "";
         return name === label || name.startsWith(`${label}, `);
       };
+      // A compact window changes views from the one menu (Work and Health's body on the phone, M1); its own tab
+      // bar is the phone's four tabs, which these tests do not use to move between views.
+      if (picker()) {
+        if (!container.querySelector('[role="menu"]')) await press(picker());
+        return press([...container.querySelectorAll('[role="menuitem"]')].find(named));
+      }
       const tab = [...container.querySelectorAll('[role="tab"]')].find(named);
       if (tab) return press(tab);
       // On a wide window a view that is not a header tab sits under one (Work: Board, List, History; Health: Fleet,
@@ -2280,8 +2289,13 @@ describe("views and filters", () => {
 
   test("compact picks a view from one menu: the feed, History and the system views, in their groups", async () => {
     const view = await mount(surface(true));
-    // No row of tabs to clip: one button names the view you are on.
-    expect(view.tabs()).toEqual([]);
+    // No row of segmented tabs to clip: one button names the view you are on. The only tabs are the phone's own bar (M1).
+    expect(view.tabs().map((tab) => (tab.getAttribute("aria-label") ?? "").split(", ")[0])).toEqual([
+      "Feed",
+      "Decisions",
+      "Work",
+      "Health",
+    ]);
     expect(view.viewNow()).toBe("Feed");
     const picker = view.byLabel("View: Feed, 2 need you. Change view");
     expect(picker?.getAttribute("aria-expanded")).toBe("false");
@@ -2608,6 +2622,38 @@ describe("the Queued hint", () => {
       expect(view.text()).not.toContain(hidden);
     });
   }
+});
+
+describe("M1 on the phone, through the surface (BRO-3037)", () => {
+  const until = async (ok: () => boolean) => {
+    for (let tries = 0; tries < 150 && !ok(); tries += 1) await settle(20);
+  };
+
+  test("a compact window opens on the Feed deck: one hold of needs.list's, not the old list", async () => {
+    const view = await mount(surface(true, { tab: "feed" }));
+    await until(() => view.text().includes("1 of 2"));
+    expect(view.text()).toContain("Needs you");
+    expect(view.text()).toContain("1 of 2");
+    // The old compact header (Maestro, Refresh, the view picker) is the Work tab's, not the Feed's.
+    expect(view.byLabel("Refresh work") === null).toBe(true);
+    expect(view.all('[aria-label^="View: "]')).toHaveLength(0);
+  });
+
+  test("params.hold opens the deck on that hold, from the push", async () => {
+    const view = await mount(surface(true, { tab: "feed", hold: "work:g" }));
+    await until(() => view.all('[data-testid="from-the-push"]').length > 0);
+    expect(view.all('[data-testid="from-the-push"]')[0]?.textContent).toBe("From the push · same hold");
+    expect(view.text()).toContain("2 of 2");
+  });
+
+  test("params.tab opens the Decisions deck, and Work keeps today's body", async () => {
+    const decisions = await mount(surface(true, { tab: "decisions" }));
+    await until(() => decisions.text().includes("Decisions"));
+    expect(decisions.all('[aria-label^="View: "]')).toHaveLength(0);
+    const work = await mount(surface(true));
+    await until(() => work.all('[aria-label^="View: "]').length > 0);
+    expect(work.byLabel("Refresh work") !== null).toBe(true);
+  });
 });
 
 describe("J1, the Feed home on the desktop (BRO-3035)", () => {
@@ -4089,6 +4135,42 @@ describe("drilling in", () => {
     expect(opened).toEqual(["agent-asker"]);
   });
 
+  test("an ask with no decision layer: its first sentence leads, the rest behind Full question; answered in words", async () => {
+    // The card's own folds are live on the desktop in the Fleet view's ledgers (the phone's deck has its own words field).
+    decisionsNow = [
+      {
+        ...decisionFixture(),
+        id: "A1",
+        headline: null,
+        question: "Rename this session to stoic-bedbug so peers can address it? The name is set only by --name.",
+        stakes: null,
+        whyYou: null,
+        options: [],
+        fallback: "continue as stoic-bedbug-9e",
+        audit: { class: "external", gates: ["lane-rename"] },
+      },
+    ];
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await view.press(view.byLabel("Read and answer the fleet's decisions, broomva"));
+    const text = view.text();
+    expect(text).toContain("Rename this session to stoic-bedbug so peers can address it?");
+    expect(text).not.toContain("The name is set only by --name.");
+    expect(text).toContain("No options were written for this ask: answer it in your own words.");
+    expect(text).toContain("If you say nothing: continue as stoic-bedbug-9e");
+    await view.press(view.byLabel("Show the full question of A1"));
+    expect(view.text()).toContain("The name is set only by --name.");
+    await view.press(view.byLabel("Show the details of A1"));
+    expect(view.text()).toContain("Class: external");
+    expect(view.text()).toContain("Gates: lane-rename");
+    expect(view.text()).not.toContain("Tried before asking");
+    expect(view.byLabel("Answer A1")?.getAttribute("aria-disabled")).toBe("true");
+    await view.type(view.byLabel("Your words for A1"), "Keep the name.");
+    await view.press(view.byLabel("Answer A1"));
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: null, note: "Keep the name." })]);
+    expect(view.text()).toContain("Answered just now");
+  });
+
   test("answered in the Fleet view, the ask stays filed under its scope in Decisions, and under its ledger here", async () => {
     decisionsNow = [decisionFixture()];
     const view = await mount(surface(false));
@@ -4676,51 +4758,6 @@ describe("the Decisions tab", () => {
     expect(view.text()).toContain("Answered just now: “File all four”");
   });
 
-  test("an ask with no decision layer: its first sentence leads, the rest behind Full question; answered in words", async () => {
-    workspaceNow = [
-      canvas("A1", {
-        headline: null,
-        question: "Rename this session to stoic-bedbug so peers can address it? The name is set only by --name.",
-        stakes: null,
-        whyYou: null,
-        options: [],
-        fallback: "continue as stoic-bedbug-9e",
-        audit: { class: "external", gates: ["lane-rename"] },
-      }),
-    ];
-    const view = await open(true);
-    const text = view.text();
-    expect(text).toContain("Rename this session to stoic-bedbug so peers can address it?");
-    expect(text).not.toContain("The name is set only by --name.");
-    expect(text).toContain("No options were written for this ask: answer it in your own words.");
-    expect(text).toContain("If you say nothing: continue as stoic-bedbug-9e");
-    await view.press(view.byLabel("Show the full question of A1"));
-    expect(view.text()).toContain("The name is set only by --name.");
-    await view.press(view.byLabel("Show the details of A1"));
-    expect(view.text()).toContain("Class: external");
-    expect(view.text()).toContain("Gates: lane-rename");
-    expect(view.text()).not.toContain("Tried before asking");
-    expect(view.byLabel("Answer A1")?.getAttribute("aria-disabled")).toBe("true");
-    await view.type(view.byLabel("Your words for A1"), "Keep the name.");
-    await view.press(view.byLabel("Answer A1"));
-    expect(sent("ask.answer")).toEqual([expect.objectContaining({ id: "A1", option: null, note: "Keep the name." })]);
-    await until(view, "Nothing to decide");
-  });
-
-  test("on a phone: the rail is a ledger picker, and the verbs are 44 pt", async () => {
-    workspaceNow = [merge(), canvas("product-name")];
-    const view = await open(true);
-    expect(view.byLabel("All ledgers: 2 open, 1 waits on you")).toBeNull();
-    await view.press(view.byLabel("Ledger: All. Change ledger"));
-    await view.press(view.byLabel("bro-2795-local-first-agentic-canvas.yaml: 1 open"));
-    expect(view.text()).toContain("Decision 1 of 1");
-    expect(view.text()).toContain("Canvas ask product-name");
-    const verb = view.byLabel("Answer product-name") as unknown as { style: { minHeight: string } } | null;
-    expect(verb?.style.minHeight).toBe("44px");
-    // No keyboard hints on a phone.
-    expect(view.text()).not.toContain("UP NEXTJK");
-  });
-
   test("an ask that waits on you shows above the work, and opens Decisions at it", async () => {
     // needs.list holds A1 (blocking); A2 is open but waits on no one (non-blocking, reversible).
     workspaceNow = [
@@ -5251,7 +5288,21 @@ describe("Initiatives", () => {
     return view;
   };
 
+  test("the tab says how many need you as needs.list does: a stale file with no hold is not counted (BRO-3001)", async () => {
+    // mod-anything's file is overdue, and needs.list holds no review for it: the phone's line says none need you.
+    const view = await open();
+    expect(view.text()).toContain("3 initiatives · 1 cannot be read · 2 open ideas");
+    expect(view.text()).not.toContain("needs you · 1 cannot be read");
+  });
+
   test("a card shows every field: title, intent, status, review date with its badge, next action, driver, waits, links, local edit, ideas", async () => {
+    // Due for review (B2): needs.list holds it, so it is the one that needs you.
+    reviewsNow = [
+      {
+        ...(initiativesNow.initiatives.find((entry) => entry.id === "mod-anything") as Initiative),
+        stale: { kind: "overdue", date: "2026-10-01" },
+      },
+    ];
     const view = await open();
     const text = view.text();
     for (const part of [
@@ -5552,8 +5603,10 @@ describe("the Feed home (BRO-2906)", () => {
     // Decide replaces the notice on the Feed: said once.
     expect(view.text()).not.toContain("A decision waits on you");
     await view.press(view.byLabel("Decide: Merge the gate fix?"));
-    await until(view, "Decision ");
-    expect(view.viewNow()).toBe("Decisions");
+    // The phone's Decisions is its deck (M5), on the ask that waits on you: one hold, its options in reach.
+    await until(view, "1 of 1");
+    expect(view.text()).toContain("Merge the gate fix?");
+    expect(view.all('[aria-label^="View: "]')).toHaveLength(0);
   });
 
   test("the search keeps what matches its title, place or branch, and says when nothing does", async () => {

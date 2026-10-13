@@ -6,13 +6,13 @@
 // (BRO-3035 J1, BRO-3036 J2–J9, BRO-3037 M1–M11) deletes a component's entries
 // here as it adopts the component; the gallery goes when it is empty. J1 adopted
 // the desktop parts (the glance tiles, the inspector panel and the undo toast on
-// the desktop), so the Desktop section is gone; the phone's inspector card and
-// toast stay until M1–M4.
+// the desktop), so the Desktop section is gone. M1–M5 (BRO-3037) adopted the phone's
+// deck, pull-up sheet, tab bar, swipe rows, undo toast and the card that rises, as the
+// live screen (client/phone/shell.tsx), so the M1 shell section is gone; the states a
+// real screen does not reach (a row half-swiped, the ring fallback) stay.
 //
-// Sections: Phone (detail header, tab bar, swipe row states, inspector
-// cards), Undertow (halo, ring fallback, dot, pulse, and what wears nothing),
-// and M1, the live phone shell: deck, pull-up sheet with the tab bar riding
-// it, swipe rows, undo toast, and the card that rises from the deck.
+// Sections: Phone (detail header, tab bar, swipe row states, inspector cards) and
+// Undertow (halo, ring fallback, dot, pulse, and what wears nothing).
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { type PluginScreenProps, useRpc } from "@getpaseo/plugin/client";
@@ -38,13 +38,12 @@ import { StandingPulse, TidepoolDot, Undertow } from "./undertow";
 import { undoEntry } from "./undo-model";
 import { UndoToast, useUndoToast } from "./undo-toast";
 
-type Section = "phone" | "undertow" | "m1";
+type Section = "phone" | "undertow";
 type Scheme = "both" | "light" | "dark";
 
 const SECTIONS: readonly { id: Section; label: string }[] = [
   { id: "phone", label: "Phone" },
   { id: "undertow", label: "Undertow" },
-  { id: "m1", label: "M1 shell" },
 ];
 const SCHEMES: readonly { id: Scheme; label: string }[] = [
   { id: "both", label: "Both" },
@@ -89,7 +88,6 @@ export function KitGalleryScreen({ theme, layout, params }: PluginScreenProps) {
       section={pick(SECTIONS, params?.section)}
       scheme={pick(SCHEMES, params?.scheme)}
       directions={swipeDirections(layout)}
-      hold={params?.hold}
     />
   );
 }
@@ -100,7 +98,6 @@ export function KitGallery({
   section: initialSection,
   scheme: initialScheme,
   directions,
-  hold,
 }: {
   theme: PluginTheme;
   compact: boolean;
@@ -108,24 +105,16 @@ export function KitGallery({
   scheme?: Scheme;
   /** The ways the phone parts swipe here: swipeDirections(layout) (BRO-3033 fact 3). */
   directions?: Directions;
-  /** The hold the M1 shell opens on (the screen's `params.hold`, BRO-3033 fact 2). */
-  hold?: string;
 }) {
   const kit = kitOf(theme);
-  const [section, setSection] = useState<Section>(initialSection ?? (compact ? "m1" : "phone"));
+  const [section, setSection] = useState<Section>(initialSection ?? "phone");
   const [scheme, setScheme] = useState<Scheme>(initialScheme ?? (compact ? (kit.dark ? "dark" : "light") : "both"));
   const activeDark = isDarkSurface(theme.colors.surface0);
   // The active Paseo theme stands for its own appearance; broomva's palette for the other.
   const light = activeDark ? GALLERY_LIGHT : theme;
   const dark = activeDark ? theme : GALLERY_DARK;
   const panes = scheme === "both" ? [light, dark] : scheme === "light" ? [light] : [dark];
-  // On the phone the M1 shell gets the screen: one thin row to leave it, so the deck sits where M1 draws it.
-  const thin = compact && section === "m1";
-  const controls = thin ? (
-    <View style={{ paddingHorizontal: 12, paddingVertical: 6 }}>
-      <Segmented theme={theme} label="Section" options={SECTIONS} value={section} onChange={setSection} compact />
-    </View>
-  ) : (
+  const controls = (
     <View style={{ gap: 10, padding: compact ? 12 : 20, paddingBottom: 8 }}>
       <Text accessibilityRole="header" style={{ color: kit.fg, fontSize: 18, fontWeight: "600" }}>
         Component kit
@@ -153,23 +142,6 @@ export function KitGallery({
       </View>
     </View>
   );
-  if (section === "m1")
-    return (
-      <View style={{ flex: 1, backgroundColor: kit.bg }}>
-        {controls}
-        <View style={{ flex: 1, flexDirection: "row", gap: 16, padding: compact ? 0 : 16, justifyContent: "center" }}>
-          {panes.map((pane) => (
-            <PhoneShell
-              key={pane.colors.surface0}
-              theme={pane}
-              framed={!compact}
-              directions={directions ?? BOTH_WAYS}
-              openOn={hold}
-            />
-          ))}
-        </View>
-      </View>
-    );
   return (
     <ScrollView style={{ flex: 1, backgroundColor: kit.bg }} contentContainerStyle={{ paddingBottom: 48 }}>
       {controls}
@@ -497,205 +469,5 @@ function UndertowParts({ theme }: { theme: PluginTheme }) {
         </View>
       </Group>
     </>
-  );
-}
-
-/** M1, live: the deck, the sheet carrying the tab bar, swipe rows, the toast, and the card that rises. */
-function PhoneShell({
-  theme,
-  framed,
-  directions,
-  openOn,
-}: {
-  theme: PluginTheme;
-  framed: boolean;
-  directions: Directions;
-  openOn?: string;
-}) {
-  const kit = kitOf(theme);
-  const [size, setSize] = useState({ width: 0, height: 0 });
-  const [index, setIndex] = useState(0);
-  const [tab, setTab] = useState("feed");
-  const [detail, setDetail] = useState(false);
-  const [gone, setGone] = useState<string[]>([]);
-  const toast = useUndoToast((receipt) => setGone((keys) => keys.filter((key) => `receipt:${key}` !== receipt)));
-  // The Feed deck deals holds only: approvals, asks, owner steps and due reviews (B2).
-  const holds = INSPECTOR_SAMPLES.filter((sample) => KIND_LOOK[sample.kind].hold);
-  const act = (done: string, then: string | undefined, key: string) =>
-    toast.show(undoEntry(`receipt:${key}`, done, Date.now(), undefined, then));
-  const header = (
-    <View style={{ flexDirection: "row", gap: 6 }}>
-      <Chip theme={theme} label="All" lead={null} />
-      <Chip theme={theme} label="Present" lead={<Dot color={kit.ok} />} />
-    </View>
-  );
-  return (
-    <View
-      testID="phone-shell"
-      onLayout={(event: LayoutChangeEvent) => setSize(event.nativeEvent.layout)}
-      style={{
-        flex: framed ? undefined : 1,
-        flexShrink: 0,
-        width: framed ? 393 : undefined,
-        height: framed ? 760 : undefined,
-        alignSelf: framed ? "flex-start" : "stretch",
-        borderRadius: framed ? 28 : 0,
-        borderWidth: framed ? 1 : 0,
-        borderColor: kit.border,
-        ...CLIP,
-        backgroundColor: kit.bg,
-      }}
-    >
-      <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
-        <Deck
-          theme={theme}
-          title="Needs you"
-          trailing={header}
-          items={holds}
-          index={index}
-          onIndexChange={setIndex}
-          keyOf={(item) => item.key}
-          directions={directions}
-          openOn={openOn}
-          renderItem={(item) => (
-            <DeckHold
-              theme={theme}
-              icon={KIND_LOOK[item.kind].icon}
-              kicker={[KIND_LOOK[item.kind].label, ...item.kicker]}
-              age={item.age}
-              title={item.title}
-              summary={item.summary ?? (item.kind === "ask" ? item.why : undefined)}
-              onDetails={() => setDetail(true)}
-              verbs={verbsFor(item.kind, item.primaryLabel).map((verb) => ({
-                label: verb.label,
-                primary: verb.primary,
-                onPress: verb.primary
-                  ? () =>
-                      act(
-                        item.kind === "approval" ? "Allowed #933" : `${KIND_LOOK[item.kind].label} · ${verb.label}`,
-                        item.kind === "approval" ? "merges in" : "applies in",
-                        item.key,
-                      )
-                  : () => setIndex(Math.min(index + 1, holds.length - 1)),
-              }))}
-            >
-              {item.kind === "approval" ? (
-                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-                  {item.evidence.map((evidence) => (
-                    <View
-                      key={evidence.label}
-                      style={{
-                        flexBasis: "46%",
-                        flexGrow: 1,
-                        backgroundColor: kit.sunken,
-                        borderRadius: 10,
-                        padding: 10,
-                        gap: 2,
-                      }}
-                    >
-                      <Text style={{ color: kit.muted, fontSize: 11.5 }}>{evidence.label}</Text>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                        <Dot color={evidence.tone === "warn" ? kit.warn : kit.ok} />
-                        <Text style={{ color: kit.fg, fontSize: 15, fontWeight: "600" }}>{evidence.value}</Text>
-                      </View>
-                    </View>
-                  ))}
-                </View>
-              ) : null}
-            </DeckHold>
-          )}
-        />
-      </View>
-      {size.height > 0 ? (
-        <PullSheet
-          theme={theme}
-          height={size.height}
-          top={64}
-          tabBar={<TabBar theme={theme} tabs={TABS} active={tab} onSelect={setTab} onNew={ignore} />}
-          title="Everything else"
-          counts={
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-              <Chip theme={theme} label="3 running" lead={<TidepoolDot theme={theme} state="running" size={11} />} />
-              <Chip theme={theme} label="1 finished" />
-              <Chip theme={theme} label="4 health" />
-              <Chip theme={theme} label="22 handled" />
-            </View>
-          }
-          toast={(place) => (
-            <UndoToast theme={theme} entry={toast.entry} onUndo={toast.undo} bottom={place.bottom} lift={place.lift} />
-          )}
-        >
-          {SHEET_ROWS.map((group) => (
-            <View key={group.title} style={{ gap: 6 }}>
-              <Text style={{ color: kit.fg, fontSize: 15, fontWeight: "600", paddingHorizontal: 4 }}>
-                {group.title}
-              </Text>
-              <View style={{ borderRadius: 14, overflow: "hidden", gap: 1, backgroundColor: kit.hairline }}>
-                {group.rows
-                  .filter((row) => !gone.includes(row.key))
-                  .map((row) => (
-                    <SwipeRow
-                      key={row.key}
-                      theme={theme}
-                      directions={directions}
-                      kind={row.kind}
-                      title={row.title}
-                      meta={row.meta}
-                      age={row.age}
-                      lead={
-                        row.state === "running" ? (
-                          <TidepoolDot theme={theme} state="running" />
-                        ) : row.state === "standing" ? (
-                          <StandingPulse theme={theme} state="standing" />
-                        ) : (
-                          <Dot
-                            color={row.kind === "finished" ? kit.ok : row.kind === "ask" ? kit.needs : kit.danger}
-                            size={9}
-                          />
-                        )
-                      }
-                      primary={
-                        row.kind === "finished" || row.kind === "notice"
-                          ? {
-                              label: row.kind === "finished" ? "Continue" : "Done",
-                              icon: "Check",
-                              onPress: () => {
-                                setGone((keys) => [...keys, row.key]);
-                                act(row.kind === "finished" ? "Continued" : "Done", undefined, row.key);
-                              },
-                            }
-                          : undefined
-                      }
-                      snooze={
-                        row.kind === "notice" ? { label: "Snooze 4h", icon: "AlarmClock", onPress: ignore } : undefined
-                      }
-                      open={{ label: "Open", icon: "ArrowUpRight", onPress: ignore }}
-                    />
-                  ))}
-              </View>
-            </View>
-          ))}
-        </PullSheet>
-      ) : null}
-      {size.height > 0 ? (
-        <InspectorCard
-          theme={theme}
-          directions={directions}
-          item={holds[index]}
-          index={index}
-          total={holds.length}
-          open={detail}
-          height={size.height}
-          onClose={() => setDetail(false)}
-          onMore={ignore}
-          onIndexChange={setIndex}
-          onVerb={(id) => {
-            setDetail(false);
-            if (id !== "deny" && id !== "skip" && id !== "open")
-              act(`${KIND_LOOK[holds[index].kind].label} · ${id}`, "applies in", holds[index].key);
-          }}
-        />
-      ) : null}
-    </View>
   );
 }

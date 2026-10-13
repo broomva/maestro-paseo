@@ -4,7 +4,7 @@
 
 import type { DecisionAsk } from "../shared/fleet";
 import type { Initiative, InitiativeStatus, WaitingOn } from "../shared/initiatives";
-import type { NeedRow } from "../shared/needs";
+import { holdOf, type NeedRow } from "../shared/needs";
 
 export const STATUS_TEXT: Record<InitiativeStatus, string> = {
   active: "Active",
@@ -131,14 +131,21 @@ export function ideaOutcome(ask: DecisionAsk, filed = false): string {
   }
 }
 
-/** The tab's facts line. */
-export function initiativesMeta(list: readonly Initiative[], ideas: readonly DecisionAsk[]): string {
-  const stale = list.filter((initiative) => initiative.stale).length;
+/**
+ * The tab's facts line. "N need you" is needs.list's: the due reviews it holds (BRO-3001, view-models.md invariant 1),
+ * never a count of the files' own `stale`, which can differ (a review answered and not yet applied, a file not read).
+ * `needsYou` is null while needs.list is unread: the line then says nothing of it.
+ */
+export function initiativesMeta(
+  list: readonly Initiative[],
+  ideas: readonly DecisionAsk[],
+  needsYou: number | null,
+): string {
   const broken = list.filter((initiative) => initiative.error).length;
   const open = ideas.filter((ask) => ask.state === "open").length;
   return [
     `${list.length} ${list.length === 1 ? "initiative" : "initiatives"}`,
-    stale > 0 ? `${stale} ${stale === 1 ? "needs" : "need"} you` : null,
+    needsYou !== null && needsYou > 0 ? `${needsYou} ${needsYou === 1 ? "needs" : "need"} you` : null,
     broken > 0 ? `${broken} cannot be read` : null,
     `${open} open ${open === 1 ? "idea" : "ideas"}`,
   ]
@@ -162,4 +169,15 @@ export function reviewNoticeText(rows: readonly Pick<NeedRow, "title" | "body">[
 /** The ideas for one initiative, open first. */
 export function ideasOf(ideas: readonly DecisionAsk[], initiative: string): DecisionAsk[] {
   return ideas.filter((ask) => ask.idea?.initiative === initiative);
+}
+
+/**
+ * The due reviews needs.list holds (the tab's "need you"): null when needs.list was not read, or could not read the
+ * reviews (`unread`), where "none" would be a guess (BRO-3008).
+ */
+export function dueReviewCount(
+  needs: { rows: readonly Pick<NeedRow, "key">[]; unread?: readonly string[] } | null | undefined,
+): number | null {
+  if (!needs || needs.unread?.includes("reviews")) return null;
+  return needs.rows.filter((row) => holdOf(row.key)?.kind === "review").length;
 }

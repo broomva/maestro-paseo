@@ -219,19 +219,22 @@ export function Chip({
   label,
   lead,
   tone,
+  dense = false,
 }: {
   theme: PluginTheme;
   label: string;
   lead?: ReactNode;
   tone?: "warn";
+  /** Tighter padding: four counts on one line at a phone's 375 pt (M1's peek has room for one line). */
+  dense?: boolean;
 }) {
   const kit = kitOf(theme);
   const style: ViewStyle = {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: dense ? 5 : 6,
     height: 30,
-    paddingHorizontal: 12,
+    paddingHorizontal: dense ? 9 : 12,
     borderRadius: 9999,
     backgroundColor: tone === "warn" ? kit.warnSoft : kit.sunken,
   };

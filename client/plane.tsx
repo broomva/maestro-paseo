@@ -51,6 +51,8 @@ import { LoopControl, LoopPanel } from "./loop";
 import { LoopsNotices, LoopsView } from "./loops";
 import { NewWork } from "./new-work";
 import { PendingVerbs } from "./pending-verbs";
+import { PHONE_TABS, type PhoneTab } from "./phone/model";
+import { PhoneSurface } from "./phone/shell";
 import { FilterRow, ScopeRow, ViewPicker } from "./plane-controls";
 import {
   applyFilter,
@@ -78,6 +80,17 @@ import { WorkBoard } from "./work-board";
 /** The views whose desktop screen is J2–J9 (BRO-3036): they carry their own watched things, so no notice band sits above them. */
 const J_SCREENS: readonly PlaneView[] = ["decisions", "board", "health", "initiatives"];
 
+/** The tab `params.tab` names (BRO-3033 fact 2), the Feed when it names none. */
+function phoneTabParam(value: string | undefined): PhoneTab {
+  return PHONE_TABS.find((tab) => tab.id === value)?.id ?? "feed";
+}
+
+/** The phone tab a view sits under: Decisions its own deck, the system views Health's body, the rest Work's. */
+function classicTabOf(view: PlaneView): PhoneTab {
+  if (view === "decisions") return "decisions";
+  return SYSTEM_VIEWS.includes(view) || view === "health" ? "health" : "work";
+}
+
 export function MaestroSurface({ theme, layout, navigation, params }: PluginScreenProps) {
   const list = useWorkList();
   // What needs you (needs.list): the subtitle, the tabs and Needs you say the header's number, read once.
@@ -91,7 +104,9 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
   const text = useText(theme);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [chosenView, setView] = useState<PlaneView>("feed");
+  const [chosenView, setChosenView] = useState<PlaneView>("feed");
+  // The phone's tab (M1): the deck tabs are the phone's own, the other two show today's views until M6 and M7.
+  const [phoneTab, setPhoneTab] = useState<PhoneTab>(() => phoneTabParam(params?.tab));
   const [filter, setFilter] = useState<Filter>("all");
   const [chosenScope, setScope] = useState<string | null>(null);
   const [loopOpen, setLoopOpen] = useState(false);
@@ -104,6 +119,11 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
   const lastView = useRef<Partial<Record<HomeTab, PlaneView>>>({});
   const asksRead = useWorkspaceAsks();
   const asks = asksRead.data ? decisionAsks(asksRead.data) : [];
+  /** Shows a view; on the phone its tab with it (a system view is Health's, Decisions its own, the rest Work's). */
+  const setView = (next: PlaneView) => {
+    setChosenView(next);
+    setPhoneTab(classicTabOf(next));
+  };
   const openFleet = (scope: string | null, tick: number | null = null) => {
     setFleetScope(scope);
     setFleetTick(tick);
@@ -113,13 +133,18 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
   const openDecisions = (ledger: string | null, ask: DecisionsFocus["ask"]) => {
     setDecisionsFocus({ ledger, ask, at: Date.now() });
     setView("decisions");
+    // The phone's Decisions deck opens on the ask when needs.list holds it (its hold key is `ask:` and the ask's key).
+    if (layout.compact && ask?.key) setHomeFocus({ hold: `ask:${ask.key}`, at: Date.now() });
   };
   // Opening on `params.hold` (a push, the header count): that hold's inspector on the Feed (BRO-3033 fact 2).
   const holdParam = params?.hold;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: setView only sets state, and only a new hold param moves it
   useEffect(() => {
     if (!holdParam) return;
     setView("feed");
-    setHomeFocus({ hold: holdParam, at: Date.now() });
+    // The phone opens its Feed deck on the hold and says so (M10); every hold is in it.
+    setPhoneTab("feed");
+    setHomeFocus({ hold: holdParam, at: Date.now(), from: "push" });
   }, [holdParam]);
   useIntent((intent) => {
     if (intent.kind === "select") {
@@ -127,7 +152,11 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
       if (!layout.compact) {
         setView("feed");
         setHomeFocus({ work: intent.id, at: Date.now() });
-      } else setSelected(intent.id);
+      } else {
+        // The phone's Feed deck opens a hold, its card opens other work, and work with neither opens its page.
+        setPhoneTab("feed");
+        setHomeFocus({ work: intent.id, at: Date.now() });
+      }
     } else if (intent.kind === "new") setCreating(true);
     else if (intent.kind === "fleet") openFleet(intent.scope);
     else if (intent.kind === "decisions")
@@ -145,7 +174,9 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
       // Its chips are the List's: the Work tab opens there, not on the Board, which would clear the filter.
       lastView.current.work = "list";
       // The Board splits by state, History lists receipts, and the system views are not work: none applies the chips.
-      setView((view) => (view === "board" || view === "history" || SYSTEM_VIEWS.includes(view) ? "feed" : view));
+      setChosenView((view) => (view === "board" || view === "history" || SYSTEM_VIEWS.includes(view) ? "feed" : view));
+      // The phone's Needs you is its Feed deck.
+      if (layout.compact) setPhoneTab("feed");
     }
   });
   const compact = layout.compact;
@@ -492,7 +523,25 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
     return (
       <ChangeScope>
         <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
-          {listPane}
+          <PhoneSurface
+            theme={theme}
+            layout={layout}
+            navigation={navigation}
+            tab={phoneTab}
+            onTab={(next) => {
+              setPhoneTab(next);
+              // Work and Health open the view they last showed, or the first today's body has.
+              if (next === "work") setChosenView(lastView.current.work === "history" ? "history" : "feed");
+              else if (next === "health" && classicTabOf(view) !== "health") setChosenView("fleet");
+            }}
+            workspace={workspace}
+            onWorkspace={setWorkspace}
+            focus={homeFocus}
+            onFocusHandled={() => setHomeFocus(null)}
+            onNew={() => setCreating(true)}
+            onOpenWork={setSelected}
+            classic={listPane}
+          />
           {newWork}
         </View>
       </ChangeScope>

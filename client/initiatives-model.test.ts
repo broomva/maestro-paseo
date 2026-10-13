@@ -7,6 +7,7 @@ import {
   dateLine,
   defaultWake,
   driverText,
+  dueReviewCount,
   evidenceUrl,
   ideaOutcome,
   ideasText,
@@ -74,7 +75,12 @@ describe("the card's words", () => {
     expect(ideasText({ open: 1, triaged: 0 })).toBe("1 idea: 1 open, 0 triaged");
     const list = [initiative({ stale: { kind: "overdue", date: "2026-10-01" } }), initiative({ error: "bad" })];
     const ideas = [{ state: "open" }, { state: "answered" }] as DecisionAsk[];
-    expect(initiativesMeta(list, ideas)).toBe("2 initiatives · 1 needs you · 1 cannot be read · 1 open idea");
+    expect(initiativesMeta(list, ideas, 1)).toBe("2 initiatives · 1 needs you · 1 cannot be read · 1 open idea");
+    // BRO-3001: "need you" is needs.list's review holds, not the files' `stale`: a stale file with no hold says none,
+    // a hold with no stale file (its file unread here) still counts, and an unread needs.list says nothing of it.
+    expect(initiativesMeta(list, ideas, 0)).toBe("2 initiatives · 1 cannot be read · 1 open idea");
+    expect(initiativesMeta([initiative({})], [], 3)).toBe("1 initiative · 3 need you · 0 open ideas");
+    expect(initiativesMeta(list, ideas, null)).toBe("2 initiatives · 1 cannot be read · 1 open idea");
     // Due reviews, as needs.list raises them (B2): each titled with its initiative and saying why.
     const due = [
       reviewNeed(
@@ -122,5 +128,16 @@ describe("the wake date", () => {
     expect(wakeProblem("tomorrow", "2026-10-05")).toBe("Write the date as YYYY-MM-DD.");
     // A day the calendar lacks, which Date.parse alone would roll into March.
     expect(wakeProblem("2027-02-30", "2026-10-05")).toBe("Write the date as YYYY-MM-DD.");
+  });
+});
+
+describe("the due reviews needs.list holds (BRO-3001, BRO-3008)", () => {
+  const rows = [{ key: "review:skene" }, { key: "work:w-1" }, { key: 'ask:["origin/main","a.yaml",null,"A1"]' }];
+  test("counts the review holds; none read is null, and so is a read that could not read the reviews", () => {
+    expect(dueReviewCount({ rows })).toBe(1);
+    expect(dueReviewCount({ rows: [] })).toBe(0);
+    expect(dueReviewCount(null)).toBeNull();
+    expect(dueReviewCount({ rows, unread: ["asks"] })).toBe(1);
+    expect(dueReviewCount({ rows: [], unread: ["reviews"] })).toBeNull();
   });
 });
