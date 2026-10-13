@@ -33,7 +33,7 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-function findChrome(explicit: string | undefined): string {
+export function findChrome(explicit: string | undefined): string {
   const candidates = [explicit, process.env.DOGFOOD_CHROME];
   const cache = join(homedir(), "Library", "Caches", "ms-playwright");
   if (existsSync(cache)) {
@@ -61,7 +61,7 @@ interface Pending {
 }
 
 /** The smallest DevTools protocol client: one socket, flattened sessions. */
-class Cdp {
+export class Cdp {
   private seq = 0;
   private readonly pending = new Map<number, Pending>();
 
@@ -102,7 +102,7 @@ class Cdp {
   }
 }
 
-class Page {
+export class Page {
   constructor(
     private readonly cdp: Cdp,
     private readonly session: string,
@@ -157,18 +157,21 @@ class Page {
    * title, so a Maestro row ("<title>, Needs you") is preferred over a bare
    * text match.
    */
-  async click(name: string): Promise<void> {
+  async click(name: string, scope?: string): Promise<void> {
     const point = await this.evaluate<{ x: number; y: number; label: string } | null>(`(() => {
       const name = ${JSON.stringify(name)};
+      // Inside one part of the page (a card), when given: Paseo's own prompt may carry the same words.
+      const root = ${scope ? `document.querySelector(${JSON.stringify(scope)})` : "document"};
+      if (!root) return null;
       // Rendered, not necessarily on screen: the target is scrolled into view below.
       const visible = (el) => {
         const r = el.getBoundingClientRect();
         return r.width > 0 && r.height > 0;
       };
-      const labelled = [...document.querySelectorAll('[aria-label]')]
+      const labelled = [...root.querySelectorAll('[aria-label]')]
         .filter((el) => el.getAttribute('aria-label').startsWith(name) && visible(el))
         .sort((a, b) => (b.getAttribute('aria-label') === name) - (a.getAttribute('aria-label') === name) || b.getAttribute('aria-label').length - a.getAttribute('aria-label').length);
-      const byText = [...document.querySelectorAll('[role="button"], button, a, [tabindex]')]
+      const byText = [...root.querySelectorAll('[role="button"], button, a, [tabindex]')]
         .filter((el) => el.innerText && el.innerText.includes(name) && visible(el))
         .sort((a, b) => a.innerText.length - b.innerText.length);
       const el = labelled[0] || byText[0];
@@ -185,7 +188,7 @@ class Page {
   }
 }
 
-async function launch(chrome: string, profile: string): Promise<{ child: ChildProcess; endpoint: string }> {
+export async function launch(chrome: string, profile: string): Promise<{ child: ChildProcess; endpoint: string }> {
   await mkdir(profile, { recursive: true });
   const child = spawn(
     chrome,
@@ -327,4 +330,4 @@ async function main(): Promise<void> {
   }
 }
 
-await main().catch((error) => fail((error as Error).message));
+if (import.meta.main) await main().catch((error) => fail((error as Error).message));

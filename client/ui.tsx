@@ -639,13 +639,14 @@ export function Segmented<T extends string>({
 
 /** Whether the last input was a key (true) or a pointer (false): focus rings show for keys only (focus-visible). */
 let keyboardModality = false;
-let modalityWatched = false;
+/** The document being watched: a page that is replaced (a test's window, a reload) is watched afresh. */
+let modalityWatched: unknown = null;
 function watchModality(): void {
-  if (modalityWatched || Platform.OS !== "web") return;
+  if (Platform.OS !== "web") return;
   const doc = (globalThis as { document?: { addEventListener(type: string, fn: () => void, capture: boolean): void } })
     .document;
-  if (!doc) return;
-  modalityWatched = true;
+  if (!doc || modalityWatched === doc) return;
+  modalityWatched = doc;
   doc.addEventListener(
     "keydown",
     () => {

@@ -62,6 +62,7 @@ export function Pill({
   disabled = false,
   busy = false,
   accessibilityLabel,
+  tone,
 }: {
   theme: PluginTheme;
   label: string;
@@ -75,9 +76,12 @@ export function Pill({
   busy?: boolean;
   /** What a screen reader says, when the button's words are not enough ("Answer A1: Merge PR #863"). */
   accessibilityLabel?: string;
+  /** A primary that says what it does by color (K1): Done is green, Unblock amber. Words always say it too. */
+  tone?: "ok" | "warn";
 }) {
   const kit = kitOf(theme);
-  const ink = primary ? kit.onInk : kit.fg;
+  const ink = primary || tone ? kit.onInk : kit.fg;
+  const fill = tone === "ok" ? kit.ok : tone === "warn" ? kit.warn : primary ? kit.ink : kit.control;
   const showKey = keyCap && keysHint(Platform.OS);
   return (
     <Pressable
@@ -95,7 +99,7 @@ export function Pill({
         // A pill that shares a row grows to its share and centres its word, so it keeps only a small margin.
         paddingHorizontal: grow ? 10 : height >= 44 ? 20 : 16,
         borderRadius: 9999,
-        backgroundColor: primary ? kit.ink : kit.control,
+        backgroundColor: fill,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",

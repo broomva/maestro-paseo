@@ -7,9 +7,10 @@
 // way to reach your phone. So Maestro registers a provider of its own and
 // keeps one session on it. Each landing at your gate is a turn there: its one
 // message is the notice, which Paseo's push shows (its first 220 characters,
-// under "Agent finished"), and the gate card under it answers the work in
-// place. Paseo raises a session's attention once until you open it; an inbox
-// still unread when the next landing comes is archived and a fresh one pushes
+// under "Agent finished"), and the digest card under it lists what needs you,
+// each opening its own session, where the card to act from waits (BRO-3008).
+// Paseo raises a session's attention once until you open it; an inbox still
+// unread when the next landing comes is archived and a fresh one pushes
 // (Inbox.session), so the channel never goes quiet on its own.
 
 import { randomUUID } from "node:crypto";
@@ -22,12 +23,12 @@ import type {
   ProviderRegistration,
 } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
-import { GATE_CARD_KIND, GATE_CARD_VERSION, type GateCardData, GateCardSchema } from "../shared/gate-card";
-import { needsWords } from "../shared/needs";
+import { CARD_KIND, CARD_VERSION, type CardData, GateCardSchema } from "../shared/card";
+import { needsWords, workKey } from "../shared/needs";
 import { lookOf, onItsOwnArc, workerOf } from "./events";
-import { landingOf } from "./gate-card";
 import { configPath } from "./paths";
 import type { Paseo } from "./runs";
+import { landingOf } from "./session-cards";
 import type { StoredWork } from "./store";
 
 export const INBOX_PROVIDER = "maestro-inbox";
@@ -217,9 +218,10 @@ function answer(input: ProviderInput, open: Set<string>, emit: (event: ProviderE
             type: "plugin",
             id: `${turnId}-card`,
             pluginId: PLUGIN_ID,
-            kind: GATE_CARD_KIND,
-            version: GATE_CARD_VERSION,
-            data: notice.card satisfies GateCardData,
+            kind: CARD_KIND,
+            version: CARD_VERSION,
+            // The inbox holds only a digest (K1): what needs you now, read live, and the landing it came with.
+            data: { kind: "digest", key: workKey(notice.card.workId), version: turnId } satisfies CardData,
           },
         });
       } else {

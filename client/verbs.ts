@@ -15,7 +15,7 @@
 import { useRpc } from "@getpaseo/plugin/client";
 import { useQueryClient } from "@tanstack/react-query";
 import { decideConductor, undoConductor } from "../shared/answers";
-import { cancelWork, dispatchWork, unblockWork, undoWork, type WorkItem } from "../shared/contracts";
+import { cancelWork, dispatchWork, stopWork, unblockWork, undoWork, type WorkItem } from "../shared/contracts";
 import { type AnswerInput, answerAsk, type DecisionAsk } from "../shared/fleet";
 import { REVIEW_ANSWERS, type ReviewAnswer, reviewInitiative } from "../shared/initiatives";
 import { holdOf, type NeedRow } from "../shared/needs";
@@ -39,6 +39,9 @@ export const VERB_IDS = [
   "file",
   "dismiss",
   "continue",
+  "course",
+  "prompt",
+  "stop",
 ] as const;
 export type VerbId = (typeof VERB_IDS)[number];
 
@@ -53,6 +56,8 @@ export interface VerbTarget {
   proposal?: string | null;
   /** A notice (notices.list's row): what Snooze quiets. */
   notice?: { key: string } | null;
+  /** A session with no work or hold of its own to name it: the session page's prompt box (K2). */
+  agentId?: string | null;
 }
 
 /** The call a verb makes. Pure data: `useVerbs` runs it. */
@@ -75,6 +80,8 @@ export type VerbPlan =
   | { call: "dispatch"; id: string; done: string }
   | { call: "unblock"; id: string; note: string; done: string }
   | { call: "cancel"; id: string; done: string }
+  /** Stop a run: its session is archived and the work is stuck, with the branch kept. Refused while it holds uncommitted work. */
+  | { call: "stop"; id: string; done: string }
   | { call: "conductor"; key: string; verb: "file" | "dismiss"; done: string }
   | { call: "snooze"; key: string; done: string }
   /** Your answer to a due initiative review (B2, J8): keep, park or close, recorded as a receipt after the window. */
@@ -125,9 +132,10 @@ export function decideApproval(
 }
 
 /** Continue prompts the session (session.prompt); a session that is gone, or none, has nothing to prompt. */
-export function promptSession(agentId: string | null, key: string, prompt: string): VerbPlan {
+export function promptSession(agentId: string | null, key: string, prompt: string, done = "Sent: continue"): VerbPlan {
   if (!agentId) return { call: "unavailable", why: "It has no session to prompt." };
-  return { call: "prompt", agentId, prompt, key, done: "Sent: continue" };
+  if (!prompt) return { call: "unavailable", why: "Say what to send." };
+  return { call: "prompt", agentId, prompt, key, done };
 }
 
 /**
@@ -206,10 +214,34 @@ export function planVerb(verb: VerbId, target: VerbTarget, choice?: string, word
     case "cancel":
       if (!item) return { call: "unavailable", why: "Only work is canceled." };
       return { call: "cancel", id: item.id, done: "Canceled" };
+    case "stop":
+      if (item?.state !== "running" && item?.state !== "review")
+        return { call: "unavailable", why: "Only a run that is going is stopped." };
+      return { call: "stop", id: item.id, done: "Stopped the run" };
     case "file":
     case "dismiss":
       if (!target.proposal) return { call: "unavailable", why: "Only a proposal is filed or dismissed." };
       return { call: "conductor", key: target.proposal, verb, done: verb === "file" ? "Filed as work" : "Dismissed" };
+    case "course": {
+      // Finished work at your gate: your note goes to its session as a prompt, which reopens it (session.prompt, with
+      // its 8 s window). The work's own revise verdict is retired (A8): nothing here decides on the work.
+      if (item?.state !== "review") return { call: "unavailable", why: "Only work at your gate changes course." };
+      if (!words.trim()) return { call: "unavailable", why: "Say what should change." };
+      return promptSession(
+        item.worker?.agentId ?? null,
+        `work:${item.id}`,
+        `Change of course: ${words.trim()}`,
+        "Changed course",
+      );
+    }
+    case "prompt":
+      // Your own words to a session; the key (when it has one) is what the receipt belongs to.
+      return promptSession(
+        target.agentId ?? item?.worker?.agentId ?? row?.session?.agentId ?? null,
+        row?.key ?? (item ? `work:${item.id}` : `session:${target.agentId ?? ""}`),
+        words.trim(),
+        "Sent",
+      );
     case "continue":
       return promptSession(
         item?.worker?.agentId ?? row?.session?.agentId ?? null,
@@ -269,6 +301,7 @@ export function useVerbs() {
     dispatch: useRpc(dispatchWork),
     unblock: useRpc(unblockWork),
     cancel: useRpc(cancelWork),
+    stop: useRpc(stopWork),
     undo: useRpc(undoWork),
     answer: useRpc(answerAsk),
     snooze: useRpc(snoozeNotice),
@@ -333,6 +366,10 @@ export function useVerbs() {
           note: plan.note,
         });
         return { done: plan.done, receipt: `verb:${receipt}`, appliesAt };
+      }
+      case "stop": {
+        const { receipt, appliesAt } = await rpc.stop({ id: plan.id });
+        return receipt ? { done: plan.done, receipt: `verb:${receipt}`, appliesAt } : { done: plan.done };
       }
       case "conductor": {
         const { receipt, appliesAt } = await rpc.conductor({ key: plan.key, verb: plan.verb });
