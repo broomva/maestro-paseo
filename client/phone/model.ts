@@ -21,6 +21,7 @@ import type { InspectorItem } from "../kit/inspector";
 import { panelVerbsFor, verbsFor } from "../kit/inspector-model";
 import type { Tab } from "../kit/tab-bar";
 import { titleText } from "../records-text";
+import { type SettingsPageId, settingsTrail } from "./settings-trail";
 
 // ── The tabs ─────────────────────────────────────────────────────────────────
 
@@ -328,7 +329,8 @@ export type PhonePage =
   | { kind: "initiatives" }
   | { kind: "fleet"; scope: string | null; tick: number | null }
   | { kind: "timeline" }
-  | { kind: "loops" };
+  | { kind: "loops" }
+  | { kind: "settings"; page: SettingsPageId };
 
 /** The page an intent opens on the phone, or null when it opens a tab or something else (Decisions, work). */
 export function pageOfIntent(intent: MaestroIntent): PhonePage | null {
@@ -357,5 +359,7 @@ export function pageTrail(page: PhonePage): string[] {
       return ["Timeline"];
     case "loops":
       return ["Loops"];
+    case "settings":
+      return settingsTrail(page.page);
   }
 }

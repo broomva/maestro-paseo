@@ -2526,6 +2526,17 @@ describe("M1 on the phone, through the surface (BRO-3037)", () => {
     expect(view.all('[aria-label^="View: "]')).toHaveLength(0);
   });
 
+  test("the New work intent grows the phone's own sheet over the deck, and closing it closes it", async () => {
+    const view = await mount(surface(true, { tab: "feed" }));
+    await until(() => view.text().includes("1 of 2"));
+    expect(view.all('[data-testid="new-work-sheet"]')).toHaveLength(0);
+    await step(generation, () => requestIntent({ kind: "new" }));
+    await settle(60);
+    expect(view.all('[data-testid="new-work-sheet"]')).toHaveLength(1);
+    await view.press(view.all('[aria-label="Close new work"]')[0]);
+    expect(view.all('[data-testid="new-work-sheet"]')).toHaveLength(0);
+  });
+
   test("params.hold opens the deck on that hold, from the push", async () => {
     const view = await mount(surface(true, { tab: "feed", hold: "work:g" }));
     await until(() => view.all('[data-testid="from-the-push"]').length > 0);

@@ -172,7 +172,32 @@ export function NewWork({
   );
 }
 
-function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPaneProps & { heading: boolean }) {
+/** What a host that draws Save to queue and Dispatch itself (the phone's pinned verbs, M9) is told after every change. */
+export interface ComposerState {
+  /** A title or brief and a place are given: the verbs may be pressed. */
+  ready: boolean;
+  /** The create call is in flight. */
+  pending: boolean;
+  /** A prompt-free run's first Dispatch was pressed: the next one starts it. */
+  confirming: boolean;
+  /** Something was typed: closing it would lose it. */
+  dirty: boolean;
+  save: () => void;
+  dispatch: () => void;
+}
+
+export function Composer({
+  theme,
+  compact,
+  onCreated,
+  onClose,
+  heading,
+  onState,
+}: NewWorkPaneProps & {
+  heading: boolean;
+  /** When given, the composer leaves Save to queue and Dispatch to the host and reports their state here. */
+  onState?: (state: ComposerState) => void;
+}) {
   const paseo = usePaseo();
   const verbs = useVerbs();
   const toast = useToast();
@@ -391,6 +416,21 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
       },
     );
   };
+
+  // A host that draws the verbs itself is told their state, and calls the same submit (a prompt-free run still asks twice).
+  const latest = useRef({ submit });
+  latest.current = { submit };
+  const dirty = title.trim() !== "" || brief.trim() !== "";
+  useEffect(() => {
+    onState?.({
+      ready,
+      pending,
+      confirming,
+      dirty,
+      save: () => latest.current.submit(false),
+      dispatch: () => latest.current.submit(true),
+    });
+  }, [onState, ready, pending, confirming, dirty]);
 
   const onBriefKey = (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
     if (!keyboard) return;
@@ -1028,59 +1068,63 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
 
           <View style={{ flexGrow: 1 }} />
 
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Save to queue"
-            accessibilityState={{ disabled: !ready || pending }}
-            disabled={!ready || pending}
-            onPress={() => submit(false)}
-            style={({ pressed }) => ({
-              height: compact ? 36 : 30,
-              paddingHorizontal: space[2],
-              justifyContent: "center",
-              borderRadius: 15,
-              backgroundColor: pressed ? theme.colors.surface2 : "transparent",
-              opacity: !ready || pending ? 0.5 : 1,
-            })}
-          >
-            <Text style={{ color: theme.colors.foregroundMuted, fontSize: size.sm }}>Save to queue</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={confirming ? "Confirm dispatch" : "Dispatch"}
-            accessibilityState={{ disabled: !ready || pending, busy: pending }}
-            disabled={!ready || pending}
-            onPress={() => submit(true)}
-            style={({ pressed }) => ({
-              height: compact ? 36 : 30,
-              paddingHorizontal: space[3],
-              flexDirection: "row",
-              alignItems: "center",
-              gap: space[2],
-              borderRadius: 15,
-              backgroundColor: ready ? theme.colors.accent : theme.colors.surface2,
-              opacity: pending ? 0.7 : pressed ? 0.85 : 1,
-            })}
-          >
-            <Text
-              style={{
-                color: ready ? theme.colors.accentForeground : theme.colors.foregroundMuted,
-                fontSize: size.sm,
-                fontWeight: "600",
-              }}
-            >
-              {confirming ? "Confirm dispatch" : "Dispatch"}
-            </Text>
-            {pending ? (
-              <ActivityIndicator size="small" color={theme.colors.accentForeground} />
-            ) : (
-              <Icon
-                name="CornerDownLeft"
-                size={14}
-                color={ready ? theme.colors.accentForeground : theme.colors.foregroundMuted}
-              />
-            )}
-          </Pressable>
+          {onState ? null : (
+            <>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Save to queue"
+                accessibilityState={{ disabled: !ready || pending }}
+                disabled={!ready || pending}
+                onPress={() => submit(false)}
+                style={({ pressed }) => ({
+                  height: compact ? 36 : 30,
+                  paddingHorizontal: space[2],
+                  justifyContent: "center",
+                  borderRadius: 15,
+                  backgroundColor: pressed ? theme.colors.surface2 : "transparent",
+                  opacity: !ready || pending ? 0.5 : 1,
+                })}
+              >
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: size.sm }}>Save to queue</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={confirming ? "Confirm dispatch" : "Dispatch"}
+                accessibilityState={{ disabled: !ready || pending, busy: pending }}
+                disabled={!ready || pending}
+                onPress={() => submit(true)}
+                style={({ pressed }) => ({
+                  height: compact ? 36 : 30,
+                  paddingHorizontal: space[3],
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: space[2],
+                  borderRadius: 15,
+                  backgroundColor: ready ? theme.colors.accent : theme.colors.surface2,
+                  opacity: pending ? 0.7 : pressed ? 0.85 : 1,
+                })}
+              >
+                <Text
+                  style={{
+                    color: ready ? theme.colors.accentForeground : theme.colors.foregroundMuted,
+                    fontSize: size.sm,
+                    fontWeight: "600",
+                  }}
+                >
+                  {confirming ? "Confirm dispatch" : "Dispatch"}
+                </Text>
+                {pending ? (
+                  <ActivityIndicator size="small" color={theme.colors.accentForeground} />
+                ) : (
+                  <Icon
+                    name="CornerDownLeft"
+                    size={14}
+                    color={ready ? theme.colors.accentForeground : theme.colors.foregroundMuted}
+                  />
+                )}
+              </Pressable>
+            </>
+          )}
         </View>
       </View>
 

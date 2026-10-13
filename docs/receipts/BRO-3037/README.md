@@ -71,3 +71,29 @@ The workspace and presence menus opened behind the deck's card on the phone (the
 ## Not driven
 
 Swipe and Open log (the light sandbox had no schedules; the dark shot had them but a swipe cannot be dragged by shot.ts), Snooze (no quiet run in the seed), the software keyboard, and Settings (PR 2). Swipe and Snooze are covered by render tests (`notice.snooze` sent once, the verb locked while it waits) and the kit's swipe tests, not on screen.
+
+# PART 2, PR 2: M9 New work and M11 Settings
+
+Shot in the dogfood sandbox at 375x812, against `m9-new-work-mobile.png` and `m11-settings-mobile.png`. `shot.ts` gained one step, `type:words`,
+which types into the first visible text area with real input events (`Input.insertText`).
+
+| File | Shows |
+|---|---|
+| `m9-new-work-typed-{light,dark}.png` | + on the tab bar opened the sheet over the dimmed Feed deck; a brief typed with input events; Save to queue and Dispatch pinned at the foot as 52 pt pills, and the contract's pills and the first promises above. The "Who starts it" row is further down the scroll and is not in this shot (the render test reads its text) |
+| `m9-saved-in-queued-light.png` | after Save to queue: the sheet closed and the work is the first row of Queued in the Feed sheet; nothing started (Running still 1) |
+| `m9-dispatched-light.png` | after Dispatch on another brief: the sheet closed, the host's "Dispatched" toast over the header |
+| `m9-dispatched-running-light.png` | the Work tab's board: Running 2, the new work wears the Undertow, Queued 4 |
+| `m11-presence-menu-{light,dark}.png` | the presence menu opened from the deck header, with "Settings ›" at its foot |
+| `m11-settings-light.png` | Settings opened from it: Presence, then Orchestration (Runs and gate, Lanes, Loops, Notices) |
+| `m11-notices-light.png` | one level deep: Notices, each kind's count from notices.list (this is the notices page, shot after the Settings root) |
+| `m11-lanes-light.png` | Lanes: the conductor (the loop's panel with Wake now) and "No fleet scope is configured" (the sandbox has none) |
+
+## Differences from the frames
+
+- **M9:** Save to queue and Dispatch are pinned; the promises include a fifth row, "If it lands nothing", that M9 does not draw (J9 does). No "Undo" on the dispatched toast: work.create has no receipt. The sheet grows by a spring from below (scale and rise), not from the + exactly.
+- **M11, drawn only what has data:** Presence (read; the switch waits for BRO-2987), Runs and gate (config.get/config.set, the 8 s undo), Lanes (loop.get and fleet.get, read-only), Loops (loops.get), Notices (notices.list). **Not drawn:** Notifications, Loop and fleet (mode, caps, Fleet on), Approvals, Credentials, Appearance (no read or write behind them), Run tick (no call), Composed prompt and Propose a change (`lanes.get` does not exist). Each lane row's mode and last tick come from fleet.get, not from lanes.get.
+- Settings' sub-pages use the plugin's own controls where they fit (Runs and gate is today's Settings screen inside the card).
+
+## Not driven
+
+The software keyboard and its lift (no iPhone; the lift is tested against a fake `keyboardDidShow`/`keyboardWillShow`), a drag-down to close, a swipe row, Snooze, Runs and gate's Save, and a prompt-free run's second Dispatch press. The sandbox has no fleet scope, so the lane rows themselves were not on screen.

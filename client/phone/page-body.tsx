@@ -1,15 +1,16 @@
-// What each page holds (client/phone/model.ts PhonePage): the phone's own Initiatives (M8)
+// What each page holds (client/phone/model.ts PhonePage): the phone's own Initiatives (M8) and Settings (M11),
 // and the views Health's sheet reaches, which are the desktop's own (Fleet, Timeline, Loops) drawn at the phone's
 // width. A hold or work they open rises as the surface's card, over the page.
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { FleetView } from "../fleet";
-import { LoopPanel } from "../loop";
 import { LoopsView } from "../loops";
+import type { PresenceRead } from "../presence";
 import { TimelineView } from "../timeline";
 import { InitiativesPage } from "./initiatives-page";
 import type { PhonePage } from "./model";
+import { SettingsPage } from "./settings-page";
 
 type Navigation = PluginSurfaceProps["navigation"];
 
@@ -17,6 +18,7 @@ export function PageBody({
   theme,
   page,
   navigation,
+  presence,
   onPage,
   onOpenHold,
   onOpenDecision,
@@ -25,6 +27,7 @@ export function PageBody({
   theme: PluginTheme;
   page: PhonePage;
   navigation: Navigation;
+  presence: PresenceRead;
   onPage: (page: PhonePage | null) => void;
   /** A due review opens as the hold the Feed's deck shows. */
   onOpenHold: (key: string) => void;
@@ -62,15 +65,19 @@ export function PageBody({
           compact
           navigation={navigation}
           onOpenFleet={(scope, tick = null) => onPage({ kind: "fleet", scope, tick })}
-          onOpenLoop={() => onPage({ kind: "loops" })}
+          onOpenLoop={() => onPage({ kind: "settings", page: "lanes" })}
         />
       );
     case "loops":
+      return <LoopsView theme={theme} />;
+    case "settings":
       return (
-        <>
-          <LoopPanel theme={theme} onClose={() => onPage(null)} />
-          <LoopsView theme={theme} />
-        </>
+        <SettingsPage
+          theme={theme}
+          page={page.page}
+          presence={presence}
+          onPage={(next) => onPage({ kind: "settings", page: next })}
+        />
       );
   }
 }

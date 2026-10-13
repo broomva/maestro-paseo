@@ -362,7 +362,7 @@ pages:
     components: [C-composer, C-pill, C-kbd, C-button]
     reads: [I-config-get, I-folder-inspect, I-lanes-get]
     writes: [I-work-create]
-    code: [client/new-work.tsx, client/composer.ts]
+    code: [client/new-work.tsx, client/composer.ts, client/phone/new-work-sheet.tsx, client/phone/keyboard.ts]
   P-phone:
     name: M10 From a push — Paseo's push, the asking session's card, Open in Maestro on the same hold
     status: new
@@ -383,7 +383,7 @@ pages:
     components: [C-settings-row, C-toggle, C-segmented, C-button]
     reads: [I-sweep-get, I-fleet-get, I-config-get]
     writes: [I-config-set, I-sweep-wake, I-fleet-mode-set, I-fleet-tick-run, I-undo]
-    code: [client/settings.tsx, client/loop.tsx]
+    code: [client/settings.tsx, client/loop.tsx, client/phone/settings-page.tsx, client/phone/settings-trail.ts]
   P-settings-loops-notices-approvals:
     name: B3 Settings › Loops, Notices, Approvals
     status: new
