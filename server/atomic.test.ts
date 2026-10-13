@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic";
@@ -40,6 +40,19 @@ describe("writeFileAtomic", () => {
     expect(reads).toBeGreaterThan(0);
     expect([...seen]).toEqual([size]);
   }, 60_000);
+
+  test("the new content arrives as a new file renamed into place: the old one is never written into", async () => {
+    const dir = await root();
+    const path = join(dir, "file.txt");
+    await writeFile(path, "old");
+    const before = await stat(path);
+    // A hard link to the old file keeps its inode and its bytes visible: a write into it would show there.
+    await link(path, join(dir, "old-link"));
+    await writeFileAtomic(path, "new");
+    expect(await readFile(join(dir, "old-link"), "utf8")).toBe("old");
+    expect((await stat(path)).ino).not.toBe(before.ino);
+    expect(await readFile(path, "utf8")).toBe("new");
+  });
 
   test("a write that fails leaves the file as it was and no temp file beside it", async () => {
     const dir = await root();
