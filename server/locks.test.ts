@@ -1,9 +1,18 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireLock, awaitUnlocked, LockBusyError, lockKey, releaseLock, withFileLock } from "./locks";
+import {
+  acquireLock,
+  awaitUnlocked,
+  etimeSeconds,
+  holderAlive,
+  LockBusyError,
+  lockKey,
+  releaseLock,
+  withFileLock,
+} from "./locks";
 
 const roots: string[] = [];
 afterAll(async () => {
@@ -91,6 +100,39 @@ describe("withFileLock", () => {
     await writeFile(join(dir, "pid"), "999999 1\n");
     await expect(withFileLock(file, locks, async () => "never", { waitMs: 150 })).rejects.toThrow("pid 999999");
     await rm(dir, { recursive: true, force: true });
+  });
+
+  test("a pid that is alive but started at another time is a reused pid: its lock is stale, and one that started when it said is live", async () => {
+    const { file, locks } = await setup();
+    const holder = spawn("/bin/sleep", ["30"]);
+    try {
+      await mkdir(locks, { recursive: true });
+      const dir = join(locks, `${await lockKey(file)}.d`);
+      const etime = await new Promise<string>((resolve) =>
+        execFile("/bin/ps", ["-o", "etime=", "-p", String(holder.pid)], (_error, out) => resolve(out)),
+      );
+      const start = Math.round(Date.now() / 1000 - (etimeSeconds(etime) ?? 0));
+      const old = new Date(Date.now() - 60_000);
+      const lockOf = async (claimed: number) => {
+        await rm(dir, { recursive: true, force: true });
+        await mkdir(dir);
+        await writeFile(join(dir, "pid"), `${holder.pid} ${claimed}\n`);
+        await writeFile(join(dir, "token"), "theirs\n");
+        await utimes(dir, old, old);
+      };
+      // The pid answers, and it started when the lock says: the holder, live however old.
+      expect(await holderAlive(`${holder.pid} ${start}`)).toBe(true);
+      await lockOf(start);
+      await expect(acquireLock(file, locks, { waitMs: 200, staleMs: 10_000 })).rejects.toBeInstanceOf(LockBusyError);
+      // The pid answers, but the process started an hour before the lock says it did: another process holds the pid now.
+      expect(await holderAlive(`${holder.pid} ${start - 3600}`)).toBe(false);
+      await lockOf(start - 3600);
+      const lock = await acquireLock(file, locks, { waitMs: 2000, staleMs: 10_000 });
+      expect((await readFile(join(lock.dir, "pid"), "utf8")).split(" ")[0]).toBe(String(process.pid));
+      await releaseLock(lock);
+    } finally {
+      holder.kill();
+    }
   });
 
   test("a stale lock is captured by rename and judged again: one taken anew in between is put back, not removed", async () => {
