@@ -168,12 +168,22 @@ export class Page {
         const r = el.getBoundingClientRect();
         return r.width > 0 && r.height > 0;
       };
+      // A deck lays every card in one strip and a card peeks at its edge: the words repeat, and the one meant is the one
+      // whose centre is on screen and not covered by something else (a card that rose over the deck).
+      const onScreen = (el) => {
+        const r = el.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        if (x < 0 || x > window.innerWidth) return 1;
+        const top = document.elementFromPoint(x, Math.min(Math.max(y, 0), window.innerHeight - 1));
+        return top && (el.contains(top) || top.contains(el)) ? 0 : 1;
+      };
       const labelled = [...root.querySelectorAll('[aria-label]')]
         .filter((el) => el.getAttribute('aria-label').startsWith(name) && visible(el))
-        .sort((a, b) => (b.getAttribute('aria-label') === name) - (a.getAttribute('aria-label') === name) || b.getAttribute('aria-label').length - a.getAttribute('aria-label').length);
+        .sort((a, b) => onScreen(a) - onScreen(b) || (b.getAttribute('aria-label') === name) - (a.getAttribute('aria-label') === name) || b.getAttribute('aria-label').length - a.getAttribute('aria-label').length);
       const byText = [...root.querySelectorAll('[role="button"], button, a, [tabindex]')]
         .filter((el) => el.innerText && el.innerText.includes(name) && visible(el))
-        .sort((a, b) => a.innerText.length - b.innerText.length);
+        .sort((a, b) => onScreen(a) - onScreen(b) || a.innerText.length - b.innerText.length);
       const el = labelled[0] || byText[0];
       if (!el) return null;
       el.scrollIntoView({ block: 'center' });

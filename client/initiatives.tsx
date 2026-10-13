@@ -30,6 +30,7 @@ import { holdOf } from "../shared/needs";
 import { sameAsk } from "./decisions";
 import { fateLine, homeText } from "./decisions-model";
 import { errorText } from "./format";
+import { holdsByTab } from "./header-count";
 import { useNeeds, useRefresh } from "./hooks";
 import {
   dateLine,
@@ -635,6 +636,9 @@ export function InitiativesView({
   const text = useText(theme);
   const client = useQueryClient();
   const read = useInitiatives();
+  // The tab's "need you" is needs.list's due reviews, the same rows the header counts (BRO-3001).
+  const needsRead = useNeeds();
+  const dueReviews = needsRead.data ? holdsByTab(needsRead.data.rows).initiatives : null;
   const [inbox, setInbox] = useState(false);
   // An answer goes into every read held at once, so the card and the counts say so before the next poll.
   const onAnswered = (answered: DecisionAsk) =>
@@ -655,7 +659,7 @@ export function InitiativesView({
   const { controlRepo, today, initiatives, ideas, warnings } = read.data;
   const openIdeas = ideas.filter((ask) => ask.state === "open").length;
   return (
-    <Section theme={theme} title="Initiatives" meta={initiativesMeta(initiatives, ideas)}>
+    <Section theme={theme} title="Initiatives" meta={initiativesMeta(initiatives, ideas, dueReviews)}>
       <Text style={text.small}>
         {`Each initiative in ${controlRepo || "your control repo"}/.control/initiatives, as origin/main holds it; a checkout's edit that has not landed is shown beside it. Ideas are answered here: develop files a queued work item, held for you to start; park sets the day it comes back.`}
       </Text>

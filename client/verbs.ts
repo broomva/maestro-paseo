@@ -140,9 +140,10 @@ export function promptSession(agentId: string | null, key: string, prompt: strin
 
 /**
  * The call `verb` makes on `target`. `choice` is the option an ask's or a review's inspector holds, and
- * `words` what you typed beside it (an answer's words, a prompt sent with Unblock). Pure.
+ * `words` what you typed beside it (an answer's words, a prompt sent with Unblock). `confirmed` is a screen that has
+ * asked twice (the phone's deck, which has no Decisions card beside it): an answer that cannot be undone is then sent. Pure.
  */
-export function planVerb(verb: VerbId, target: VerbTarget, choice?: string, words = ""): VerbPlan {
+export function planVerb(verb: VerbId, target: VerbTarget, choice?: string, words = "", confirmed = false): VerbPlan {
   const { row = null, item = null, ask = null } = target;
   const hold = row ? holdOf(row.key) : null;
   switch (verb) {
@@ -174,7 +175,7 @@ export function planVerb(verb: VerbId, target: VerbTarget, choice?: string, word
       const note = words.trim();
       // An answer that cannot be undone takes Decisions' deliberate confirm; so does one this client cannot send,
       // and an answer with nothing chosen and nothing said.
-      if (!ask || option?.reversible === false || (!option && !note))
+      if (!ask || (option?.reversible === false && !confirmed) || (!option && !note))
         return {
           call: "go",
           intent: decisions,

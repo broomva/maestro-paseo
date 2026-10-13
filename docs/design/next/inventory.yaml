@@ -285,7 +285,7 @@ pages:
     components: [C-hold-card, C-finished-card, C-notice-card, C-work-row, C-rail, C-state-label, C-pill, C-button, C-glance-tile, C-inspector, C-undo-toast, C-undertow, C-deck, C-pull-sheet, C-tab-bar, C-swipe-row]
     reads: [I-needs-list, I-handled-list, I-work-list, I-notices-list, I-sweep-get]
     writes: [I-ask-answer, I-approval-decide, I-owner-step-done, I-session-prompt, I-notice-snooze, I-work-unblock, I-undo]
-    code: [client/home.tsx, client/home-cards.tsx, client/home-model.ts, client/verbs.ts, client/feed.tsx, client/feed-model.ts]
+    code: [client/home.tsx, client/home-cards.tsx, client/home-model.ts, client/verbs.ts, client/feed.tsx, client/feed-model.ts, client/phone/shell.tsx, client/phone/model.ts, client/phone/hold-card.tsx, client/phone/sheet-rows.tsx, client/phone/deck-header.tsx]
   P-briefing:
     name: J2–J4 Briefings — the inspector per kind (approval, ask, notice); M2–M4 cards with the detail header
     status: change
@@ -296,7 +296,7 @@ pages:
     components: [C-briefing, C-hold-card, C-markdown, C-kbd, C-button, C-inspector, C-detail-header]
     reads: [I-work-get, I-work-files, I-needs-list]
     writes: [I-approval-decide, I-ask-answer, I-work-unblock, I-work-cancel, I-undo]
-    code: [client/detail.tsx]
+    code: [client/detail.tsx, client/phone/shell.tsx]
   P-approval-card:
     name: K0–K2 Maestro cards in a Paseo session — every kind and state; one tap, 8 s undo, receipt; Open in Maestro is the session page
     status: change
@@ -317,7 +317,7 @@ pages:
     components: [C-decision-card, C-progress, C-segmented, C-kbd, C-button, C-glance-tile, C-inspector, C-deck]
     reads: [I-asks-workspace, I-needs-list, I-answers-status]
     writes: [I-ask-answer, I-fleet-ask-answer, I-conductor-decide, I-undo]
-    code: [client/decision-triage.tsx, client/decision-card.tsx, client/decisions-stage.tsx, client/decisions-stage-model.ts, client/conductor-answers.tsx]
+    code: [client/decision-triage.tsx, client/decision-card.tsx, client/decisions-stage.tsx, client/decisions-stage-model.ts, client/conductor-answers.tsx, client/phone/answers-sheet.tsx]
   P-work:
     name: J6 Work — five lanes as trays, Undertow on running cards, who closed Done; J6b the inspector over the right-hand lanes (B3). M6 on the phone
     status: change
@@ -371,6 +371,8 @@ pages:
     components: [C-hold-card, C-tabs]
     reads: [I-needs-list]
     writes: [I-approval-decide, I-ask-answer, I-undo]
+    note: "BRO-3037 PR 1: the phone half. params.hold opens the Feed deck on that hold with a note that it came from the push (client/phone/shell.tsx); the session card's Open in Maestro (BRO-3008) passes the hold's needs.list key"
+    code: [client/phone/shell.tsx, client/phone/model.ts]
   P-settings-sweep-fleet:
     name: B2 Settings › Sweep and fleet
     status: change
@@ -486,7 +488,7 @@ pages:
 
   # Development (BRO-3034). Reached by its route only, and off unless the daemon runs with MAESTRO_KIT_GALLERY=1.
   P-kit-gallery:
-    name: "Component gallery — the kit's phone parts (M components, Undertow) in every state, light and dark; J1 adopted the desktop parts (BRO-3035); BRO-3036–3037 adopt the rest"
+    name: "Component gallery — the kit's phone parts (M components, Undertow) in every state, light and dark; J1 adopted the desktop parts (BRO-3035) and M1–M5 the live phone shell (BRO-3037); the rest are adopted by BRO-3037's M6–M11"
     status: new
     frame: eTSe9
     png: j1-feed-home.png

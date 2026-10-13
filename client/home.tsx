@@ -47,6 +47,8 @@ export interface HomeFocus {
   work?: string;
   /** When it was asked: a later one is a new request even for the same hold. */
   at: number;
+  /** Where it came from: a push opens the phone's deck on the hold with a note that it did (M10). */
+  from?: "push";
 }
 
 const INSPECTOR_WIDTH = 480;

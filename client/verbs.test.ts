@@ -246,6 +246,17 @@ describe("an answer carries your words (J3), a prompt goes with Unblock (J4)", (
     expect(planVerb("answer", { row, ask: decision }, "all", "yes")).toMatchObject({ call: "go" });
   });
 
+  test("a screen that asked twice (the phone's deck) sends it: confirmed lifts the Decisions hand-off, nothing else", () => {
+    expect(planVerb("answer", { row, ask: decision }, "all", "yes", true)).toMatchObject({
+      call: "answer",
+      option: "all",
+      note: "yes",
+    });
+    // Confirmed never sends an answer with nothing chosen and nothing said, nor one for an ask this client has not read.
+    expect(planVerb("answer", { row, ask: decision }, undefined, "", true)).toMatchObject({ call: "go" });
+    expect(planVerb("answer", { row }, "all", "yes", true)).toMatchObject({ call: "go" });
+  });
+
   test("what you chose and typed goes to Decisions with the answer it confirms, never lost on the way", () => {
     expect(planVerb("answer", { row, ask: decision }, "all", " the whole fleet ")).toMatchObject({
       call: "go",

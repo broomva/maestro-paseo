@@ -174,20 +174,23 @@ function Popover({ theme, children, width }: { theme: PluginTheme; children: Rea
   );
 }
 
-function WorkspaceMenu({
+export function WorkspaceMenu({
   theme,
   options,
   value,
   onChoose,
+  width = 280,
 }: {
   theme: PluginTheme;
   options: readonly WorkspaceOption[];
   value: string | null;
   onChoose: (id: string | null) => void;
+  /** The popover's width: a phone gives it the room it has. */
+  width?: number;
 }) {
   const kit = kitOf(theme);
   return (
-    <Popover theme={theme} width={280}>
+    <Popover theme={theme} width={width}>
       {options.map((option) => {
         const chosen = option.id === value;
         return (
@@ -226,12 +229,20 @@ function WorkspaceMenu({
 }
 
 /** P1: the presence menu. States are shown as the design has them; none is chosen until presence.set exists (BRO-2987). */
-function PresenceMenu({ theme, presence }: { theme: PluginTheme; presence: PresenceRead }) {
+export function PresenceMenu({
+  theme,
+  presence,
+  width = 356,
+}: {
+  theme: PluginTheme;
+  presence: PresenceRead;
+  width?: number;
+}) {
   const kit = kitOf(theme);
   const openSettings = settingsOpener();
   const tone = { present: kit.ok, away: kit.warn, off: kit.muted } as const;
   return (
-    <Popover theme={theme} width={356}>
+    <Popover theme={theme} width={width}>
       <View style={{ padding: 8, gap: 10 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text accessibilityRole="header" style={{ flex: 1, color: kit.fg, fontSize: 15, fontWeight: "600" }}>

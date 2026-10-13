@@ -1013,18 +1013,17 @@ describe("the gallery is behind its flag", () => {
     const view = await mount(<KitGalleryScreen {...props(false)} />);
     expect(view.id("gallery-pane-light")).toBeTruthy();
     expect(view.id("gallery-pane-dark")).toBeTruthy();
-    for (const section of ["Phone", "Undertow", "M1 shell"]) {
+    for (const section of ["Phone", "Undertow"]) {
       const radio = view.all('[role="radio"]').find((el) => el.textContent === section);
       await view.press(radio);
     }
     // J1 adopted the desktop parts (BRO-3035): the gallery has no Desktop section left.
     expect(view.all('[role="radio"]').some((el) => el.textContent === "Desktop")).toBe(false);
   });
-  it("on the phone it opens on the live M1 shell, in the active appearance only", async () => {
-    // The sheet and the card wait for the shell's measured height, which happy-dom never lays out.
+  it("on the phone it opens on the Phone section, in the active appearance only", async () => {
+    // M1 is the live screen now (client/phone/shell.render.test.tsx): the gallery keeps the states it does not reach.
     const view = await mount(<KitGalleryScreen {...props(true)} />);
-    expect(view.all('[data-testid="phone-shell"]')).toHaveLength(1);
-    expect(view.id("deck")).toBeTruthy();
-    expect(view.text()).toContain("1 of 4");
+    expect(view.all('[data-testid="phone-shell"]')).toHaveLength(0);
+    expect(view.all('[data-testid^="gallery-pane"]')).toHaveLength(1);
   });
 });

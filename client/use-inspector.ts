@@ -53,8 +53,8 @@ export interface Inspector {
   showing: boolean;
   selectHold: (key: string) => void;
   selectWork: (id: string) => void;
-  /** Send a verb on a target through the one adapter. */
-  act: (verb: VerbId, target: VerbTarget, choice?: string, words?: string) => Promise<void>;
+  /** Send a verb on a target through the one adapter; true when it was sent (or opened), false when it failed or one was already in flight. */
+  act: (verb: VerbId, target: VerbTarget, choice?: string, words?: string, confirmed?: boolean) => Promise<boolean>;
   targetOf: (hold: NeedEntry | null) => VerbTarget;
   /** A card's own verb: Deny and Answer open the inspector, the rest are sent. */
   onCardVerb: (hold: NeedEntry, id: string) => void;
@@ -119,14 +119,21 @@ export function useInspector({
   };
   // One verb at a time on a hold: it cannot be acted on again until the call has answered and every read has landed.
   const inFlight = useRef(new Set<string>());
-  const act = async (verb: VerbId, target: VerbTarget, choice?: string, words?: string) => {
+  const act = async (
+    verb: VerbId,
+    target: VerbTarget,
+    choice?: string,
+    words?: string,
+    confirmed = false,
+  ): Promise<boolean> => {
     const id =
       target.row?.key ?? (target.item ? `work:${target.item.id}` : (target.proposal ?? target.notice?.key ?? verb));
-    if (inFlight.current.has(id)) return;
+    if (inFlight.current.has(id)) return false;
     inFlight.current.add(id);
     let landed: Promise<void> = Promise.resolve();
+    let sent = true;
     try {
-      const plan = planVerb(verb, target, choice, words);
+      const plan = planVerb(verb, target, choice, words, confirmed);
       const out = await verbs.run(plan, env);
       landed = out.settled;
       // Work this screen has no hold or row for opens in its own detail; the rest is for the tab that owns it.
@@ -141,10 +148,12 @@ export function useInspector({
       if (out.receipt) undo.show(undoEntry(out.receipt, out.done, Date.now(), out.appliesAt, "applies in"));
       else toast.show(out.done);
     } catch (error) {
+      sent = false;
       toast.error(errorText(error));
     } finally {
       void landed.catch(() => undefined).then(() => inFlight.current.delete(id));
     }
+    return sent;
   };
   const targetOf = (hold: NeedEntry | null): VerbTarget =>
     hold ? { row: hold.row, item: hold.item, ask: hold.ask } : { item };

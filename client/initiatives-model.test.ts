@@ -74,7 +74,12 @@ describe("the card's words", () => {
     expect(ideasText({ open: 1, triaged: 0 })).toBe("1 idea: 1 open, 0 triaged");
     const list = [initiative({ stale: { kind: "overdue", date: "2026-10-01" } }), initiative({ error: "bad" })];
     const ideas = [{ state: "open" }, { state: "answered" }] as DecisionAsk[];
-    expect(initiativesMeta(list, ideas)).toBe("2 initiatives · 1 needs you · 1 cannot be read · 1 open idea");
+    expect(initiativesMeta(list, ideas, 1)).toBe("2 initiatives · 1 needs you · 1 cannot be read · 1 open idea");
+    // BRO-3001: "need you" is needs.list's review holds, not the files' `stale`: a stale file with no hold says none,
+    // a hold with no stale file (its file unread here) still counts, and an unread needs.list says nothing of it.
+    expect(initiativesMeta(list, ideas, 0)).toBe("2 initiatives · 1 cannot be read · 1 open idea");
+    expect(initiativesMeta([initiative({})], [], 3)).toBe("1 initiative · 3 need you · 0 open ideas");
+    expect(initiativesMeta(list, ideas, null)).toBe("2 initiatives · 1 cannot be read · 1 open idea");
     // Due reviews, as needs.list raises them (B2): each titled with its initiative and saying why.
     const due = [
       reviewNeed(

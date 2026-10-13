@@ -49,8 +49,7 @@ input; the M9 composer (BRO-3037) lifts itself from `keyboardWillShow`/`keyboard
 
 `gallery.tsx` shows every part in every state, light and dark (the active theme for its own appearance,
 broomva's palette for the other). It is a development screen: registered with `addScreen` as `kit`, with no
-sidebar row or command, at `/h/<server>/plugin/maestro/surface/kit?param.section=phone|undertow|m1`
-(and `param.hold=<key>` to open the M1 deck on a hold),
+sidebar row or command, at `/h/<server>/plugin/maestro/surface/kit?param.section=phone|undertow`,
 and off unless the daemon runs with `MAESTRO_KIT_GALLERY=1` (`shared/kit.ts`). To shoot it:
 
 ```sh
@@ -58,6 +57,8 @@ MAESTRO_KIT_GALLERY=1 bun scripts/dogfood/up.ts --plugin "$PWD"
 bun scripts/dogfood/shot.ts --out /tmp/kit --no-open --wait-for "Component kit" \
   --path "/h/{server}/plugin/maestro/surface/kit?param.section=phone" --height 2300
 ```
+
+M1–M5 (BRO-3037 PR 1, `client/phone/`) adopted the phone shell: the Deck, the pull-up sheet carrying the tab bar, the swipe rows, the undo toast and the card that rises, on the live Feed and Decisions tabs. The gallery's `m1` section (and its `param.hold`) went with them; its `phone` and `undertow` sections keep the states the live screen does not reach.
 
 J1 (BRO-3035, `client/home.tsx`) adopted the desktop parts: `InspectorPanel` (scoped to the screen's root, so Esc is Maestro's only while Maestro has focus), `GlanceTile`, `UndoToast` and `Undertow` on running rows. Its entries left the gallery's Desktop section, which is gone; the phone's inspector card, toast and Undertow stay until M1–M4.
 

@@ -197,6 +197,10 @@ export function Deck<T>({
 export interface DeckVerb {
   label: string;
   primary?: boolean;
+  /** What a screen reader says when the label alone does not ("Answer: Keep them off"). */
+  accessibilityLabel?: string;
+  /** A verb of this hold is waiting out its undo window, or the call is in flight: it cannot be pressed again. */
+  disabled?: boolean;
   onPress: () => void;
 }
 
@@ -266,6 +270,8 @@ export function DeckHold({
             theme={theme}
             label={verb.label}
             primary={verb.primary}
+            disabled={verb.disabled}
+            accessibilityLabel={verb.accessibilityLabel}
             onPress={verb.onPress}
             height={DECK.verb}
             grow
