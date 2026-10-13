@@ -18,7 +18,7 @@ export const VIEWS = [
   { id: "board", label: "Board", icon: "Columns3", group: "work" },
   { id: "list", label: "List", icon: "List", group: "work" },
   { id: "history", label: "History", icon: "History", group: "work" },
-  // J7 (BRO-3036): the desktop's Health overview. A phone has no such view (viewFor keeps it to the feed).
+  // J7 (BRO-3036): the desktop's Health overview.
   { id: "health", label: "Overview", icon: "Activity", group: "work" },
   { id: "fleet", label: "Fleet", icon: "Activity", group: "system" },
   { id: "decisions", label: "Decisions", icon: "Inbox", group: "system" },
@@ -33,16 +33,6 @@ export type ViewOption = (typeof VIEWS)[number];
 export const SYSTEM_VIEWS: readonly PlaneView[] = VIEWS.filter((option) => option.group === "system").map(
   (option) => option.id,
 );
-
-/** Compact windows have no room for columns or dense rows: they show the feed, History, or a system view. */
-export function viewFor(view: PlaneView, compact: boolean): PlaneView {
-  return compact && view !== "history" && !SYSTEM_VIEWS.includes(view) ? "feed" : view;
-}
-
-/** The views a window offers: compact ones only those viewFor keeps. */
-export function viewsFor(compact: boolean): ViewOption[] {
-  return VIEWS.filter((option) => viewFor(option.id, compact) === option.id);
-}
 
 /** The offered views in their groups, an empty group left out. */
 export function groupedViews(views: readonly ViewOption[]): { group: ViewGroup; label: string; views: ViewOption[] }[] {

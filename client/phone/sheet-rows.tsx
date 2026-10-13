@@ -9,7 +9,7 @@ import type { Directions } from "../kit/assumptions";
 import { Dot } from "../kit/parts";
 import { SwipeRow } from "../kit/swipe-row";
 import { kitOf } from "../kit/tokens";
-import { StandingPulse, TidepoolDot } from "../kit/undertow";
+import { StandingPulse, TidepoolDot, Undertow } from "../kit/undertow";
 import type { RowLead, SheetGroup, SheetRow } from "./model";
 
 /** What a row's verbs do: the screen sends them through the one adapter (client/verbs.ts). */
@@ -37,6 +37,7 @@ export function SheetRows({
   handlers,
   canContinue,
   hasSession,
+  halo,
 }: {
   theme: PluginTheme;
   groups: readonly SheetGroup[];
@@ -45,47 +46,60 @@ export function SheetRows({
   /** Whether a row's session can be prompted (Continue): the work has a session to send it to. */
   canContinue: (row: SheetRow) => boolean;
   hasSession: (row: SheetRow) => boolean;
+  /** Rows that wear the Undertow: Running's alone (B1). */
+  halo?: (row: SheetRow) => boolean;
 }) {
   const kit = kitOf(theme);
   return (
     <>
       {groups.map((group) => (
         <View key={group.id} testID={`sheet-group-${group.id}`} style={{ gap: 6 }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 4 }}>
-            <Text accessibilityRole="header" style={{ color: kit.fg, fontSize: 15, fontWeight: "600" }}>
-              {group.title}
-            </Text>
-            <Text style={{ color: kit.muted, fontSize: 13, fontVariant: ["tabular-nums"] }}>{group.rows.length}</Text>
-          </View>
+          {group.title ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 4 }}>
+              <Text accessibilityRole="header" style={{ color: kit.fg, fontSize: 15, fontWeight: "600" }}>
+                {group.title}
+              </Text>
+              <Text style={{ color: kit.muted, fontSize: 13, fontVariant: ["tabular-nums"] }}>{group.rows.length}</Text>
+            </View>
+          ) : null}
           <View style={{ borderRadius: 14, overflow: "hidden", gap: 1, backgroundColor: kit.hairline }}>
-            {group.rows.map((row) => (
-              <SwipeRow
-                key={row.key}
-                theme={theme}
-                directions={directions}
-                kind={row.kind}
-                title={row.title}
-                meta={row.meta}
-                age={row.age}
-                lead={<Lead theme={theme} lead={row.lead} />}
-                onPress={() => handlers.onOpen(row)}
-                primary={
-                  row.verbs.continue && canContinue(row)
-                    ? { label: "Continue", icon: "Check", onPress: () => handlers.onContinue(row) }
-                    : undefined
-                }
-                snooze={
-                  row.verbs.snooze
-                    ? { label: "Snooze 4h", icon: "AlarmClock", onPress: () => handlers.onSnooze(row) }
-                    : undefined
-                }
-                open={{
-                  label: "Open",
-                  icon: "ArrowUpRight",
-                  onPress: () => (hasSession(row) ? handlers.onSession(row) : handlers.onOpen(row)),
-                }}
-              />
-            ))}
+            {group.rows.map((row) => {
+              const swipe = (
+                <SwipeRow
+                  key={row.key}
+                  theme={theme}
+                  directions={directions}
+                  kind={row.kind}
+                  title={row.title}
+                  meta={row.meta}
+                  age={row.age}
+                  lead={<Lead theme={theme} lead={row.lead} />}
+                  onPress={() => handlers.onOpen(row)}
+                  primary={
+                    row.verbs.continue && canContinue(row)
+                      ? { label: "Continue", icon: "Check", onPress: () => handlers.onContinue(row) }
+                      : undefined
+                  }
+                  snooze={
+                    row.verbs.snooze
+                      ? { label: "Snooze 4h", icon: "AlarmClock", onPress: () => handlers.onSnooze(row) }
+                      : undefined
+                  }
+                  open={{
+                    label: "Open",
+                    icon: "ArrowUpRight",
+                    onPress: () => (hasSession(row) ? handlers.onSession(row) : handlers.onOpen(row)),
+                  }}
+                />
+              );
+              return halo?.(row) ? (
+                <Undertow key={row.key} theme={theme} state="running" radius={18}>
+                  {swipe}
+                </Undertow>
+              ) : (
+                swipe
+              );
+            })}
           </View>
         </View>
       ))}

@@ -26,17 +26,9 @@ import { AnswersNotices, AskNotices, useWorkspaceAsks } from "./decisions";
 import { decisionAsks, ledgerOf } from "./decisions-model";
 import { WorkDetail } from "./detail";
 import { DecideSection, FeedControls, FeedSectionsView, NeedsSection } from "./feed";
-import {
-  handledForYou,
-  handledShown,
-  headerLine,
-  matchesQuery,
-  needsByInitiative,
-  needsSection,
-  sectionsOf,
-} from "./feed-model";
+import { handledShown, matchesQuery, needsByInitiative, needsSection, sectionsOf } from "./feed-model";
 import { FleetNotices, FleetView } from "./fleet";
-import { duration, errorText, plural } from "./format";
+import { errorText, plural } from "./format";
 import { holdTarget, tabBadges } from "./header-count";
 import { HealthScreen } from "./health";
 import { HistoryView } from "./history";
@@ -47,13 +39,13 @@ import { useHandled, useLoop, useNeeds, useNeedsEvents, useWorkList } from "./ho
 import { InitiativeNotices, InitiativesView } from "./initiatives";
 import { InitiativesBoard } from "./initiatives-board";
 import { requestIntent, useIntent } from "./intent";
-import { LoopControl, LoopPanel } from "./loop";
+import { LoopPanel } from "./loop";
 import { LoopsNotices, LoopsView } from "./loops";
 import { NewWork } from "./new-work";
 import { PendingVerbs } from "./pending-verbs";
-import { PHONE_TABS, type PhoneTab } from "./phone/model";
+import { PHONE_TABS, type PhonePage, type PhoneTab, pageOfIntent } from "./phone/model";
 import { PhoneSurface } from "./phone/shell";
-import { FilterRow, ScopeRow, ViewPicker } from "./plane-controls";
+import { FilterRow, ScopeRow } from "./plane-controls";
 import {
   applyFilter,
   countFilters,
@@ -64,17 +56,14 @@ import {
   type PlaneView,
   resolveScope,
   SYSTEM_VIEWS,
-  summaryText,
   VIEWS,
-  viewFor,
-  viewsFor,
   visibleFilters,
 } from "./plane-model";
 import { BoardView, FeedView, ListView } from "./plane-views";
 import { ScoreboardCard } from "./scoreboard";
 import { ChipRow } from "./stage-parts";
 import { TimelineNotices, TimelineView } from "./timeline";
-import { Button, Card, IconButton, Notice, space, useText } from "./ui";
+import { Button, Card, Notice, space, useText } from "./ui";
 import { WorkBoard } from "./work-board";
 
 /** The views whose desktop screen is J2–J9 (BRO-3036): they carry their own watched things, so no notice band sits above them. */
@@ -85,12 +74,6 @@ function phoneTabParam(value: string | undefined): PhoneTab {
   return PHONE_TABS.find((tab) => tab.id === value)?.id ?? "feed";
 }
 
-/** The phone tab a view sits under: Decisions its own deck, the system views Health's body, the rest Work's. */
-function classicTabOf(view: PlaneView): PhoneTab {
-  if (view === "decisions") return "decisions";
-  return SYSTEM_VIEWS.includes(view) || view === "health" ? "health" : "work";
-}
-
 export function MaestroSurface({ theme, layout, navigation, params }: PluginScreenProps) {
   const list = useWorkList();
   // What needs you (needs.list): the subtitle, the tabs and Needs you say the header's number, read once.
@@ -98,15 +81,16 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
   const handled = useHandled();
   // A session that changes refetches both, as a verb does when it settles.
   useNeedsEvents();
-  const needsYouTotal = needs.data ? needs.data.summary.total : null;
+  const _needsYouTotal = needs.data ? needs.data.summary.total : null;
   // The same read as the loop control's (one query): whether the loop is on words the Queued hint.
   const loopOn = useLoop().data?.minutes != null;
   const text = useText(theme);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [chosenView, setChosenView] = useState<PlaneView>("feed");
-  // The phone's tab (M1): the deck tabs are the phone's own, the other two show today's views until M6 and M7.
+  // The phone's tab (M1, M6, M7) and the page over it (M8, M11, and the views Health's sheet reaches).
   const [phoneTab, setPhoneTab] = useState<PhoneTab>(() => phoneTabParam(params?.tab));
+  const [phonePage, setPhonePage] = useState<PhonePage | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [chosenScope, setScope] = useState<string | null>(null);
   const [loopOpen, setLoopOpen] = useState(false);
@@ -119,11 +103,8 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
   const lastView = useRef<Partial<Record<HomeTab, PlaneView>>>({});
   const asksRead = useWorkspaceAsks();
   const asks = asksRead.data ? decisionAsks(asksRead.data) : [];
-  /** Shows a view; on the phone its tab with it (a system view is Health's, Decisions its own, the rest Work's). */
-  const setView = (next: PlaneView) => {
-    setChosenView(next);
-    setPhoneTab(classicTabOf(next));
-  };
+  /** Shows a view on the desktop; the phone has tabs and pages instead (client/phone/shell.tsx). */
+  const setView = setChosenView;
   const openFleet = (scope: string | null, tick: number | null = null) => {
     setFleetScope(scope);
     setFleetTick(tick);
@@ -134,16 +115,20 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
     setDecisionsFocus({ ledger, ask, at: Date.now() });
     setView("decisions");
     // The phone's Decisions deck opens on the ask when needs.list holds it (its hold key is `ask:` and the ask's key).
-    if (layout.compact && ask?.key) setHomeFocus({ hold: `ask:${ask.key}`, at: Date.now() });
+    if (layout.compact) {
+      setPhoneTab("decisions");
+      setPhonePage(null);
+      if (ask?.key) setHomeFocus({ hold: `ask:${ask.key}`, at: Date.now() });
+    }
   };
   // Opening on `params.hold` (a push, the header count): that hold's inspector on the Feed (BRO-3033 fact 2).
   const holdParam = params?.hold;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: setView only sets state, and only a new hold param moves it
   useEffect(() => {
     if (!holdParam) return;
     setView("feed");
     // The phone opens its Feed deck on the hold and says so (M10); every hold is in it.
     setPhoneTab("feed");
+    setPhonePage(null);
     setHomeFocus({ hold: holdParam, at: Date.now(), from: "push" });
   }, [holdParam]);
   useIntent((intent) => {
@@ -155,9 +140,11 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
       } else {
         // The phone's Feed deck opens a hold, its card opens other work, and work with neither opens its page.
         setPhoneTab("feed");
+        setPhonePage(null);
         setHomeFocus({ work: intent.id, at: Date.now() });
       }
     } else if (intent.kind === "new") setCreating(true);
+    else if (layout.compact && pageOfIntent(intent)) setPhonePage(pageOfIntent(intent));
     else if (intent.kind === "fleet") openFleet(intent.scope);
     else if (intent.kind === "decisions")
       openDecisions(
@@ -176,13 +163,15 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
       // The Board splits by state, History lists receipts, and the system views are not work: none applies the chips.
       setChosenView((view) => (view === "board" || view === "history" || SYSTEM_VIEWS.includes(view) ? "feed" : view));
       // The phone's Needs you is its Feed deck.
-      if (layout.compact) setPhoneTab("feed");
+      if (layout.compact) {
+        setPhoneTab("feed");
+        setPhonePage(null);
+      }
     }
   });
   const compact = layout.compact;
-  const pad = compact ? space[4] : space[6];
-  const view = viewFor(chosenView, compact);
-  const bands = compact || !J_SCREENS.includes(view);
+  const view = chosenView;
+  const bands = !J_SCREENS.includes(view);
   const tab = tabOfView(view);
 
   const items = list.data?.items ?? [];
@@ -222,7 +211,7 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
       onOpenHold={(row) => requestIntent(holdTarget(row))}
     />
   );
-  const board = list.data?.scoreboard;
+  const _board = list.data?.scoreboard;
   // Decide (client/feed.tsx): the asks that wait on you, inline at the top of the Feed.
   const decide = (
     <DecideSection
@@ -244,10 +233,11 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
   };
 
   // The tabs' badges, from needs.list alone (header-count.ts tabBadges).
-  const badges = needs.data ? tabBadges(needs.data) : {};
+  const _badges = needs.data ? tabBadges(needs.data) : {};
 
-  const newWork = (
-    <NewWork theme={theme} open={creating} onOpenChange={setCreating} onCreated={setSelected} compact={compact} />
+  // The desktop's New work is Paseo's modal; the phone's grows from the + in its own surface (M9).
+  const newWork = compact ? null : (
+    <NewWork theme={theme} open={creating} onOpenChange={setCreating} onCreated={setSelected} compact={false} />
   );
 
   if (compact && current) {
@@ -273,58 +263,20 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
     <ScrollView
       style={{ flex: 1 }}
       contentContainerStyle={{
-        padding: pad,
+        padding: space[6],
         gap: space[5],
         // The Feed is a home page: a readable column, centred when it has the window to itself.
-        ...(view === "feed" && !compact ? { width: "100%", maxWidth: 760, alignSelf: "center" as const } : null),
+        ...(view === "feed" ? { width: "100%", maxWidth: 760, alignSelf: "center" as const } : null),
       }}
       keyboardShouldPersistTaps="handled"
     >
-      {compact ? (
-        <View style={{ gap: space[2] }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space[3] }}>
-            <View style={{ flex: 1 }}>
-              <Text style={text.heading} accessibilityRole="header">
-                Maestro
-              </Text>
-            </View>
-            <IconButton theme={theme} icon="RefreshCw" label="Refresh work" onPress={() => void list.refetch()} />
-            <Button
-              theme={theme}
-              variant="primary"
-              icon="Plus"
-              label="New work"
-              compact={compact}
-              onPress={() => setCreating(true)}
-            />
-          </View>
-          {/* Its own row under the title, as the design has it: beside the buttons it wraps. */}
-          <Text style={[text.body, { fontWeight: "500" }]}>
-            {/* Maestro-wide, as the header button: once needs.list is read; before that, what the work alone says. */}
-            {view === "feed" && loaded && needsYouTotal !== null
-              ? headerLine(needsYouTotal, sectionsOf(items).running.length, handledForYou(allHandled).length)
-              : summaryText(items, needsYouTotal)}
-          </Text>
-          {/* Its own row, the pane's full width: beside the buttons a phone wraps "Next wake in 15 min". */}
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space[3], flexWrap: "wrap" }}>
-            <LoopControl theme={theme} open={loopOpen} onToggle={() => setLoopOpen((open) => !open)} />
-            {board ? (
-              <Text style={[text.small, text.tabular]}>
-                {board.live ? "running now · " : ""}
-                {duration(board.unsupervisedMs)} unsupervised today
-              </Text>
-            ) : null}
-          </View>
-        </View>
-      ) : null}
-
-      {compact && loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
+      {loopOpen ? <LoopPanel theme={theme} onClose={() => setLoopOpen(false)} /> : null}
 
       {/* What you decided that has not taken effect: every verb of yours waits 8 s, with one Undo (B4). A work's
           own decision at the gate counts down in its detail. */}
       <PendingVerbs
         theme={theme}
-        compact={compact}
+        compact={false}
         skip={["work.verdict"]}
         except={current ? [workKey(current)] : undefined}
       />
@@ -339,25 +291,23 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
       {/* The desktop's J screens say what they watch themselves (J5's tiles, Health's notices): no band above them. */}
       {bands ? (
         <>
-          {view === "fleet" ? null : <FleetNotices theme={theme} compact={compact} onOpen={openFleet} />}
-          <AnswersNotices theme={theme} compact={compact} />
+          {view === "fleet" ? null : <FleetNotices theme={theme} compact={false} onOpen={openFleet} />}
+          <AnswersNotices theme={theme} compact={false} />
           {/* On the Feed, Decide below says the same, inline. */}
           {view === "decisions" || view === "feed" ? null : (
-            <AskNotices theme={theme} compact={compact} onOpen={(row) => requestIntent(holdTarget(row))} />
+            <AskNotices theme={theme} compact={false} onOpen={(row) => requestIntent(holdTarget(row))} />
           )}
-          {view === "loops" ? null : <LoopsNotices theme={theme} compact={compact} onOpen={() => setView("loops")} />}
+          {view === "loops" ? null : <LoopsNotices theme={theme} compact={false} onOpen={() => setView("loops")} />}
           {view === "timeline" ? null : (
-            <TimelineNotices theme={theme} compact={compact} onOpen={() => setView("timeline")} />
+            <TimelineNotices theme={theme} compact={false} onOpen={() => setView("timeline")} />
           )}
           {view === "initiatives" ? null : (
-            <InitiativeNotices theme={theme} compact={compact} onOpen={() => chooseView("initiatives")} />
+            <InitiativeNotices theme={theme} compact={false} onOpen={() => chooseView("initiatives")} />
           )}
         </>
       ) : null}
 
-      {compact ? (
-        <ViewPicker theme={theme} view={view} onView={chooseView} views={viewsFor(true)} badges={badges} />
-      ) : TAB_VIEWS[tab].length > 1 ? (
+      {TAB_VIEWS[tab].length > 1 ? (
         <ChipRow
           theme={theme}
           label={`${HOME_TABS.find((entry) => entry.id === tab)?.label ?? "Maestro"} views`}
@@ -371,7 +321,7 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
       {view === "fleet" ? (
         <FleetView
           theme={theme}
-          compact={compact}
+          compact={false}
           scope={fleetScope}
           tick={fleetTick}
           navigation={navigation}
@@ -381,15 +331,15 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
       ) : view === "decisions" ? (
         <DecisionsView
           theme={theme}
-          compact={compact}
+          compact={false}
           navigation={navigation}
           focus={decisionsFocus}
-          workspace={compact ? null : workspace}
+          workspace={workspace}
         />
       ) : view === "initiatives" ? (
         <InitiativesView
           theme={theme}
-          compact={compact}
+          compact={false}
           navigation={navigation}
           onOpenDecision={(ledger, id) => openDecisions(ledger, id ? { ledger, id } : null)}
           onOpenWork={setSelected}
@@ -399,7 +349,7 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
       ) : view === "timeline" ? (
         <TimelineView
           theme={theme}
-          compact={compact}
+          compact={false}
           navigation={navigation}
           onOpenFleet={openFleet}
           onOpenLoop={() => setLoopOpen(true)}
@@ -468,7 +418,7 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
                     variant="primary"
                     icon="Plus"
                     label="New work"
-                    compact={compact}
+                    compact={false}
                     onPress={() => setCreating(true)}
                   />
                 </View>
@@ -528,21 +478,18 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
             layout={layout}
             navigation={navigation}
             tab={phoneTab}
-            onTab={(next) => {
-              setPhoneTab(next);
-              // Work and Health open the view they last showed, or the first today's body has.
-              if (next === "work") setChosenView(lastView.current.work === "history" ? "history" : "feed");
-              else if (next === "health" && classicTabOf(view) !== "health") setChosenView("fleet");
-            }}
+            onTab={setPhoneTab}
             workspace={workspace}
             onWorkspace={setWorkspace}
             focus={homeFocus}
             onFocusHandled={() => setHomeFocus(null)}
-            onNew={() => setCreating(true)}
+            creating={creating}
+            onCreating={setCreating}
             onOpenWork={setSelected}
-            classic={listPane}
+            page={phonePage}
+            onPage={setPhonePage}
+            onOpenDecision={(ledger, id) => openDecisions(ledger, id ? { ledger, id } : null)}
           />
-          {newWork}
         </View>
       </ChangeScope>
     );

@@ -4,7 +4,8 @@
 // answers.status, the verb ledger) and wires the kit's parts to it: the Deck and its holds, the pull-up sheet,
 // the swipe rows on it, the card that rises (M2–M4), and the undo toast. Every verb is sent through
 // client/use-inspector.ts and client/verbs.ts, the adapter the desktop uses, so a verb here is the same act with
-// the same 8 s undo (B4). Work and Health keep today's bodies until M6 and M7 replace them (`classic`).
+// the same 8 s undo (B4). Work (M6) and Health (M7) are decks and sheets of their own; Initiatives (M8), the views
+// Health reaches and Settings (M11) are pages that rise over the surface; New work (M9) grows from the +.
 //
 // What the deck shows and what a verb sends come from one read: a hold's card is drawn from its entry, and
 // its verbs send that entry's target, never an id looked up again. A read that failed says so; it never reads as
@@ -12,6 +13,7 @@
 // wrong hold.
 
 import type { PluginTheme } from "@getpaseo/plugin";
+import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useToast } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, type LayoutChangeEvent, Pressable, ScrollView, Text, View } from "react-native";
@@ -19,9 +21,9 @@ import { useWorkspaceAsks } from "../decisions";
 import { decisionAsks, isTriaged, triageQueue } from "../decisions-model";
 import { stageTiles, wentRows } from "../decisions-stage-model";
 import { type NeedEntry, needsSection } from "../feed-model";
-import { errorText } from "../format";
+import { ago, errorText } from "../format";
 import type { HomeFocus } from "../home";
-import { holdInspector, holdParam, homeSections, workspaceOptions } from "../home-model";
+import { type HealthRow, holdInspector, holdParam, homeSections, workspaceOptions } from "../home-model";
 import { useAnswersStatus, useHandled, useNeeds, useNotices, useVerbLedger, useWorkList } from "../hooks";
 import { requestIntent } from "../intent";
 import { type Directions, swipeDirections } from "../kit/assumptions";
@@ -39,8 +41,10 @@ import { usePresence } from "../presence";
 import { useInspector } from "../use-inspector";
 import { useTick } from "../use-tick";
 import { planVerb, type VerbId } from "../verbs";
+import { type LaneCard, NO_FILTERS, workBoard } from "../work-model";
 import { AnswersSheet } from "./answers-sheet";
 import { DeckHeader } from "./deck-header";
+import { FleetSheet, HealthHost, NoticeDeckCard, UnblockSheet } from "./health-tab";
 import { HoldCard } from "./hold-card";
 import {
   advanceTo,
@@ -56,14 +60,33 @@ import {
   feedSheet,
   irreversibleChoice,
   openingChoice,
+  type PhonePage,
   type PhoneTab,
+  pageOfIntent,
+  pageTrail,
   phoneTabs,
   resolveIndex,
+  type SheetCount,
   type SheetRow,
   sheetTitle,
   unreadWords,
 } from "./model";
+import { NewWorkSheet } from "./new-work-sheet";
+import { PageBody } from "./page-body";
+import { PagePanel } from "./page-panel";
 import { SheetRows } from "./sheet-rows";
+import {
+  firstLane,
+  healthCounts,
+  healthDeck,
+  laneCards,
+  laneRows,
+  type NoticeAct,
+  type WorkLaneId,
+  workCounts,
+  workDeck,
+} from "./tabs-model";
+import { LaneSwitcher, WorkDeckCard } from "./work-tab";
 
 /** The sheet's top when it is up: the tab bar stops this far under Paseo's header. */
 const SHEET_TOP = 12;
@@ -71,7 +94,7 @@ const SHEET_TOP = 12;
 export interface PhoneSurfaceProps {
   theme: PluginTheme;
   layout: { compact: boolean; platform: string };
-  navigation?: { openAgent: (input: { agentId: string }) => void };
+  navigation?: PluginSurfaceProps["navigation"];
   tab: PhoneTab;
   onTab: (tab: PhoneTab) => void;
   workspace: string | null;
@@ -79,11 +102,16 @@ export interface PhoneSurfaceProps {
   /** A hold or work to open on: `params.hold` (a push), or an intent from elsewhere. */
   focus: HomeFocus | null;
   onFocusHandled: () => void;
-  onNew: () => void;
+  /** New work (M9) is open: its sheet grows from the + and the screen owns whether it is shown. */
+  creating: boolean;
+  onCreating: (open: boolean) => void;
   /** Work this screen has no hold or row for opens on its own page. */
   onOpenWork: (id: string) => void;
-  /** The body of the tabs M6 and M7 have not replaced yet. */
-  classic: ReactNode;
+  /** The page that is up (M8, M11, and the views Health reaches), and how it changes; null: none. */
+  page: PhonePage | null;
+  onPage: (page: PhonePage | null) => void;
+  /** An ask or a review's decision opened from a page: the Decisions tab at it. */
+  onOpenDecision: (ledger: string, askId: string | null) => void;
   /** A frame the host already knows (a test, a shot): otherwise the screen's own layout is measured. */
   frame?: { width: number; height: number };
 }
@@ -120,9 +148,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const everyHold = useMemo(() => needsSection(rows ?? [], items, asks), [rows, items, asks]);
   const entries = useMemo(() => {
     const scoped = everyHold.filter((entry) => workspace === null || entry.row.scope === workspace);
-    return tab === "decisions" ? decisionsDeck(scoped) : feedDeck(scoped);
+    return tab === "decisions" ? decisionsDeck(scoped) : tab === "feed" ? feedDeck(scoped) : [];
   }, [everyHold, tab, workspace]);
-  const keys = entries.map((entry) => entry.row.key);
 
   const sections = homeSections({
     needs: needs.data ?? null,
@@ -135,6 +162,35 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     query: "",
   });
   const groups = feedSheet(sections, now);
+
+  // Work (M6): the board as the desktop's J6 reads it, in this workspace; its deck is the Needs you tray's work.
+  const board = useMemo(
+    () =>
+      workBoard({
+        items,
+        needs: needs.data ?? null,
+        handled: handled.data ?? null,
+        asks,
+        filters: { ...NO_FILTERS, workspace },
+        now,
+      }),
+    [items, needs.data, handled.data, asks, workspace, now],
+  );
+  const workCards = useMemo(() => workDeck(board), [board]);
+  const [chosenLane, setLane] = useState<WorkLaneId | null>(null);
+  const lane = chosenLane ?? firstLane(board);
+  // Health (M7): the notices, stuck first, in this workspace.
+  const noticeRows = useMemo(() => healthDeck(sections.health), [sections.health]);
+  const noticesRead: Read = notices.data ? "ok" : notices.isError ? "error" : "pending";
+  const workRead: Read = needs.data && list.data ? "ok" : needs.isError || list.isError ? "error" : "pending";
+
+  // The deck's holds, by key: the Feed's and Decisions' holds, Work's work, Health's notices.
+  const keys =
+    tab === "work"
+      ? workCards.map((card) => card.key)
+      : tab === "health"
+        ? noticeRows.map((row) => row.key)
+        : entries.map((entry) => entry.row.key);
 
   // Where the deck stands: a hold by its key, so the list moving under it moves nothing onto the wrong hold.
   const [stand, setStand] = useState<{ key: string | null; last: number }>({ key: null, last: 0 });
@@ -212,6 +268,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   }, [armed]);
 
   const advance = (from: string) => {
+    // A hold the deck does not list (a review opened from its page) leaves the deck where it is.
+    if (!keys.includes(from)) return;
     const next = advanceTo(keys, from, waitingKeys);
     setStand({ key: next, last: Math.max(0, keys.indexOf(next)) });
   };
@@ -261,8 +319,10 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const keep = useRef<InspectorItem | null>(null);
   if (inspected) keep.current = inspected;
   const cardItem = inspected ?? keep.current;
-  const cardIndex = selection?.kind === "hold" ? Math.max(0, keys.indexOf(selection.key)) : 0;
-  const cardTotal = selection?.kind === "hold" ? Math.max(1, keys.length) : 1;
+  // The card pages through the deck's holds only when what it opened is one of them.
+  const inDeck = selection?.kind === "hold" && keys.includes(selection.key);
+  const cardIndex = inDeck ? Math.max(0, keys.indexOf(selection.key)) : 0;
+  const cardTotal = inDeck ? Math.max(1, keys.length) : 1;
   const onCardVerb = async (id: string, choice?: string) => {
     if (!selection) return;
     if (openEntry && cardItem && (id === "answer" || id === "skip")) {
@@ -285,6 +345,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     onOpen: (row: SheetRow) => {
       if (row.target.open) requestIntent(row.target.open);
       else if (row.target.item) inspector.selectWork(row.target.item.id);
+      else toast.show("It was closed: there is nothing to open.");
     },
     onContinue: (row: SheetRow) => void inspector.act("continue", { item: row.target.item }),
     onSnooze: (row: SheetRow) => void inspector.act("snooze", { notice: row.target.notice }),
@@ -293,13 +354,31 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const canContinue = (row: SheetRow) => planVerb("continue", { item: row.target.item }).call !== "unavailable";
   const hasSession = (row: SheetRow) => planVerb("open", { item: row.target.item }).call === "session";
 
+  // Health's deck: a notice's one verb. Unblock asks for words in a sheet of our own; Snooze is sent; the rest open
+  // the view that handles the notice (a page) or its work (the card). The deck moves on only when a verb was sent.
+  const [unblocking, setUnblocking] = useState<HealthRow | null>(null);
+  const openNotice = (row: HealthRow) => {
+    if (row.item) inspector.selectWork(row.item.id);
+    else if (row.open) {
+      const next = pageOfIntent(row.open);
+      if (next) props.onPage(next);
+      else requestIntent(row.open);
+    } else toast.show("Nothing else to open for it.");
+  };
+  const onNoticeVerb = async (row: HealthRow, act: NoticeAct) => {
+    if (act === "unblock") return setUnblocking(row);
+    if (act === "open") return openNotice(row);
+    const sent = await inspector.act("snooze", { notice: { key: row.key } });
+    if (sent) advance(row.key);
+  };
+
   const tabBar = (
     <TabBar
       theme={theme}
       tabs={phoneTabs(needs.data ?? null, notices.data?.summary.total ?? 0)}
       active={tab}
       onSelect={(id) => onTab(id as PhoneTab)}
-      onNew={props.onNew}
+      onNew={() => props.onCreating(true)}
     />
   );
   const header = (
@@ -310,11 +389,12 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       onWorkspace={onWorkspace}
       presence={presence}
       width={Math.max(0, size.width - 32)}
+      onSettings={() => props.onPage({ kind: "settings", page: "root" })}
     />
   );
 
-  const deckTab = tab === "feed" || tab === "decisions";
   const measured = size.height > 0 && size.width > 0;
+  const { page } = props;
 
   const queue = useMemo(
     () =>
@@ -325,22 +405,33 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     [asks],
   );
 
+  // Each tab's read, for what its empty deck says: never "nothing" over a read that failed.
+  const deckRead: Read = tab === "health" ? noticesRead : tab === "work" ? workRead : read;
+  const deckUnread = tab === "health" ? notices.data?.summary.unread : unread;
   const empty = (
     <View style={{ paddingVertical: 28, gap: 10, alignItems: "flex-start" }}>
-      {read === "pending" ? <ActivityIndicator color={kit.muted} /> : null}
+      {deckRead === "pending" ? <ActivityIndicator color={kit.muted} /> : null}
       <Text
         accessibilityRole="alert"
-        style={{ color: read === "error" || unread?.length ? kit.danger : kit.muted, fontSize: 16 }}
+        style={{ color: deckRead === "error" || deckUnread?.length ? kit.danger : kit.muted, fontSize: 16 }}
       >
-        {deckEmptyWords(read, tab, unread)}
+        {deckEmptyWords(deckRead, tab, deckUnread)}
       </Text>
-      {read === "error" ? (
+      {deckRead === "error" ? (
         <>
-          <Text style={{ color: kit.muted, fontSize: 13 }}>{errorText(needs.error)}</Text>
+          <Text style={{ color: kit.muted, fontSize: 13 }}>
+            {errorText(tab === "health" ? notices.error : tab === "work" && !needs.isError ? list.error : needs.error)}
+          </Text>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Try again"
-            onPress={() => void needs.refetch()}
+            onPress={() => {
+              if (tab === "health") void notices.refetch();
+              else {
+                void needs.refetch();
+                void list.refetch();
+              }
+            }}
             style={{
               height: 44,
               paddingHorizontal: 18,
@@ -356,6 +447,137 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     </View>
   );
 
+  const deckProps = {
+    theme,
+    title: deckTitle(tab),
+    trailing: header,
+    index,
+    onIndexChange: move,
+    directions,
+    empty,
+  };
+  const askedAbout = (row: HealthRow) => (row.since ? ago(row.since, now) : "");
+
+  const sheetCounts = (counts: readonly SheetCount[]) => (
+    <View style={{ flexDirection: "row", gap: 5 }}>
+      {counts.map((count) => (
+        <Chip
+          key={count.id}
+          theme={theme}
+          label={count.label}
+          tone={count.tone}
+          dense
+          lead={
+            "running" in count && count.running ? <TidepoolDot theme={theme} state="running" size={11} /> : undefined
+          }
+        />
+      ))}
+    </View>
+  );
+  // The sheet: the same frame for every tab; its toast is the surface's one undo (under a page, the page's own).
+  const sheet = (counts: readonly SheetCount[], body: ReactNode) => (
+    <PullSheet
+      theme={theme}
+      height={size.height}
+      top={SHEET_TOP}
+      inset={0}
+      safeBottom={safe}
+      tabBar={tabBar}
+      title={sheetTitle(tab)}
+      counts={sheetCounts(counts)}
+      toast={(place) => (
+        <UndoToast
+          theme={theme}
+          entry={page ? null : inspector.undo.entry}
+          onUndo={inspector.undo.undo}
+          bottom={place.bottom}
+          lift={place.lift}
+        />
+      )}
+    >
+      {body}
+    </PullSheet>
+  );
+  const unreadList = (what: string, error: unknown) => (
+    <Text accessibilityRole="alert" style={{ color: kit.danger, fontSize: 14, paddingHorizontal: 4 }}>
+      {`Couldn't read ${what} (${errorText(error)}).`}
+    </Text>
+  );
+
+  const scrolled = (children: ReactNode) => (
+    <ScrollView
+      // Each tab starts at its own top: a scroll position is not carried from one deck to another.
+      key={tab}
+      keyboardShouldPersistTaps="handled"
+      contentContainerStyle={{
+        paddingHorizontal: 16,
+        paddingTop: 12,
+        paddingBottom: TAB_BAND + PEEK + safe + 24,
+        gap: 10,
+      }}
+    >
+      {pushed ? (
+        <View
+          testID="from-the-push"
+          style={{
+            alignSelf: "flex-start",
+            height: 28,
+            paddingHorizontal: 12,
+            borderRadius: 9999,
+            backgroundColor: kit.needsSoft,
+            justifyContent: "center",
+          }}
+        >
+          <Text style={{ color: kit.needs, fontSize: 12.5, fontWeight: "600" }}>From the push · same hold</Text>
+        </View>
+      ) : null}
+      {tab !== "health" && unread?.length ? (
+        <Text testID="unread-sources" accessibilityRole="alert" style={{ color: kit.danger, fontSize: 13.5 }}>
+          {unreadWords(unread)}
+        </Text>
+      ) : null}
+      {gone && !unread?.length ? (
+        <Text accessibilityRole="alert" style={{ color: kit.warn, fontSize: 13.5 }}>
+          That hold is no longer waiting on you: it was answered, or it closed.
+        </Text>
+      ) : null}
+      {children}
+    </ScrollView>
+  );
+
+  const workSheet = (
+    <>
+      <LaneSwitcher
+        theme={theme}
+        lane={lane}
+        counts={{
+          running: laneCards(board, "running").length,
+          queued: laneCards(board, "queued").length,
+          standing: laneCards(board, "standing").length,
+          done: laneCards(board, "done").length,
+        }}
+        onLane={setLane}
+      />
+      {list.isError && !list.data ? (
+        unreadList("the work list", list.error)
+      ) : laneCards(board, lane).length === 0 ? (
+        <Text style={{ color: kit.muted, fontSize: 14, paddingHorizontal: 4 }}>
+          {list.data ? `Nothing is ${lane === "done" ? "done in the last 24 h" : lane}.` : "Reading the work…"}
+        </Text>
+      ) : (
+        <SheetRows
+          theme={theme}
+          groups={[{ id: "running", title: "", rows: laneRows(laneCards(board, lane), lane, now) }]}
+          directions={directions}
+          handlers={rowHandlers}
+          canContinue={canContinue}
+          hasSession={hasSession}
+          halo={(row) => row.lead === "running"}
+        />
+      )}
+    </>
+  );
+
   return (
     <View
       testID="phone-shell"
@@ -366,53 +588,44 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       style={{ flex: 1, backgroundColor: kit.bg, ...(props.frame ? props.frame : null) }}
     >
       <SafeBottom onBottom={setSafe} />
-      {deckTab ? (
-        <ScrollView
-          // Each tab starts at its own top: a scroll position is not carried from one deck to another.
-          key={tab}
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{
-            paddingHorizontal: 16,
-            paddingTop: 12,
-            paddingBottom: TAB_BAND + PEEK + safe + 24,
-            gap: 10,
-          }}
-        >
-          {pushed ? (
-            <View
-              testID="from-the-push"
-              style={{
-                alignSelf: "flex-start",
-                height: 28,
-                paddingHorizontal: 12,
-                borderRadius: 9999,
-                backgroundColor: kit.needsSoft,
-                justifyContent: "center",
-              }}
-            >
-              <Text style={{ color: kit.needs, fontSize: 12.5, fontWeight: "600" }}>From the push · same hold</Text>
-            </View>
-          ) : null}
-          {unread?.length ? (
-            <Text testID="unread-sources" accessibilityRole="alert" style={{ color: kit.danger, fontSize: 13.5 }}>
-              {unreadWords(unread)}
-            </Text>
-          ) : null}
-          {gone && !unread?.length ? (
-            <Text accessibilityRole="alert" style={{ color: kit.warn, fontSize: 13.5 }}>
-              That hold is no longer waiting on you: it was answered, or it closed.
-            </Text>
-          ) : null}
-          <Deck
-            theme={theme}
-            title={deckTitle(tab)}
-            trailing={header}
+      {scrolled(
+        tab === "work" ? (
+          <Deck<LaneCard>
+            {...deckProps}
+            items={workCards}
+            keyOf={(card) => card.key}
+            renderItem={(card) => (
+              <WorkDeckCard
+                theme={theme}
+                card={card}
+                hasSession={planVerb("open", { item: card.item }).call === "session"}
+                onSession={() => void inspector.act("open", { item: card.item })}
+                onHold={() => inspector.selectHold(card.key)}
+              />
+            )}
+          />
+        ) : tab === "health" ? (
+          <Deck<HealthRow>
+            {...deckProps}
+            items={noticeRows}
+            keyOf={(row) => row.key}
+            renderItem={(row) => (
+              <NoticeDeckCard
+                theme={theme}
+                row={row}
+                age={askedAbout(row)}
+                waiting={waitingWords(row.key)}
+                hasSession={planVerb("open", { item: row.item }).call === "session"}
+                onSession={() => void inspector.act("open", { item: row.item })}
+                onVerb={(act) => void onNoticeVerb(row, act)}
+              />
+            )}
+          />
+        ) : (
+          <Deck<NeedEntry>
+            {...deckProps}
             items={entries}
-            index={index}
-            onIndexChange={move}
             keyOf={(entry) => entry.row.key}
-            directions={directions}
-            empty={empty}
             renderItem={(entry) => {
               const item = holdInspector(entry, now);
               const key = entry.row.key;
@@ -437,56 +650,14 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
               );
             }}
           />
-        </ScrollView>
-      ) : (
-        <View style={{ flex: 1, paddingBottom: TAB_BAND + safe }}>{props.classic}</View>
+        ),
       )}
 
-      {measured && deckTab ? (
-        <PullSheet
-          theme={theme}
-          height={size.height}
-          top={SHEET_TOP}
-          inset={0}
-          safeBottom={safe}
-          tabBar={tabBar}
-          title={sheetTitle(tab)}
-          counts={
-            <View style={{ flexDirection: "row", gap: 5 }}>
-              {(tab === "feed"
-                ? feedCounts(sections, handled.data ?? null)
-                : answersCounts(answersRead.data ?? null)
-              ).map((count) => (
-                <Chip
-                  key={count.id}
-                  theme={theme}
-                  label={count.label}
-                  tone={count.tone}
-                  dense
-                  lead={
-                    "running" in count && count.running ? (
-                      <TidepoolDot theme={theme} state="running" size={11} />
-                    ) : undefined
-                  }
-                />
-              ))}
-            </View>
-          }
-          toast={(place) => (
-            <UndoToast
-              theme={theme}
-              entry={inspector.undo.entry}
-              onUndo={inspector.undo.undo}
-              bottom={place.bottom}
-              lift={place.lift}
-            />
-          )}
-        >
-          {tab === "feed" ? (
+      {measured && tab === "feed"
+        ? sheet(
+            feedCounts(sections, handled.data ?? null),
             list.isError && !list.data ? (
-              <Text accessibilityRole="alert" style={{ color: kit.danger, fontSize: 14, paddingHorizontal: 4 }}>
-                {`Couldn't read the work list (${errorText(list.error)}).`}
-              </Text>
+              unreadList("the work list", list.error)
             ) : groups.length === 0 ? (
               <Text style={{ color: kit.muted, fontSize: 14, paddingHorizontal: 4 }}>
                 {list.data ? "Nothing else is running, queued or finished." : "Reading the work…"}
@@ -500,25 +671,74 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
                 canContinue={canContinue}
                 hasSession={hasSession}
               />
-            )
-          ) : (
+            ),
+          )
+        : null}
+      {measured && tab === "decisions"
+        ? sheet(
+            answersCounts(answersRead.data ?? null),
             <AnswersSheet
               theme={theme}
               tiles={stageTiles(queue, needs.data ?? null, answersRead.data ?? null, now)}
               held={answersRead.data?.held ?? null}
               went={answersRead.data ? wentRows(answersRead.data.recent) : null}
               onOpenPr={openUrl}
-            />
-          )}
-        </PullSheet>
+            />,
+          )
+        : null}
+      {measured && tab === "work" ? sheet(workCounts(board), workSheet) : null}
+      {measured && tab === "health" ? (
+        <HealthHost
+          items={items}
+          workFailed={list.isError && !list.data}
+          now={now}
+          render={(model, lanes) =>
+            sheet(
+              healthCounts(model, lanes),
+              <FleetSheet
+                theme={theme}
+                model={model}
+                directions={directions}
+                due={(rows ?? []).filter((row) => row.key.startsWith("review:")).length}
+                onTile={() => undefined}
+                onLog={() => props.onPage({ kind: "loops" })}
+                onPage={(next) =>
+                  props.onPage(next === "fleet" ? { kind: "fleet", scope: null, tick: null } : { kind: next })
+                }
+              />,
+            )
+          }
+        />
       ) : null}
-      {!deckTab ? (
-        <View
-          pointerEvents="box-none"
-          style={{ position: "absolute", left: 0, right: 0, bottom: safe, height: TAB_BAND, paddingHorizontal: 12 }}
+
+      {measured && page ? (
+        <PagePanel
+          theme={theme}
+          height={size.height}
+          trail={pageTrail(page)}
+          onBack={() => props.onPage(page.kind === "settings" ? { kind: "settings", page: "root" } : null)}
+          onClose={() => props.onPage(null)}
         >
-          {tabBar}
-        </View>
+          <PageBody
+            theme={theme}
+            page={page}
+            navigation={navigation}
+            presence={presence}
+            onPage={props.onPage}
+            onOpenHold={(key) => inspector.selectHold(key)}
+            onOpenDecision={props.onOpenDecision}
+            onOpenWork={(id) => (items.some((one) => one.id === id) ? inspector.selectWork(id) : props.onOpenWork(id))}
+          />
+        </PagePanel>
+      ) : null}
+      {measured && props.creating ? (
+        <NewWorkSheet
+          theme={theme}
+          height={size.height}
+          safeBottom={safe}
+          onClose={() => props.onCreating(false)}
+          onCreated={() => props.onCreating(false)}
+        />
       ) : null}
       {measured && cardItem ? (
         <InspectorCard
@@ -544,6 +764,32 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
             inspector.selectHold(next);
           }}
           onOpenSession={() => void inspector.act("open", inspector.targetOf(openEntry))}
+        />
+      ) : null}
+      {unblocking ? (
+        <UnblockSheet
+          theme={theme}
+          title={unblocking.title}
+          safeBottom={safe}
+          onCancel={() => setUnblocking(null)}
+          onSend={async (words) => {
+            // Closes and moves on only when the prompt was sent; the work is the one the notice was drawn from.
+            const sent = await inspector.act("unblock", { item: unblocking.item }, undefined, words);
+            if (sent) {
+              setUnblocking(null);
+              advance(unblocking.key);
+            }
+            return sent;
+          }}
+        />
+      ) : null}
+      {page ? (
+        <UndoToast
+          theme={theme}
+          entry={inspector.undo.entry}
+          onUndo={inspector.undo.undo}
+          bottom={safe + 16}
+          lift={0}
         />
       ) : null}
     </View>
