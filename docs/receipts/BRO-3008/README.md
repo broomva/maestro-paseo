@@ -21,3 +21,6 @@ Dark: `*-dark.png` for 02, 04, 06, 08.
 Bugs the run found, both fixed with a test that fails without the fix: Undo pressed while the verb's own reads were
 still landing was dropped (Allow and Undo shared one in-flight claim); on the phone the evidence line and the K2 title
 were clipped.
+
+P20 round 1 (the orchestrator's review) fixes are in the PR's second commit; its tests and mutation results are in the
+PR description.

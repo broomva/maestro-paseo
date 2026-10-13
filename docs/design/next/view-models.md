@@ -187,7 +187,7 @@ writes an owner verb. The checker enforces it.
 | P-header | J1 header, M1 deck header | I-needs-list | | `NeedSummary` for the tab counts |
 | P-feed | J1, M1 | I-needs-list, I-handled-list, I-work-list, I-notices-list, I-sweep-get | I-ask-answer, I-approval-decide, I-owner-step-done, I-session-prompt, I-notice-snooze, I-work-unblock, I-undo | `NeedSummary`; `handled.list.today`; `sweep.get.unsupervisedToday`, `nextWakeAt`. Glance tiles read only these fields |
 | P-briefing | J2–J4, M2–M4 | I-work-get, I-work-files, I-needs-list | I-approval-decide, I-ask-answer, I-work-unblock, I-work-cancel, I-undo | `ApprovalBody.evidence`, `after` |
-| P-approval-card | K0–K2 (session cards, the session page) | I-needs-list, I-verbs-list, I-work-get, I-work-for-agent, I-asks-workspace | I-approval-decide, I-ask-answer, I-owner-step-done, I-session-prompt, I-work-unblock, I-notice-snooze, I-work-cancel, I-work-stop, I-work-adopt, I-undo | the card reads its hold live by `key` (`{kind, key, version}` is all its row carries); `verbs.list` gives its countdown and receipt; `needs.list.unread` says which source a missing hold could not be read from |
+| P-approval-card | K0–K2 (session cards, the session page) | I-needs-list, I-verbs-list, I-work-get, I-work-for-agent, I-asks-workspace | I-approval-decide, I-ask-answer, I-owner-step-done, I-session-prompt, I-work-unblock, I-notice-snooze, I-work-cancel, I-work-stop, I-work-adopt, I-undo | the card reads its hold live by `key` (`{kind, key, version}` is all its row carries); `verbs.list` gives its countdown and receipt; `needs.list.unread` says which source a missing hold could not be read from; the digest and the session page name an unread source instead of saying nothing needs you or holds |
 | P-decisions | J5, M5 | I-asks-workspace, I-needs-list, I-answers-status | I-ask-answer, I-fleet-ask-answer, I-conductor-decide, I-undo | **new read** `answers.status` → `{ waitingToLand, landingPr?, routed, acted, held, recent[] }` |
 | P-work | J6, J6b, M6 | I-work-list, I-work-history | I-work-cancel, I-work-stop, I-session-prompt, I-approval-decide, I-undo | `WorkRow.liveTurn`, `lifecycle`, `closedBy`; J6b decides an approval in place |
 | P-health | J7, M7 | I-fleet-get, I-fleet-tick, I-timeline-get, I-loops-get, I-lanes-get, I-needs-list, I-notices-list | I-work-adopt, I-session-prompt, I-work-stop, I-notice-snooze, I-fleet-tick-run, I-fleet-mode-set, I-loop-control, I-undo | **new read** `notices.list` → `{ key, kind: stuck \| quiet \| schedule \| loop \| initiative, title, scope, since, evidence[], closesWhen, verb }`; `fleet.tick.grid` (24 per scope); `loops.get[].recent` (last 16 runs); `lanes.get` liveness |
@@ -252,11 +252,13 @@ conductor, never by Maestro (A8).
 The card lives in the session that asked; the inbox session holds only a digest. `server/session-cards.ts` appends it
 with `timeline.append` (`kind: "maestro-card"`, id `maestro-card:<kind>:<key>:<version>`, so a card appended again
 after a restart replaces itself), from `needs.list`'s own rows on every sweep and a moment after an event
-(a prompt raised, an `approval.request`, a landing). The row's data is only `{ kind, key, version }`:
+(a prompt raised, an `approval.request`, a landing). An append that fails is tried again on later passes, further apart
+each time (15 s doubling to 5 min), for as long as the hold is live; what is no longer due is forgotten; a session that
+is archived or gone gets no card. The row's data is only `{ kind, key, version }`:
 
 | Kind | Key it reads | Version | Raised |
 |---|---|---|---|
-| `approval`, `ask`, `owner_step` | the hold's `key` (`work:<id>`, `approval:<id>`, `ask:[…]`) | a prompt's request id; `approval:<id>` its key; else `since` | every hold that names a session |
+| `approval`, `ask`, `owner_step` | the hold's `key` (`work:<id>`, `approval:<id>`, `ask:[…]`) | a prompt's request id; `approval:<id>` its key; else a word of the hold's key, title and body (never its first-seen time, which a restart loses) | every hold that names a session |
 | `finished` | `work:<id>` | the landing's index | a landing seen live that nothing holds after a 2 s settle |
 | `health` | `work:<id>` | a hash of the stop's reason | work that stopped in the last 15 min, in its own session |
 | `digest` | `work:<id>` of the landing it came with | the inbox turn | by the inbox, with each notice |
