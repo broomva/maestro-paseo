@@ -1025,6 +1025,20 @@ describe("M8, Initiatives from Health's sheet", () => {
     expect(view.text()).toContain("It stays active; its next review date moves on.");
   });
 
+  test("answering a review from the page leaves the Feed's deck where it was", async () => {
+    // The Decisions deck is on its second ask; the review answered on the page is not that deck's hold to move past.
+    const second = needsNow().rows.filter((row) => row.key.startsWith("ask:"))[1]?.key as string;
+    const view = await mount({ tab: "decisions", focus: { hold: second, at: 1 }, page: { kind: "initiatives" } });
+    for (let at = 0; at < 3; at += 1) await settle();
+    const before = /(\d) of 2/.exec(view.text())?.[0];
+    expect(before).toBe("2 of 2");
+    await view.press(view.id("initiative-skene"));
+    await view.press(view.label("Keep"));
+    await view.press(view.label("Answer"));
+    expect(sent("initiatives.review")).toHaveLength(1);
+    expect(/(\d) of 2/.exec(view.text())?.[0]).toBe(before);
+  });
+
   test("a read that failed says so and offers Try again, never an empty list", async () => {
     initiativesFail = "control repo missing";
     const view = await mount({ tab: "health", page: { kind: "initiatives" } });
