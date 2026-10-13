@@ -7,7 +7,7 @@
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import type { NoticeRow } from "../shared/notices";
 import { useFleet, useScopeReads } from "./fleet";
 import type { Cell } from "./fleet-cockpit-model";

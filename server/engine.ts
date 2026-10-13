@@ -83,7 +83,7 @@ import { briefOf, type RunKeys, workTitle } from "./frontmatter";
 import { type LabelAgent, PARENT_AGENT_LABEL, WORK_LABELS, workLabels } from "./labels";
 import { describePermission, type PermissionLike } from "./permissions";
 import { type Paseo, startRun, WORK_LABEL } from "./runs";
-import { type Mutation, placement, type StoredWork, WorkStore, withLock } from "./store";
+import { type Mutation, placement, type StoredWork, WorkStore } from "./store";
 import { pausedBy } from "./usage-limit";
 import { toWire } from "./wire";
 import { type WorktreeStatus, worktreeStatus } from "./worktree";
@@ -1494,7 +1494,7 @@ export class Engine {
     if (!paseo) return record(`Could not archive the workspace: ${NO_HANDLE} ${stands}`);
     // The claim is the item's lock, the one every mutation of it takes, so the receipt is written after it is released.
     return record(
-      await withLock(item.contract.id, () =>
+      await store.withLock(item.contract.id, () =>
         this.archiveClaimed(paseo, item, { ...worker, workspaceId, branch }, stands),
       ),
     );
@@ -1900,7 +1900,7 @@ export class Engine {
     const outcome =
       digest === null
         ? { failed: await archive(false) }
-        : await withLock(id, async () => {
+        : await store.withLock(id, async () => {
             // The item first, read and not mutated: mutate takes this same lock, and so does load, which
             // waits for it. fresh is the raw read for code holding the lock. It must still be this stop.
             const moved = stopMoved(await store.fresh(id, stopped.dir).catch(() => null), worker.agentId);

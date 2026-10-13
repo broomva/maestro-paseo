@@ -4,19 +4,11 @@
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useState } from "react";
 import { Platform, Pressable, Text, TextInput, View } from "react-native";
 import { runningOf } from "../shared/needs-you";
 import type { TabBadge } from "./header-count";
-import {
-  HOME_TABS,
-  type HomeTab,
-  healthRows,
-  homeBadges,
-  type WorkspaceOption,
-  wakeChip,
-  workspaceOptions,
-} from "./home-model";
+import { HOME_TABS, type HomeTab, homeBadges, type WorkspaceOption, wakeChip, workspaceOptions } from "./home-model";
 import { useLoop, useNeeds, useNotices, useWorkList } from "./hooks";
 import { frostLook } from "./kit/assumptions";
 import { Dot, MONO, TABULAR } from "./kit/parts";

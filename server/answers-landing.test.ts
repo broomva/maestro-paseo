@@ -6,7 +6,8 @@ import { join } from "node:path";
 import type { PrRef } from "../shared/answers";
 import { AnswerRouter } from "./answer-routes";
 import { AnswersLander, BATCH_TITLE, batchPr, type Forge, unlandedAnswers } from "./answers-landing";
-import { ANSWERS_BRANCH, WorkspaceAsks } from "./control-home";
+import { WorkspaceAsks } from "./control-home";
+import { ANSWERS_BRANCH } from "./git";
 import type { Paseo } from "./runs";
 
 const LEDGER = "bro-9000-landing.yaml";

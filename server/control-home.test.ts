@@ -7,9 +7,7 @@ import { join } from "node:path";
 import type { DecisionAsk } from "../shared/fleet";
 import { parsed, rowsOf } from "./control-asks";
 import {
-  ANSWERS_BRANCH,
   blobId,
-  gitWords,
   isLocal,
   type Ledger,
   landedLedgers,
@@ -18,6 +16,7 @@ import {
   type Sources,
   WorkspaceAsks,
 } from "./control-home";
+import { ANSWERS_BRANCH, gitWords } from "./git";
 import { readLedgers as paseoAsksRead } from "./testdata/paseo-asks-ledger";
 
 // ── The rule, on parsed sources ──────────────────────────────────────────────

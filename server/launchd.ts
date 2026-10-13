@@ -45,7 +45,7 @@ import {
   parseUnloads,
   type Seen,
 } from "./launchd-model";
-import { expandHome, LABEL_PREFIX } from "./paths";
+import { expandHome, LABEL_PREFIX, launchAgentsDir } from "./paths";
 
 export interface RunResult {
   stdout: string;
@@ -232,7 +232,7 @@ export class Launchd {
     this.uid = options.uid ?? process.getuid?.() ?? 501;
     this.prefix = options.prefix ?? "com.broomva.";
     if (!LABEL_PREFIX.test(this.prefix)) throw new Error(`Not a launchd label prefix: ${JSON.stringify(this.prefix)}`);
-    this.agentsDir = options.agentsDir ?? expandHome("~/Library/LaunchAgents");
+    this.agentsDir = options.agentsDir ?? launchAgentsDir();
     this.now = options.now ?? Date.now;
   }
 
@@ -501,7 +501,7 @@ export async function launchdPresence(
 ): Promise<Map<string, "on" | "off" | "gone">> {
   const run = readOnly(options.run ?? execRunner);
   const uid = options.uid ?? process.getuid?.() ?? 501;
-  const agentsDir = options.agentsDir ?? expandHome("~/Library/LaunchAgents");
+  const agentsDir = options.agentsDir ?? launchAgentsDir();
   const out = async (args: readonly string[]) => {
     const result = await run(LAUNCHCTL, args, { timeoutMs: SHORT_MS });
     if (result.code !== 0) throw new Error(`launchctl ${args[0]} exited ${result.code ?? "on a signal"}`);

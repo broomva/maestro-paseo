@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkItem } from "../shared/contracts";
 import { groupOf, type OrchState } from "../shared/states";
-import { acquireLock, releaseLock } from "./control-asks";
 import { askBatch, H, report, session, writeFleet } from "./fake-fleet";
 import { AwakeClock, DISABLED_NOTICE, Fleet, REVIEWS_FILE, uptimeRaw, wallClock } from "./fleet";
+import { acquireLock, releaseLock } from "./locks";
 
 const roots: string[] = [];
 afterAll(async () => {

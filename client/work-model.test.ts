@@ -143,11 +143,11 @@ describe("the five trays", () => {
 
   test("only Running wears the Undertow, only Standing the pulse (JE rule 9)", () => {
     const board = workBoard(input);
-    expect(board.lanes.flatMap((lane) => lane.cards.filter((card) => card.running).map((card) => lane.id))).toEqual([
+    expect(board.lanes.flatMap((lane) => lane.cards.filter((card) => card.running).map((_card) => lane.id))).toEqual([
       "running",
       "running",
     ]);
-    expect(board.lanes.flatMap((lane) => lane.cards.filter((card) => card.standing).map((card) => lane.id))).toEqual([
+    expect(board.lanes.flatMap((lane) => lane.cards.filter((card) => card.standing).map((_card) => lane.id))).toEqual([
       "standing",
     ]);
   });

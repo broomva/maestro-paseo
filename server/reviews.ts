@@ -6,7 +6,7 @@
 
 import { readFile } from "node:fs/promises";
 import type { ReviewAnswer } from "../shared/initiatives";
-import { appendJsonLine } from "./jsonl";
+import { appendAskReceipt } from "./ask-receipts";
 
 export interface ReviewReceipt {
   initiative: string;
@@ -60,6 +60,6 @@ export class ReviewReceipts {
   }
 
   async record(receipt: ReviewReceipt): Promise<void> {
-    await appendJsonLine(this.path, { kind: KIND, ...receipt });
+    await appendAskReceipt(this.path, { kind: KIND, ...receipt });
   }
 }

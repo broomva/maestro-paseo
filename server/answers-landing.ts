@@ -26,21 +26,13 @@
 // you and Decisions to read without asking git.
 
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { type AnswersLanding, AnswersLandingSchema, type AskRef, answersWord, type PrRef } from "../shared/answers";
+import { writeFileAtomic } from "./atomic";
 import { parsed, type Row, rowsOf, stateOf, text } from "./control-asks";
-import {
-  ANSWERS_BRANCH,
-  ASKS_DIR,
-  catFiles,
-  git,
-  isAnswersWorktree,
-  MAIN_REF,
-  mergeInto,
-  uncommitted,
-  type WorkspaceAsks,
-} from "./control-home";
+import type { WorkspaceAsks } from "./control-home";
+import { ANSWERS_BRANCH, catFiles, git, isAnswersWorktree, MAIN_REF, uncommitted } from "./git";
+import { ASKS_DIR } from "./paths";
 
 /** The batch PR's title opens with this, so a person and Maestro alike know it for what it is. */
 export const BATCH_TITLE = "answers:";
@@ -209,10 +201,11 @@ export class AnswersLander {
       }
       const mainSha = (await git(repo, ["rev-parse", "--verify", "--quiet", `${MAIN_REF}^{commit}`])).trim();
       // Origin's own batch first: what another pushed there is merged in, never pushed over.
-      const remote = await this.remoteHead(path);
+      const { branch } = asks;
+      const remote = await branch.remoteHead();
       if (remote && !(await this.has(path, remote))) {
-        await git(path, ["fetch", "--quiet", "origin", `refs/heads/${ANSWERS_BRANCH}`], 60_000);
-        const conflicted = await mergeInto(path, remote, `Merge origin's ${ANSWERS_BRANCH}`);
+        await branch.fetchRemote();
+        const conflicted = await branch.merge(remote, `Merge origin's ${ANSWERS_BRANCH}`);
         if (conflicted) {
           const refs = await this.unlanded(path, mainSha);
           return {
@@ -224,7 +217,7 @@ export class AnswersLander {
         }
       }
       if (!(await this.has(path, mainSha))) {
-        const conflicted = await mergeInto(path, mainSha, `Merge ${MAIN_REF} into ${ANSWERS_BRANCH}`);
+        const conflicted = await branch.merge(mainSha, `Merge ${MAIN_REF} into ${ANSWERS_BRANCH}`);
         if (conflicted) {
           const refs = await this.unlanded(path, mainSha);
           return { kind: "conflict" as const, ledgers: conflicted.map(ledgerName), with: MAIN_REF, refs };
@@ -238,8 +231,8 @@ export class AnswersLander {
         // Level: the branch holds nothing main does not. To main itself while origin's batch is part of main.
         const head = (await git(path, ["rev-parse", "HEAD"])).trim();
         const behindMain = !remote || (await this.isAncestor(path, remote, mainSha));
-        if (head !== mainSha && behindMain) await git(path, ["reset", "--quiet", "--hard", mainSha]);
-        await this.push(path);
+        if (head !== mainSha && behindMain) await branch.resetTo(mainSha);
+        await branch.push();
         return { kind: "level" as const };
       }
       const refs = await this.unlanded(path, mainSha);
@@ -251,7 +244,7 @@ export class AnswersLander {
         );
       }
       // Pushed from inside the queue: no answer commits between the count and the push.
-      await this.push(path);
+      await branch.push();
       return { kind: "pending" as const, refs };
     });
     if (!outcome) return { ...BLANK(at), landed };
@@ -314,23 +307,6 @@ export class AnswersLander {
     );
   }
 
-  /** Origin's maestro/answers as it is now, or null when origin has none. */
-  private async remoteHead(path: string): Promise<string | null> {
-    const listed = await git(path, ["ls-remote", "origin", `refs/heads/${ANSWERS_BRANCH}`], 60_000);
-    return listed.split(/\s/)[0] || null;
-  }
-
-  /**
-   * The branch pushed to origin, when origin's differs. Never forced: origin's
-   * batch was merged in first, so this is a fast-forward, and git refuses any
-   * other (one pushed meanwhile waits for the next wake to merge it).
-   */
-  private async push(path: string): Promise<void> {
-    const [head, remote] = await Promise.all([git(path, ["rev-parse", "HEAD"]), this.remoteHead(path)]);
-    if (remote === head.trim()) return;
-    await git(path, ["push", "--quiet", "origin", `HEAD:refs/heads/${ANSWERS_BRANCH}`], 180_000);
-  }
-
   /** The answers HEAD records that main does not, over the ledgers the two hold differently. */
   private async unlanded(path: string, mainSha: string): Promise<AskRef[]> {
     const changed = (await git(path, ["diff", "--name-only", mainSha, "HEAD", "--", `${ASKS_DIR}/`]))
@@ -357,10 +333,7 @@ export class AnswersLander {
     this.last = state;
     const file = this.options.statePath;
     try {
-      await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-      const temp = `${file}.tmp-${process.pid}`;
-      await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-      await rename(temp, file);
+      await writeFileAtomic(file, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600, dirMode: 0o700 });
     } catch (error) {
       this.options.log?.(`answers: keeping the landing state: ${(error as Error).message}`);
     }

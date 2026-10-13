@@ -41,7 +41,6 @@ import { type TabBadge, tabBadges } from "./header-count";
 import type { MaestroIntent } from "./intent";
 import type { Choice, InspectorItem, SessionRef } from "./kit/inspector";
 import { waitWords } from "./loop-model";
-import { DRIFT_WORDS } from "./loops-model";
 import type { PlaneView } from "./plane-model";
 import { stuckText, workerText } from "./plane-model";
 import { placeText, titleText } from "./records-text";

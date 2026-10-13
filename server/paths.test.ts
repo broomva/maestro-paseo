@@ -1,7 +1,37 @@
 import { describe, expect, test } from "bun:test";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { controlAskPaths, controlRepoPaths, verbWindowMs } from "./paths";
+import {
+  ASKS_DIR,
+  broomvaHome,
+  controlAskPaths,
+  controlRepoPaths,
+  fleetPaths,
+  launchAgentsDir,
+  lockRootBeside,
+  p9Dir,
+  verbWindowMs,
+  workLockRoot,
+} from "./paths";
+
+describe("every path Maestro writes or reads comes from here, and honours its override (BRO-2997)", () => {
+  test("LaunchAgents, p9 and the loop home: the override when named, the default otherwise", () => {
+    expect(launchAgentsDir({})).toBe(join(homedir(), "Library", "LaunchAgents"));
+    expect(launchAgentsDir({ MAESTRO_PASEO_FLEET_AGENTS: "/x/agents" })).toBe("/x/agents");
+    expect(launchAgentsDir({ MAESTRO_PASEO_FLEET_AGENTS: "~/agents" })).toBe(join(homedir(), "agents"));
+    expect(fleetPaths({ MAESTRO_PASEO_FLEET_AGENTS: "/x/agents" }).agents).toBe("/x/agents");
+    expect(p9Dir({})).toBe(join(homedir(), ".config", "broomva", "p9"));
+    expect(p9Dir({ MAESTRO_PASEO_P9_DIR: "/x/p9" })).toBe("/x/p9");
+    expect(broomvaHome({})).toBe(join(homedir(), ".broomva"));
+    expect(broomvaHome({ BROOMVA_HOME: "~/elsewhere" })).toBe(join(homedir(), "elsewhere"));
+  });
+
+  test("locks sit beside what they guard; the asks folder is defined once", () => {
+    expect(lockRootBeside("/s/state/asks.jsonl")).toBe("/s/state/.locks");
+    expect(workLockRoot("/w/maestro")).toBe("/w/maestro/.locks");
+    expect(ASKS_DIR).toBe(join(".control", "asks"));
+  });
+});
 
 describe("the owner's control repo and receipts are never a test's by default", () => {
   test("outside a test: ~/broomva, its answers worktree and receipts under ~/.local/state", () => {

@@ -8,17 +8,13 @@ import { join } from "node:path";
 import {
   type AnswerInput,
   AUDIT_LINES,
-  acquireLock,
   answerDecision,
   decisionsOf,
-  dropLeftovers,
   entryHash,
-  LOCK_STALE_MS,
-  lockKey,
   readDecisions,
-  releaseLock,
   withAnswer,
 } from "./control-asks";
+import { acquireLock, dropLeftovers, LOCK_STALE_MS, lockKey, releaseLock } from "./locks";
 
 const roots: string[] = [];
 afterAll(async () => {

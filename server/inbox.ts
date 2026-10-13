@@ -14,7 +14,7 @@
 // (Inbox.session), so the channel never goes quiet on its own.
 
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type {
   ProviderConnection,
@@ -25,6 +25,7 @@ import type {
 import { z } from "zod";
 import { CARD_KIND, CARD_VERSION, type CardData, GateCardSchema } from "../shared/card";
 import { needsWords, workKey } from "../shared/needs";
+import { writeFileAtomic } from "./atomic";
 import { lookOf, onItsOwnArc, workerOf } from "./events";
 import { configPath } from "./paths";
 import type { Paseo } from "./runs";
@@ -429,7 +430,7 @@ export class Inbox {
       title: INBOX_TITLE,
     });
     this.kept = created.id;
-    await writeFile(this.path, `${JSON.stringify({ agentId: created.id })}\n`).catch((error) =>
+    await writeFileAtomic(this.path, `${JSON.stringify({ agentId: created.id })}\n`).catch((error) =>
       this.log(`inbox id not kept on disk (kept for this run): ${(error as Error).message}`),
     );
     return created.id;

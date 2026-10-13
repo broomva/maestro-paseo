@@ -109,7 +109,8 @@ test(`past ${WAKE_LOG_MAX} lines it is rewritten to the newest ${WAKE_LOG_KEEP};
   expect(JSON.parse(kept.at(-1) ?? "{}").tickId).toBe("t5001");
   expect(JSON.parse(kept[0] ?? "{}").tickId).toBe(`t${WAKE_LOG_MAX - WAKE_LOG_KEEP + 1}`);
   // No temporary file is left beside it.
-  expect(await readdir(join(path, ".."))).toEqual(["wake-log.jsonl"]);
+  expect((await readdir(join(path, ".."))).sort()).toEqual([".locks", "wake-log.jsonl"]);
+  expect(await readdir(join(path, "..", ".locks"))).toEqual([]);
 });
 
 test("appends at once land in order, none lost", async () => {

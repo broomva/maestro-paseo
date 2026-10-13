@@ -36,11 +36,11 @@
 // each answer once it is where it belongs (server/answer-routes.ts). Not here:
 // re-application from receipts.
 
-import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { type AskHome, type AskNotice, askNotice, type DecisionAsk, homeKey } from "../shared/fleet";
+import { AnswersBranch } from "./answers-branch";
 import {
   type AnswerInput,
   ambiguity,
@@ -58,17 +58,14 @@ import {
   text,
 } from "./control-asks";
 import { UserError } from "./engine";
+import { catFiles, FetchGate, git, MAIN_REF } from "./git";
+import { ASKS_DIR } from "./paths";
 
-export const ASKS_DIR = join(".control", "asks");
-export const MAIN_REF = "origin/main";
-export const ANSWERS_BRANCH = "maestro/answers";
 /** origin/main is fetched at most this often (§5.2). */
 export const FETCH_EVERY_MS = 5 * 60_000;
 /** A read is reused this long: the header count polls it from every client. */
 export const READ_TTL_MS = 10_000;
 const LEDGER_LIMIT = 1024 * 1024;
-/** A `git cat-file --batch` of every ledger blob takes well under a second; past this it is stuck. */
-const CAT_FILE_MS = 30_000;
 /** An answer fetches origin/main first, unless it was fetched this recently. */
 const ANSWER_FETCH_FRESH_MS = 30_000;
 /** How far back main's history of a ledger is read for where a squash-merged ask first landed. */
@@ -403,82 +400,6 @@ function resolveOne(
 
 // ── Git ──────────────────────────────────────────────────────────────────────
 
-/** Read at each call, so a test's isolated git config holds. No prompt, no optional locks, git's own words. */
-const gitEnv = () => ({ ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" });
-
-export function git(cwd: string, args: readonly string[], timeout = 20_000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "git",
-      ["-C", cwd, ...args],
-      { timeout, maxBuffer: 64 * 1024 * 1024, env: gitEnv() },
-      (error, stdout, stderr) => {
-        if (error) reject(new Error(`git ${args[0]}: ${gitWords(stderr || error.message)}`));
-        else resolve(stdout);
-      },
-    );
-  });
-}
-
-/**
- * What git said, in a line: the first line that names a cause (`fatal:`,
- * `error:`, a hook's `[FAIL]`), else its last line that says anything. A
- * hook's banner comes first, so the first line alone would only name the hook.
- */
-export function gitWords(output: string): string {
-  const lines = output
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !/^=+.*=+$/.test(line));
-  // git's own cause leads (`fatal:`, `error:`); a hook's reason is often marked; else its last word.
-  const cause = lines.find((line) => /^(?:fatal:|error:|\[fail\])/i.test(line));
-  return cause ?? lines.at(-1) ?? "it failed with no words";
-}
-
-/** Many objects in one `git cat-file --batch`: each spec's bytes, or null when git has none. */
-export function catFiles(repo: string, specs: readonly string[]): Promise<Map<string, Buffer | null>> {
-  const found = new Map<string, Buffer | null>();
-  if (specs.length === 0) return Promise.resolve(found);
-  return new Promise((resolve, reject) => {
-    const child = spawn("git", ["-C", repo, "cat-file", "--batch"], { env: gitEnv() });
-    const chunks: Buffer[] = [];
-    // A git that hangs is killed, so a stalled object read never holds every later read and answer.
-    const timer = setTimeout(() => child.kill("SIGKILL"), CAT_FILE_MS);
-    child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
-    child.stdin.on("error", () => undefined);
-    child.on("error", reject);
-    child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      if (signal) {
-        reject(new Error(`git cat-file was stopped (${signal}) after ${CAT_FILE_MS / 1000} s`));
-        return;
-      }
-      if (code !== 0) {
-        reject(new Error(`git cat-file exited ${code}`));
-        return;
-      }
-      const out = Buffer.concat(chunks);
-      let at = 0;
-      for (const spec of specs) {
-        const end = out.indexOf(10, at);
-        if (end < 0) break;
-        const header = out.subarray(at, end).toString("utf8");
-        at = end + 1;
-        const match = /^[0-9a-f]+ (\w+) (\d+)$/.exec(header);
-        if (!match) {
-          found.set(spec, null);
-          continue;
-        }
-        const size = Number(match[2]);
-        found.set(spec, match[1] === "blob" ? out.subarray(at, at + size) : null);
-        at += size + 1;
-      }
-      resolve(found);
-    });
-    child.stdin.end(`${specs.join("\n")}\n`);
-  });
-}
-
 /** git's blob id for some bytes, so a working file is compared with a tree's without reading the blob. */
 export function blobId(bytes: Buffer, format: "sha1" | "sha256" = "sha1"): string {
   return createHash(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
@@ -517,6 +438,8 @@ export interface WorkspaceAsksOptions {
   fetch?: boolean;
   /** How often the sweep fetches at most; FETCH_EVERY_MS unless the plugin says (MAESTRO_PASEO_FETCH_SECONDS). */
   fetchEveryMs?: number;
+  /** The fetch of origin/main, shared with every other reader of it (the loop ledger); a private one when none is given. */
+  fetchGate?: FetchGate;
   now?: () => number;
   log?: (message: string) => void;
   ttlMs?: number;
@@ -551,19 +474,16 @@ export class WorkspaceAsks {
   private readonly histories = new Map<string, MainHistory>();
   private readonly files = new Map<string, { stamp: string; id: string; bytes: Buffer }>();
   private format: "sha1" | "sha256" | null = null;
-  private lastFetch = 0;
-  /** When a fetch last succeeded, and why the last one failed (null once one succeeds). */
-  private lastFetchOk = 0;
-  private lastFetchTry = 0;
-  private lastFetchError: string | null = null;
-  private fetchedAt: string | null = null;
-  private fetching: Promise<string | null> | null = null;
+  private readonly gate: FetchGate;
+  /** The one writer of the answers worktree and its branch. */
+  readonly branch: AnswersBranch;
   private cached: { at: number; read: Promise<WorkspaceRead> } | null = null;
-  private writes: Promise<unknown> = Promise.resolve();
 
   constructor(options: WorkspaceAsksOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
+    this.gate = options.fetchGate ?? new FetchGate(this.now);
+    this.branch = new AnswersBranch({ repo: options.controlRepo, path: options.answersPath, log: options.log });
   }
 
   /** The workspace's asks, at most READ_TTL_MS old unless `fresh`. A read never fetches (BRO-2995): the sweep does. */
@@ -598,43 +518,32 @@ export class WorkspaceAsks {
   /**
    * origin/main, fetched at most every FETCH_EVERY_MS: the plugin sweep's
    * (server/sweep.ts), never a read's, since a fetch writes the repo. Resolves
-   * once it settles; one in flight is waited on, never doubled.
+   * once it settles; one in flight is waited on, never doubled, and the gate
+   * is the loop ledger's as well (server/git.ts FetchGate).
    */
   async fetchDue(): Promise<void> {
     if (this.options.fetch === false) return;
-    const every = this.options.fetchEveryMs ?? FETCH_EVERY_MS;
-    if (this.fetching || this.now() - this.lastFetch >= every) await this.fetchNow();
+    await this.gate.due(this.options.controlRepo, "main", this.options.fetchEveryMs ?? FETCH_EVERY_MS, this.askLog);
+    this.cached = null;
   }
 
+  private fetchedAt(): string | null {
+    const at = this.gate.lastWorked(this.options.controlRepo, "main");
+    return at > 0 ? new Date(at).toISOString() : null;
+  }
+
+  private readonly askLog = (message: string) => this.options.log?.(`asks: ${message}`);
+
   /** Fetches origin/main (one fetch at a time); resolves to why it failed, or null. */
-  private fetchNow(): Promise<string | null> {
-    if (this.fetching) return this.fetching;
-    this.lastFetch = this.now();
-    this.lastFetchTry = this.now();
-    const fetching = git(this.options.controlRepo, ["fetch", "--quiet", "origin", "main"], 60_000)
-      .then(() => {
-        this.fetchedAt = new Date(this.now()).toISOString();
-        this.lastFetchOk = this.now();
-        this.lastFetchError = null;
-        this.cached = null;
-        return null;
-      })
-      .catch((error) => {
-        const message = (error as Error).message;
-        this.lastFetchError = message;
-        this.options.log?.(`asks: fetching origin/main: ${message}`);
-        return message;
-      })
-      .finally(() => {
-        this.fetching = null;
-      });
-    this.fetching = fetching;
-    return fetching;
+  private async fetchNow(): Promise<string | null> {
+    const failed = await this.gate.run(this.options.controlRepo, "main", this.askLog);
+    this.cached = null;
+    return failed;
   }
 
   /** For a test: waits for a fetch in flight. */
   async settled(): Promise<void> {
-    await this.fetching;
+    await this.gate.inFlight(this.options.controlRepo, "main");
   }
 
   /** origin/main fetched now (one fetch at a time, shared with reads): why it failed, or null. Off for a test without a remote. */
@@ -643,19 +552,13 @@ export class WorkspaceAsks {
   }
 
   /**
-   * Runs `run` in the answers' own queue, so nothing else writes the answers
-   * worktree meanwhile (the landing step, server/answers-landing.ts), and the
-   * next read is fresh.
+   * Runs `run` as the only writer of the answers worktree (server/answers-branch.ts): the landing step
+   * (server/answers-landing.ts) and an answer take the same lock, and the next read is fresh.
    */
   exclusive<T>(run: () => Promise<T>): Promise<T> {
-    const next = this.writes
-      .catch(() => undefined)
-      .then(run)
-      .finally(() => {
-        this.cached = null;
-      });
-    this.writes = next;
-    return next;
+    return this.branch.exclusive(run).finally(() => {
+      this.cached = null;
+    });
   }
 
   private async scan(): Promise<WorkspaceRead> {
@@ -763,7 +666,7 @@ export class WorkspaceAsks {
     this.trimCaches();
     return {
       controlRepo: repo,
-      main: { sha: mainSha, fetchedAt: this.fetchedAt },
+      main: { sha: mainSha, fetchedAt: this.fetchedAt() },
       all: resolveHomes({
         controlRepo: await realpath(repo).catch(() => repo),
         main,
@@ -909,9 +812,7 @@ export class WorkspaceAsks {
    * since you read it, is refused. Answers run one at a time.
    */
   answer(input: AnswerInput & { ledger: string; home: string }): Promise<{ ask: DecisionAsk; warning: string | null }> {
-    const next = this.writes.catch(() => undefined).then(() => this.answerNow(input));
-    this.writes = next;
-    return next;
+    return this.exclusive(() => this.answerNow(input));
   }
 
   private async answerNow(
@@ -923,10 +824,13 @@ export class WorkspaceAsks {
     let unfetched: string | null = null;
     if (this.options.fetch !== false) {
       const now = this.now();
-      if (this.fetching) unfetched = await this.fetching;
-      else if (now - this.lastFetchOk < ANSWER_FETCH_FRESH_MS) unfetched = null;
+      const { controlRepo: repo } = this.options;
+      const flying = this.gate.inFlight(repo, "main");
+      if (flying) unfetched = await flying;
+      else if (now - this.gate.lastWorked(repo, "main") < ANSWER_FETCH_FRESH_MS) unfetched = null;
       // A fetch that failed this recently is said, not run again: an offline daemon never makes each answer wait 60 s.
-      else if (now - this.lastFetchTry < ANSWER_FETCH_FRESH_MS) unfetched = this.lastFetchError;
+      else if (now - this.gate.lastTried(repo, "main") < ANSWER_FETCH_FRESH_MS)
+        unfetched = this.gate.lastError(repo, "main");
       else unfetched = await this.fetchNow();
     }
     const stale = unfetched
@@ -974,179 +878,17 @@ export class WorkspaceAsks {
       return { ask: answered.ask, warning: [stale, answered.warning].filter(Boolean).join(" ") || null };
     }
     if (found.home.kind !== "main") throw new UserError(`The ask ${input.id} is not the workspace's to answer here.`);
-    const answers = await this.answersWorktree();
+    const answers = await this.branch.worktree();
     const path = await ledgerPathIn(answers, input.ledger);
     const answered = await answerDecision(path, answer, { ...write, home: found.home });
     this.cached = null;
-    const committed = await this.commitAnswer(answers, input.ledger, answered.ask);
+    const committed = await this.branch.commit(answers, input.ledger, answered.ask);
     this.options.log?.(`asks: you answered ${input.ledger} ${input.id}, in the answers batch`);
     return {
       ask: { ...answered.ask, batched: true },
       warning: [stale, answered.warning, committed].filter(Boolean).join(" ") || null,
     };
   }
-
-  /**
-   * Maestro's answers worktree on maestro/answers, made the first time it is
-   * needed (from origin/main, or from the branch when it is there already) and
-   * brought up to origin/main before each answer, by a merge that never
-   * rewrites what the branch holds. A worktree that is not this repo's on that
-   * branch, or a merge that conflicts, is refused.
-   */
-  private async answersWorktree(): Promise<string> {
-    const repo = this.options.controlRepo;
-    const path = this.options.answersPath;
-    const mainSha = (
-      await git(repo, ["rev-parse", "--verify", "--quiet", `${MAIN_REF}^{commit}`]).catch(() => "")
-    ).trim();
-    if (!mainSha) throw new UserError(`${repo} has no ${MAIN_REF}, so an answer for it has nowhere to go.`);
-    if (!(await lstat(path).catch(() => null))) {
-      const branch = await git(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${ANSWERS_BRANCH}`]).catch(
-        () => "",
-      );
-      const args = branch.trim()
-        ? ["worktree", "add", "--quiet", path, ANSWERS_BRANCH]
-        : ["worktree", "add", "--quiet", "--no-track", "-b", ANSWERS_BRANCH, path, mainSha];
-      await git(repo, args, 60_000).catch(async (error) => {
-        // The branch still registered at a worktree whose folder is gone (a cleared state dir): that registration
-        // is dead, so git's own prune clears it, and the worktree is made again. One checked out anywhere live is refused.
-        const holder = await this.answersHolder();
-        if (holder && !(await lstat(holder).catch(() => null))) {
-          await git(repo, ["worktree", "prune"]);
-          await git(repo, args, 60_000).catch((again) => {
-            throw new UserError(`Maestro's answers worktree could not be made at ${path}: ${(again as Error).message}`);
-          });
-          return;
-        }
-        throw new UserError(
-          holder
-            ? `${ANSWERS_BRANCH} is checked out at ${holder}, not at Maestro's answers worktree ${path}, so no answer was written. Remove that worktree, or point MAESTRO_PASEO_CONTROL_ANSWERS at it.`
-            : `Maestro's answers worktree could not be made at ${path}: ${(error as Error).message}`,
-        );
-      });
-    }
-    if (!(await isAnswersWorktree(repo, path))) {
-      throw new UserError(
-        `${path} is not ${repo}'s answers worktree on ${ANSWERS_BRANCH}, so no answer was written there.`,
-      );
-    }
-    // Anything uncommitted there (an earlier answer whose commit failed, a hand edit) is never swept into this answer's commit.
-    const dirty = await uncommitted(path);
-    if (dirty.length > 0) {
-      throw new UserError(
-        `Maestro's answers worktree has changes not committed (${dirty.join(", ")}), so no answer was written. Commit or discard them in ${path} first.`,
-      );
-    }
-    const current = await git(path, ["merge-base", "--is-ancestor", mainSha, "HEAD"]).then(
-      () => true,
-      () => false,
-    );
-    if (!current) {
-      const conflicted = await mergeInto(path, mainSha, `Merge ${MAIN_REF} into ${ANSWERS_BRANCH}`);
-      if (conflicted) {
-        const where = conflicted.length > 0 ? ` (it conflicts in ${conflicted.join(", ")})` : "";
-        throw new UserError(
-          `${ANSWERS_BRANCH} could not take ${MAIN_REF}'s latest${where}. No answer was written, and no answer whose home is ${MAIN_REF} is, until that is settled by hand in ${path}.`,
-        );
-      }
-    }
-    return path;
-  }
-
-  /** Where git has maestro/answers checked out, by its listing (a worktree whose folder is gone included), or null. */
-  private async answersHolder(): Promise<string | null> {
-    const listing = await git(this.options.controlRepo, ["worktree", "list", "--porcelain"]).catch(() => "");
-    const block = listing
-      .split(/\n\n+/)
-      .find((entry) => entry.split("\n").includes(`branch refs/heads/${ANSWERS_BRANCH}`));
-    return (
-      block
-        ?.split("\n")
-        .find((line) => line.startsWith("worktree "))
-        ?.slice("worktree ".length) ?? null
-    );
-  }
-
-  /**
-   * Commits this answer's ledger, and only it, on maestro/answers. A commit
-   * that fails (a hook refusing it, say) is said; the answer stays in the file,
-   * and the next answer is refused until the worktree is clean again.
-   */
-  private async commitAnswer(answers: string, ledger: string, ask: DecisionAsk): Promise<string | null> {
-    const file = join(ASKS_DIR, ledger);
-    try {
-      const message = `answer(${ledger}): ${ask.id}${ask.answerOption ? ` -> ${ask.answerOption}` : ""}\n\nAnswered-by: owner:maestro`;
-      await git(answers, ["commit", "--quiet", "-m", message, "--", file], 120_000);
-      return null;
-    } catch (error) {
-      const message = `Your answer is in the answers worktree, but its commit on ${ANSWERS_BRANCH} failed (${(error as Error).message}). Maestro writes no other answer there until ${file} is committed or discarded in ${answers}.`;
-      this.options.log?.(`asks: ${message}`);
-      return message;
-    }
-  }
-}
-
-/**
- * Merges `rev` into the checkout at `path`, never resolving anything: a merge
- * that conflicts is aborted, and one git made cleanly whose ledgers no longer
- * read (both sides answered one entry: two `answer` keys) is undone. Either
- * way the checkout is as it was, and the files are named (repo-relative); null when merged.
- */
-export async function mergeInto(path: string, rev: string, message: string): Promise<string[] | null> {
-  const before = (await git(path, ["rev-parse", "HEAD"])).trim();
-  const clean = await git(path, ["merge", "--quiet", "--no-edit", "-m", message, rev], 60_000).then(
-    () => true,
-    () => false,
-  );
-  if (!clean) {
-    const files = (await git(path, ["diff", "--name-only", "--diff-filter=U"]).catch(() => ""))
-      .split("\n")
-      .filter(Boolean);
-    await git(path, ["merge", "--abort"]).catch(() => undefined);
-    return files;
-  }
-  const merged = (await git(path, ["diff", "--name-only", before, "HEAD", "--", `${ASKS_DIR}/`]))
-    .split("\n")
-    .filter(Boolean);
-  const blobs = await catFiles(
-    path,
-    merged.map((file) => `HEAD:${file}`),
-  );
-  const unreadable = merged.filter((file) => {
-    const bytes = blobs.get(`HEAD:${file}`);
-    if (!bytes || !LEDGER.test(file.split("/").pop() ?? "")) return false;
-    try {
-      parsed(bytes.toString("utf8"));
-      return false;
-    } catch {
-      return true;
-    }
-  });
-  if (unreadable.length === 0) return null;
-  await git(path, ["reset", "--quiet", "--hard", before]);
-  return unreadable;
-}
-
-/** Whether `path` is a worktree of `repo`'s own (one git common dir) with maestro/answers checked out. */
-export async function isAnswersWorktree(repo: string, path: string): Promise<boolean> {
-  const [ours, theirs, onBranch] = await Promise.all([
-    git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(() => ""),
-    git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(() => ""),
-    git(path, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => ""),
-  ]);
-  const [oursReal, theirsReal] = await Promise.all([
-    realpath(ours.trim()).catch(() => ours.trim()),
-    realpath(theirs.trim()).catch(() => theirs.trim()),
-  ]);
-  return Boolean(oursReal) && oursReal === theirsReal && onBranch.trim() === ANSWERS_BRANCH;
-}
-
-/** A checkout's files not committed, by path. Each line is `XY path`; X may be a space, so lines are never trimmed before the cut. */
-export async function uncommitted(path: string): Promise<string[]> {
-  return (await git(path, ["status", "--porcelain", "--untracked-files=all"]))
-    .split("\n")
-    .filter((line) => line.length > 3)
-    .map((line) => line.slice(3));
 }
 
 export function homeWords(home: AskHome): string {

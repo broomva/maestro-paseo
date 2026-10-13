@@ -6,7 +6,7 @@
 //   bun scripts/inventory-check.ts            # exit 1 on any finding
 //   bun scripts/inventory-check.ts --summary  # counts per section and status
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 
@@ -320,6 +320,78 @@ export function check(inv: Inventory, root: string): string[] {
   return out;
 }
 
+// One writer per store, enforced on the source (BRO-2997). The rule above counts the modules a store names; this one
+// reads the server's files and fails any that writes a file without being named a store's writer, so a second writer
+// of a store cannot appear without the inventory saying so. A call counts when it is a write primitive: writeFile,
+// appendFile (and their Sync forms), createWriteStream, Bun.write, rename, or one of Maestro's own appenders
+// (server/atomic.ts, server/jsonl.ts). Every .ts file under server/ (subfolders too) and bin/ is read; tests and
+// testdata are left out on purpose: they write fixtures and are no part of what runs.
+const WRITE_CALL =
+  /\b(writeFile|appendFile|writeFileSync|appendFileSync|createWriteStream|writeFileAtomic|appendJsonLine|appendJsonLines|appendLinesLocked|rename|renameSync)\s*\(|\bBun\.write\s*\(/;
+const RAW_WRITE = /\b(writeFile|appendFile|writeFileSync|appendFileSync|createWriteStream)\s*\(|\bBun\.write\s*\(/;
+/** Files that may write with a bare writeFile or appendFile, and why: every other write is atomic or an append under the lock. */
+export const RAW_WRITE_OK: Record<string, string> = {
+  "server/control-asks.ts":
+    "the ledger's temp file is written with the entry's own mode, wx, then renamed under the lock's token check",
+};
+/** The layer every writer goes through: they name no store of their own. */
+export const WRITE_HELPERS = new Set(["server/atomic.ts", "server/jsonl.ts", "server/locks.ts"]);
+/** Files that write and are no store's writer, and why. */
+export const NOT_A_STORE: Record<string, string> = {
+  "server/agent-socket.ts": "binds the agent socket: a stale socket is renamed aside, which is no store",
+  "server/fake-fleet.ts": "a fixture that makes a fleet's files for a test or a sandbox",
+  "server/registry-fixture.ts": "a fixture that makes Paseo's registry for a test or a sandbox",
+};
+
+/** The source text without its comments and string literals' quotes mattering: a call named in a comment is no call. */
+function codeOf(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+}
+
+/** The non-test .ts files under a folder, subfolders included, as root-relative paths; testdata is no source. */
+function sourcesUnder(root: string, folder: string): string[] {
+  const dir = join(root, folder);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const rel = `${folder}/${entry.name}`;
+    if (entry.isDirectory())
+      return entry.name === "testdata" || entry.name === "node_modules" ? [] : sourcesUnder(root, rel);
+    return entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts") ? [rel] : [];
+  });
+}
+
+export function writerLeaks(inv: Inventory, root: string): string[] {
+  const out: string[] = [];
+  const named = new Map<string, string>();
+  for (const [id, s] of Object.entries(inv.stores)) {
+    if (s.status === "retire") continue;
+    for (const m of s.modules ?? []) {
+      if (!m.startsWith("server/")) continue;
+      if (!existsSync(join(root, m))) out.push(`${id}: names writer module ${m}, which does not exist`);
+      named.set(m, id);
+    }
+  }
+  const files = [
+    ...sourcesUnder(root, "server"),
+    ...sourcesUnder(root, "bin"),
+    ...(existsSync(join(root, "index.server.ts")) ? ["index.server.ts"] : []),
+  ];
+  for (const file of files) {
+    if (WRITE_HELPERS.has(file) || file in NOT_A_STORE) continue;
+    const code = codeOf(readFileSync(join(root, file), "utf8"));
+    if (RAW_WRITE.test(code) && !(file in RAW_WRITE_OK))
+      out.push(
+        `${file}: writes with a bare writeFile or appendFile; replace a file through writeFileAtomic (server/atomic.ts) and add lines through appendJsonLine (server/jsonl.ts)`,
+      );
+    if (named.has(file)) continue;
+    if (WRITE_CALL.test(code))
+      out.push(
+        `${file}: writes a file but is no store's writer module; name it in a store's modules, or route the write through the one that is`,
+      );
+  }
+  return out;
+}
+
 // docs/design/next/view-models.md carries a per-screen table: | Page | Screens | Reads | Writes | New fields |.
 // The contract and the inventory must agree on what each live page reads and writes.
 export function contractDrift(inv: Inventory, markdown: string): string[] {
@@ -406,6 +478,7 @@ if (import.meta.main) {
   }
   const findings = [
     ...check(inv, root),
+    ...writerLeaks(inv, root),
     ...contractDrift(inv, readFileSync(join(root, "docs/design/next/view-models.md"), "utf8")),
     ...missingFrames(inv, penIds(root)),
   ];

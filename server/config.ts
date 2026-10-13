@@ -4,10 +4,11 @@
 // setting missing from the file takes its default, so a file written before
 // the setting existed still loads.
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { ConfigSchema, type MaestroConfig } from "../shared/contracts";
+import { writeFileAtomic } from "./atomic";
 import { configPath, expandHome } from "./paths";
 
 export { configPath, expandHome };
@@ -68,9 +69,6 @@ export async function loadConfig(path = configPath()): Promise<MaestroConfig> {
 
 export async function saveConfig(next: MaestroConfig, path = configPath()): Promise<MaestroConfig> {
   const config = normalize(ConfigSchema.parse(next));
-  await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  await rename(tmp, path);
+  await writeFileAtomic(path, `${JSON.stringify(config, null, 2)}\n`);
   return config;
 }
