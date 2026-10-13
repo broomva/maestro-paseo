@@ -146,7 +146,7 @@ async function staleness(dir: string, judge: Judge, at = dir): Promise<{ stale: 
  * captured. One that reads live (it was released and taken anew between the look and the rename) goes back; if
  * another writer has made its own meanwhile, the captured holder finds its token gone and writes nothing.
  */
-async function reclaim(dir: string, judge: () => Judge): Promise<void> {
+async function reclaim(dir: string, judge: () => Judge, beforeCapture?: () => Promise<void>): Promise<void> {
   const mutex = `${dir.replace(/\.d$/, "")}.reclaim.d`;
   try {
     await mkdir(mutex);
@@ -158,6 +158,7 @@ async function reclaim(dir: string, judge: () => Judge): Promise<void> {
   }
   try {
     if (!(await staleness(dir, judge()))?.stale) return;
+    await beforeCapture?.();
     const aside = `${dir}.stale-${randomBytes(4).toString("hex")}`;
     if (
       !(await rename(dir, aside).then(
@@ -184,6 +185,8 @@ export interface AcquireOptions {
   staleMs?: number;
   /** What the lock covers, for the refusal's words. */
   what?: string;
+  /** For a test: runs between judging a lock stale and capturing it, where a holder may release and a writer take it anew. */
+  beforeCapture?: () => Promise<void>;
 }
 
 export async function acquireLock(ledgerPath: string, lockRoot: string, options: AcquireOptions = {}): Promise<Lock> {
@@ -220,7 +223,7 @@ export async function acquireLock(ledgerPath: string, lockRoot: string, options:
       if (code !== "EEXIST") throw error;
     }
     const state = await staleness(dir, judge());
-    if (state?.stale) await reclaim(dir, judge);
+    if (state?.stale) await reclaim(dir, judge, options.beforeCapture);
     else if (state) holder = state.holder;
     if (now() >= deadline) throw new LockBusyError(holder, options.what);
     await sleep(50 + Math.floor(Math.random() * 50));

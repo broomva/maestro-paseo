@@ -801,6 +801,23 @@ describe("presence (BRO-2911 §2)", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+  test("with no folder given, it reads MAESTRO_PASEO_FLEET_AGENTS, not ~/Library/LaunchAgents (BRO-2997)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "maestro-agents-"));
+    const saved = process.env.MAESTRO_PASEO_FLEET_AGENTS;
+    try {
+      await writeFile(join(root, "com.broomva.only-here.plist"), "<plist/>");
+      process.env.MAESTRO_PASEO_FLEET_AGENTS = root;
+      const run: Runner = async (_command, args) => ({ stdout: args[0] === "list" ? "" : "", code: 0 });
+      const got = await launchdPresence(["com.broomva.only-here", "com.broomva.elsewhere"], { run, uid: 501 });
+      expect(Object.fromEntries(got)).toEqual({ "com.broomva.only-here": "off", "com.broomva.elsewhere": "gone" });
+      // The Timeline's reader takes the same folder.
+      expect((new Launchd({ run, uid: 501 }) as unknown as { agentsDir: string }).agentsDir).toBe(root);
+    } finally {
+      if (saved === undefined) delete process.env.MAESTRO_PASEO_FLEET_AGENTS;
+      else process.env.MAESTRO_PASEO_FLEET_AGENTS = saved;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   test("a failed read throws: no presence is guessed", async () => {
     const run: Runner = async () => ({ stdout: "", code: 1 });
     await expect(launchdPresence(["x"], { run, uid: 501, agentsDir: "/none" })).rejects.toThrow("exited 1");

@@ -326,6 +326,12 @@ export function check(inv: Inventory, root: string): string[] {
 // appendFile, rename, or one of Maestro's own appenders (server/atomic.ts, server/jsonl.ts).
 const WRITE_CALL =
   /\b(writeFile|appendFile|writeFileAtomic|appendJsonLine|appendJsonLines|appendLinesLocked|rename)\s*\(/;
+const RAW_WRITE = /\b(writeFile|appendFile)\s*\(/;
+/** Files that may write with a bare writeFile or appendFile, and why: every other write is atomic or an append under the lock. */
+export const RAW_WRITE_OK: Record<string, string> = {
+  "server/control-asks.ts":
+    "the ledger's temp file is written with the entry's own mode, wx, then renamed under the lock's token check",
+};
 /** The layer every writer goes through: they name no store of their own. */
 export const WRITE_HELPERS = new Set(["server/atomic.ts", "server/jsonl.ts", "server/locks.ts"]);
 /** Files that write and are no store's writer, and why. */
@@ -355,11 +361,17 @@ export function writerLeaks(inv: Inventory, root: string): string[] {
     ...readdirSync(join(root, "server"))
       .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
       .map((f) => `server/${f}`),
-    "index.server.ts",
+    ...(existsSync(join(root, "index.server.ts")) ? ["index.server.ts"] : []),
   ];
   for (const file of files) {
-    if (WRITE_HELPERS.has(file) || file in NOT_A_STORE || named.has(file)) continue;
-    if (WRITE_CALL.test(codeOf(readFileSync(join(root, file), "utf8"))))
+    if (WRITE_HELPERS.has(file) || file in NOT_A_STORE) continue;
+    const code = codeOf(readFileSync(join(root, file), "utf8"));
+    if (RAW_WRITE.test(code) && !(file in RAW_WRITE_OK))
+      out.push(
+        `${file}: writes with a bare writeFile or appendFile; replace a file through writeFileAtomic (server/atomic.ts) and add lines through appendJsonLine (server/jsonl.ts)`,
+      );
+    if (named.has(file)) continue;
+    if (WRITE_CALL.test(code))
       out.push(
         `${file}: writes a file but is no store's writer module; name it in a store's modules, or route the write through the one that is`,
       );

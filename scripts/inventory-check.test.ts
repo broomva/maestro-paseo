@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { check, contractDrift, type Inventory, load, missingFrames, penIds } from "./inventory-check";
+import { check, contractDrift, type Inventory, load, missingFrames, penIds, writerLeaks } from "./inventory-check";
 
 const root = join(import.meta.dir, "..");
 
@@ -341,5 +342,88 @@ describe("inventory-check", () => {
       i.interfaces["I-sweep"].handler = "lane";
     });
     expect(out.join("\n")).toMatch(/a plugin loop calls I-sweep, which launches a session/);
+  });
+});
+
+// One writer per store, on the source (BRO-2997): a tree of its own, so what is written is what the test says.
+describe("writerLeaks", () => {
+  function tree(files: Record<string, string>) {
+    const dir = mkdtempSync(join(tmpdir(), "maestro-leaks-"));
+    mkdirSync(join(dir, "server"));
+    for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+    return dir;
+  }
+  const inv = (modules: string[]) => {
+    const one = clean();
+    (one.stores["S-asks"] as { modules: string[] }).modules = modules;
+    return one;
+  };
+  const WRITES = 'import { writeFileAtomic } from "./atomic";\nawait writeFileAtomic(path, text);\n';
+
+  test("the real server is clean: every file that writes is a store's writer", () => {
+    expect(writerLeaks(load(root), root)).toEqual([]);
+  });
+
+  test("a file that writes and is no store's writer is named", () => {
+    const dir = tree({ "server/ledger.ts": WRITES, "server/other.ts": WRITES });
+    try {
+      expect(writerLeaks(inv(["server/ledger.ts"]), dir)).toEqual([
+        expect.stringMatching(/^server\/other\.ts: writes a file but is no store's writer module/),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("every kind of write counts: an append, a rename, a bare writeFile, the appenders", () => {
+    const calls = [
+      "appendFile(p, t)",
+      "rename(a, b)",
+      "writeFile(p, t)",
+      "appendJsonLine(p, r)",
+      "appendLinesLocked(p, [r])",
+    ];
+    const dir = tree(Object.fromEntries(calls.map((call, n) => [`server/w${n}.ts`, `await ${call};\n`])));
+    try {
+      const found = writerLeaks(inv([]), dir);
+      for (let n = 0; n < calls.length; n += 1) expect(found.join("\n")).toContain(`server/w${n}.ts`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a call in a comment or a test file is no write; a read-only file passes", () => {
+    const dir = tree({
+      "server/reads.ts":
+        "// it used to writeFile(path) here\n/* appendFile(a, b) */\nconst x = await readFile(path);\n",
+      "server/ledger.test.ts": "await writeFile(a, b);\n",
+    });
+    try {
+      expect(writerLeaks(inv([]), dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a named writer still may not write with a bare writeFile or appendFile: it replaces or appends through the helpers", () => {
+    const dir = tree({ "server/ledger.ts": "await writeFile(path, text);\n" });
+    try {
+      expect(writerLeaks(inv(["server/ledger.ts"]), dir)).toEqual([
+        expect.stringMatching(/bare writeFile or appendFile/),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a store that names a writer module that is not there is named", () => {
+    const dir = tree({});
+    try {
+      expect(writerLeaks(inv(["server/missing.ts"]), dir)).toEqual([
+        "S-asks: names writer module server/missing.ts, which does not exist",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
