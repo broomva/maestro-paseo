@@ -49,7 +49,8 @@ Shot in the dogfood sandbox at 375x812 (`bun scripts/dogfood/up.ts --plugin "$PW
 | `m6-work-deck-{light,dark}.png` | Work: the work that needs you (hold line, lifecycle rails, receipts, Open session / Open the hold); the sheet peeks with 1 running · 3 queued · 0 standing · 3 done |
 | `m6-work-sheet-{light,dark}.png` | the board as one list with the lane switcher; the running row wears the Undertow |
 | `m7-health-deck-{light,dark}.png` | Health: the notices, stuck first, what closes each, Open session / Unblock… |
-| `m7-health-sheet-{light,dark}.png` | the fleet at a glance (four tiles), schedules and loops (swipe left: Open log), and the views Health reaches |
+| `m7-health-sheet-light.png` | the sandbox's sheet as it was: 0 schedules, 0 lanes, "ticks: not read", "No loop or schedule is registered or observed.", the four tiles and the More rows |
+| `m7-health-sheet-dark.png` | the same sheet in dark, shot later against the sandbox with its control repo: 5 schedules (4 on time, 1 off) |
 | `m7-unblock-sheet-light.png` | Unblock: a text-input sheet of ours over the deck, the notice still visible |
 | `m8-initiatives-light.png` | Initiatives as a page "from Health": lateness loudest, a hollow dot for no driver |
 | `m8-review-undo-light.png` | a due review answered from the page (Keep): the 8 s undo toast over the page |
@@ -66,3 +67,7 @@ Shot in the dogfood sandbox at 375x812 (`bun scripts/dogfood/up.ts --plugin "$PW
 ## A defect found while dogfooding
 
 The workspace and presence menus opened behind the deck's card on the phone (the deck's header row was not above the cards): the presence menu could not be seen, so Settings was unreachable by touch. The row now paints above them (`client/kit/deck.tsx`).
+
+## Not driven
+
+Swipe and Open log (the light sandbox had no schedules; the dark shot had them but a swipe cannot be dragged by shot.ts), Snooze (no quiet run in the seed), the software keyboard, and Settings (PR 2). Swipe and Snooze are covered by render tests (`notice.snooze` sent once, the verb locked while it waits) and the kit's swipe tests, not on screen.

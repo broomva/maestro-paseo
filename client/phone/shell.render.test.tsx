@@ -189,6 +189,8 @@ let needsHeld: Promise<void> | null = null;
 let pending: Pending[] = [];
 let unblockFail: string | null = null;
 let noticesFail: string | null = null;
+let noticesUnread: string[] = [];
+let workListFail: string | null = null;
 let initiativesFail: string | null = null;
 const calls: { method: string; input: unknown }[] = [];
 
@@ -243,6 +245,8 @@ function reset() {
   pending = [];
   unblockFail = null;
   noticesFail = null;
+  noticesUnread = [];
+  workListFail = null;
   initiativesFail = null;
   calls.length = 0;
   toasts.length = 0;
@@ -259,6 +263,11 @@ const ledgerEntry = (method: string, key: string, label: string): Pending => ({
   remainingMs: 8_000,
 });
 
+const withUnread = <T extends { summary: { unread: string[] } }>(notices: T): T => ({
+  ...notices,
+  summary: { ...notices.summary, unread: noticesUnread },
+});
+
 const invoke = async (method: string, input: unknown) => {
   calls.push({ method, input });
   switch (method) {
@@ -267,6 +276,7 @@ const invoke = async (method: string, input: unknown) => {
       if (needsFail) throw new Error(needsFail);
       return unreadNow ? { ...needsNow(), unread: unreadNow } : needsNow();
     case "work.list":
+      if (workListFail) throw new Error(workListFail);
       return {
         root: "/work",
         items: workListPrompt
@@ -292,9 +302,11 @@ const invoke = async (method: string, input: unknown) => {
       return { rows: [], today: { closedForYou: 22, byYou: 4, asksAnswered: 3 } };
     case "notices.list":
       if (noticesFail) throw new Error(noticesFail);
-      return noticesOf(
-        { items, fleet: [], timeline: [], loops: [], reviews: [], snoozed: new Map<string, string>() },
-        Date.now(),
+      return withUnread(
+        noticesOf(
+          { items, fleet: [], timeline: [], loops: [], reviews: [], snoozed: new Map<string, string>() },
+          Date.now(),
+        ),
       );
     case "asks.workspace":
       return { controlRepo: "/Users/me/broomva", main: null, decisions: asks, fleet: [], warnings: [] };
@@ -888,6 +900,13 @@ describe("M6, Work at 375 x 812", () => {
     expect(view.text()).toContain("Running");
   });
 
+  test("a work list that failed beside a good needs.list is not 'no work needs you'", async () => {
+    workListFail = "daemon down";
+    const view = await mount({ tab: "work" });
+    expect(view.text()).toContain("Couldn't read the work that needs you.");
+    expect(view.text()).not.toContain("No work needs you.");
+  });
+
   test("a failed read says so: never 'no work needs you'", async () => {
     needsFail = "daemon down";
     const view = await mount({ tab: "work" });
@@ -996,6 +1015,17 @@ describe("M7, Health at 375 x 812", () => {
     expect(view.text()).toContain("No loop or schedule is registered or observed.");
     await view.press(view.label("Initiatives, 1 review due"));
     expect(view.pages).toEqual([{ kind: "initiatives" }]);
+  });
+
+  test("a source the notices could not read is said above the deck, with cards and without", async () => {
+    noticesUnread = ["the fleet"];
+    const view = await mount({ tab: "health" });
+    expect(view.id("unread-sources")?.textContent).toBe("Couldn't read the fleet: notices may be missing.");
+    expect(view.text()).toContain("Credits ledger: ended mid-turn");
+    items.splice(0, items.length);
+    const empty = await mount({ tab: "health" });
+    expect(empty.text()).toContain("Couldn't read the notices (the fleet).");
+    expect(empty.text()).not.toContain("Nothing is asking for a look.");
   });
 
   test("a notices read that failed says so; it is never 'nothing is asking for a look'", async () => {

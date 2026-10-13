@@ -320,6 +320,7 @@ describe("a failed read is never 'nothing needs you'", () => {
     expect(unreadWords(undefined)).toBeNull();
     expect(unreadWords([])).toBeNull();
     expect(unreadWords(["asks", "work"])).toBe("Couldn't read asks, work: what needs you may be missing holds.");
+    expect(unreadWords(["the fleet"], "health")).toBe("Couldn't read the fleet: notices may be missing.");
     expect(deckEmptyWords("ok", "feed", ["asks"])).toBe("Couldn't read what needs you (asks).");
     expect(deckEmptyWords("ok", "decisions", ["asks"])).not.toContain("No decision waits");
     expect(deckEmptyWords("ok", "feed", [])).toBe("Nothing needs you.");

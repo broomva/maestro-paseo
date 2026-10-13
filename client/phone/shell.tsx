@@ -528,9 +528,9 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
           <Text style={{ color: kit.needs, fontSize: 12.5, fontWeight: "600" }}>From the push · same hold</Text>
         </View>
       ) : null}
-      {tab !== "health" && unread?.length ? (
+      {deckUnread?.length ? (
         <Text testID="unread-sources" accessibilityRole="alert" style={{ color: kit.danger, fontSize: 13.5 }}>
-          {unreadWords(unread)}
+          {unreadWords(deckUnread, tab)}
         </Text>
       ) : null}
       {gone && !unread?.length ? (

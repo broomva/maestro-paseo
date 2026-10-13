@@ -2222,7 +2222,36 @@ describe("views and filters", () => {
   });
 });
 
-describe("the live signal", () => {});
+describe("the live signal", () => {
+  // The running dot is the desktop List's (the phone's Undertow motion is the kit's, client/kit/kit.render.test.tsx).
+  const opacities = async (view: Awaited<ReturnType<typeof mount>>) => {
+    const sample = () => view.rings().map((ring) => ring.style.opacity);
+    const first = sample();
+    await settle(200);
+    return [first, sample()];
+  };
+
+  test("the running dot pulses, and holds still when reduced motion is asked for", async () => {
+    setReduced(false);
+    const view = await mount(surface(false));
+    await view.goto("List");
+    expect(view.rings().length).toBeGreaterThan(0);
+    const [before, after] = await opacities(view);
+    expect(after).not.toEqual(before);
+    await act(async () => setReduced(true));
+    await settle();
+    const [still, later] = await opacities(view);
+    expect(later).toEqual(still);
+  });
+
+  test("a list opened under reduced motion starts still", async () => {
+    const view = await mount(surface(false));
+    await view.goto("List");
+    const [before, after] = await opacities(view);
+    expect(view.rings().length).toBeGreaterThan(0);
+    expect(after).toEqual(before);
+  });
+});
 
 describe("History", () => {
   test("groups by day, filters you or the loop, groups by work, and a row opens its work", async () => {

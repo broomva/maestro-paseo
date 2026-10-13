@@ -259,8 +259,11 @@ export function feedCounts(
  * The sources needs.list could not read, in words (BRO-3008): a hold of one is missing because the read failed, not
  * because it was answered. null when every source was read.
  */
-export function unreadWords(unread: readonly string[] | undefined): string | null {
-  return unread?.length ? `Couldn't read ${unread.join(", ")}: what needs you may be missing holds.` : null;
+export function unreadWords(unread: readonly string[] | undefined, tab: PhoneTab = "feed"): string | null {
+  if (!unread?.length) return null;
+  return tab === "health"
+    ? `Couldn't read ${unread.join(", ")}: notices may be missing.`
+    : `Couldn't read ${unread.join(", ")}: what needs you may be missing holds.`;
 }
 
 /**
