@@ -5,7 +5,6 @@
 
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { Group, OrchState } from "../shared/states";
 import {
@@ -15,7 +14,6 @@ import {
   type Initiative,
   type PlaneView,
   scopeLabel,
-  VIEW_GROUPS,
   VIEWS,
   type ViewOption,
 } from "./plane-model";

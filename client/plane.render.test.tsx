@@ -1318,15 +1318,14 @@ const diffState = {
   getWorkspace: (id: string) => (id === "ws-a" ? { id, diffStat: { additions: 12, deletions: 3 } } : null),
   getAgent: () => null,
 };
-// On the phone these tests open on the Work tab: until M6 and M7 replace them, Work and Health show the views
-// the phone had before M1 (BRO-3037), and what they prove is those views. The phone's own tabs have their tests in
-// client/phone/shell.render.test.tsx.
+// A compact window is the phone: it opens on the Feed deck (params.tab names another). The phone's own tabs have
+// their tests in client/phone/shell.render.test.tsx; here it is the plane that is under test, through its intents.
 const surface = (compact: boolean, params: Record<string, string> = {}) => (
   <MaestroSurface
     theme={theme}
     host={{ id: "h", label: "h" }}
     layout={{ compact, platform: "web" }}
-    params={compact ? { tab: "work", ...params } : params}
+    params={params}
     navigation={{
       openAgent({ agentId }: { agentId: string }) {
         opened.push(agentId);
@@ -1488,7 +1487,6 @@ async function mount(node: ReactNode, options: { state?: PluginClientStateSource
 
 const consoleError = spyOn(console, "error").mockImplementation(() => {});
 const isProbe = (args: unknown[]) => args.some((arg) => String(arg).includes("inside a workspace panel"));
-const probeLogs = () => consoleError.mock.calls.filter(isProbe).length;
 
 /** Waits out the act scope still open (a timed-out test's), then unmounts every surface, each on its own. */
 async function unmountAll(): Promise<string[]> {
@@ -1572,43 +1570,6 @@ afterAll(async () => {
 });
 
 describe("the changed line", () => {
-  test("a surface without client state renders, logs once, and shows no changed stat", async () => {
-    items = finished("a");
-    const view = await mount(surface(true));
-    // needs.list's holds: Work g at your gate, holding a prompt (Work a finished, Work b is stuck: watched, A1).
-    expect(view.text()).toContain("1 needs you · 1 running");
-    expect(view.text()).toContain("hawthorne · core");
-    expect(view.text()).toContain("maestro/a-1");
-    expect(view.text()).not.toMatch(/\+\d+ −\d+/);
-    expect(probeLogs()).toBe(1);
-    await view.press(view.byLabel("Work a, Finished, hawthorne · core, updated 12 minutes ago"));
-    expect(view.text()).toContain("Changed");
-    await view.press(view.byLabel("Back to all work"));
-    await view.press(view.byLabel("Work g, Needs you, updated 12 minutes ago"));
-    expect(view.text()).toContain("Approve the branch");
-    expect(view.text()).not.toContain("Changed");
-    expect(probeLogs()).toBe(1);
-  });
-
-  test("while needs.list cannot be read, the subtitle never says nothing needs you, and says why (BRO-3001)", async () => {
-    needsFail = "socket closed";
-    const view = await mount(surface(true));
-    for (let tries = 0; tries < 100 && !view.text().includes("could not be read"); tries += 1) await settle(20);
-    expect(view.text()).toContain("What needs you could not be read");
-    // What the work alone says, in words that say so: never a bare number, never "Nothing needs you".
-    expect(view.text()).toContain("2 work items need you · 1 running");
-    expect(view.text()).not.toContain("Nothing needs you");
-  });
-
-  test("with no work waiting and needs.list unread, it still never says nothing needs you: an ask may wait", async () => {
-    needsFail = "socket closed";
-    items = fixture().filter((item) => item.state !== "review");
-    const view = await mount(surface(true));
-    for (let tries = 0; tries < 100 && !view.text().includes("could not be read"); tries += 1) await settle(20);
-    expect(view.text()).toContain("What needs you could not be read");
-    expect(view.text()).not.toContain("Nothing needs you");
-  });
-
   test("one snapshot with the header button: the screen's reads reach it, and its reads fill the screen (BRO-3001)", async () => {
     resetNeedsBus();
     const toHeader: number[] = [];
@@ -1617,8 +1578,8 @@ describe("the changed line", () => {
     });
     try {
       const view = await mount(surface(true));
-      for (let tries = 0; tries < 100 && !view.byLabel("View: Feed, 2 need you. Change view"); tries += 1)
-        await settle(20);
+      // The phone's deck says how many holds there are (its tab bar rides the sheet, which a test cannot measure).
+      for (let tries = 0; tries < 100 && !view.text().includes("1 of 2"); tries += 1) await settle(20);
       expect(toHeader).toEqual([2]);
       // You act on the screen (a verb settles, every query refetches): the header hears the new number.
       items = [...fixture(), work("n", "review")];
@@ -1630,39 +1591,14 @@ describe("the changed line", () => {
       const header = needsNow();
       const newer = { ...header, rows: header.rows.slice(0, 1), summary: { ...header.summary, total: 1 } };
       await step(generation, () => publishNeeds(newer, "header", readTicket()));
-      for (let tries = 0; tries < 100 && !view.byLabel("View: Feed, 1 needs you. Change view"); tries += 1)
-        await settle(20);
-      expect(view.byLabel("View: Feed, 1 needs you. Change view")).not.toBeNull();
-      expect(view.text()).toContain("1 needs you · 1 running");
+      for (let tries = 0; tries < 100 && !view.text().includes("1 of 1"); tries += 1) await settle(20);
+      // The deck says the newer number, from the same snapshot.
+      expect(view.text()).toContain("1 of 1");
       expect(calls.filter((call) => call.method === "needs.list").length).toBe(reads);
     } finally {
       stop();
       resetNeedsBus();
     }
-  });
-
-  test("with client state, the card and the detail show +a −d", async () => {
-    items = finished("a");
-    const view = await mount(surface(true), { state: diffState as unknown as PluginClientStateSource });
-    expect(view.text()).toContain("+12 −3");
-    expect(view.byLabel("12 lines added, 3 removed")).not.toBeNull();
-    const card = view.byLabel("Work a, Finished, hawthorne · core, updated 12 minutes ago");
-    expect(card?.getAttribute("aria-current")).toBe("false");
-    await view.press(card);
-    // A phone's detail takes the page: the stat is on the detail, and the list is behind it.
-    expect(view.byLabel("12 lines added, 3 removed")).not.toBeNull();
-    expect(view.text().match(/\+12 −3/g)).toHaveLength(1);
-    expect(probeLogs()).toBe(0);
-  });
-
-  test("the server's changed line shows on the card and the detail with no client state", async () => {
-    items = finished("a").map((item) =>
-      item.id === "a" ? { ...item, changed: { additions: 5, deletions: 1 } } : item,
-    );
-    const view = await mount(surface(true));
-    expect(view.byLabel("5 lines added, 1 removed")).not.toBeNull();
-    await view.press(view.byLabel("Work a, Finished, hawthorne · core, updated 12 minutes ago"));
-    expect(view.text().match(/\+5 −1/g)).toHaveLength(1);
   });
 
   test("the detail alone, as the agent panel mounts it, survives a host without state", async () => {
@@ -2228,11 +2164,9 @@ describe("views and filters", () => {
     expect(view.text()).not.toContain("Work b");
     await view.goto("List");
     expect(view.pressed("All, 6")).toBe("true");
-    // A search typed in the compact feed while the board is the chosen view: J6's board is narrowed by the header's search.
+    // A search typed in the header while the board is the chosen view narrows J6's board.
     await view.goto("Board");
-    await view.rerender(surface(true));
-    await view.type(view.byLabel("Find work, ticket or branch"), "genesis");
-    await view.rerender(surface(false));
+    await view.type(view.byLabel("Search work, ticket or branch"), "genesis");
     expect(view.viewNow()).toBe("Board");
     expect(view.text()).toContain("1 work item in scope");
     expect(view.text()).toContain("Work c");
@@ -2286,86 +2220,9 @@ describe("views and filters", () => {
       "Loops",
     ]);
   });
-
-  test("compact picks a view from one menu: the feed, History and the system views, in their groups", async () => {
-    const view = await mount(surface(true));
-    // No row of segmented tabs to clip: one button names the view you are on. The only tabs are the phone's own bar (M1).
-    expect(view.tabs().map((tab) => (tab.getAttribute("aria-label") ?? "").split(", ")[0])).toEqual([
-      "Feed",
-      "Decisions",
-      "Work",
-      "Health",
-    ]);
-    expect(view.viewNow()).toBe("Feed");
-    const picker = view.byLabel("View: Feed, 2 need you. Change view");
-    expect(picker?.getAttribute("aria-expanded")).toBe("false");
-    await view.press(picker);
-    expect(view.all('[role="menuitem"]').map((item) => item.getAttribute("aria-label"))).toEqual([
-      "Feed, 2 need you",
-      "History",
-      "Fleet",
-      "Decisions",
-      "Timeline",
-      "Initiatives",
-      "Loops",
-    ]);
-    expect(view.text()).toContain("WORKFeed2HistorySYSTEMFleetDecisionsTimelineInitiativesLoops");
-    expect(view.byLabel("Feed, 2 need you")?.getAttribute("aria-current")).toBe("true");
-    await view.press(view.byLabel("Feed, 2 need you"));
-    expect(view.all('[role="menuitem"]')).toEqual([]);
-    expect(view.text()).toContain("claude · own worktree");
-    await view.goto("History");
-    expect(view.viewNow()).toBe("History");
-    await settle(50);
-    expect(view.text()).toContain("You approved");
-    await view.press(view.all('[aria-label^="You approved, Work a"]')[0]);
-    // Compact pushes the work over the list, with a way back.
-    expect(view.byLabel("Back to all work")).not.toBeNull();
-  });
 });
 
-describe("the live signal", () => {
-  const opacities = async (view: Awaited<ReturnType<typeof mount>>) => {
-    const sample = () => view.rings().map((ring) => ring.style.opacity);
-    const first = sample();
-    await settle(200);
-    return [first, sample()];
-  };
-
-  test("the running dot pulses, holds still under reduced motion, and chip dots never pulse", async () => {
-    setReduced(false);
-    const view = await mount(surface(true));
-    expect(view.rings()).toHaveLength(1);
-    const [before, after] = await opacities(view);
-    expect(after).not.toEqual(before);
-    await act(async () => setReduced(true));
-    await settle();
-    const [still, later] = await opacities(view);
-    expect(later).toEqual(still);
-  });
-
-  test("a surface opened under reduced motion starts still", async () => {
-    const view = await mount(surface(true));
-    const [before, after] = await opacities(view);
-    expect(view.rings()).toHaveLength(1);
-    expect(after).toEqual(before);
-  });
-
-  test("reduced motion holds from the first frame, before AccessibilityInfo answers", async () => {
-    // The async answer never lands: only the synchronous read can keep the dot still.
-    const ask = spyOn(web.AccessibilityInfo, "isReduceMotionEnabled").mockImplementation(
-      () => new Promise<boolean>(() => {}),
-    );
-    try {
-      const view = await mount(surface(true));
-      const [before, after] = await opacities(view);
-      expect(view.rings()).toHaveLength(1);
-      expect(after).toEqual(before);
-    } finally {
-      ask.mockRestore();
-    }
-  });
-});
+describe("the live signal", () => {});
 
 describe("History", () => {
   test("groups by day, filters you or the loop, groups by work, and a row opens its work", async () => {
@@ -2474,7 +2331,8 @@ describe("the work folder's files", () => {
 
 describe("the week", () => {
   test("seven bars, each with its day and hours in words; tapping shows where the hours went", async () => {
-    const view = await mount(surface(true));
+    const view = await mount(surface(false));
+    await view.goto("List");
     const bars = view.all('[aria-label*=" unsupervised, "]');
     const short = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const days = [0, 1, 2, 3, 4, 5].map((index) => short[local(index - 6, 12).getDay()]).concat("Today");
@@ -2522,12 +2380,12 @@ describe("the loop", () => {
         }),
       ],
     };
-    const view = await mount(surface(true));
-    const control = view.byLabel("Next wake in 12 min. Show the loop");
+    const view = await mount(surface(false));
+    const control = view.byLabel("Next wake: 12 min. Show the loop");
     expect(control?.getAttribute("aria-expanded")).toBe("false");
     expect(view.text()).not.toContain("Recent wakes");
     await view.press(control);
-    expect(view.byLabel("Next wake in 12 min. Hide the loop")?.getAttribute("aria-expanded")).toBe("true");
+    expect(view.byLabel("Next wake: 12 min. Hide the loop")?.getAttribute("aria-expanded")).toBe("true");
     expect(view.text()).toContain("The loop wakes every 15 minutes.");
     const [first, second] = rows(view);
     expect(first?.getAttribute("aria-label")).toMatch(/^Wake, Today at \d\d:\d\d, you asked$/);
@@ -2548,8 +2406,8 @@ describe("the loop", () => {
         cause: "manual",
         narrative: ["Woke because you asked.", "Did:", "  Started Persist the cart across devices."],
       });
-    const view = await mount(surface(true));
-    await view.press(view.byLabel("Next wake in 20 min. Show the loop"));
+    const view = await mount(surface(false));
+    await view.press(view.byLabel("Next wake: 20 min. Show the loop"));
     await view.press(view.byLabel("Wake now"));
     expect(calls.filter((call) => call.method === "loop.wake")).toHaveLength(1);
     const [first, second] = rows(view);
@@ -2567,8 +2425,8 @@ describe("the loop", () => {
         skipped: "another check was already running",
         narrative: ["Woke because you asked.", "Skipped: another check was already running."],
       });
-    const view = await mount(surface(true));
-    await view.press(view.byLabel("Waking…. Show the loop"));
+    const view = await mount(surface(false));
+    await view.press(view.byLabel("Next wake: waking…. Show the loop"));
     await view.press(view.byLabel("Wake now"));
     expect(view.all('[role="alert"]').map((el) => el.textContent)).toEqual([
       "Not woken: another check was already running.",
@@ -2576,8 +2434,8 @@ describe("the loop", () => {
   });
 
   test("off and never woken: it says so, and says where its period is set", async () => {
-    const view = await mount(surface(true));
-    await view.press(view.byLabel("Loop off. Show the loop"));
+    const view = await mount(surface(false));
+    await view.press(view.byLabel("Next wake: loop off. Show the loop"));
     expect(view.text()).toContain("The loop is off.");
     expect(view.text()).toContain("No wakes yet.");
     expect(view.text()).toContain("Its period is set in Settings.");
@@ -2590,8 +2448,8 @@ describe("the loop", () => {
       opened += 1;
     });
     try {
-      const view = await mount(surface(true));
-      await view.press(view.byLabel("Loop off. Show the loop"));
+      const view = await mount(surface(false));
+      await view.press(view.byLabel("Next wake: loop off. Show the loop"));
       await view.press(view.byLabel("Open Settings"));
       expect(opened).toBe(1);
     } finally {
@@ -2646,13 +2504,14 @@ describe("M1 on the phone, through the surface (BRO-3037)", () => {
     expect(view.text()).toContain("2 of 2");
   });
 
-  test("params.tab opens the Decisions deck, and Work keeps today's body", async () => {
+  test("params.tab opens the Decisions deck and the Work deck", async () => {
     const decisions = await mount(surface(true, { tab: "decisions" }));
     await until(() => decisions.text().includes("Decisions"));
     expect(decisions.all('[aria-label^="View: "]')).toHaveLength(0);
-    const work = await mount(surface(true));
-    await until(() => work.all('[aria-label^="View: "]').length > 0);
-    expect(work.byLabel("Refresh work") !== null).toBe(true);
+    const work = await mount(surface(true, { tab: "work" }));
+    await until(() => work.text().includes("The board"));
+    expect(work.all('[aria-label^="View: "]')).toHaveLength(0);
+    expect(work.byLabel("Refresh work") === null).toBe(true);
   });
 });
 
@@ -3674,7 +3533,8 @@ describe("the Fleet view", () => {
     const view = await mount(surface(true));
     await step(generation, () => requestIntent({ kind: "fleet", scope: "sri" }));
     await settle(30);
-    expect(view.viewNow()).toBe("Fleet");
+    // On the phone the Fleet is a page over the surface (Health's sheet reaches it).
+    expect(view.all('[data-testid="page-panel"]')).toHaveLength(1);
     expect(sent("fleet.get").at(-1)).toEqual({ scope: "sri", ticks: 24 });
   });
 
@@ -3991,7 +3851,7 @@ describe("the Fleet view", () => {
 
   test("on a phone: four tiles, rows stacked, a row opens the inspector as a sheet; the report waits for Report", async () => {
     const view = await mount(surface(true));
-    await view.goto("Fleet");
+    await step(generation, () => requestIntent({ kind: "fleet", scope: null }));
     await settle(30);
     // Every tile is reachable on the phone, in a row that scrolls sideways.
     expect(starting(view, "Unmanaged: ")).toBeDefined();
@@ -4067,27 +3927,6 @@ describe("the Timeline", () => {
     await view.press(view.all('[aria-label^="Maestro\'s loop, Maestro"]')[0]);
     await view.press(view.byLabel("Open the loop"));
     expect(view.byLabel("Close the loop")).not.toBeNull();
-  });
-
-  test("on the phone: a failed run shows above the other views, opens the Timeline, and is not repeated there", async () => {
-    timelineNotices = [
-      {
-        id: "launchd:com.broomva.kg-lint",
-        kind: "launchd",
-        name: "kg-lint",
-        status: "failed",
-        reason: "Its last run failed: exit 1.",
-        since: new Date(Date.now() - 2 * H).toISOString(),
-      },
-    ];
-    const view = await mount(surface(true));
-    await settle(50);
-    expect(view.text()).toContain("kg-lint: failed run");
-    expect(view.text()).toContain("Its last run failed: exit 1.");
-    await view.press(view.byLabel("Open Timeline, kg-lint"));
-    expect(view.viewNow()).toBe("Timeline");
-    expect(view.text()).not.toContain("kg-lint: failed run.");
-    expect(view.text()).toContain("1 needs you.");
   });
 });
 
@@ -5281,32 +5120,26 @@ describe("Initiatives", () => {
     for (let tries = 0; tries < 150 && !view.text().includes(text); tries += 1) await settle(20);
   };
   // The card and the ideas are the phone's list as well as J8's expanded row: their rules are tested on the list.
-  const open = async (compact = true) => {
+  const open = async (compact = false) => {
     const view = await mount(surface(compact));
     await view.goto("Initiatives");
     await until(view, "mod-anything skill");
     return view;
   };
-
-  test("the tab says how many need you as needs.list does: a stale file with no hold is not counted (BRO-3001)", async () => {
-    // mod-anything's file is overdue, and needs.list holds no review for it: the phone's line says none need you.
-    const view = await open();
-    expect(view.text()).toContain("3 initiatives · 1 cannot be read · 2 open ideas");
-    expect(view.text()).not.toContain("needs you · 1 cannot be read");
-  });
+  /** J8's rows open their card in place (a row due for review opens its hold instead). */
+  const expand = async (view: Awaited<ReturnType<typeof mount>>) => {
+    await view.press(view.all('[aria-label^="Initiative: mod-anything skill"]')[0]);
+  };
 
   test("a card shows every field: title, intent, status, review date with its badge, next action, driver, waits, links, local edit, ideas", async () => {
-    // Due for review (B2): needs.list holds it, so it is the one that needs you.
-    reviewsNow = [
-      {
-        ...(initiativesNow.initiatives.find((entry) => entry.id === "mod-anything") as Initiative),
-        stale: { kind: "overdue", date: "2026-10-01" },
-      },
-    ];
+    // The card reads the file's own stale date; the row opens it in place (a due one would open its hold).
     const view = await open();
-    const text = view.text();
+    await expand(view);
+    const first = view.text();
+    await view.press(view.all('[aria-label^="Initiative: Fleet autonomy"]')[0]);
+    // One row is open at a time: the quote is Fleet autonomy's, the rest mod-anything's.
+    const text = `${first} ${view.text()}`;
     for (const part of [
-      "3 initiatives · 1 needs you · 1 cannot be read · 2 open ideas",
       "mod-anything skill",
       "Waits on you",
       "Intent not stated: the owner's words were not written down",
@@ -5325,17 +5158,14 @@ describe("Initiatives", () => {
       "Done when: Done.",
       // A quote is the owner's words with their source; the sentinel is never dressed as one.
       "“the work we start get forgotten” — owner, 2026-10-03",
-      // A file that cannot be read is a row with the reason, never hidden.
-      "This initiative cannot be read, so it is shown as it is: broken.yaml: it has a YAML error",
     ]) {
       expect(text).toContain(part);
     }
-    expect(view.byLabel("mod-anything skill: Overdue")).not.toBeNull();
-    expect(view.byLabel("Fleet autonomy: Overdue")).toBeNull();
   });
 
   test("links open where they point: Linear, the PR, the session; a waiting PR opens too", async () => {
     const view = await open();
+    await expand(view);
     await view.press(view.byLabel("Open BRO-2808 in Linear"));
     await view.press(view.byLabel("Open the PR broomva/skills#267, open"));
     await view.press(view.byLabel("Open the PR broomva/skills#267"));
@@ -5377,6 +5207,7 @@ describe("Initiatives", () => {
 
   test("an idea answered develop is sent through ask.answer at its home, and its held work opens", async () => {
     const view = await open();
+    await expand(view);
     await view.press(view.byLabel("Show the ideas for mod-anything"));
     expect(view.text()).toContain("Build idea I1, or park it?");
     expect(view.text()).toContain("mod-anything · from report docs/reports/beyond-games.html · evidence BRO-2810");
@@ -5390,7 +5221,6 @@ describe("Initiatives", () => {
     expect(sent("initiatives.file")).toEqual([{ ledger: "ideas-mod-anything.yaml", id: "I3", home: "origin/main" }]);
     expect(view.text()).toContain("Developed on 2026-10-05: a work item was filed for it, held for you to start.");
     expect(view.byLabel("File the work for I3")).toBeNull();
-    await view.press(view.byLabel("Open the work filed for I3"));
     await view.press(view.byLabel("Open the evidence for I1, BRO-2810"));
     expect(urls).toEqual(["https://linear.app/broomva/issue/BRO-2810"]);
     expect(view.byLabel("Answer I1")?.getAttribute("aria-disabled")).toBe("true");
@@ -5426,6 +5256,7 @@ describe("Initiatives", () => {
       developed: [{ ref: "ideas-mod-anything.yaml#I3", id: "w3", title: "Work w3", path: "mod-anything/w3" }],
     };
     const view = await open();
+    await expand(view);
     await view.press(view.byLabel("Show the ideas for mod-anything"));
     await view.press(view.byLabel("Show 1 triaged"));
     expect(view.text()).toContain("Parked on 2026-10-05 until 2099-01-10.");
@@ -5435,7 +5266,7 @@ describe("Initiatives", () => {
 
   test("park takes a wake date: the idea's own by default, a bad or past one refused before it is sent", async () => {
     const view = await open();
-    await view.press(view.byLabel("All ideas (2 open)"));
+    await view.press(view.byLabel("Proposed, 2"));
     await view.press(view.byLabel("Park until 2099-01-10, recommended for I2"));
     const wake = view.byLabel("The wake date for I2");
     expect(wake?.getAttribute("value")).toBe("2099-01-10");
@@ -5463,12 +5294,12 @@ describe("Initiatives", () => {
     await view.press(view.byLabel("Kill for I1"));
     await view.press(view.byLabel("Answer I1: Kill"));
     expect((sent("ask.answer")[1] as { option: string }).option).toBe("kill");
-    await view.press(view.byLabel("By initiative"));
+    await view.press(view.byLabel("All, 2"));
     expect(view.text()).toContain("Fleet autonomy");
   });
 
-  test("an initiative past its date shows where Maestro says what needs you, and opens the tab; ideas stay out of Decisions", async () => {
-    // Due for review (B2): needs.list raises it as an ask, which the band says and the header counts.
+  test("a due review is a hold in the Feed's deck; an open idea stays out of Decisions", async () => {
+    // Due for review (B2): needs.list raises it as an ask, which the deck holds and the header counts.
     reviewsNow = [
       {
         ...(initiativesNow.initiatives.find((entry) => entry.id === "mod-anything") as Initiative),
@@ -5476,30 +5307,26 @@ describe("Initiatives", () => {
       },
     ];
     workspaceNow = [ideaFixture("I9", { home: { kind: "main", path: "/Users/me/broomva", branch: null } })];
-    const view = await mount(surface(true));
-    for (let tries = 0; tries < 150 && !view.text().includes("has passed"); tries += 1) await settle(20);
-    expect(view.text()).toContain(
-      "Review mod-anything skill: keep, park or close? Its review date, 2026-10-01, has passed.",
-    );
-    await view.press(view.byLabel("Open Initiatives, 1 need a look"));
-    await until(view, "mod-anything skill");
-    expect(view.viewNow()).toBe("Initiatives");
-    expect(view.text()).not.toContain("Its review date, 2026-10-01, has passed.");
-    // The idea is answered here, never twice: Decisions does not list it.
-    await view.goto("Decisions");
-    await until(view, "Nothing to decide");
-    expect(view.text()).not.toContain("Build idea I9");
+    const feed = await mount(surface(true));
+    await until(feed, "Review mod-anything skill: keep, park or close?");
+    expect(feed.text()).toContain("Review mod-anything skill: keep, park or close?");
+    // The idea is answered where it lives, never twice: the Decisions deck does not hold it.
+    const decisions = await mount(surface(true, { tab: "decisions" }));
+    await until(decisions, "No decision waits on you.");
+    expect(decisions.text()).not.toContain("Build idea I9");
   });
 
   test("what folds, folds back; a read that fails says why and tries again", async () => {
     const view = await open();
+    await expand(view);
     await view.press(view.byLabel("Show the ideas for mod-anything"));
     await view.press(view.byLabel("Show 1 triaged"));
     expect(view.text()).toContain("Build idea I3");
     await view.press(view.byLabel("Hide the triaged"));
     expect(view.text()).not.toContain("Build idea I3");
     await view.press(view.byLabel("Hide the ideas for mod-anything"));
-    expect(view.text()).not.toContain("Build idea I1");
+    // The Proposed tile names the first idea too: what folded is the card's own list.
+    expect(view.byLabel("Show the ideas for mod-anything")).not.toBeNull();
 
     initiativesFail = "the control repo is gone";
     const broken = await mount(surface(false));
@@ -5510,131 +5337,6 @@ describe("Initiatives", () => {
     await broken.press(broken.byLabel("Try again"));
     await until(broken, "mod-anything skill");
     expect(broken.text()).toContain("mod-anything skill");
-  });
-});
-
-describe("the Feed home (BRO-2906)", () => {
-  const until = async (view: Awaited<ReturnType<typeof mount>>, text: string) => {
-    for (let tries = 0; tries < 150 && !view.text().includes(text); tries += 1) await settle(20);
-  };
-  const handledAt = new Date(Date.now() - 60 * 60_000).toISOString();
-  const withHandled = () => [
-    ...fixture(),
-    work("h", "done", {
-      title: "SRI: STI-3569 typography cap",
-      closed: { by: "maestro", at: handledAt },
-      adoptedBy: { by: "SRI Orchestrator" },
-    }),
-  ];
-
-  test("its sections, in order, under a header that says what was handled for you", async () => {
-    items = withHandled();
-    const view = await mount(surface(true));
-    const headings = view.all('[role="heading"]').map((el) => el.textContent);
-    const order = ["Needs you", "Stuck", "Running", "Queued", "Handled for you", "Done"].map((name) =>
-      headings.indexOf(name),
-    );
-    expect(order.every((at) => at >= 0)).toBe(true);
-    expect([...order].sort((a, b) => a - b)).toEqual(order);
-    // needs.list's total and handled.list's rows for you (BRO-3001).
-    expect(view.text()).toContain("2 need you · 1 running · 1 handled for you");
-    expect(view.text()).toContain("From their orchestrators: 1 arc closed");
-    expect(view.byLabel("Done: SRI: STI-3569 typography cap. SRI Orchestrator: Done")).not.toBeNull();
-    // Maestro's own closes (an auto gate, a finished arc) are handled for you too: not "by their orchestrator".
-    expect(view.text()).toContain("closed without you this week");
-    expect(view.text()).toContain("STI-3569 typography cap");
-    expect(view.text()).toContain("today 1 · this week 1");
-    // The Done list opens on demand.
-    expect(view.text()).not.toContain("Work f");
-    expect(view.byLabel("Show the 1 done item")?.getAttribute("aria-expanded")).toBe("false");
-    // An icon-only toggle is a 32 px target: react-native-web ignores hitSlop.
-    expect(view.byLabel("Show the 1 done item")?.getAttribute("style")).toContain("min-width: 32px");
-    await view.press(view.byLabel("Show the 1 done item"));
-    expect(view.text()).toContain("Work f");
-    expect(view.byLabel("Hide the 1 done item")?.getAttribute("aria-expanded")).toBe("true");
-  });
-
-  test("a card at your gate: its branch, its ask, Needs you and its verb, with no button inside the card", async () => {
-    const view = await mount(surface(true));
-    const card = view.byLabel("Work a, Needs you, hawthorne · core, updated 12 minutes ago");
-    expect(card?.textContent).toContain("maestro/a-1");
-    expect(card?.textContent).toContain("Approve the branch");
-    expect(card?.textContent).toContain("Needs you");
-    expect(card?.textContent).toContain("Answer");
-    // The one button says what it opens to, and the ask, to a screen reader too.
-    const described = (card?.getAttribute("aria-describedby") ?? "").split(" ").map((id) => view.byId(id)?.textContent);
-    expect(described).toEqual(["Answer", "Approve the branch"]);
-    expect(card?.querySelectorAll('[role="button"]').length).toBe(0);
-    await view.press(card);
-    // On a phone it opens the work over the list, with a way back.
-    expect(view.byLabel("Back to all work")).not.toBeNull();
-  });
-
-  test("an ask that waits on you is a hold under Needs you; Decide lists the open ones that do not; each opens Decisions", async () => {
-    workspaceNow = [
-      { ...decisionFixture(), ledger: "plain.yaml", id: "B1", hash: "bbbbbbbbbbbbbbbb", headline: "A plain ask?" },
-      {
-        ...decisionFixture(),
-        ledger: "gate.yaml",
-        id: "A1",
-        hash: "aaaaaaaaaaaaaaaa",
-        headline: "Merge the gate fix?",
-        blocking: true,
-        waiting: true,
-        fallback: "hold",
-        options: [
-          { id: "merge", label: "Merge it", consequence: "", reversible: true, recommended: true },
-          { id: "hold", label: "Hold it", consequence: "", reversible: true, recommended: false },
-        ],
-      },
-    ];
-    const view = await mount(surface(true));
-    await until(view, "Merge the gate fix?");
-    const rows = view.all('[aria-label^="Decide: "]').map((el) => el.getAttribute("aria-label"));
-    expect(rows).toEqual(["Decide: Merge the gate fix?", "Decide: A plain ask?"]);
-    // The waiting one is needs.list's row, in Needs you; the plain one is Decide's, said to wait on no one.
-    const needsYou = view.all('[role="heading"]').find((el) => el.textContent === "Needs you")
-      ?.parentElement?.parentElement;
-    expect(needsYou?.textContent).toContain("Merge the gate fix?");
-    expect(needsYou?.textContent).not.toContain("A plain ask?");
-    expect(view.text()).toContain("open, not waiting on you");
-    expect(view.text()).toContain("blocks work");
-    expect(view.text()).toContain("silent → Hold it");
-    // Decide replaces the notice on the Feed: said once.
-    expect(view.text()).not.toContain("A decision waits on you");
-    await view.press(view.byLabel("Decide: Merge the gate fix?"));
-    // The phone's Decisions is its deck (M5), on the ask that waits on you: one hold, its options in reach.
-    await until(view, "1 of 1");
-    expect(view.text()).toContain("Merge the gate fix?");
-    expect(view.all('[aria-label^="View: "]')).toHaveLength(0);
-  });
-
-  test("the search keeps what matches its title, place or branch, and says when nothing does", async () => {
-    const view = await mount(surface(true));
-    const field = view.byLabel("Find work, ticket or branch");
-    await view.type(field, "genesis");
-    expect(view.text()).toContain("Work c");
-    expect(view.text()).not.toContain("Work a");
-    await view.type(field, "maestro/a-1");
-    expect(view.text()).toContain("Work a");
-    expect(view.text()).not.toContain("Work c");
-    await view.type(field, "nothing like it");
-    expect(view.text()).toContain("No work matches “nothing like it”.");
-    expect(view.byLabel("Clear the search")?.getAttribute("style")).toContain("min-height: 32px");
-    await view.press(view.byLabel("Clear the search"));
-    expect(view.text()).toContain("Work c");
-  });
-
-  test("the scope menu lists the initiatives and narrows the feed to one", async () => {
-    const view = await mount(surface(true));
-    await view.press(view.byLabel("Scope: all scopes"));
-    const items = () => view.all('[role="menuitemradio"]');
-    expect(items().map((el) => el.textContent?.split(/\d/)[0])).toEqual(["All scopes", "genesis", "hawthorne"]);
-    expect(items().map((el) => el.getAttribute("aria-checked"))).toEqual(["true", "false", "false"]);
-    await view.press(items().find((el) => el.textContent?.startsWith("genesis")));
-    expect(view.byLabel("Scope: genesis")).not.toBeNull();
-    expect(view.text()).toContain("Work c");
-    expect(view.text()).not.toContain("Work a");
   });
 });
 

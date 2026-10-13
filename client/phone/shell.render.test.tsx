@@ -915,7 +915,11 @@ describe("M7, Health at 375 x 812", () => {
           project: "sri",
           ticket: "STI-3617",
           title: "Eve turn latency",
-          flag: { kind: "quiet", reason: "Quiet for 808 minutes.", at: new Date(Date.now() - 808 * 60_000).toISOString() },
+          flag: {
+            kind: "quiet",
+            reason: "Quiet for 808 minutes.",
+            at: new Date(Date.now() - 808 * 60_000).toISOString(),
+          },
         },
       ),
     );
@@ -969,7 +973,11 @@ describe("M7, Health at 375 x 812", () => {
         {
           project: "sri",
           title: "Eve turn latency",
-          flag: { kind: "quiet", reason: "Quiet for 808 minutes.", at: new Date(Date.now() - 808 * 60_000).toISOString() },
+          flag: {
+            kind: "quiet",
+            reason: "Quiet for 808 minutes.",
+            at: new Date(Date.now() - 808 * 60_000).toISOString(),
+          },
         },
       ),
     );

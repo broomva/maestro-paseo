@@ -15,19 +15,12 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { ANSWER_NOTE_CHARS, type DecisionAsk, homeKey } from "../shared/fleet";
-import {
-  fileIdeaWork,
-  getInitiatives,
-  type Initiative,
-  type InitiativesView as InitiativesRead,
-  ideaRef,
-} from "../shared/initiatives";
+import { fileIdeaWork, getInitiatives, type Initiative, ideaRef } from "../shared/initiatives";
 import { holdOf } from "../shared/needs";
-import { sameAsk } from "./decisions";
 import { fateLine, homeText } from "./decisions-model";
 import { errorText } from "./format";
 import { useNeeds, useRefresh } from "./hooks";
@@ -35,14 +28,11 @@ import {
   dateLine,
   defaultWake,
   driverText,
-  dueReviewCount,
   evidenceUrl,
   INTENT_NOT_STATED,
   ideaMeta,
   ideaOutcome,
-  ideasOf,
   ideasText,
-  initiativesMeta,
   linearUrl,
   reviewNoticeText,
   STATUS_TEXT,
@@ -50,7 +40,7 @@ import {
   wakeProblem,
 } from "./initiatives-model";
 import { useOpenUrl } from "./open-url";
-import { Button, Card, Notice, radius, Section, space, useText } from "./ui";
+import { Button, Card, Notice, radius, space, useText } from "./ui";
 import { useVerbs } from "./verbs";
 
 /** Files change when a session lands a PR: a read every 60 s is plenty. */
@@ -616,111 +606,6 @@ export function InitiativeCard({
         />
       ) : null}
     </Card>
-  );
-}
-
-/** The tab: every initiative, or every idea in one inbox. */
-export function InitiativesView({
-  theme,
-  compact,
-  navigation,
-  onOpenDecision,
-  onOpenWork,
-}: {
-  theme: PluginTheme;
-  compact: boolean;
-  navigation: Navigation;
-  onOpenDecision: (ledger: string, askId: string | null) => void;
-  onOpenWork: (id: string) => void;
-}) {
-  const text = useText(theme);
-  const client = useQueryClient();
-  const read = useInitiatives();
-  // The tab's "need you" is needs.list's due reviews, the same rows the header counts (BRO-3001).
-  const needsRead = useNeeds();
-  const dueReviews = dueReviewCount(needsRead.data);
-  const [inbox, setInbox] = useState(false);
-  // An answer goes into every read held at once, so the card and the counts say so before the next poll.
-  const onAnswered = (answered: DecisionAsk) =>
-    client.setQueriesData<InitiativesRead>({ queryKey: QUERY_KEY }, (view) =>
-      view ? { ...view, ideas: view.ideas.map((ask) => (sameAsk(ask, answered) ? answered : ask)) } : view,
-    );
-  if (read.isPending) return <ActivityIndicator color={theme.colors.foregroundMuted} />;
-  if (read.isError) {
-    return (
-      <View style={{ gap: space[3] }}>
-        <Notice theme={theme} tone="danger">
-          {`Your initiatives could not be read: ${errorText(read.error)}`}
-        </Notice>
-        <Button theme={theme} label="Try again" onPress={() => void read.refetch()} />
-      </View>
-    );
-  }
-  const { controlRepo, today, initiatives, ideas, warnings } = read.data;
-  const openIdeas = ideas.filter((ask) => ask.state === "open").length;
-  return (
-    <Section theme={theme} title="Initiatives" meta={initiativesMeta(initiatives, ideas, dueReviews)}>
-      <Text style={text.small}>
-        {`Each initiative in ${controlRepo || "your control repo"}/.control/initiatives, as origin/main holds it; a checkout's edit that has not landed is shown beside it. Ideas are answered here: develop files a queued work item, held for you to start; park sets the day it comes back.`}
-      </Text>
-      {warnings.slice(0, 3).map((warning) => (
-        <Notice key={warning} theme={theme} tone="warn">
-          {warning}
-        </Notice>
-      ))}
-      <View accessibilityRole="tablist" style={{ flexDirection: "row", gap: space[2], flexWrap: "wrap" }}>
-        <Button
-          theme={theme}
-          variant={inbox ? "secondary" : "primary"}
-          icon="Target"
-          label="By initiative"
-          compact={compact}
-          onPress={() => setInbox(false)}
-        />
-        <Button
-          theme={theme}
-          variant={inbox ? "primary" : "secondary"}
-          icon="Lightbulb"
-          label={`All ideas (${openIdeas} open)`}
-          compact={compact}
-          onPress={() => setInbox(true)}
-        />
-      </View>
-      {inbox ? (
-        <IdeaList
-          theme={theme}
-          ideas={ideas}
-          today={today}
-          compact={compact}
-          onAnswered={onAnswered}
-          onOpenWork={onOpenWork}
-        />
-      ) : initiatives.length === 0 ? (
-        <Card theme={theme}>
-          <Text style={text.title}>No initiatives yet</Text>
-          <Text style={text.muted}>
-            {`An initiative is one file in ${controlRepo || "the control repo"}/.control/initiatives on origin/main. None is there yet.`}
-          </Text>
-        </Card>
-      ) : (
-        <View style={{ gap: space[3] }}>
-          {initiatives.map((initiative) => (
-            <InitiativeCard
-              key={`${initiative.home.kind}:${initiative.file}`}
-              theme={theme}
-              initiative={initiative}
-              ideas={ideasOf(ideas, initiative.id)}
-              today={today}
-              compact={compact}
-              navigation={navigation}
-              onOpenDecision={onOpenDecision}
-              onAnswered={onAnswered}
-              onOpenWork={onOpenWork}
-            />
-          ))}
-        </View>
-      )}
-    </Section>
   );
 }
 

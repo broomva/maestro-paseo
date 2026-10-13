@@ -711,7 +711,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
         />
       ) : null}
 
-      {measured && page ? (
+      {page ? (
         <PagePanel
           theme={theme}
           height={size.height}
@@ -731,7 +731,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
           />
         </PagePanel>
       ) : null}
-      {measured && props.creating ? (
+      {props.creating ? (
         <NewWorkSheet
           theme={theme}
           height={size.height}

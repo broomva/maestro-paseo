@@ -4,9 +4,8 @@
 // (server/loop.ts); its period is chosen in Settings.
 
 import type { PluginTheme } from "@getpaseo/plugin";
-import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { useState } from "react";
+import { ActivityIndicator, Text, View } from "react-native";
 import type { WakeEntry } from "../shared/contracts";
 import { errorText } from "./format";
 import { useLoop, useVerbs } from "./hooks";
@@ -14,7 +13,6 @@ import {
   causeText,
   keyedLines,
   type LoopState,
-  loopChipText,
   periodText,
   skippedText,
   wakeLines,
@@ -23,53 +21,7 @@ import {
 } from "./loop-model";
 import { PendingVerbs } from "./pending-verbs";
 import { settingsOpener } from "./settings-link";
-import { Button, Card, IconButton, Notice, radius, size, space, useText } from "./ui";
-
-/** The time now, moved on every `ms` while mounted, so a countdown counts down between reads. */
-function useNow(ms: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), ms);
-    return () => clearInterval(timer);
-  }, [ms]);
-  return now;
-}
-
-/** "Loop off", "Next wake in 12 min" or "Waking…". Pressing it opens or closes the loop's panel. */
-export function LoopControl({ theme, open, onToggle }: { theme: PluginTheme; open: boolean; onToggle: () => void }) {
-  const loop = useLoop();
-  const now = useNow(15_000);
-  const label = loopChipText(loop.data ?? null, now);
-  const ink = loop.data?.minutes == null ? theme.colors.foregroundMuted : theme.colors.foreground;
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ expanded: open }}
-      aria-expanded={open}
-      accessibilityLabel={`${label}. ${open ? "Hide" : "Show"} the loop`}
-      onPress={onToggle}
-      style={({ pressed }) => ({
-        flexDirection: "row",
-        alignItems: "center",
-        alignSelf: "flex-start",
-        gap: space[1],
-        minHeight: 28,
-        paddingHorizontal: space[3],
-        borderRadius: radius.pill,
-        borderWidth: 1,
-        borderColor: open ? theme.colors.accent : theme.colors.border,
-        backgroundColor: open || pressed ? theme.colors.surface2 : "transparent",
-      })}
-    >
-      {loop.data?.ticking ? (
-        <ActivityIndicator size="small" color={ink} />
-      ) : (
-        <Icon name="Timer" size={14} color={ink} />
-      )}
-      <Text style={{ color: ink, fontSize: size.xs, fontWeight: "600", fontVariant: ["tabular-nums"] }}>{label}</Text>
-    </Pressable>
-  );
-}
+import { Button, Card, IconButton, Notice, space, useText } from "./ui";
 
 /** The loop's panel: how often it wakes, Wake now, and the recent wakes, newest first. */
 export function LoopPanel({ theme, onClose }: { theme: PluginTheme; onClose: () => void }) {
