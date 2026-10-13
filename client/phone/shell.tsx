@@ -5,7 +5,7 @@
 // the swipe rows on it, the card that rises (M2–M4), and the undo toast. Every verb is sent through
 // client/use-inspector.ts and client/verbs.ts, the adapter the desktop uses, so a verb here is the same act with
 // the same 8 s undo (B4). Work (M6) and Health (M7) are decks and sheets of their own; Initiatives (M8), the views
-// Health reaches and Settings (M11) are pages that rise over the surface; New work (M9) grows from the +.
+// Health reaches are pages that rise over the surface.
 //
 // What the deck shows and what a verb sends come from one read: a hold's card is drawn from its entry, and
 // its verbs send that entry's target, never an id looked up again. A read that failed says so; it never reads as
@@ -71,7 +71,6 @@ import {
   sheetTitle,
   unreadWords,
 } from "./model";
-import { NewWorkSheet } from "./new-work-sheet";
 import { PageBody } from "./page-body";
 import { PagePanel } from "./page-panel";
 import { SheetRows } from "./sheet-rows";
@@ -102,9 +101,8 @@ export interface PhoneSurfaceProps {
   /** A hold or work to open on: `params.hold` (a push), or an intent from elsewhere. */
   focus: HomeFocus | null;
   onFocusHandled: () => void;
-  /** New work (M9) is open: its sheet grows from the + and the screen owns whether it is shown. */
-  creating: boolean;
-  onCreating: (open: boolean) => void;
+  /** New work: the + opens the screen's composer. */
+  onNew: () => void;
   /** Work this screen has no hold or row for opens on its own page. */
   onOpenWork: (id: string) => void;
   /** The page that is up (M8, M11, and the views Health reaches), and how it changes; null: none. */
@@ -378,7 +376,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       tabs={phoneTabs(needs.data ?? null, notices.data?.summary.total ?? 0)}
       active={tab}
       onSelect={(id) => onTab(id as PhoneTab)}
-      onNew={() => props.onCreating(true)}
+      onNew={props.onNew}
     />
   );
   const header = (
@@ -389,7 +387,6 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       onWorkspace={onWorkspace}
       presence={presence}
       width={Math.max(0, size.width - 32)}
-      onSettings={() => props.onPage({ kind: "settings", page: "root" })}
     />
   );
 
@@ -716,29 +713,19 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
           theme={theme}
           height={size.height}
           trail={pageTrail(page)}
-          onBack={() => props.onPage(page.kind === "settings" ? { kind: "settings", page: "root" } : null)}
+          onBack={() => props.onPage(null)}
           onClose={() => props.onPage(null)}
         >
           <PageBody
             theme={theme}
             page={page}
             navigation={navigation}
-            presence={presence}
             onPage={props.onPage}
             onOpenHold={(key) => inspector.selectHold(key)}
             onOpenDecision={props.onOpenDecision}
             onOpenWork={(id) => (items.some((one) => one.id === id) ? inspector.selectWork(id) : props.onOpenWork(id))}
           />
         </PagePanel>
-      ) : null}
-      {props.creating ? (
-        <NewWorkSheet
-          theme={theme}
-          height={size.height}
-          safeBottom={safe}
-          onClose={() => props.onCreating(false)}
-          onCreated={() => props.onCreating(false)}
-        />
       ) : null}
       {measured && cardItem ? (
         <InspectorCard

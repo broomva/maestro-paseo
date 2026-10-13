@@ -1,19 +1,10 @@
-// The Maestro surface: all work, attention first, as a feed, a board or a
-// list, or what happened as History, scoped to one initiative or to
-// everything; or the Fleet, fleet-reconcile's hourly runs. Wide windows keep
-// the feed and the selected item side by side; the board, the list, History
-// and the Fleet take the width and open the item beside them. Compact windows
-// show the feed, History or the Fleet and push the item over it, with a way
-// back. What needs you is needs.list (BRO-3001): the subtitle, the tab badges
-// and the Feed's Needs you section read it, and nothing here counts on its own.
-// A decision ask that waits on you shows above every view but Decisions and the
-// Feed (client/decisions.tsx), an initiative review that is due above every
-// view but Initiatives (client/initiatives.tsx). What you watch shows the same
-// way: a fleet tick that is missed or failing above every view but the Fleet,
-// any other scheduled run that failed or was missed above every view but the
-// Timeline (client/timeline.tsx), loop drift above every view but Loops. The
-// views come in two labelled groups, Work and System; a phone picks one from a
-// single menu.
+// The Maestro surface. A wide window is the desktop: Maestro's header over the Feed home (J1), the board (J6), Health
+// (J7), Initiatives (J8) or one of the older views (List, History, Fleet, Decisions, Timeline, Loops), with the
+// selected item beside it. A compact window is the phone (client/phone/shell.tsx): four tabs, each a deck of what
+// needs you and a sheet of the rest, with pages (Initiatives, Fleet, Timeline, Loops) rising over them. What needs
+// you is needs.list (BRO-3001): the tab badges, the decks and the header read it, and nothing here counts on its own.
+// This screen holds the state they share (the tab, the page, the workspace, the opened hold) and hears the intents
+// other surfaces send (client/intent.ts), which it turns into a tab, a page or an opened hold.
 
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
@@ -405,8 +396,7 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
             onWorkspace={setWorkspace}
             focus={homeFocus}
             onFocusHandled={() => setHomeFocus(null)}
-            creating={creating}
-            onCreating={setCreating}
+            onNew={() => setCreating(true)}
             onOpenWork={setSelected}
             page={phonePage}
             onPage={setPhonePage}

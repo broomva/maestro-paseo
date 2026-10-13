@@ -25,6 +25,8 @@ import {
   irreversibleChoice,
   openingChoice,
   PHONE_TABS,
+  pageOfIntent,
+  pageTrail,
   phoneTabOf,
   phoneTabs,
   resolveIndex,
@@ -321,5 +323,31 @@ describe("a failed read is never 'nothing needs you'", () => {
     expect(deckEmptyWords("ok", "feed", ["asks"])).toBe("Couldn't read what needs you (asks).");
     expect(deckEmptyWords("ok", "decisions", ["asks"])).not.toContain("No decision waits");
     expect(deckEmptyWords("ok", "feed", [])).toBe("Nothing needs you.");
+  });
+});
+
+describe("pages and what each tab's empty deck says", () => {
+  test("an intent that names a view opens it as a page; the others are not pages", () => {
+    expect(pageOfIntent({ kind: "fleet", scope: "sri" })).toEqual({ kind: "fleet", scope: "sri", tick: null });
+    expect(pageOfIntent({ kind: "timeline" })).toEqual({ kind: "timeline" });
+    expect(pageOfIntent({ kind: "loops" })).toEqual({ kind: "loops" });
+    expect(pageOfIntent({ kind: "initiatives" })).toEqual({ kind: "initiatives" });
+    expect(pageOfIntent({ kind: "new" })).toBeNull();
+    expect(pageOfIntent({ kind: "select", id: "w" })).toBeNull();
+    expect(pageOfIntent({ kind: "decisions" })).toBeNull();
+  });
+
+  test("Initiatives says where it came from, the rest name themselves", () => {
+    expect(pageTrail({ kind: "initiatives" })).toEqual(["from Health"]);
+    expect(pageTrail({ kind: "fleet", scope: null, tick: null })).toEqual(["Fleet"]);
+  });
+
+  test("a failed or unread read names what it could not read, never 'nothing'", () => {
+    expect(deckEmptyWords("error", "health")).toBe("Couldn't read the notices.");
+    expect(deckEmptyWords("error", "work")).toBe("Couldn't read the work that needs you.");
+    expect(deckEmptyWords("ok", "health", ["the fleet"])).toBe("Couldn't read the notices (the fleet).");
+    expect(deckEmptyWords("pending", "work")).toBe("Reading the work that needs you…");
+    expect(deckEmptyWords("ok", "health")).toBe("Nothing is asking for a look.");
+    expect(deckEmptyWords("ok", "work")).toBe("No work needs you.");
   });
 });

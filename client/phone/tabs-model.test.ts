@@ -16,6 +16,7 @@ import {
   healthCounts,
   healthDeck,
   laneCards,
+  laneRows,
   lifecycleOf,
   noticeAct,
   noticePrimary,
@@ -292,5 +293,28 @@ describe("Health: the fleet at a glance", () => {
     ]);
     expect(counts[0]?.tone).toBe("warn");
     expect(healthCounts(model, 1).at(-1)?.label).toBe("1 lane");
+  });
+});
+
+describe("Work's sheet rows", () => {
+  const rows = (lane: "running" | "queued" | "done") => laneRows(laneCards(board, lane), lane, NOW);
+
+  test("a running row says where, its ticket and its live turn; it never offers Continue or Snooze", () => {
+    const [row] = rows("running");
+    expect(row?.kind).toBe("running");
+    expect(row?.lead).toBe("running");
+    expect(row?.meta).toContain("STI-3684");
+    expect(row?.meta).toContain("working");
+    expect(row?.verbs).toEqual({ continue: false, snooze: false });
+    expect(row?.target.item?.id).toBe("w-run-1f2");
+  });
+
+  test("a queued row waits; a Done row is finished and offers Continue only when it has work behind it", () => {
+    expect(rows("queued")[0]?.kind).toBe("queued");
+    const done = rows("done")[0];
+    expect(done?.kind).toBe("finished");
+    // handled.list's row for work this client has no item for: nothing to prompt.
+    expect(done?.target.item).toBeNull();
+    expect(done?.verbs.continue).toBe(false);
   });
 });

@@ -225,16 +225,13 @@ export function PresenceMenu({
   theme,
   presence,
   width = 356,
-  onSettings,
 }: {
   theme: PluginTheme;
   presence: PresenceRead;
   width?: number;
-  /** Where Settings opens when the screen has its own (the phone's M11 card); else the host's Settings screen. */
-  onSettings?: () => void;
 }) {
   const kit = kitOf(theme);
-  const openSettings = onSettings ?? settingsOpener();
+  const openSettings = settingsOpener();
   const tone = { present: kit.ok, away: kit.warn, off: kit.muted } as const;
   return (
     <Popover theme={theme} width={width}>

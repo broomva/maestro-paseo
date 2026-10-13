@@ -68,7 +68,6 @@ export function DeckHeader({
   onWorkspace,
   presence,
   width,
-  onSettings,
 }: {
   theme: PluginTheme;
   workspaces: readonly WorkspaceOption[];
@@ -77,8 +76,6 @@ export function DeckHeader({
   presence: PresenceRead;
   /** The room the menus have: a phone's width less its margins. */
   width: number;
-  /** Settings, from the presence menu's foot (M11): the screen opens its own card. */
-  onSettings?: () => void;
 }) {
   const kit = kitOf(theme);
   const [menu, setMenu] = useState<Menu>(null);
@@ -116,21 +113,7 @@ export function DeckHeader({
           }}
         />
       ) : null}
-      {menu === "presence" ? (
-        <PresenceMenu
-          theme={theme}
-          presence={presence}
-          width={room}
-          onSettings={
-            onSettings
-              ? () => {
-                  setMenu(null);
-                  onSettings();
-                }
-              : undefined
-          }
-        />
-      ) : null}
+      {menu === "presence" ? <PresenceMenu theme={theme} presence={presence} width={room} /> : null}
     </View>
   );
 }

@@ -5,11 +5,7 @@
 
 import { useEffect, useRef } from "react";
 import { Animated, Easing, Keyboard, Platform } from "react-native";
-
-/** How far a sheet standing `safeBottom` above the screen's bottom edge rises for a keyboard `height` tall. */
-export function keyboardLift(height: number, safeBottom: number): number {
-  return Math.max(0, Math.round(height - Math.max(0, safeBottom)));
-}
+import { keyboardLift } from "./keyboard-lift";
 
 /** The events carrying it: iOS announces the animation before it runs; elsewhere it is announced after. */
 export const KEYBOARD_EVENTS =

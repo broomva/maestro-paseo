@@ -389,7 +389,6 @@ async function mount(
     focus?: HomeFocus | null;
     cached?: ReturnType<typeof needsNow>;
     page?: PhonePage | null;
-    creating?: boolean;
   } = {},
 ) {
   const container = win.document.createElement("div");
@@ -400,7 +399,6 @@ async function mount(
   if (props.cached) client.setQueryData(NEEDS_KEY, props.cached);
   let tab: PhoneTab = props.tab ?? "feed";
   let page: PhonePage | null = props.page ?? null;
-  let creating = props.creating ?? false;
   const handled: number[] = [];
   const pages: (PhonePage | null)[] = [];
   const node = () => (
@@ -418,11 +416,7 @@ async function mount(
           onWorkspace={() => undefined}
           focus={props.focus ?? null}
           onFocusHandled={() => void handled.push(1)}
-          creating={creating}
-          onCreating={(next) => {
-            creating = next;
-            void act(() => root.render(node()));
-          }}
+          onNew={() => undefined}
           onOpenWork={() => undefined}
           page={page}
           onPage={(next) => {
@@ -1043,39 +1037,5 @@ describe("M8, Initiatives from Health's sheet", () => {
     const view = await mount({ tab: "health", page: { kind: "initiatives" } });
     await view.press(view.label("Close"));
     expect(view.pages).toEqual([null]);
-  });
-});
-
-// ── M11: Settings ────────────────────────────────────────────────────────────
-
-describe("M11, Settings from the presence menu", () => {
-  test("the presence menu's Settings opens the card, one level deep, drawing only what has data", async () => {
-    const view = await mount();
-    await view.press(view.labelled("Presence: Present")[0]);
-    await view.press(view.label("Settings"));
-    expect(view.pages).toEqual([{ kind: "settings", page: "root" }]);
-  });
-
-  test("the root lists the rows that have a read behind them, and none that do not", async () => {
-    const view = await mount({ page: { kind: "settings", page: "root" } });
-    for (const row of ["Presence", "Runs and gate", "Lanes", "Loops", "Notices"]) {
-      expect(view.labelled(row).length).toBeGreaterThan(0);
-    }
-    // No read or write exists for these yet: they are not drawn.
-    for (const absent of ["Notifications", "Approvals", "Credentials", "Appearance"]) {
-      expect(view.text()).not.toContain(absent);
-    }
-    expect(view.text()).toContain("Changes apply after the 8 s undo");
-    expect(view.text()).toContain("conductor + 0");
-  });
-
-  test("a row goes one level deeper and the chevron comes back", async () => {
-    const view = await mount({ page: { kind: "settings", page: "root" } });
-    await view.press(view.label("Presence, Present"));
-    expect(view.pages.at(-1)).toEqual({ kind: "settings", page: "presence" });
-    expect(view.text()).toContain("Choosing a state lands with BRO-2987");
-    expect(view.text()).toContain("Settings › Presence");
-    await view.press(view.label("Back"));
-    expect(view.pages.at(-1)).toEqual({ kind: "settings", page: "root" });
   });
 });
