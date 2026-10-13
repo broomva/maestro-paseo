@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AnswersLanding, answersNotice } from "../shared/answers";
 import type { MaestroConfig, WakeEntry } from "../shared/contracts";
+import { SESSIONS_START_NOTHING } from "../shared/text";
 import type { RouteOutcome } from "./answer-routes";
 import { attentionOf } from "./attention";
 import { defaultConfig } from "./config";
@@ -13,7 +14,6 @@ import { fakePaseo } from "./fake-paseo";
 import { ACTIVE_AGAIN, quietCleared, sessionActiveAt } from "./flags";
 import { ALREADY_WAKING, ASK_NOT_CONNECTED, Loop, NOT_CONNECTED, QUIET_MS, SWEEP_OVERRAN } from "./loop";
 import type { Paseo } from "./runs";
-import { HELD_FOR_YOU } from "./runs";
 import { WorkStore } from "./store";
 import { WakeLog } from "./wake-log";
 
@@ -976,11 +976,13 @@ describe("dispatch as Maestro (A8, BRO-2990)", () => {
     expect(fake.created).toHaveLength(1);
   });
 
-  test("a session cannot start work held for you; you can", async () => {
+  test("a session cannot start work, held for you or not; you can", async () => {
     const { queue, engine, fake } = await setup();
     const held = await queue("Held", { hold: "You chose to develop ideas-maestro.yaml I1." });
     expect(held.nextRun?.held).toBe("You chose to develop ideas-maestro.yaml I1.");
-    await expect(engine.dispatch(fake.paseo, held.id, { actor: "agent", by: "a1" })).rejects.toThrow(HELD_FOR_YOU);
+    await expect(engine.dispatch(fake.paseo, held.id, { actor: "agent", by: "a1" })).rejects.toThrow(
+      SESSIONS_START_NOTHING,
+    );
     expect((await engine.dispatch(fake.paseo, held.id)).state).toBe("running");
   });
 });

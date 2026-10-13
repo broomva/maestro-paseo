@@ -21,13 +21,15 @@
 //      it; and with no question pending, when a turn whose start was missed
 //      ends failed or canceled after the work landed (server/engine.ts
 //      endTurn): the gate then shows the turn that stopped, as Stuck.
-// The invariant that matters is kept exactly: under gate:human nothing reaches
-// done without an approve verdict, but for two named causes, with nothing of
-// yours open: arcFinished, the work's own arc reported itself finished and its
-// session was archived (server/events.ts finishedArc); and adopterClosed, an
-// orchestrator that adopted the work took back its own arc's landing and
-// archived its session, with you having done nothing with it since it landed
-// (server/events.ts adopterClosed, BRO-2903).
+// The invariant that matters (A1: work never asks to be approved; gates merge it):
+// work reaches done only by a gate or by the owner's verdict. A gate is a PR
+// merged through the repo's merge gates (a blocked adopted arc whose branch
+// merged: server/branch-merge.ts, closed with the PR and its merge commit on
+// the receipt) or gate:auto checks that passed. It never reaches done by
+// anything a session says or does to itself: its transcript, its ARC-STATUS
+// line, its handback, its archive, or the archive of the orchestrator that
+// tracked it, which Paseo does not tell apart from the session archiving itself
+// (BRO-2996). Work whose session ends stays at your gate.
 
 export const ORCH_STATES = [
   "proposed",
@@ -141,18 +143,6 @@ export interface TransitionContext {
   /** True when every required done check passed on this run. */
   checksPassed?: boolean;
   /**
-   * True when the work's own arc reported itself finished (its last turn's
-   * `ARC-STATUS: CLOSED|DONE|MERGED`) and its session was archived since
-   * (server/events.ts finishedArc): it closes itself, receipted as Maestro's.
-   */
-  arcFinished?: boolean;
-  /**
-   * True when an orchestrator that adopted the work took back its own arc's
-   * landing and archived its session since, untouched by you (server/events.ts
-   * adopterClosed): that landing was the orchestrator's to read.
-   */
-  adopterClosed?: boolean;
-  /**
    * True when an orchestrator's child, blocked only because its session ended
    * unfinished, has a branch, recorded at its adoption, from which a PR merged
    * after the adoption (server/branch-merge.ts): the work landed.
@@ -165,17 +155,11 @@ export function transition(from: OrchState, to: OrchState, ctx: TransitionContex
   if (!LEGAL[from].includes(to)) {
     throw new IllegalTransitionError(from, to);
   }
-  if (
-    from === "review" &&
-    to === "done" &&
-    ctx.verdict !== "approve" &&
-    ctx.arcFinished !== true &&
-    ctx.adopterClosed !== true
-  ) {
+  if (from === "review" && to === "done" && ctx.verdict !== "approve") {
     throw new IllegalTransitionError(
       from,
       to,
-      "only an approve verdict, an arc that reported itself finished and was archived, or an orchestrator that took back its arc and archived it, closes gated work",
+      "only the owner's verdict closes work at the gate; a merged PR closes stuck work (server/branch-merge.ts)",
     );
   }
   if (from === "blocked" && to === "done" && ctx.branchMerged !== true) {

@@ -551,7 +551,7 @@ interfaces:
   I-work-get: { name: "work.get", status: keep, handler: plugin, callers: [ui, worker], code: [server/engine.ts] }
   I-work-history: { name: "work.history", status: keep, handler: plugin, callers: [ui], code: [server/records.ts] }
   I-work-files: { name: "work.files and work.file", status: keep, handler: plugin, callers: [ui], code: [server/records.ts] }
-  I-work-for-agent: { name: "work.for-agent", status: keep, handler: plugin, callers: [ui, worker], code: [server/engine.ts] }
+  I-work-for-agent: { name: "work.for-agent (the verified caller's own session, or one it started)", status: change, handler: plugin, callers: [ui, worker], code: [server/engine.ts, server/agent-socket.ts, server/callers.ts] }
   I-asks-workspace: { name: "asks.workspace", status: keep, handler: plugin, callers: [ui], code: [server/control-home.ts] }
   I-fleet-get: { name: "fleet.get", status: keep, handler: plugin, callers: [ui], code: [server/fleet.ts] }
   I-fleet-tick: { name: "fleet.tick", status: keep, handler: plugin, callers: [ui], code: [server/fleet.ts] }
@@ -611,7 +611,7 @@ interfaces:
 
   # Work records. Queue only: launching is a lane's (A8).
   I-work-create: { name: "work.create (queues; no dispatch flag)", status: change, handler: plugin, callers: [ui, worker, lane], stores: [S-work], code: [server/engine.ts] }
-  I-work-adopt: { name: "work.adopt (verified caller, BRO-2996)", status: change, handler: plugin, callers: [ui, worker], stores: [S-work], code: [server/engine.ts] }
+  I-work-adopt: { name: "work.adopt (verified caller, BRO-2996)", status: change, handler: plugin, callers: [ui, worker], stores: [S-work], code: [server/engine.ts, server/agent-socket.ts, server/callers.ts] }
 
   # The agent contract (C1): typed reaches, written through the ledger library.
   I-ask-raise: { name: "ask.raise", status: new, handler: bstack, callers: [worker, lane, bstack], stores: [S-asks-ledgers] }
@@ -653,7 +653,7 @@ interfaces:
   I-drift-record: { name: "record a loop drift transition (pinned writer, BRO-3002)", status: change, handler: bstack, callers: [plugin], stores: [S-loop-drift], code: [server/loops.ts] }
 
   # Retired.
-  I-work-dispatch: { name: "work.dispatch (the plugin starts a session)", status: retire, handler: plugin, callers: [ui, worker, lane], launches: true, stores: [S-work], code: [server/engine.ts, server/runs.ts] }
+  I-work-dispatch: { name: "work.dispatch (the plugin starts a session; your Dispatch is the one start left, and it left the agent socket, BRO-2996)", status: retire, handler: plugin, callers: [ui, lane], launches: true, stores: [S-work], code: [server/engine.ts, server/runs.ts] }
   I-work-verdict: { name: "work.verdict approve (refused), revise (Change course), block (Cancel work)", status: retire, handler: plugin, callers: [ui], gate: owner, stores: [S-work], code: [server/engine.ts] }
   I-work-attention: { name: "work.attention (the watched notices and the pills' sessions; no count reads it since BRO-3001)", status: retire, handler: plugin, callers: [ui], code: [server/attention.ts] }
 
@@ -826,25 +826,27 @@ findings:
   FND-self-close:
     name: A session can close its own gated work by printing ARC-STATUS and calling maestro ls
     severity: major
-    state: open
+    state: fixed
     ticket: BRO-2996
     about: [I-work-list, F-agent-cli]
-    code: [server/engine.ts:2149, server/events.ts:491]
-    note: "Since BRO-2995, maestro ls is a pure read and triggers nothing; the plugin sweep still closes a finished arc whose session was archived (finishedArc), within one sweep, so the rule itself stands until BRO-2996."
+    code: [server/engine.ts, server/events.ts]
+    note: "finishedArc and adopterClosed are gone: a session's own ARC-STATUS DONE, CLOSED or MERGED, its archive, and the archive of the orchestrator that tracked it close nothing, so its work waits at your gate with a note that its session is gone (engine.test.ts 'what a session says of itself never closes its gated work'; agent-socket.test.ts 'a child cannot close its own work ... spoofed or not'). Paseo's archive hook does not say who archived, so no archive can be an owner's verdict. Work reaches done only by a gate (a PR merged through the repo's merge gates, or gate:auto checks) or the owner's verdict; a merged branch closes a Stuck adopted arc as Done with the PR and merge commit on the receipt (branch-merge.test.ts, engine.test.ts), and a session that tracked itself and archives itself stays Stuck rather than canceled."
   FND-socket-caller:
     name: The socket trusts a self-reported caller; adopt any session, dispatch any queued item
     severity: major
-    state: open
+    state: fixed
     ticket: BRO-2996
     about: [I-work-adopt, I-work-create, P-cli]
-    code: [server/agent-socket.ts:95, bin/maestro.ts:55]
+    code: [server/agent-socket.ts, server/callers.ts, bin/maestro.ts]
+    note: "Every verb that writes checks its caller against Paseo's registry plus a client-supplied folder (not peer credentials): the agent exists, is live, and the shell is in its folder. It acts only for that session, or one it started by Paseo's own record; approval.request and approval.withdraw are the verified session's own; work.dispatch left the socket; a caller naming no session may only queue work, held for the owner (origin marked external). Residual (BRO-3086): a process of yours that reads the registry and sends a live session's id and folder is taken for it; it still cannot close or start work."
   FND-agent-dispatch-policy:
     name: maestro dispatch from a session uses a weaker run policy than the loop
     severity: major
-    state: open
+    state: fixed
     ticket: BRO-2996
     about: [I-work-dispatch]
-    code: [server/engine.ts:343, server/runs.ts:101]
+    code: [server/engine.ts, server/runs.ts]
+    note: "There is no session dispatch to hold to a policy: work.dispatch and create-with-dispatch left the socket, the engine refuses any start that is not yours, and the lane-profile path that only a session's start used is deleted."
   FND-client-counts:
     name: The client sums six lists into the count, and three surfaces disagree (Fleet band omits loops)
     severity: major

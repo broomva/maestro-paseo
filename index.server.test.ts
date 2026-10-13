@@ -10,6 +10,8 @@ import { answers } from "./server/agent-socket";
 import { loadConfig } from "./server/config";
 import { Engine, NO_HANDLE, UNDO_MS } from "./server/engine";
 import { fakePaseo } from "./server/fake-paseo";
+import { newId, registryAt } from "./server/registry-fixture";
+import { SESSIONS_START_NOTHING } from "./shared/text";
 
 setDefaultTimeout(60_000);
 
@@ -76,7 +78,11 @@ test("the plugin's handlers and hooks hand the agent socket its daemon client", 
     }),
   );
   const path = join(root, "m.sock");
-  const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
+  const saved = {
+    config: process.env.MAESTRO_PASEO_CONFIG,
+    socket: process.env.MAESTRO_PASEO_SOCKET,
+    agents: process.env.MAESTRO_PASEO_AGENTS,
+  };
   // No fleet here: the plugin's Fleet view reads this test's empty folder, never the machine's fleet.
   const fleet = [
     "MAESTRO_PASEO_FLEET_CONFIG",
@@ -93,6 +99,13 @@ test("the plugin's handlers and hooks hand the agent socket its daemon client", 
   for (const key of fleet) process.env[key] = join(root, "no-fleet", key);
   process.env.MAESTRO_PASEO_CONFIG = config;
   process.env.MAESTRO_PASEO_SOCKET = path;
+  // Paseo's registry of sessions, which the socket checks its callers against: the one live session here.
+  const registry = registryAt(join(root, "agents"));
+  const session = { id: newId(), cwd: join(root, "session") };
+  await mkdir(session.cwd, { recursive: true });
+  await registry.add(session);
+  process.env.MAESTRO_PASEO_AGENTS = registry.dir;
+  const asSession = { path, caller: session.id, cwd: session.cwd };
   const { host, handlers, hooks } = fakeHost();
   const cleanup = contribute(host);
   try {
@@ -103,23 +116,32 @@ test("the plugin's handlers and hooks hand the agent socket its daemon client", 
       await new Promise((r) => setTimeout(r, 10));
     }
 
-    // Before any event: reads and creates work, starting a run says why it cannot.
-    const { item } = (await call("work.create", { title: "Wired", repo }, { path, caller: "s1" })) as {
+    // Before any event: reads and creates work; tracking a session says why it cannot. A caller that is no
+    // live session in its own folder is refused, through the plugin's own wiring of the registry.
+    const { item } = (await call("work.create", { title: "Wired", repo }, asSession)) as {
       item: { id: string };
     };
-    const early = call("work.dispatch", { id: item.id }, { path });
+    const early = call("work.adopt", {}, asSession);
     await expect(early).rejects.toBeInstanceOf(Refused);
     await expect(early).rejects.toThrow(NO_HANDLE);
+    await expect(call("work.create", { title: "Spoofed", repo }, { path, caller: newId(), cwd: root })).rejects.toThrow(
+      "No Paseo session has the id",
+    );
+    await expect(call("work.create", { title: "Elsewhere", repo }, { ...asSession, cwd: root })).rejects.toThrow(
+      "Run maestro from inside that folder",
+    );
 
-    // Any hook the daemon delivers carries the client; the socket can then start runs for a lane,
-    // in Settings' mode, which does not ask (BRO-2990).
+    // Any hook the daemon delivers carries the client. The socket still starts nothing (A8): the start is yours,
+    // through the plugin's own handler, in your Settings' mode.
     const fake = fakePaseo();
     const created = hooks.get("agent.created");
     if (!created) throw new Error("agent.created is not subscribed");
     await created({ agent: { id: "someone" } }, { paseo: fake.paseo, signal: new AbortController().signal });
-    const { item: running } = (await call("work.dispatch", { id: item.id }, { path, caller: "lane-1" })) as {
-      item: { state: string };
-    };
+    await expect(call("work.dispatch", { id: item.id }, asSession)).rejects.toThrow(SESSIONS_START_NOTHING);
+    expect(fake.created).toHaveLength(0);
+    const dispatch = handlers.get("work.dispatch");
+    if (!dispatch) throw new Error("work.dispatch is not handled");
+    const { item: running } = (await dispatch({ id: item.id }, { paseo: fake.paseo })) as { item: { state: string } };
     expect(running.state).toBe("running");
     expect(fake.created).toHaveLength(1);
 
@@ -132,8 +154,10 @@ test("the plugin's handlers and hooks hand the agent socket its daemon client", 
     await cleanup();
     process.env.MAESTRO_PASEO_CONFIG = saved.config;
     process.env.MAESTRO_PASEO_SOCKET = saved.socket;
+    process.env.MAESTRO_PASEO_AGENTS = saved.agents;
     if (saved.config === undefined) delete process.env.MAESTRO_PASEO_CONFIG;
     if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
+    if (saved.agents === undefined) delete process.env.MAESTRO_PASEO_AGENTS;
     for (const [key, value] of savedFleet) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -886,7 +910,13 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
     }),
   );
   const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
+  // The session that will ask leave for an action, live in Paseo's registry (the socket checks its callers there).
+  const registry = registryAt(join(root, "agents"));
+  const asker = { id: newId(), cwd: join(root, "asker") };
+  await mkdir(asker.cwd, { recursive: true });
+  await registry.add(asker);
   const env: Record<string, string> = {
+    MAESTRO_PASEO_AGENTS: registry.dir,
     // The sweep's own timer never fires inside the test: only its start-up run and the first hook's (BRO-2995).
     MAESTRO_PASEO_SWEEP_SECONDS: "3600",
     // Every sweep may fetch, so no throttle armed at start-up would hide a fetch a read makes.
@@ -945,7 +975,7 @@ test("needs.list and handled.list are wired, pure, and the one number every surf
     await call(
       "approval.request",
       { action: "gh pr merge 933 --squash", ref: "ce73104", heldBy: "gate", title: "Merge #933", scope: "broomva" },
-      { path: socket, caller: "agent-9" },
+      { path: socket, caller: asker.id, cwd: asker.cwd },
     );
     const { item: stuck } = await run("work.create", { ...base, title: "Stuck" });
     await run("work.dispatch", { id: stuck.id });

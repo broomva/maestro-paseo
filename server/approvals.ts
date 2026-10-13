@@ -5,8 +5,9 @@
 // tells the session. Maestro runs nothing itself (A8): the session, or the conductor, does what was allowed.
 //
 // One append-only file (`approvals.jsonl`): `approval.requested`, then `approval.decided` or
-// `approval.withdrawn`. A request names its session by the id the caller reports, which is unverified
-// (BRO-2996), so a request is only ever a question put to you: the decision is yours, and never on the agent socket.
+// `approval.withdrawn`. A request names its session by the id the agent socket verified against Paseo's registry
+// (BRO-2996, server/callers.ts): the cap, the withdrawal and the message an Allow sends back are all that live
+// session's. A request is still only a question put to you: the decision is yours, and never on the agent socket.
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -64,7 +65,7 @@ export function requestId(agentId: string, action: string, ref: string | null): 
     .slice(0, 16);
 }
 
-/** How many requests one session may have waiting: the socket trusts its caller (BRO-2996), so a loop cannot flood Needs you. */
+/** How many requests one verified session may have waiting, so a loop in one session cannot flood Needs you. */
 export const MAX_OPEN_PER_SESSION = 20;
 
 export class Approvals {
@@ -118,12 +119,11 @@ export class Approvals {
   }
 
   /**
-   * Raise a request for `agentId`. The same session asking for the same action
+   * Raise a request for `agentId`, a session the socket verified. The same session asking for the same action
    * at the same ref while it waits is the one request, so asking again changes
    * nothing: the card keeps its place and its time.
    */
-  async request(agentId: string | null, input: unknown): Promise<{ id: string; key: string }> {
-    if (!agentId) throw new UserError("Say which session is asking: approval.request needs the caller's agent id.");
+  async request(agentId: string, input: unknown): Promise<{ id: string; key: string }> {
     const parsed = ApprovalRequestSchema.safeParse(input ?? {});
     if (!parsed.success) {
       const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`);
@@ -180,7 +180,7 @@ export class Approvals {
   }
 
   /** The session took its request back: nothing waits on you any more. Only the session that asked may. */
-  async withdraw(agentId: string | null, id: string): Promise<{ withdrawn: boolean }> {
+  async withdraw(agentId: string, id: string): Promise<{ withdrawn: boolean }> {
     return this.serial(async () => {
       const { requests, settled } = await this.read();
       const request = requests.get(id);

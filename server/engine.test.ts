@@ -8,6 +8,7 @@ import { contractPromises } from "../client/composer";
 import type { MaestroConfig } from "../shared/contracts";
 import { nextRunCopy } from "../shared/run";
 import type { Verdict } from "../shared/states";
+import { SESSIONS_START_NOTHING } from "../shared/text";
 import { NAME_RETRY_MS } from "./adopter-names";
 import { defaultConfig } from "./config";
 import {
@@ -16,7 +17,7 @@ import {
   CLIENT_WAIT_MS,
   Engine,
   type EngineOptions,
-  MODED_BY_YOU,
+  NEVER_BY_RULE,
   NOT_STOPPABLE,
   RUN_WENT_ON,
   STOP_BEFORE_CANCEL,
@@ -772,12 +773,19 @@ describe("reconcile", () => {
   test("an adoption records its lineage and labels the session with it: its work, ticket and parent (BRO-2908)", async () => {
     const labelled: [string, Record<string, string>][] = [];
     const { engine, fake, repo } = await setup({}, { label: async (id, labels) => void labelled.push([id, labels]) });
-    fake.agents.set("orchestrator", { ...idleSession(repo), id: "orchestrator", title: "SRI Orchestrator" });
-    fake.timelines.set("orchestrator", said("Working."));
-    const parent = await engine.adopt(fake.paseo, "orchestrator", "SRI Orchestrator");
-    fake.agents.set("manual", idleSession(repo));
-    fake.timelines.set("manual", said("Fixed it.\n\n## Ask\n- Merge #12?"));
-    const child = await engine.adopt(fake.paseo, "manual", "STI-3508 Enroll the identity", BY_ORCHESTRATOR, {});
+    // Three id spaces, none equal: the orchestrator's agent id, the agent id of the session it started, a claimed id.
+    const orchestrator = "5b0c3f64-2d7e-4a19-8c35-9e41a7d02b16";
+    const started = "c0d4e8a2-6f13-4b7a-9d52-1a3e5f70b894";
+    fake.agents.set(orchestrator, { ...idleSession(repo), id: orchestrator, title: "SRI Orchestrator" });
+    fake.timelines.set(orchestrator, said("Working."));
+    const parent = await engine.adopt(fake.paseo, orchestrator, "SRI Orchestrator");
+    // Paseo labels a session with the agent that started it: that, not the adopter's word, is its lineage.
+    fake.agents.set(started, { ...idleSession(repo), id: started, labels: { "paseo.parent-agent-id": orchestrator } });
+    fake.timelines.set(started, said("Fixed it.\n\n## Ask\n- Merge #12?"));
+    const child = await engine.adopt(fake.paseo, started, "STI-3508 Enroll the identity", {
+      actor: "agent",
+      by: orchestrator,
+    });
     expect([child.parentWork, child.ticket, parent.parentWork, parent.ticket]).toEqual([
       parent.id,
       "STI-3508",
@@ -786,13 +794,43 @@ describe("reconcile", () => {
     ]);
     await engine.labelsSettled();
     expect(labelled.at(-1)).toEqual([
-      "manual",
+      started,
       { "maestro.work": child.id, ticket: "STI-3508", "maestro.parent-work": parent.id },
     ]);
     // A ticket given to the verb wins over the title's.
     fake.agents.set("other", { ...idleSession(repo), id: "other", title: "BRO-1 old" });
     fake.timelines.set("other", said("Done."));
     expect((await engine.adopt(fake.paseo, "other", "", undefined, { ticket: "BRO-2908" })).ticket).toBe("BRO-2908");
+  });
+
+  test("lineage comes from Paseo's record of who started the session, never from who claims to have adopted it (BRO-2996)", async () => {
+    const { engine, fake, repo } = await setup();
+    const orchestrator = "5b0c3f64-2d7e-4a19-8c35-9e41a7d02b16";
+    const other = "7a2e91d0-4c58-4e3b-a6f7-0b9d13c85e42";
+    fake.agents.set(orchestrator, { ...idleSession(repo), id: orchestrator, title: "Orchestrator" });
+    fake.timelines.set(orchestrator, said("Working."));
+    await engine.adopt(fake.paseo, orchestrator, "");
+    fake.agents.set(other, { ...idleSession(repo), id: other, title: "Another orchestrator" });
+    fake.timelines.set(other, said("Working."));
+    const stranger = await engine.adopt(fake.paseo, other, "");
+    const child = (id: string, labels?: Record<string, string>) => {
+      fake.agents.set(id, { ...idleSession(repo), id, title: `Child ${id.slice(0, 4)}`, labels });
+      fake.timelines.set(id, said("Fixed it.\n\n## Ask\n- Merge?"));
+    };
+    // A session with no parent record, adopted by an agent that claims to be its orchestrator: no lineage.
+    const loose = "a1111111-2222-4333-8444-555555555555";
+    child(loose);
+    expect((await engine.adopt(fake.paseo, loose, "", { actor: "agent", by: orchestrator })).parentWork).toBeNull();
+    // One Paseo says another orchestrator started: that one's work, whoever adopts it and whatever they claim.
+    const theirs = "b1111111-2222-4333-8444-555555555555";
+    child(theirs, { "paseo.parent-agent-id": other });
+    expect((await engine.adopt(fake.paseo, theirs, "", { actor: "agent", by: orchestrator })).parentWork).toBe(
+      stranger.id,
+    );
+    // The same record adopted by you: the lineage is only kept for what an agent tracks, as before.
+    const yours = "c1111111-2222-4333-8444-555555555555";
+    child(yours, { "paseo.parent-agent-id": orchestrator });
+    expect((await engine.adopt(fake.paseo, yours, "")).parentWork).toBeNull();
   });
 
   test("reconcile labels a tracked session that lacks its work label: once, with a backoff after a failure (BRO-2908)", async () => {
@@ -3112,7 +3150,7 @@ describe("the composer's choices", () => {
     });
   });
 
-  test("auto_accept the work chose warns on the card, and a session may not start the work", async () => {
+  test("auto_accept the work chose warns on the card; only you start the work", async () => {
     const { engine, fake, repo } = await setup({ provider: "opencode/big" });
     const item = await engine.create(fake.paseo, {
       ...draft(repo),
@@ -3123,9 +3161,10 @@ describe("the composer's choices", () => {
       "skips permission prompts",
     );
     await expect(engine.dispatch(fake.paseo, item.id, { actor: "agent", by: "session-1" })).rejects.toThrow(
-      MODED_BY_YOU,
+      SESSIONS_START_NOTHING,
     );
     expect(fake.created).toHaveLength(0);
+    expect((await engine.dispatch(fake.paseo, item.id)).state).toBe("running");
   });
 
   test("a Settings mode belongs to the Settings provider; work on another provider does not inherit it", async () => {
@@ -3137,7 +3176,7 @@ describe("the composer's choices", () => {
   });
 
   test("work a session creates carries none of the run choices: how runs start stays yours", async () => {
-    // Settings' mode does not ask, so a session's run may start, in that mode, never the choices it passed.
+    // Created by a session it only queues; started by you, it takes Settings, never the choices the session passed.
     const { engine, fake, repo, config } = await setup({ modeId: "bypassPermissions" });
     const item = await engine.create(
       fake.paseo,
@@ -3149,15 +3188,17 @@ describe("the composer's choices", () => {
         modeId: "bypassPermissions",
         thinkingOptionId: "max",
         featureValues: { fast: true },
-        dispatch: true,
+        dispatch: false,
       },
       { actor: "agent", by: "session-1" },
     );
     const file = await readFile(join(config.workRoot, item.path, WORK_FILE), "utf8");
     for (const key of ["provider:", "isolation:", "mode:", "thinking:", "features:"]) expect(file).not.toContain(key);
+    expect(fake.created).toEqual([]);
+    const started = await engine.dispatch(fake.paseo, item.id);
     const options = fake.created[0] as { config: Record<string, unknown> };
     expect(options.config).toEqual({ provider: "claude/sonnet", modeId: "bypassPermissions" });
-    expect(item.worker?.branch).toMatch(/^run\//);
+    expect(started.worker?.branch).toMatch(/^run\//);
   });
 });
 
@@ -3176,10 +3217,10 @@ describe("a mode you chose is yours to use", () => {
   });
   const session = { actor: "agent" as const, by: "session-1" };
 
-  test("a session cannot start work that carries a mode you chose; nothing starts", async () => {
+  test("a session cannot start work that carries a mode you chose, or any other; nothing starts", async () => {
     const { engine, fake, repo } = await setup();
     const item = await engine.create(fake.paseo, moded(repo));
-    await expect(engine.dispatch(fake.paseo, item.id, session)).rejects.toThrow(MODED_BY_YOU);
+    await expect(engine.dispatch(fake.paseo, item.id, session)).rejects.toThrow(SESSIONS_START_NOTHING);
     expect(fake.created).toHaveLength(0);
     expect((await engine.get(item.id)).item.state).toBe("proposed");
   });
@@ -3199,14 +3240,6 @@ describe("a mode you chose is yours to use", () => {
     const receipt = (await engine.get(item.id)).events.find((event) => event.type === "dispatched");
     expect(receipt?.detail).toStartWith("claude/sonnet (mode bypassPermissions, thinking high, fast_mode on) on run/");
   });
-
-  test("a session still starts queued work that has no mode of its own, in Settings' mode, not its own", async () => {
-    const { engine, fake, repo } = await setup({ modeId: "bypassPermissions" });
-    fake.addSession("session-1", { modeId: "acceptEdits" });
-    const item = await engine.create(fake.paseo, { ...moded(repo), modeId: undefined });
-    const running = await engine.dispatch(fake.paseo, item.id, session);
-    expect(running.worker?.modeId).toBe("bypassPermissions");
-  });
 });
 
 describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
@@ -3214,9 +3247,8 @@ describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
   const fail = (engine: Engine, agentId: string) =>
     engine.onTurnEnded({ id: agentId }, { kind: "failed", error: { message: "boom" } }, []);
 
-  test("3 stuck runs and a 4th dispatch is refused, yours or a lane's; nothing starts", async () => {
+  test("3 stuck runs and a 4th dispatch is refused, at the cap whoever asks; nothing starts", async () => {
     const { create, engine, fake } = await setup({ concurrencyCap: 3, modeId: "bypassPermissions" });
-    fake.addSession("lane-1", { modeId: "bypassPermissions" });
     for (const n of [1, 2, 3]) {
       await create();
       await fail(engine, `agent-${n}`);
@@ -3225,7 +3257,8 @@ describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
     const fourth = await create({ dispatch: false });
     const full = "At capacity: 3 of 3 slots taken (3 stuck). It stays queued.";
     await expect(engine.dispatch(fake.paseo, fourth.id)).rejects.toThrow(full);
-    await expect(engine.dispatch(fake.paseo, fourth.id, lane)).rejects.toThrow(full);
+    // A session is refused for what it is, before the cap is read: it starts nothing.
+    await expect(engine.dispatch(fake.paseo, fourth.id, lane)).rejects.toThrow(SESSIONS_START_NOTHING);
     expect(fake.created).toHaveLength(3);
     expect((await engine.get(fourth.id)).item.state).toBe("proposed");
   });
@@ -3317,10 +3350,8 @@ describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
     expect(raw).toMatchObject({ actor: "human" });
   });
 
-  test("a session cannot start work filed from your answer before A8; your Dispatch starts it", async () => {
-    // Settings' mode does not ask, so only the work itself can make a session's start refused.
+  test("work filed from your answer before A8 is started by your Dispatch, and by no session", async () => {
     const { engine, fake, repo } = await setup({ modeId: "bypassPermissions" });
-    fake.addSession("lane-1", { modeId: "default" });
     // As the routing before A8 filed it: Maestro's, for an answer, no hold.
     const legacy = await engine.create(
       fake.paseo,
@@ -3336,122 +3367,31 @@ describe("who starts a run, and what holds the cap (A8, BRO-2990)", () => {
       },
       { actor: "maestro", via: "loop" },
     );
-    await expect(engine.dispatch(fake.paseo, legacy.id, lane)).rejects.toThrow(
-      "Filed from your answer before A8: start it yourself, or cancel it.",
-    );
+    await expect(engine.dispatch(fake.paseo, legacy.id, lane)).rejects.toThrow(SESSIONS_START_NOTHING);
     expect(fake.created).toEqual([]);
     expect((await engine.dispatch(fake.paseo, legacy.id)).state).toBe("running");
   });
 
-  test("a session's run takes Settings' mode when it does not ask, whatever mode the session runs in", async () => {
-    const { create, engine, fake } = await setup({ modeId: "bypassPermissions" });
-    fake.addSession("lane-1", { modeId: "default", title: "SRI lane" });
-    const item = await create({ dispatch: false });
-    const running = await engine.dispatch(fake.paseo, item.id, lane);
-    expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({
-      provider: "claude/sonnet",
-      modeId: "bypassPermissions",
-    });
-    expect(running.worker?.modeId).toBe("bypassPermissions");
-  });
-
-  test("a session cannot borrow another session's mode by naming its id (unverified until BRO-2996)", async () => {
-    // Settings ask before acting; a bypass worker's id is in work.list for any session to read.
-    const { create, engine, fake } = await setup({ modeId: "default" });
+  test("no session starts work, whatever id it names; nothing starts and nothing is half-made", async () => {
+    // Settings do not ask and a bypass session's id is in work.list for any session to read: neither buys a start.
+    const { create, engine, fake, repo } = await setup({ modeId: "bypassPermissions" });
     fake.addSession("bypass-worker", { modeId: "bypassPermissions" });
     const item = await create({ dispatch: false });
-    await expect(engine.dispatch(fake.paseo, item.id, { actor: "agent", by: "bypass-worker" })).rejects.toThrow(
-      "A run nobody watches never starts in Always ask, so this one was not started: the mode in your Settings (default) asks before it acts",
-    );
-    expect(fake.created).toEqual([]);
-    expect((await engine.get(item.id)).item.state).toBe("proposed");
-  });
-
-  test("a session's start that will be refused holds no slot while its profile is read: yours starts meanwhile", async () => {
-    let release!: () => void;
-    const reading = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let entered!: () => void;
-    const inside = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const { create, engine, fake } = await setup(
-      { concurrencyCap: 1, modeId: null },
-      {
-        lane: async (_agentId, _paseo, config) => {
-          entered();
-          await reading;
-          return { name: "your Settings", provider: config.provider, modeId: config.modeId };
-        },
-      },
-    );
-    const theirs = await create({ dispatch: false });
-    const mine = await create({ dispatch: false });
-    const refused = engine.dispatch(fake.paseo, theirs.id, lane).then(
-      () => "started",
-      (error: Error) => error.message,
-    );
-    await inside;
-    // The session's start is still reading its profile: it has taken no slot, so your Dispatch at cap 1 starts.
-    expect((await engine.dispatch(fake.paseo, mine.id)).state).toBe("running");
-    release();
-    expect(await refused).toContain("your Settings name no mode for it");
-    expect(fake.created).toHaveLength(1);
-  });
-
-  test("a lane profile that cannot be read refuses the start, saying it could not be read", async () => {
-    const { create, engine, fake } = await setup(
-      {},
-      {
-        lane: async () => {
-          throw new Error("Paseo did not answer within 0.2s");
-        },
-      },
-    );
-    const item = await create({ dispatch: false });
-    await expect(engine.dispatch(fake.paseo, item.id, lane)).rejects.toThrow(
-      "Maestro could not read its profile (Paseo did not answer within 0.2s)",
-    );
-    expect(fake.created).toEqual([]);
-  });
-
-  test("modeId null never means Always ask for a run nobody watches: refused before any session starts", async () => {
-    const { create, engine, fake, config, repo } = await setup({ modeId: null });
-    // Whatever the calling session runs in: the profile is your Settings.
-    fake.addSession("lane-1", { modeId: "bypassPermissions" });
-    const item = await create({ dispatch: false });
-    const refusals: Array<[string, () => void, RegExp]> = [
-      ["no mode in Settings", () => undefined, /your Settings name no mode for it/],
-      ["a Settings mode that asks", () => (config.modeId = "default"), /asks before it acts/],
-    ];
-    for (const [what, arrange, why] of refusals) {
-      arrange();
-      for (const by of ["lane-1", null]) {
-        const refused = await engine.dispatch(fake.paseo, item.id, { actor: "agent", by }).then(
-          () => "started",
-          (error: Error) => error.message,
-        );
-        expect([what, refused]).toEqual([what, expect.stringMatching(why)]);
-        expect(refused).toStartWith("A run nobody watches never starts in Always ask");
-      }
+    for (const by of ["lane-1", "bypass-worker", null]) {
+      await expect(engine.dispatch(fake.paseo, item.id, { actor: "agent", by })).rejects.toThrow(
+        SESSIONS_START_NOTHING,
+      );
     }
-    // Work you gave another provider: Settings' mode is the Settings provider's, so it is not this run's.
-    config.modeId = "bypassPermissions";
-    const codex = await engine.create(fake.paseo, {
-      title: "On codex",
-      brief: "",
-      repo,
-      gate: "human",
-      check: "",
-      initiative: "",
-      dispatch: false,
-      provider: "codex/gpt-5.5",
-    });
-    await expect(engine.dispatch(fake.paseo, codex.id, lane)).rejects.toThrow("the mode in your Settings is claude's");
+    // Create-and-start by a session is refused before it creates anything; Maestro's own routing is refused too.
+    const input = { title: "Now", brief: "", repo, gate: "human" as const, check: "", initiative: "", dispatch: true };
+    await expect(engine.create(fake.paseo, input, lane)).rejects.toThrow(SESSIONS_START_NOTHING);
+    await expect(engine.createWork(fake.paseo, input, lane)).rejects.toThrow(SESSIONS_START_NOTHING);
+    await expect(engine.create(fake.paseo, input, { actor: "maestro", via: "loop" })).rejects.toThrow(NEVER_BY_RULE);
     expect(fake.created).toEqual([]);
+    expect((await engine.list()).items.map((listed) => listed.id)).toEqual([item.id]);
     expect((await engine.get(item.id)).item.state).toBe("proposed");
-    // You may still start it.
+    // The same create from you starts, and so does your Dispatch.
+    expect((await engine.createWork(fake.paseo, input)).item.state).toBe("running");
     expect((await engine.dispatch(fake.paseo, item.id)).state).toBe("running");
   });
 });
@@ -3781,7 +3721,7 @@ describe("every run passes the folder check, whichever verb starts it", () => {
   });
 });
 
-describe("a finished arc closes itself once its session is archived (BRO-2861)", () => {
+describe("what a session says of itself never closes its gated work (BRO-2996, was BRO-2861)", () => {
   const said = (text: string) => [
     { type: "user_message" as const, text: "go" },
     { type: "assistant_message" as const, text },
@@ -3791,55 +3731,81 @@ describe("a finished arc closes itself once its session is archived (BRO-2861)",
     engine: Engine,
     fake: ReturnType<typeof fakePaseo>,
     hook: "none" | "bare" | "client" = "bare",
+    agentId = "agent-1",
   ) => {
-    const agent = fake.agents.get("agent-1");
+    const agent = fake.agents.get(agentId);
     if (agent) agent.archivedAt = new Date(clock).toISOString();
-    if (hook !== "none") await engine.onArchived({ id: "agent-1" }, hook === "client" ? fake.paseo : null);
+    if (hook !== "none") await engine.onArchived({ id: agentId }, hook === "client" ? fake.paseo : null);
   };
 
-  test("CLOSED, then archived: the next sweep closes it, receipted as Maestro's, and the card says why", async () => {
-    const { create, engine, fake } = await setup();
+  test("CLOSED, DONE or MERGED in its own last turn, then archived: it waits at your gate, however it is noticed", async () => {
+    for (const word of ["CLOSED", "DONE", "MERGED"]) {
+      for (const hook of ["bare", "client", "none"] as const) {
+        const { create, engine, fake } = await setup({ archiveOnApprove: true });
+        const item = await create();
+        await endTurn(engine, fake, said(`Merged #12.\n\nARC-STATUS: ${word}`));
+        await archive(engine, fake, hook);
+        tick(1);
+        // The hook with the daemon's client reconciles at once; the others wait for the sweep: neither closes it.
+        await engine.upkeep(fake.paseo);
+        const { item: waiting, events } = await engine.get(item.id);
+        expect([word, hook, waiting.state, waiting.closed]).toEqual([word, hook, "review", null]);
+        expect(events.some((event) => event.type === "state" && event.text === "Done")).toBe(false);
+        // Archive on approve is for an approval: nothing closed, so no workspace went.
+        expect(fake.archivedWorkspaces).toEqual([]);
+      }
+    }
+  });
+
+  test("your verdict still settles it, after the same words", async () => {
+    const { create, engine, fake, timers } = await setup();
     const item = await create();
-    await endTurn(engine, fake, said("Merged #12.\n\nARC-STATUS: CLOSED"));
-    await archive(engine, fake);
-    // The hook only notes the archive: the close is reconcile's, in the next sweep.
+    await endTurn(engine, fake, said("ARC-STATUS: CLOSED"));
+    await archive(engine, fake, "client");
     expect((await engine.get(item.id)).item.state).toBe("review");
-    tick(1);
-    await engine.upkeep(fake.paseo);
-    const { item: closed, events } = await engine.get(item.id);
-    expect(closed.state).toBe("done");
-    expect(closed.verdict).toBe("Its arc reported “ARC-STATUS: CLOSED” and its session was archived");
-    expect(closed.closed?.by).toBe("maestro");
-    expect(events.at(-1)).toMatchObject({
-      type: "state",
-      actor: "maestro",
-      text: "Done",
-      detail: "Its arc reported “ARC-STATUS: CLOSED” and its session was archived",
+    await engine.verdict(fake.paseo, item.id, "block", "");
+    tickMs(UNDO_MS);
+    await timers.fire();
+    expect((await engine.get(item.id)).item.state).toBe("canceled");
+  });
+
+  test("neither a session that tracked itself nor one an orchestrator tracked closes its work by being archived", async () => {
+    const { engine, fake, repo } = await setup();
+    const session = (id: string, title: string) => ({
+      id,
+      cwd: repo,
+      status: "running" as const,
+      workspaceId: `ws-${id}`,
+      provider: "claude",
+      title,
+      archivedAt: null as string | null,
+      pendingPermissions: [],
+      activeTurn: null,
     });
-  });
-
-  test("its hook carrying the daemon's client closes it at once, with no sweep", async () => {
-    const { create, engine, fake } = await setup();
-    const item = await create();
-    await endTurn(engine, fake, said("ARC-STATUS: CLOSED"));
-    await archive(engine, fake, "client");
-    expect((await engine.get(item.id)).item.state).toBe("done");
-  });
-
-  test("a self-closed run's workspace receipt says it stays done, not that an approval stands", async () => {
-    const { create, engine, fake, repo } = await setup({ archiveOnApprove: true });
-    const item = await create();
-    cleanWorktree(repo, item.worker);
-    await endTurn(engine, fake, said("ARC-STATUS: CLOSED"));
-    fake.paseo.workspaces.archive = (async (workspaceId: string) => ({
-      requestId: "r",
-      workspaceId,
-      archivedAt: null,
-      error: "busy",
-    })) as typeof fake.paseo.workspaces.archive;
-    await archive(engine, fake, "client");
-    const { events } = await engine.get(item.id);
-    expect(events.at(-1)?.text).toBe("Could not archive the workspace: busy. It stays done.");
+    const orchestrator = "5b0c3f64-2d7e-4a19-8c35-9e41a7d02b16";
+    const selfTracked = "c0d4e8a2-6f13-4b7a-9d52-1a3e5f70b894";
+    const taken = "e7a19c53-08bd-4f26-b1d4-3c6a82f5d907";
+    fake.agents.set(selfTracked, session(selfTracked, "Its own arc"));
+    fake.agents.set(taken, session(taken, "An orchestrator's arc"));
+    const mine = await engine.adopt(fake.paseo, selfTracked, "", { actor: "agent", by: selfTracked });
+    const theirs = await engine.adopt(fake.paseo, taken, "", { actor: "agent", by: orchestrator });
+    for (const id of [selfTracked, taken]) {
+      const agent = fake.agents.get(id);
+      if (agent) agent.status = "idle";
+      await engine.onTurnEnded({ id }, { kind: "completed" }, said("Merged.\n\nARC-STATUS: HANDBACK 1"), `t-${id}`);
+    }
+    expect([mine, theirs].map((item) => item.state)).toEqual(["running", "running"]);
+    expect((await engine.get(mine.id)).item.state).toBe("review");
+    expect((await engine.get(theirs.id)).item.state).toBe("review");
+    await archive(engine, fake, "client", selfTracked);
+    await archive(engine, fake, "client", taken);
+    // Paseo does not say who archived, so no archive, the orchestrator's included, is a verdict: both wait for you.
+    for (const item of [mine, theirs]) {
+      const { item: waiting, events } = await engine.get(item.id);
+      expect([waiting.state, waiting.closed]).toEqual(["review", null]);
+      expect(events.some((event) => event.text === "Done")).toBe(false);
+      expect(events.some((event) => event.type === "note" && event.text === ARCHIVED_NOTE)).toBe(true);
+    }
   });
 
   test("a handback from a session you adopted waits on you after its archive (BRO-2903 is only an orchestrator's)", async () => {
@@ -3883,49 +3849,6 @@ describe("a finished arc closes itself once its session is archived (BRO-2861)",
     tick(10);
     await engine.upkeep(fake.paseo);
     expect((await engine.get(item.id)).item.state).toBe("review");
-  });
-
-  test("its archive hook missed: the daemon's archive is enough, and its note is written with the close", async () => {
-    const { create, engine, fake } = await setup();
-    const item = await create();
-    await endTurn(engine, fake, said("ARC-STATUS: MERGED"));
-    await archive(engine, fake, "none");
-    tick(1);
-    await engine.upkeep(fake.paseo);
-    const { item: closed, events } = await engine.get(item.id);
-    expect(closed).toMatchObject({
-      state: "done",
-      verdict: "Its arc reported “ARC-STATUS: MERGED” and its session was archived",
-    });
-    expect(events.map((event) => event.text)).toContain(ARCHIVED_NOTE);
-  });
-
-  test("with archive on approve, the run's workspace goes as an approval's would; off, it stays", async () => {
-    for (const on of [true, false]) {
-      const { create, engine, fake, repo } = await setup({ archiveOnApprove: on });
-      const item = await create();
-      cleanWorktree(repo, item.worker);
-      await endTurn(engine, fake, said("ARC-STATUS: CLOSED"));
-      await archive(engine, fake);
-      tick(1);
-      await engine.upkeep(fake.paseo);
-      expect((await engine.get(item.id)).item.state).toBe("done");
-      expect(fake.archivedWorkspaces).toEqual(on ? ["ws-1"] : []);
-    }
-  });
-
-  test("a decision of yours in its undo window wins: Cancel work lands as canceled, not done", async () => {
-    const { create, engine, fake, timers } = await setup();
-    const item = await create();
-    await endTurn(engine, fake, said("ARC-STATUS: CLOSED"));
-    await engine.verdict(fake.paseo, item.id, "block", "");
-    await archive(engine, fake);
-    // Inside the undo window: the sweep's reconcile leaves it at the gate, your decision still pending.
-    await engine.upkeep(fake.paseo);
-    expect((await engine.get(item.id)).item).toMatchObject({ state: "review", pending: { verdict: "block" } });
-    tickMs(UNDO_MS);
-    await timers.fire();
-    expect((await engine.get(item.id)).item.state).toBe("canceled");
   });
 });
 
@@ -3998,7 +3921,7 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
     return { ...s, item, end };
   }
 
-  test("its orchestrator archiving a handed-back arc closes it, receipted as the orchestrator's (BRO-2903)", async () => {
+  test("its orchestrator archiving a handed-back arc leaves it at your gate, its session noted as gone (BRO-2996)", async () => {
     const { engine, fake, item, end } = await adopted();
     tick(17);
     await end("Merged #2134.\n\nARC-STATUS: HANDBACK 1");
@@ -4006,19 +3929,17 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
     const agent = fake.agents.get("arc");
     if (agent) agent.archivedAt = new Date(clock).toISOString();
     await engine.onArchived({ id: "arc" }, fake.paseo);
-    const { item: closed, events } = await engine.get(item.id);
-    expect(closed.state).toBe("done");
-    expect(events.at(-1)).toMatchObject({
-      type: "state",
-      actor: "maestro",
-      text: "Done",
-      detail: "Its orchestrator (session orchestr) took it back and archived its session",
-    });
+    const { item: waiting, events } = await engine.get(item.id);
+    expect([waiting.state, waiting.closed]).toEqual(["review", null]);
+    expect(events.at(-1)).toMatchObject({ type: "note", actor: "maestro", text: ARCHIVED_NOTE });
+    // A sweep later changes nothing: only a verdict of yours closes it.
+    tick(60);
+    await engine.upkeep(fake.paseo);
+    expect((await engine.get(item.id)).item.state).toBe("review");
   });
 
-  test("its orchestrator archiving an arc whose session died closes it with the same plain receipt (BRO-2903)", async () => {
+  test("an arc whose session died and was archived waits at your gate too, not closed (BRO-2996)", async () => {
     const { engine, fake, item, store } = await adopted();
-    // Landed before the handback rule (or recovered), its last words the error the session died on.
     await store.mutate(item.id, () => ({
       to: "review",
       events: [
@@ -4040,13 +3961,7 @@ describe("adopted arcs land at your gate only with something to decide (BRO-2864
       agent.archivedAt = new Date(clock).toISOString();
     }
     await engine.onArchived({ id: "arc" }, fake.paseo);
-    const { item: after, events } = await engine.get(item.id);
-    expect(after.state).toBe("done");
-    expect(events.at(-1)).toMatchObject({
-      type: "state",
-      actor: "maestro",
-      detail: "Its orchestrator (session orchestr) took it back and archived its session",
-    });
+    expect((await engine.get(item.id)).item.state).toBe("review");
   });
 
   test("a turn that hands nothing back is the arc between steps: it stays running, and no card is left", async () => {
@@ -4313,6 +4228,120 @@ describe("an orchestrator's child whose branch merged after its session ended (B
       "done",
       "Its branch feature/x merged as acme/app#7 after it was adopted",
       [["acme/app", "feature/x"]],
+    ]);
+  });
+
+  test("the receipt names the PR and its merge commit, so who closed it can be audited (BRO-2996)", async () => {
+    const sha = "9fceb02d0ae598e95dc970b74767f19372d61af8";
+    const env = await setup({}, { ...recorded, merged: async () => ({ number: 7, mergedAt: AFTER, sha }) });
+    const item = await adoptAndArchive(env, ORCHESTRATOR);
+    await env.engine.upkeep(env.fake.paseo);
+    const { item: after, events } = await env.engine.get(item.id);
+    expect([after.state, after.verdict]).toEqual([
+      "done",
+      "Its branch feature/x merged as acme/app#7 (merge commit 9fceb02) after it was adopted",
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      type: "state",
+      actor: "maestro",
+      text: "Done",
+      detail: expect.stringContaining("9fceb02"),
+    });
+    expect(after.closed?.by).toBe("maestro");
+  });
+
+  test("work reaches done by a merge, and by nothing a session says or does to itself (BRO-2996)", async () => {
+    const sha = "9fceb02d0ae598e95dc970b74767f19372d61af8";
+    let answer: { number: number; mergedAt: string; sha: string } | null = null;
+    const env = await setup({}, { ...recorded, merged: async () => answer });
+    const { engine, fake, repo } = env;
+    const self = "c0d4e8a2-6f13-4b7a-9d52-1a3e5f70b894";
+    fake.agents.set(self, {
+      id: self,
+      cwd: repo,
+      status: "idle",
+      workspaceId: null,
+      provider: "claude",
+      title: "Its own arc",
+      archivedAt: null,
+      pendingPermissions: [],
+      activeTurn: null,
+    } as never);
+    fake.timelines.set(self, [{ type: "assistant_message", text: "Opened the PR." }]);
+    // A session that tracked itself: its handback, its ARC-STATUS and its archive close nothing, however long.
+    const item = await engine.adopt(fake.paseo, self, "", { actor: "agent", by: self });
+    await engine.onTurnEnded(
+      { id: self },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "Merged.\n\nARC-STATUS: DONE" }] as never,
+      "t1",
+    );
+    const agent = fake.agents.get(self);
+    if (agent) agent.archivedAt = new Date(clock).toISOString();
+    await engine.onArchived({ id: self }, fake.paseo);
+    for (const minutes of [3, 60, 24 * 60]) {
+      tick(minutes);
+      await engine.upkeep(fake.paseo);
+      expect([minutes, (await engine.get(item.id)).item.state]).toEqual([minutes, "review"]);
+    }
+    // The PR merges through the repo's gates: now it is done, by the merge, named on the receipt. (At your gate it
+    // is yours; a merge closes only what stopped Stuck, so send it Stuck first, as a session ending mid-run does.)
+    const stuck = await env.store.mutate(item.id, () => ({
+      to: "blocked",
+      reason: "The session was archived before it finished",
+    }));
+    expect(stuck.contract.state).toBe("blocked");
+    expect((await engine.get(item.id)).item.state).toBe("blocked");
+    answer = { number: 7, mergedAt: new Date(clock).toISOString(), sha };
+    tick(1);
+    await engine.upkeep(fake.paseo);
+    await engine.upkeep(fake.paseo);
+    const { item: done } = await engine.get(item.id);
+    expect([done.state, done.verdict]).toEqual([
+      "done",
+      "Its branch feature/x merged as acme/app#7 (merge commit 9fceb02) after it was adopted",
+    ]);
+  });
+
+  test("a session that tracked itself and archives itself after a clean turn stays Stuck, not canceled (BRO-2996)", async () => {
+    const env = await setup(
+      {},
+      { git: async () => ({ branch: null, githubRepo: "acme/app" }), merged: async () => null },
+    );
+    const { engine, fake, repo } = env;
+    const idle = (id: string) =>
+      ({
+        id,
+        cwd: repo,
+        status: "idle",
+        workspaceId: null,
+        provider: "claude",
+        title: `Arc ${id.slice(0, 4)}`,
+        archivedAt: null,
+        pendingPermissions: [],
+        activeTurn: null,
+      }) as never;
+    const own = "c0d4e8a2-6f13-4b7a-9d52-1a3e5f70b894";
+    const theirs = "e7a19c53-08bd-4f26-b1d4-3c6a82f5d907";
+    const orchestrator = "5b0c3f64-2d7e-4a19-8c35-9e41a7d02b16";
+    // The two differ only in who tracked them. Without a recorded branch neither is watched, so they reach the
+    // archived-between-turns rule: an orchestrator's arc is canceled; a session's own is left for you.
+    for (const id of [own, theirs]) {
+      fake.agents.set(id, idle(id));
+      fake.timelines.set(id, [{ type: "assistant_message", text: "Pushed; the PR is open." }]);
+    }
+    const mine = await engine.adopt(fake.paseo, own, "", { actor: "agent", by: own });
+    const adopted = await engine.adopt(fake.paseo, theirs, "", { actor: "agent", by: orchestrator });
+    for (const id of [own, theirs]) {
+      const agent = fake.agents.get(id);
+      if (agent) agent.archivedAt = new Date(clock).toISOString();
+      await engine.onArchived({ id }, fake.paseo);
+    }
+    tick(3);
+    await engine.upkeep(fake.paseo);
+    expect([(await engine.get(mine.id)).item.state, (await engine.get(adopted.id)).item.state]).toEqual([
+      "blocked",
+      "canceled",
     ]);
   });
 

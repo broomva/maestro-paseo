@@ -5,8 +5,7 @@
 // the session, while its own worktree still existed: a PR from it merged after
 // the adoption. The receipt claims only that.
 //
-// Narrow on purpose. Only work an agent adopted closes this way, as only its
-// landings are the orchestrator's to read (events.ts adopterClosed): work you
+// Narrow on purpose. Only work an agent adopted closes this way: work you
 // adopted or dispatched is gated by you and stays Stuck. A branch is recorded
 // only for a separate worktree, never a shared checkout whose branch belongs to
 // whoever switched it last. A branch any PR targets as its base (dev, main) is
@@ -40,6 +39,8 @@ export function repoOf(remote: string | null | undefined): string | null {
 export interface MergedPr {
   number: number;
   mergedAt: string;
+  /** The merge commit, as gh reports it; absent when gh did not say. */
+  sha?: string | null;
 }
 
 /**
@@ -99,6 +100,8 @@ export function archivedBetweenTurns(events: readonly WorkEvent[], now: number):
   const bound = events.findLastIndex((event) => event.type === "dispatched" || event.type === "adopted");
   const bind = events[bound];
   if (bind?.type !== "adopted" || bind.actor !== "agent") return false;
+  // A session that tracked itself has no orchestrator whose arc ended: its own archive cancels nothing (BRO-2996).
+  if (bind.by && bind.by === bind.agentId) return false;
   if (events.slice(bound + 1).some((event) => "actor" in event && event.actor === "human")) return false;
   const turn = events
     .slice(bound + 1, at)
@@ -106,18 +109,22 @@ export function archivedBetweenTurns(events: readonly WorkEvent[], now: number):
   return turn?.type === "turn.ended" && turn.outcome === "completed";
 }
 
-/** The receipt for closing a watched card whose branch merged after its adoption; null otherwise. Pure. */
+/**
+ * The receipt for closing a watched card whose branch merged after its adoption; null otherwise. A merge through
+ * the repo's merge gates is the gate's verdict (A1), so it is the one close that is neither yours nor a gate:auto
+ * check: the PR and its merge commit are what the card says closed it. Pure.
+ */
 export function branchMerged(
   events: readonly WorkEvent[],
   merged: MergedPr | null,
   now: number,
-): { branch: string; repo: string; number: number } | null {
+): { branch: string; repo: string; number: number; sha: string | null } | null {
   const watched = watchedBranch(events, now);
   const bind = events.findLast((event) => event.type === "adopted");
   if (!watched || !merged || !bind) return null;
   // A PR merged before this work was adopted is an old one on a reused branch.
   if (!(Date.parse(merged.mergedAt) > Date.parse(bind.ts))) return null;
-  return { branch: watched.branch, repo: watched.repo, number: merged.number };
+  return { branch: watched.branch, repo: watched.repo, number: merged.number, sha: merged.sha ?? null };
 }
 
 /**
@@ -174,18 +181,24 @@ export function mergedPrs(run: Run = ghRun, now: () => number = Date.now, log?: 
           "--state",
           "merged",
           "--json",
-          "number,mergedAt,isCrossRepository",
+          "number,mergedAt,isCrossRepository,mergeCommit",
           "--limit",
           "5",
         ]),
         rows(["--repo", repo, "--base", branch, "--state", "all", "--json", "number", "--limit", "1"]),
       ]);
       // A fork's PR with the same branch name is someone else's work.
-      const row = (merged as { number?: unknown; mergedAt?: unknown; isCrossRepository?: unknown }[]).find(
-        (entry) => entry.isCrossRepository === false,
-      );
+      const row = (
+        merged as {
+          number?: unknown;
+          mergedAt?: unknown;
+          isCrossRepository?: unknown;
+          mergeCommit?: { oid?: unknown };
+        }[]
+      ).find((entry) => entry.isCrossRepository === false);
       if (based.length === 0 && row && typeof row.number === "number" && typeof row.mergedAt === "string") {
-        pr = { number: row.number, mergedAt: row.mergedAt };
+        const oid = row.mergeCommit?.oid;
+        pr = { number: row.number, mergedAt: row.mergedAt, sha: typeof oid === "string" && oid ? oid : null };
       }
     } catch (error) {
       log?.(`reading ${repo} for ${branch}: ${(error as Error).message}`);

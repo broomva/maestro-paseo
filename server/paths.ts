@@ -149,6 +149,16 @@ export function paseoSchedulesDir(env: NodeJS.ProcessEnv = process.env): string 
   );
 }
 
+/**
+ * Paseo's registry of sessions, which the agent socket checks its callers against (server/callers.ts): `agents/` in
+ * the daemon's home, its PASEO_HOME, else ~/.paseo.
+ */
+export function paseoAgentsDir(env: NodeJS.ProcessEnv = process.env): string {
+  return (
+    env.MAESTRO_PASEO_AGENTS ?? join(env.PASEO_HOME ? expandHome(env.PASEO_HOME) : join(homedir(), ".paseo"), "agents")
+  );
+}
+
 /** A launchd label prefix: it can reach a log predicate or a launchctl target only as a name. */
 export const LABEL_PREFIX = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 

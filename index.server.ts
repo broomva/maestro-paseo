@@ -8,6 +8,7 @@ import { AnswersLander, ghForge } from "./server/answers-landing";
 import { answersStatus, landingNow } from "./server/answers-status";
 import { Approvals } from "./server/approvals";
 import { attentionOf } from "./server/attention";
+import { Callers } from "./server/callers";
 import { loadConfig, saveConfig } from "./server/config";
 import { WorkspaceAsks } from "./server/control-home";
 import { Engine, UserError } from "./server/engine";
@@ -32,6 +33,7 @@ import {
   expandHome,
   launchdPrefix,
   noticeSnoozesPath,
+  paseoAgentsDir,
   paseoSchedulesDir,
   socketPath,
   verbsPath,
@@ -859,7 +861,13 @@ export default function contribute(host: PluginServerContext) {
 
   // Sessions reach Maestro through a socket of its own (server/agent-socket.ts).
   // If it cannot open, Maestro's own screens still work, and it keeps trying.
-  const stopSocket = keepServing({ path: socketPath(), methods: agentMethods(engine, () => latest, approvals), log });
+  // Every verb that writes checks its caller against Paseo's registry of sessions first (server/callers.ts, BRO-2996).
+  const callers = new Callers({ dir: paseoAgentsDir() });
+  const stopSocket = keepServing({
+    path: socketPath(),
+    methods: agentMethods(engine, () => latest, approvals, callers),
+    log,
+  });
 
   // The plugin sweep (server/sweep.ts): what the reads above no longer do, on its own cadence, whoever looks.
   // Its first sweep runs now: decisions made before a restart are armed, or applied when overdue.
