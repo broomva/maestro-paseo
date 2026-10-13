@@ -23,8 +23,8 @@ import {
 } from "./events";
 import { flagNow } from "./flags";
 import { briefOf } from "./frontmatter";
-import { lastLanding } from "./gate-card";
 import { nextRun } from "./runs";
+import { lastLanding } from "./session-cards";
 import { placement, type StoredWork } from "./store";
 
 /** `config` is the Settings this read used: `nextRun` fills the work's unset run choices from it. */

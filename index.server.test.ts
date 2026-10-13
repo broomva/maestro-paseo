@@ -1337,3 +1337,90 @@ test("a snooze and a review answer are checked again when their window closes (B
     }
   }
 });
+
+test("a prompt a session is paused on is carded in that session, and needs.list names a source it could not read (BRO-3008)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maestro-plugin-"));
+  roots.push(root);
+  const repo = join(root, "repo");
+  await mkdir(join(repo, ".git"), { recursive: true });
+  const config = join(root, "config.json");
+  await writeFile(
+    config,
+    JSON.stringify({
+      workRoot: join(root, "work"),
+      provider: "claude/test-model",
+      modeId: null,
+      isolation: "worktree",
+    }),
+  );
+  // The approvals' file is a folder: it cannot be read, which is a failed read and not "no requests".
+  const unreadable = join(root, "approvals-as-a-folder");
+  await mkdir(unreadable);
+  const env: Record<string, string> = {
+    MAESTRO_PASEO_SWEEP_SECONDS: "3600",
+    MAESTRO_PASEO_FETCH_SECONDS: "0",
+    BROOMVA_HOME: join(root, "home"),
+    MAESTRO_PASEO_LAUNCHD: "off",
+    MAESTRO_PASEO_SCHEDULES: join(root, "schedules"),
+    MAESTRO_PASEO_LOOP_REPOS: "off",
+    MAESTRO_PASEO_FLEET_CONFIG: join(root, "no-fleet", "config"),
+    MAESTRO_PASEO_FLEET_STATE: join(root, "no-fleet", "state"),
+    MAESTRO_PASEO_FLEET_AGENTS: join(root, "no-fleet", "agents"),
+    MAESTRO_PASEO_APPROVALS: unreadable,
+  };
+  const savedEnv = Object.keys(env).map((key) => [key, process.env[key]] as const);
+  Object.assign(process.env, env);
+  const saved = { config: process.env.MAESTRO_PASEO_CONFIG, socket: process.env.MAESTRO_PASEO_SOCKET };
+  process.env.MAESTRO_PASEO_CONFIG = config;
+  process.env.MAESTRO_PASEO_SOCKET = join(root, "m.sock");
+  const { host, handlers, hooks } = fakeHost();
+  const cleanup = contribute(host);
+  const fake = fakePaseo();
+  const context = { paseo: fake.paseo, signal: new AbortController().signal };
+  const run = async (name: string, input: unknown) => {
+    const handler = handlers.get(name);
+    if (!handler) throw new Error(`${name} is not handled`);
+    return (await handler(input, context)) as Record<string, unknown> & { item: { id: string } };
+  };
+  try {
+    const { item } = await run("work.create", {
+      title: "Harden the ledger",
+      brief: "",
+      repo,
+      initiative: "",
+      dispatch: true,
+      check: "",
+      gate: "human",
+    });
+    const read = (await run("needs.list", {})) as unknown as import("./shared/needs").Needs;
+    // The work was read and the approvals were not: a card whose hold is missing must not say it was resolved.
+    expect(read.unread).toEqual(["approvals"]);
+    // A prompt the session is paused on: its card goes into that session's own timeline, the exact prompt by request.
+    fake.agents.get("agent-1")?.pendingPermissions.push({ id: "p1", name: "Bash" });
+    const asked = hooks.get("agent.permission_requested");
+    if (!asked) throw new Error("agent.permission_requested is not subscribed");
+    await asked(
+      {
+        agent: { id: "agent-1" },
+        request: { id: "p1", name: "Bash", title: "Run a command", description: "git push" },
+      },
+      context,
+    );
+    for (let waited = 0; waited < 80 && fake.appended.length === 0; waited += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(fake.appended.map((entry) => [entry.agentId, entry.item.kind, entry.item.data])).toEqual([
+      ["agent-1", "maestro-card", { kind: "approval", key: `work:${item.id}`, version: "p1" }],
+    ]);
+  } finally {
+    await cleanup();
+    for (const [key, value] of savedEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    if (saved.config === undefined) delete process.env.MAESTRO_PASEO_CONFIG;
+    else process.env.MAESTRO_PASEO_CONFIG = saved.config;
+    if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
+    else process.env.MAESTRO_PASEO_SOCKET = saved.socket;
+  }
+});

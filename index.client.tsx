@@ -1,15 +1,25 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { createWorkPanel } from "./client/agent-panel";
+import { cardActions } from "./client/card-actions";
 import { createPillContent, PILL_ICONS } from "./client/composer-pill";
-import { createGateCard } from "./client/gate-card";
 import { MAESTRO_SCREEN, opener, startIntegrations } from "./client/integrations";
 import { requestIntent } from "./client/intent";
 import { KitGalleryScreen } from "./client/kit/gallery";
 import { MaestroSurface } from "./client/plane";
+import { createLegacyCard, createSessionCard } from "./client/session-card";
+import { createSessionScreen, sessionTitle } from "./client/session-screen";
 import { MaestroSettings } from "./client/settings";
 import { linkSettingsOf } from "./client/settings-link";
+import {
+  CARD_KIND,
+  CARD_VERSION,
+  CardSchema,
+  GATE_CARD_KIND,
+  GATE_CARD_VERSION,
+  GateCardSchema,
+  SESSION_SCREEN,
+} from "./shared/card";
 import { adoptAgent } from "./shared/contracts";
-import { GATE_CARD_KIND, GATE_CARD_VERSION, GateCardSchema } from "./shared/gate-card";
 import { KIT_SCREEN } from "./shared/kit";
 import { BROOMVA_DARK, BROOMVA_LIGHT } from "./shared/theme";
 
@@ -91,12 +101,23 @@ export default function contribute(client: PluginClientContext) {
     },
   });
 
-  // The card a run leaves in its session when it lands at your gate (server/gate-card.ts).
+  // Open in Maestro on a card: K2, the page for that one session (`params.agentId`).
+  const actions = cardActions(client, open);
+  client.addScreen({ id: SESSION_SCREEN, title: sessionTitle, Component: createSessionScreen(actions) });
+
+  // The cards Maestro leaves in a session (server/session-cards.ts, K1): where you act from a push.
+  client.addTimelineRenderer({
+    kind: CARD_KIND,
+    version: CARD_VERSION,
+    schema: CardSchema,
+    Component: createSessionCard(actions),
+  });
+  // Sessions keep their timelines: the gate card of an earlier build still renders, as the finished card it was.
   client.addTimelineRenderer({
     kind: GATE_CARD_KIND,
     version: GATE_CARD_VERSION,
     schema: GateCardSchema,
-    Component: createGateCard(open),
+    Component: createLegacyCard(actions),
   });
 
   // The header count in every workspace and a pill beside every tracked session's composer.

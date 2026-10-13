@@ -94,3 +94,16 @@ and p9, then the reconcile, and prints the row table and the UNREGISTERED count.
 unless `--drift-home <tmp>` is given; then transitions go through `broomva_home.py` into that home,
 never `~/.broomva`. Put a canary row in a temp copy of the ledger to make a drift appear, then remove
 it to clear it. Never change a real substrate to do this.
+
+## Session cards (BRO-3008)
+
+```sh
+bun scripts/dogfood/up.ts --plugin .
+bun scripts/dogfood/cards.ts --out "$(mktemp -d)" [--theme dark]
+```
+
+`cards.ts` opens each stand-in session's own page, where Maestro's card sits at the tail, and operates it: Open in
+Maestro (K2), Allow, the 8 s Undo, the receipt, and a hold allowed from the Feed in another page whose card then
+follows. Add `origin.agent_id: <agent id>` to an ask in the sandbox's control repo (`control.ts` seeds the ledgers)
+to get an Ask card in that session. PNGs land in `--out`; a background page does not poll, so the script brings the
+one it watches to the front.

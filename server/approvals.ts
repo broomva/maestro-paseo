@@ -52,6 +52,8 @@ type Line =
 export interface ApprovalsOptions {
   path: string;
   now?: () => Date;
+  /** Told after a request is written: the session's card goes into its timeline (server/session-cards.ts). */
+  raised?: () => void;
 }
 
 /** The id of a request: the same session asking for the same action at the same ref is one request. */
@@ -68,11 +70,13 @@ export const MAX_OPEN_PER_SESSION = 20;
 export class Approvals {
   private readonly path: string;
   private readonly now: () => Date;
+  private readonly raised: () => void;
   private chain: Promise<unknown> = Promise.resolve();
 
   constructor(options: ApprovalsOptions) {
     this.path = options.path;
     this.now = options.now ?? (() => new Date());
+    this.raised = options.raised ?? (() => undefined);
   }
 
   private serial<T>(work: () => Promise<T>): Promise<T> {
@@ -150,6 +154,7 @@ export class Approvals {
           evidence,
           after,
         });
+        this.raised();
       }
       return { id, key: `approval:${id}` };
     });

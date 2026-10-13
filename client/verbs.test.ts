@@ -306,3 +306,56 @@ describe("a due initiative review is answered through the adapter (B2, J8)", () 
     expect(planVerb("answer", { row: reviewRow }, "develop")).toMatchObject({ call: "go" });
   });
 });
+
+describe("what a card and the session page add to the adapter (BRO-3008)", () => {
+  const review = fakeWork("w-ledger", "review", live, { permission: null, landing: 4 });
+  const AGENT_OF_REVIEW = live.agentId;
+
+  test("Change course is your note sent to the work's session (session.prompt), and needs a note and work at the gate", () => {
+    expect(planVerb("course", { item: review }, undefined, "  Use the cache.  ")).toEqual({
+      call: "prompt",
+      agentId: AGENT_OF_REVIEW,
+      prompt: "Change of course: Use the cache.",
+      key: "work:w-ledger",
+      done: "Changed course",
+    });
+    expect(planVerb("course", { item: review }, undefined, "   ")).toEqual({
+      call: "unavailable",
+      why: "Say what should change.",
+    });
+    expect(planVerb("course", { item: fakeWork("w", "running", live) }, undefined, "x").call).toBe("unavailable");
+    expect(planVerb("course", {}, undefined, "x").call).toBe("unavailable");
+  });
+
+  test("a prompt of your own words goes to the session named, on the work's key, trimmed; never empty, never to no one", () => {
+    expect(planVerb("prompt", { agentId: AGENT, item: review }, undefined, " Run the tests again ")).toEqual({
+      call: "prompt",
+      agentId: AGENT,
+      prompt: "Run the tests again",
+      key: "work:w-ledger",
+      done: "Sent",
+    });
+    // A session with no work still has a key: the session's.
+    expect(planVerb("prompt", { agentId: AGENT }, undefined, "hi")).toMatchObject({ key: `session:${AGENT}` });
+    expect(planVerb("prompt", { agentId: AGENT }, undefined, "  ")).toEqual({
+      call: "unavailable",
+      why: "Say what to send.",
+    });
+    expect(planVerb("prompt", {}, undefined, "hi")).toEqual({
+      call: "unavailable",
+      why: "It has no session to prompt.",
+    });
+  });
+
+  test("Stop is for a run that is going; stuck, done or queued work has nothing to stop", () => {
+    expect(planVerb("stop", { item: fakeWork("w-run", "running", live) })).toEqual({
+      call: "stop",
+      id: "w-run",
+      done: "Stopped the run",
+    });
+    expect(planVerb("stop", { item: review }).call).toBe("stop");
+    for (const state of ["blocked", "done", "proposed"] as const) {
+      expect(planVerb("stop", { item: fakeWork("w", state, live) }).call).toBe("unavailable");
+    }
+  });
+});

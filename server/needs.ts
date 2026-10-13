@@ -39,8 +39,10 @@ import {
   type HandledRow,
   KIND_VERBS,
   NEED_KINDS,
+  NEED_SOURCES,
   type NeedKind,
   type NeedRow,
+  type NeedSource,
   type NeedSummary,
   type Needs,
   type PendingApproval,
@@ -52,6 +54,7 @@ import { needsHand, onlyYouStart } from "../shared/needs-you";
 import { isTerminal } from "../shared/states";
 import { ticketOf } from "../shared/text";
 import { UNDO_MS } from "../shared/undo";
+import type { PendingVerb } from "../shared/verbs";
 
 /** How far back handled.list reaches: a week, as the Feed's Handled for you always showed. */
 export const HANDLED_MS = 7 * 24 * 60 * 60 * 1000;
@@ -500,4 +503,105 @@ export function handledOf(
       asksAnswered: answered.size,
     },
   };
+}
+
+/**
+ * Each source needs.list is read from. A source that rejects (or, for the work, answers null; for the asks, says it
+ * was not whole) costs its own rows and is named in `unread`: every other source's rows are still read.
+ */
+export interface NeedReads {
+  /** The work, read with no session reconcile; null when it could not be read. */
+  work(): Promise<WorkItem[] | null>;
+  /** Every ask, and whether both the workspace's and the fleet's were read. */
+  asks(): Promise<[DecisionAsk[], boolean]>;
+  reviews(): Promise<Initiative[]>;
+  landing(): Promise<AnswersLanding | null>;
+  sessionAgents(): Promise<ReadonlyMap<string, string>>;
+  approvals(): Promise<OpenApproval[]>;
+  decisions(): Promise<{ pending: readonly PendingVerb[] }>;
+}
+
+/**
+ * needs.list from its sources (BRO-3001), naming each one that could not be read (`unread`, BRO-3008): a hold whose
+ * source failed is missing from `rows` because the read failed, not because it was answered. Pure but for the reads
+ * and `firstSeen`: a read that was not whole forgets no first-seen time.
+ */
+export async function readNeeds(
+  reads: NeedReads,
+  options: {
+    workspace: string;
+    now: number;
+    kind?: NeedKind;
+    firstSeen: { at: FirstSeen; keep: (keys: readonly string[], complete: boolean) => void };
+    /** The batch with the answers given since its last check (the hold, the badge and J5's tile say one number). */
+    landing?: (landing: AnswersLanding | null, asks: readonly DecisionAsk[], now: number) => AnswersLanding | null;
+    log?: (message: string) => void;
+  },
+): Promise<Needs> {
+  const log = options.log ?? (() => undefined);
+  const unread = new Set<NeedSource>();
+  let decisionsRead = true;
+  const [work, [asks, asksRead], reviews, landing, sessionAgents, approvals, decisions] = await Promise.all([
+    reads.work().catch((error) => {
+      log(`needs: reading the work: ${(error as Error).message}`);
+      return null;
+    }),
+    reads.asks().catch((error): [DecisionAsk[], boolean] => {
+      log(`needs: reading the asks: ${(error as Error).message}`);
+      return [[], false];
+    }),
+    reads.reviews().catch((error) => {
+      unread.add("reviews");
+      log(`needs: reading the initiatives: ${(error as Error).message}`);
+      return [] as Initiative[];
+    }),
+    reads.landing().catch(() => {
+      unread.add("answers");
+      return null;
+    }),
+    // Which Paseo agent each Claude session is, from the fleet's reports: one prompt counts once.
+    reads.sessionAgents().catch((error) => {
+      log(`needs: reading the fleet's sessions: ${(error as Error).message}`);
+      return new Map<string, string>() as ReadonlyMap<string, string>;
+    }),
+    reads.approvals().catch((error) => {
+      unread.add("approvals");
+      log(`needs: reading the approval requests: ${(error as Error).message}`);
+      return [] as OpenApproval[];
+    }),
+    reads.decisions().catch((error) => {
+      decisionsRead = false;
+      log(`needs: reading your decisions: ${(error as Error).message}`);
+      return { pending: [] as readonly PendingVerb[] };
+    }),
+  ]);
+  if (work === null) unread.add("work");
+  if (!asksRead) unread.add("asks");
+  const pending = new Map(
+    decisions.pending
+      .filter((verb) => verb.verb === "approval.decide")
+      .map((verb) => [verb.key, { receipt: verb.receipt, label: verb.label, appliesAt: verb.appliesAt }]),
+  );
+  const needs = needsOf(
+    {
+      // The work that could not be read costs its own rows, never the asks', the reviews' or the batch's.
+      items: work ?? [],
+      asks,
+      reviews,
+      landing: options.landing ? options.landing(landing, asks, options.now) : landing,
+      sessionAgents,
+      workspace: options.workspace,
+      approvals,
+      pending,
+    },
+    options.now,
+    options.kind,
+    options.firstSeen.at,
+  );
+  if (!options.kind)
+    options.firstSeen.keep(
+      needs.rows.map((row) => row.key),
+      unread.size === 0 && decisionsRead,
+    );
+  return unread.size ? { ...needs, unread: NEED_SOURCES.filter((source) => unread.has(source)) } : needs;
 }

@@ -183,8 +183,8 @@ notifyManager.setNotifyFunction((notify) => {
 });
 const { PaseoApiProvider, PluginClientStateProvider, PluginRpcProvider } = await import("@getpaseo/plugin/client/host");
 const { MaestroSurface } = await import("./plane");
+const { createSessionCard } = await import("./session-card");
 const { WorkDetail } = await import("./detail");
-const { createGateCard } = await import("./gate-card");
 const { createWorkPanel } = await import("./agent-panel");
 const { requestIntent, resetIntents, takeIntent } = await import("./intent");
 const { MaestroSettings } = await import("./settings");
@@ -381,6 +381,8 @@ let pendingVerbs: Array<{
   appliesAt: string;
   remainingMs: number;
 }> = [];
+/** What settled in the ledger (verbs.list `recent`): a test closes a decision's window by moving it here. */
+let recentVerbs: Array<Record<string, string>> = [];
 let nextWake: () => WakeEntry = () => wakeEntry("w-now", 0, { cause: "manual" });
 const settingsFixture = (): MaestroConfig => ({
   workRoot: "/work",
@@ -1052,7 +1054,7 @@ const invoke = async (method: string, input: unknown) => {
     loopState = { ...loopState, recent: [nextWake(), ...loopState.recent] };
     return { receipt: "r-wake", appliesAt: new Date(Date.now() + 8_000).toISOString() };
   }
-  if (method === "verbs.list") return { pending: pendingVerbs, recent: [] };
+  if (method === "verbs.list") return { pending: pendingVerbs, recent: recentVerbs };
   if (method === "approval.decide") {
     const { key, allow, action } = input as { key: string; allow: boolean; action: string };
     const entry = {
@@ -1499,6 +1501,7 @@ afterEach(async () => {
   takeIntent();
   items = fixture();
   pendingVerbs = [];
+  recentVerbs = [];
   loopState = loopOff();
   nextWake = () => wakeEntry("w-now", 0, { cause: "manual" });
   settings = settingsFixture();
@@ -1890,99 +1893,6 @@ describe("a finished arc at your gate (BRO-2856)", () => {
       id: "first",
       key: JSON.stringify([root.path, "a.yaml", null, "first"]),
     });
-  });
-
-  test("from a session's gate card, the link goes through the card's opener, which opens Maestro too", async () => {
-    items = [
-      ...fixture(),
-      work("arc", "review", {
-        permission: null,
-        worker: { ...worker("arc", null), cwd: "/wt/0t6jwuf0/sti-3485-approval-reply" },
-        look: arcLook,
-        landing: 3,
-      }),
-    ];
-    decisionsNow = [
-      { ...decisionFixture(), ledger: "sti-3485.yaml", arc: "sti-3485-approval-reply", id: "redeploy", home: root },
-    ];
-    const asked: unknown[] = [];
-    const Card = createGateCard((intent) => asked.push(intent));
-    const props = {
-      item: { data: { workId: "arc", landing: 3, agentId: "ag-arc" } },
-      theme,
-      layout: { compact: false },
-    } as unknown as ComponentProps<typeof Card>;
-    const view = await mount(<Card {...props} />);
-    for (let tries = 0; tries < 100 && !view.text().includes("Answer its"); tries += 1) await settle(20);
-    takeIntent();
-    await view.press(view.byLabel("Answer its 1 decision in Decisions"));
-    // Not left for a surface that may not be open: handed to the card's opener.
-    expect(takeIntent()).toBeNull();
-    expect(asked).toEqual([
-      {
-        kind: "decisions",
-        ledger: "broomva/sti-3485.yaml",
-        id: "redeploy",
-        key: JSON.stringify([root.path, "sti-3485.yaml", null, "redeploy"]),
-      },
-    ]);
-  });
-
-  /** The session's gate card for work `id` landed at 3, mounted as Paseo mounts it. */
-  async function gateCard(id: string) {
-    const Card = createGateCard(() => undefined);
-    const props = {
-      item: { data: { workId: id, landing: 3, agentId: `ag-${id}` } },
-      theme,
-      layout: { compact: false },
-    } as unknown as ComponentProps<typeof Card>;
-    const view = await mount(<Card {...props} />);
-    for (
-      let tries = 0;
-      tries < 100 && !view.text().includes("Change course") && !view.text().includes("The agent is asking");
-      tries += 1
-    ) {
-      await settle(20);
-    }
-    return view;
-  }
-
-  test("a card for a run that asked nothing shows its last words and says what the verbs do, inventing no ask", async () => {
-    const said = "Stored it on the Run record. All 40 tests pass and the branch is pushed.";
-    const look = { ran: "18m unsupervised · 1 turn · ran to the gate", decided: [], ask: "", arc: null, closing: said };
-    items = [
-      ...fixture(),
-      work("plain", "review", { permission: null, worker: worker("plain", null), look, landing: 3 }),
-    ];
-    const text = (await gateCard("plain")).text();
-    expect(text).toContain("Its last words");
-    expect(text).toContain(said);
-    expect(text).toContain(
-      "Change course reopens its session with your note. Gates merge finished work; you do not approve it.",
-    );
-    expect(text).not.toContain("Ask");
-    expect(text).not.toContain("Approve to close it");
-    // What it asks comes before how long it ran: the run's meta is the footer.
-    expect(text.indexOf(said)).toBeLessThan(text.indexOf("18m unsupervised"));
-  });
-
-  test("a card for a handback shows its ⛔ block verbatim as what it handed you", async () => {
-    const look = {
-      ran: "40m unsupervised · 2 turns · ran to the gate",
-      decided: [],
-      ask: "⛔ Blocked on you — 1 item, ~2 min",
-      arc: null,
-      closing: null,
-      handed: "| # | ask | unblocks |\n|---|---|---|\n| 1 | Merge #2134 | the deploy |",
-    };
-    items = [
-      ...fixture(),
-      work("handed", "review", { permission: null, worker: worker("handed", null), look, landing: 3 }),
-    ];
-    const text = (await gateCard("handed")).text();
-    expect(text).toContain("⛔ Blocked on you — 1 item, ~2 min");
-    expect(text).toContain("What it handed you");
-    expect(text).toContain("Merge #2134");
   });
 
   test("in the work panel beside a session, the link goes through the panel's opener, which opens Maestro too", async () => {
@@ -5742,48 +5652,32 @@ describe("Allow and Deny, and Change course: approval.decide and its undo (BRO-2
     <WorkDetail id={id} theme={theme} compact={false} navigation={undefined} open={requestIntent} />
   );
   const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
-  const card = async (id: string) => {
-    const Card = createGateCard(() => undefined);
-    const props = {
-      item: { data: { workId: id, landing: 3, agentId: `ag-${id}` } },
-      theme,
-      layout: { compact: false },
-    } as unknown as ComponentProps<typeof Card>;
-    const view = await mount(<Card {...props} />);
+
+  test(`Allow in the work's detail is approval.decide on the exact action, with a countdown and an Undo`, async () => {
+    items = [...fixture(), asking("k")];
+    const view = await mount(detail("k"));
     for (let tries = 0; tries < 100 && !view.byLabel("Allow"); tries += 1) await settle(20);
-    return view;
-  };
+    await view.press(view.byLabel("Allow"));
+    expect(sent("approval.decide")).toEqual([{ key: "work:k", allow: true, action: ACTION, requestId: "r1" }]);
+    for (let tries = 0; tries < 100 && !view.text().includes("takes effect in"); tries += 1) await settle(20);
+    expect(view.text()).toContain(`Allowed ${ACTION} · takes effect in`);
+    // One decision at a time: both verbs wait while it does, so a second press sends nothing.
+    await view.press(view.byLabel("Deny"));
+    await view.press(view.byLabel("Allow"));
+    expect(sent("approval.decide")).toHaveLength(1);
+    await view.press(view.byLabel(`Undo: Allowed ${ACTION}`));
+    expect(sent("verb.undo")).toEqual([{ receipt: "r-1" }]);
+    for (let tries = 0; tries < 100 && view.text().includes("takes effect in"); tries += 1) await settle(20);
+    expect(view.text()).not.toContain("takes effect in");
+  });
 
-  for (const [where, open] of [
-    ["the work's detail", async () => mount(detail("k"))],
-    ["the card in the session", async () => card("k")],
-  ] as const) {
-    test(`Allow in ${where} is approval.decide on the exact action, with a countdown and an Undo`, async () => {
-      items = [...fixture(), asking("k")];
-      const view = await open();
-      for (let tries = 0; tries < 100 && !view.byLabel("Allow"); tries += 1) await settle(20);
-      await view.press(view.byLabel("Allow"));
-      expect(sent("approval.decide")).toEqual([{ key: "work:k", allow: true, action: ACTION, requestId: "r1" }]);
-      for (let tries = 0; tries < 100 && !view.text().includes("takes effect in"); tries += 1) await settle(20);
-      expect(view.text()).toContain(`Allowed ${ACTION} · takes effect in`);
-      // One decision at a time: both verbs wait while it does, so a second press sends nothing.
-      await view.press(view.byLabel("Deny"));
-      await view.press(view.byLabel("Allow"));
-      expect(sent("approval.decide")).toHaveLength(1);
-      await view.press(view.byLabel(`Undo: Allowed ${ACTION}`));
-      expect(sent("verb.undo")).toEqual([{ receipt: "r-1" }]);
-      for (let tries = 0; tries < 100 && view.text().includes("takes effect in"); tries += 1) await settle(20);
-      expect(view.text()).not.toContain("takes effect in");
-    });
-
-    test(`Deny in ${where} is approval.decide with allow false`, async () => {
-      items = [...fixture(), asking("k")];
-      const view = await open();
-      for (let tries = 0; tries < 100 && !view.byLabel("Deny"); tries += 1) await settle(20);
-      await view.press(view.byLabel("Deny"));
-      expect(sent("approval.decide")).toEqual([{ key: "work:k", allow: false, action: ACTION, requestId: "r1" }]);
-    });
-  }
+  test("Deny in the work's detail is approval.decide with allow false", async () => {
+    items = [...fixture(), asking("k")];
+    const view = await mount(detail("k"));
+    for (let tries = 0; tries < 100 && !view.byLabel("Deny"); tries += 1) await settle(20);
+    await view.press(view.byLabel("Deny"));
+    expect(sent("approval.decide")).toEqual([{ key: "work:k", allow: false, action: ACTION, requestId: "r1" }]);
+  });
 
   test("finished work offers Change course and Cancel work, and never Approve", async () => {
     items = [...fixture(), work("fin", "review", { permission: null, worker: worker("fin", "maestro/fin-1"), look })];
@@ -5799,21 +5693,95 @@ describe("Allow and Deny, and Change course: approval.decide and its undo (BRO-2
     await view.press(view.byLabel("Change course"));
     expect(sent("work.verdict")).toEqual([{ id: "fin", verdict: "revise", note: "Use the cache." }]);
   });
+});
 
-  test("the session card for finished work says Finished, offers Change course, and no Approve", async () => {
-    items = [
-      ...fixture(),
-      work("fin", "review", { permission: null, worker: worker("fin", "maestro/fin-1"), look, landing: 3 }),
+describe("a hold decided in J1 shows in its session card (BRO-3008)", () => {
+  const permission = { requestId: "r1", title: "Run a command", detail: "git push origin main" };
+  const ACTION = "Run a command: git push origin main";
+  const asking = (id: string) =>
+    work(id, "review", {
+      worker: worker(id, `maestro/${id}-1`),
+      phase: "asking",
+      landing: 3,
+      permission,
+      look: { ran: "4m unsupervised · 1 turn · paused on a question", decided: [], ask: ACTION },
+    });
+  const Card = createSessionCard({
+    session: (agentId) => void opened.push(`card:${agentId}`),
+    hold: () => undefined,
+    maestro: () => undefined,
+    intent: () => undefined,
+  });
+  const cardFor = (id: string) => (
+    <Card
+      {...({
+        item: {
+          type: "plugin",
+          kind: "maestro-card",
+          version: 1,
+          data: { kind: "approval", key: `work:${id}`, version: "r1" },
+        },
+        agentId: `ag-${id}`,
+        timestamp: new Date(),
+        theme,
+        layout: { compact: false },
+      } as unknown as ComponentProps<typeof Card>)}
+    />
+  );
+  const sent = (method: string) => calls.filter((call) => call.method === method).map((call) => call.input);
+  const inCard = (view: Awaited<ReturnType<typeof mount>>, id: string) =>
+    view.all(`[data-testid="card-work:${id}"]`)[0];
+  const until = async (ok: () => boolean) => {
+    for (let tries = 0; tries < 150 && !ok(); tries += 1) await settle(20);
+  };
+
+  test("Allow in J1 is the card's undo window too; once it took effect the card is one receipt line and J1's hold has left", async () => {
+    items = [...fixture(), asking("k")];
+    const view = await mount(
+      <>
+        {cardFor("k")}
+        {surface(false)}
+      </>,
+    );
+    await until(() => view.all('[data-testid="hold-work:k"]').length === 1 && inCard(view, "k") !== undefined);
+    expect(inCard(view, "k")?.textContent).toContain(ACTION);
+    calls.length = 0;
+    await view.press(view.all('[data-testid="hold-work:k"] [aria-label="Allow"]')[0]);
+    expect(sent("approval.decide")).toEqual([{ key: "work:k", allow: true, action: ACTION, requestId: "r1" }]);
+    // The card reads the same ledger as the toast does: the same window, the same Undo, and no verb left to press.
+    await until(() => view.all('[data-testid="card-undo"]').length === 1);
+    expect(view.all('[data-testid="card-undo"]')[0]?.textContent).toContain(`Allowed ${ACTION}`);
+    expect(inCard(view, "k")).toBeUndefined();
+    // The window closes: the session moves on, the hold leaves Needs you, and the ledger keeps the receipt.
+    const taken = pendingVerbs[0] as unknown as Record<string, string>;
+    pendingVerbs = [];
+    recentVerbs = [
+      { ...taken, settledAt: new Date().toISOString(), outcome: "applied", detail: "Answered the prompt." },
     ];
-    const Card = createGateCard(() => undefined);
-    const props = {
-      item: { data: { workId: "fin", landing: 3, agentId: "ag-fin" } },
-      theme,
-      layout: { compact: false },
-    } as unknown as ComponentProps<typeof Card>;
-    const view = await mount(<Card {...props} />);
-    for (let tries = 0; tries < 100 && !view.byLabel("Change course"); tries += 1) await settle(20);
-    expect(view.text()).toContain("Finished");
-    expect(view.byLabel("Approve")).toBeNull();
+    items = items.map((item) =>
+      item.id === "k" ? { ...item, state: "running", group: groupOf("running"), permission: null } : item,
+    );
+    await view.refetch();
+    await until(() => view.all('[data-testid="card-settled"]').length === 1);
+    expect(view.all('[data-testid="card-settled"]')[0]?.textContent).toContain(`Allowed ${ACTION} · took effect`);
+    expect(view.all('[data-testid="hold-work:k"]')).toHaveLength(0);
+  });
+
+  test("a hold answered in J1 that left Needs you with no receipt of ours shows resolved elsewhere in its card", async () => {
+    items = [...fixture(), asking("k")];
+    const view = await mount(
+      <>
+        {cardFor("k")}
+        {surface(false)}
+      </>,
+    );
+    await until(() => inCard(view, "k") !== undefined);
+    items = items.map((item) =>
+      item.id === "k" ? { ...item, state: "running", group: groupOf("running"), permission: null } : item,
+    );
+    await view.refetch();
+    await until(() => view.all('[data-testid="card-settled"]').length === 1);
+    expect(view.all('[data-testid="card-settled"]')[0]?.textContent).toContain("Approval · resolved elsewhere");
+    expect(view.all('[data-testid="card-work:k"] [aria-label="Allow"]')).toHaveLength(0);
   });
 });

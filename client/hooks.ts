@@ -134,7 +134,7 @@ export const NEEDS_NUDGE_MS = 2_000;
  * badge and Needs you section reads. One query; useNeedsEvents refetches it
  * when a session changes, every verb when it settles (useVerbs).
  */
-export function useNeeds() {
+export function useNeeds(pollMs: number | false = NEEDS_POLL_MS) {
   const read = useRpc(listNeeds);
   return useQuery({
     queryKey: NEEDS_KEY,
@@ -143,7 +143,7 @@ export function useNeeds() {
       const ticket = readTicket();
       return stampNeeds(await read({}), ticket);
     },
-    refetchInterval: NEEDS_POLL_MS,
+    refetchInterval: pollMs,
   });
 }
 

@@ -38,7 +38,7 @@ features:
     answers: [A1, A2]
     pages: [P-feed, P-approval-card, P-briefing, P-phone]
     interfaces: [I-approval-request, I-needs-list, I-approval-decide, I-undo, I-approval-apply]
-    code: [client/gate-card.tsx, client/detail.tsx, server/approvals.ts, server/verb-specs.ts]
+    code: [client/session-card.tsx, client/detail.tsx, server/approvals.ts, server/verb-specs.ts]
   F-need-owner-step:
     name: Owner step — something only the owner can do (a login, a key, a sudo); Done or Not now
     status: new
@@ -54,7 +54,7 @@ features:
     kind: watch
     pages: [P-feed]
     interfaces: [I-finished, I-handled-list, I-session-prompt]
-    code: [client/arc-report.tsx, client/gate-card.tsx, client/detail.tsx, shared/needs-you.ts]
+    code: [client/arc-report.tsx, client/session-card.tsx, client/detail.tsx, shared/needs-you.ts]
     note: "BRO-2999: work that finished and waits at the gate (review with no permission prompt) is Finished, watched and never counted as needing you. Its card offers Change course (a send back with your note, 8 s undo) and Cancel work; there is no Approve."
   F-health-notices:
     name: Health — a fact with evidence that closes itself; Unblock, Snooze, Open log
@@ -249,7 +249,7 @@ features:
     replaced_by: [F-need-approval, F-finished]
     pages: [P-approval-card]
     interfaces: [I-work-verdict]
-    code: [client/gate-card.tsx, client/detail.tsx, server/engine.ts]
+    code: [client/session-card.tsx, client/detail.tsx, server/engine.ts]
     note: "Retired in BRO-2999: work.verdict approve is refused (APPROVE_RETIRED). A gate card and the detail pane hold a held action (Allow, Deny) or a finished run (Change course); decisions recorded before still read and apply."
   F-plugin-dispatch:
     name: The plugin loop starts queued work
@@ -298,14 +298,15 @@ pages:
     writes: [I-approval-decide, I-ask-answer, I-work-unblock, I-work-cancel, I-undo]
     code: [client/detail.tsx]
   P-approval-card:
-    name: K1 Maestro cards in a Paseo session — every kind and state; one tap, 8 s undo, receipt
+    name: K0–K2 Maestro cards in a Paseo session — every kind and state; one tap, 8 s undo, receipt; Open in Maestro is the session page
     status: change
     frame: w9zol
     png: k1-session-cards.png
+    note: K0 k0-push-to-card-flow.png (flow), K2 k2-session-page.png (the session page, openScreen params.agentId)
     components: [C-hold-card, C-kbd, C-button]
-    reads: [I-needs-list, I-verbs-list]
-    writes: [I-approval-decide, I-undo]
-    code: [client/gate-card.tsx]
+    reads: [I-needs-list, I-verbs-list, I-work-get, I-work-for-agent, I-asks-workspace]
+    writes: [I-approval-decide, I-ask-answer, I-owner-step-done, I-session-prompt, I-work-unblock, I-notice-snooze, I-work-cancel, I-work-stop, I-work-adopt, I-undo]
+    code: [client/session-card.tsx, client/card-model.ts, client/card-hooks.ts, client/card-parts.tsx, client/card-actions.ts, client/session-digest.tsx, client/session-screen.tsx, server/session-cards.ts, shared/card.ts]
   P-decisions:
     name: J5 Decisions — one at a time; four answer tiles; where each answer went. M5 on the phone
     status: change
@@ -509,7 +510,7 @@ components:
     name: Hold card — variants ask, approval, owner step; the verbs in place
     status: new
     pen: null
-    code: [client/home-cards.tsx, client/decision-card.tsx, client/gate-card.tsx]
+    code: [client/home-cards.tsx, client/decision-card.tsx, client/session-card.tsx]
   C-finished-card: { name: "Finished card", status: new, pen: null, code: [client/home-cards.tsx, client/arc-report.tsx] }
   C-notice-card: { name: "Notice card", status: change, pen: null, code: [client/fleet-queue.tsx] }
   C-work-row: { name: "Work row (Undertow while running)", status: change, pen: null, code: [client/home-cards.tsx, client/plane-views.tsx, client/feed.tsx] }
@@ -866,7 +867,7 @@ findings:
     state: fixed
     ticket: BRO-2999
     about: [F-approve-work, I-work-verdict, P-approval-card]
-    code: [server/engine.ts, client/gate-card.tsx, client/detail.tsx]
+    code: [server/engine.ts, client/session-card.tsx, client/detail.tsx]
     note: "work.verdict approve throws APPROVE_RETIRED; the cards offer Change course and Cancel work. Gap: with approve gone nothing closes plain human-gate work whose branch merged (BRO-3076)."
   FND-no-undo:
     name: Stop, cancel, unblock, answer, review and config.set apply at once, with no undo

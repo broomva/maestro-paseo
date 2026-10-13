@@ -17,8 +17,6 @@ afterAll(async () => {
   await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
 });
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-
 type Handler = (input: unknown, context: unknown) => unknown;
 
 async function withPlugin(
@@ -112,7 +110,7 @@ async function withPlugin(
   }
 }
 
-test("the plugin cards a landing through the client its hooks were handed", async () => {
+test("the plugin cards a landing in its own session, through the client its hooks were handed", async () => {
   await withPlugin(async ({ call, hook, repo, fake }) => {
     const { item } = (await call("work.create", {
       title: "Wired",
@@ -132,9 +130,12 @@ test("the plugin cards a landing through the client its hooks were handed", asyn
       asks: [],
       turnId: "t1",
     });
-    await flush();
-    expect(fake.appended.map((entry) => entry.item.data)).toEqual([
-      { workId: item.id, landing: expect.any(Number), agentId: "agent-1" },
+    // The card goes in a moment after the landing (the settle), once nothing holds the work.
+    for (let waited = 0; waited < 60 && fake.appended.length === 0; waited += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(fake.appended.map((entry) => [entry.agentId, entry.item.data])).toEqual([
+      ["agent-1", { kind: "finished", key: `work:${item.id}`, version: expect.stringMatching(/^\d+$/) }],
     ]);
   });
 });

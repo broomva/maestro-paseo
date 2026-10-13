@@ -141,6 +141,10 @@ export function permissionAction(permission: { title: string; detail: string | n
 }
 export const ANSWERS_KEY = "answers:batch";
 
+/** Where needs.list reads its rows from (server/needs.ts): a source that fails costs its own rows (`unread`). */
+export const NEED_SOURCES = ["work", "asks", "reviews", "answers", "approvals"] as const;
+export type NeedSource = (typeof NEED_SOURCES)[number];
+
 export type Hold =
   | { kind: "work"; id: string }
   | { kind: "ask"; askKey: string }
@@ -164,6 +168,24 @@ export function holdOf(key: string): Hold | null {
       return { kind: "review", initiative: rest };
     case "approval":
       return { kind: "approval", id: rest };
+    default:
+      return null;
+  }
+}
+
+/** The source a hold's key is read from, or null for a key no hold has. */
+export function sourceOf(key: string): NeedSource | null {
+  switch (holdOf(key)?.kind) {
+    case "work":
+      return "work";
+    case "ask":
+      return "asks";
+    case "review":
+      return "reviews";
+    case "approval":
+      return "approvals";
+    case "answers":
+      return "answers";
     default:
       return null;
   }
@@ -215,7 +237,16 @@ export type NeedSummary = z.infer<typeof NeedSummarySchema>;
 export const listNeeds = defineRpc({
   name: "needs.list",
   input: z.object({ kind: z.enum(NEED_KINDS).optional() }),
-  output: z.object({ rows: z.array(NeedRowSchema), summary: NeedSummarySchema }),
+  output: z.object({
+    rows: z.array(NeedRowSchema),
+    summary: NeedSummarySchema,
+    /**
+     * The sources this read could not read, absent when every one was. A hold of an unread source is missing from
+     * `rows` because the read failed, not because it was answered: a card that finds its hold missing says it
+     * could not read (client/card-model.ts), never that it is resolved.
+     */
+    unread: z.array(z.enum(NEED_SOURCES)).optional(),
+  }),
 });
 export type Needs = z.infer<typeof listNeeds.output>;
 

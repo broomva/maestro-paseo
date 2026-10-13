@@ -13,7 +13,6 @@ import { WorkspaceAsks } from "./server/control-home";
 import { Engine, UserError } from "./server/engine";
 import { AwakeClock, Fleet, wallClock } from "./server/fleet";
 import { inspectFolder as inspect } from "./server/folders";
-import { GateCards } from "./server/gate-card";
 import { GhaSchedules } from "./server/gha";
 import { createInboxProvider, Inbox } from "./server/inbox";
 import { agentIds, driverRelay, ghRun, ideaWork, prStates, workspaceInitiatives } from "./server/initiatives";
@@ -22,7 +21,7 @@ import { Launchd, launchdPresence } from "./server/launchd";
 import { Loop } from "./server/loop";
 import { homeWriter, Loops } from "./server/loops";
 import { gitLedger, loopPaths, loopReposPath, multiLedger } from "./server/loops-ledger";
-import { firstSeenMemory, handledOf, needsOf } from "./server/needs";
+import { firstSeenMemory, handledOf, readNeeds } from "./server/needs";
 import { NoticeSnoozes } from "./server/notice-snoozes";
 import { noticesOf } from "./server/notices";
 import { OwnerVerbs } from "./server/owner-verbs";
@@ -42,6 +41,7 @@ import {
 import { Records } from "./server/records";
 import { ReviewReceipts, reviewId } from "./server/reviews";
 import type { Paseo } from "./server/runs";
+import { SessionCards } from "./server/session-cards";
 import { fetchEvery, Sweep, sweepEvery } from "./server/sweep";
 import { Timeline } from "./server/timeline";
 import {
@@ -97,7 +97,7 @@ import {
 } from "./shared/initiatives";
 import { galleryEnabled, kitGallery } from "./shared/kit";
 import { getLoops } from "./shared/loops";
-import { askHoldKey, listHandled, listNeeds, type NeedKind, workKey } from "./shared/needs";
+import { askHoldKey, listHandled, listNeeds, type NeedKind, type Needs, workKey } from "./shared/needs";
 import { listNotices, snoozeNotice } from "./shared/notices";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
 import { getTimeline, getTimelineLog } from "./shared/timeline";
@@ -114,8 +114,17 @@ function gateLabel(title: string, pending: { verdict: "approve" | "revise" | "bl
 }
 
 export default function contribute(host: PluginServerContext) {
-  // A run that lands at your gate leaves an approval card in its session, through the latest client below.
-  const cards = new GateCards(() => latest, log);
+  // What holds you, a run that lands at your gate and work that stops each leave a card in the session that asked
+  // (server/session-cards.ts, BRO-3008), through the latest client below. It reads what needs you and the work
+  // as every read does (pure), a little after something changes and on every sweep.
+  const cards = new SessionCards(
+    () => latest,
+    {
+      holds: async () => (await needsNow()).rows,
+      work: () => engine.list().then(({ items }) => items),
+    },
+    log,
+  );
 
   // The host hands the plugin its daemon client only inside handlers and hooks,
   // never at startup: one client for the life of the plugin process. The agent
@@ -157,7 +166,7 @@ export default function contribute(host: PluginServerContext) {
   // Every verb of yours that changes state takes effect 8 s after you make it, and leaves a receipt (B4,
   // server/owner-verbs.ts); what agents asked leave for waits in its own file (server/approvals.ts).
   const verbs = new OwnerVerbs({ path: verbsPath(), client: () => latest, windowMs: verbWindowMs(), log });
-  const approvals = new Approvals({ path: approvalsPath() });
+  const approvals = new Approvals({ path: approvalsPath(), raised: () => cards.nudge() });
   const verbDeps = { verbs, engine, approvals };
   registerApprovalVerbs(verbDeps);
   registerWorkVerbs(verbDeps);
@@ -469,69 +478,21 @@ export default function contribute(host: PluginServerContext) {
   // When an undated hold was first seen (an undated ask, the answers batch), in memory only: its `since`
   // holds still across reads, and a hold that went is forgotten, so one that comes back starts again.
   const firstSeen = firstSeenMemory();
-  const needsNow = async (kind?: NeedKind) => {
-    // A source that cannot be read this time costs its rows, never their first-seen times.
-    let partial = false;
-    const [read, [asks, asksRead], reviews, landing, sessionAgents, open, waiting] = await Promise.all([
-      workItems(),
-      allAsks(),
-      dueReviews().catch((error) => {
-        partial = true;
-        log(`needs: reading the initiatives: ${(error as Error).message}`);
-        return [];
-      }),
-      (lander?.state() ?? Promise.resolve(null)).catch(() => {
-        partial = true;
-        return null;
-      }),
-      // Which Paseo agent each Claude session is, from the fleet's reports: one prompt counts once.
-      fleet.sessionAgents().catch((error) => {
-        log(`needs: reading the fleet's sessions: ${(error as Error).message}`);
-        return new Map<string, string>();
-      }),
-      // What agents asked leave for, and your decisions still in their window: files, read as they stand.
-      approvals.open().catch((error) => {
-        partial = true;
-        log(`needs: reading the approval requests: ${(error as Error).message}`);
-        return [];
-      }),
-      verbs.list().catch((error) => {
-        partial = true;
-        log(`needs: reading your decisions: ${(error as Error).message}`);
-        return { pending: [], recent: [] };
-      }),
-    ]);
-    const pending = new Map(
-      waiting.pending
-        .filter((verb) => verb.verb === "approval.decide")
-        .map((verb) => [verb.key, { receipt: verb.receipt, label: verb.label, appliesAt: verb.appliesAt }]),
-    );
-    // The work that could not be read costs its own rows, never the asks', the reviews' or the batch's.
-    const items = read ?? [];
-    const now = Date.now();
-    const needs = needsOf(
+  const needsNow = (kind?: NeedKind): Promise<Needs> =>
+    readNeeds(
       {
-        items,
-        asks,
-        reviews,
-        // The batch with the answers given since its last check: the hold, the badge and J5's tile say one number.
-        landing: landingNow(landing, asks, now),
-        sessionAgents,
-        workspace: workspaceName,
-        approvals: open,
-        pending,
+        work: workItems,
+        asks: allAsks,
+        reviews: dueReviews,
+        landing: () => lander?.state() ?? Promise.resolve(null),
+        // Which Paseo agent each Claude session is, from the fleet's reports: one prompt counts once.
+        sessionAgents: () => fleet.sessionAgents(),
+        // What agents asked leave for, and your decisions still in their window: files, read as they stand.
+        approvals: () => approvals.open(),
+        decisions: () => verbs.list(),
       },
-      now,
-      kind,
-      firstSeen.at,
+      { workspace: workspaceName, now: Date.now(), kind, firstSeen, landing: landingNow, log },
     );
-    if (!kind)
-      firstSeen.keep(
-        needs.rows.map((row) => row.key),
-        !partial && asksRead && read !== null,
-      );
-    return needs;
-  };
   server.handle(listNeeds, ({ kind }) => needsNow(kind));
   server.handle(listHandled, async () => {
     const [read, [asks]] = await Promise.all([workItems(), allAsks()]);
@@ -886,7 +847,11 @@ export default function contribute(host: PluginServerContext) {
     await engine.onTurnEnded(event.agent, event.outcome, event.timeline, event.turnId);
     void router?.route({ agentId: event.agent.id });
   });
-  server.on("agent.permission_requested", (event) => engine.onPermissionRequested(event.agent, event.request));
+  server.on("agent.permission_requested", async (event) => {
+    await engine.onPermissionRequested(event.agent, event.request);
+    // The prompt is a hold now: its card goes into the session that is paused on it.
+    cards.nudge();
+  });
   server.on("agent.permission_resolved", (event) => engine.onPermissionResolved(event.agent, event.requestId));
   server.on("agent.archived", (event, { paseo }) => engine.onArchived(event.agent, paseo));
   // Heard only for its client: the socket can then start runs as soon as any session exists.
@@ -909,6 +874,9 @@ export default function contribute(host: PluginServerContext) {
           if (await engine.upkeep(paseo)) log("sweep: the work moved to match its sessions, or a decision came due");
         },
       },
+      // What holds you, in the session that asked: a hold raised while the daemon was down, or an agent's
+      // approval.request, gets its card here when no event said so (server/session-cards.ts).
+      { name: "session cards", background: true, run: () => cards.reconcile() },
       // Your verbs in their window are armed again after a restart, and those overdue apply (server/owner-verbs.ts).
       {
         name: "your decisions",
@@ -944,6 +912,7 @@ export default function contribute(host: PluginServerContext) {
 
   return async () => {
     sweep.stop();
+    cards.stop();
     loop.stop();
     // Before a reload's new router resumes your decisions: this one applies none of them any more.
     router?.stop();

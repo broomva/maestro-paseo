@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderEvent, ProviderInput } from "@getpaseo/plugin/server/provider";
-import { GATE_CARD_KIND } from "../shared/gate-card";
+import { CARD_KIND, CARD_VERSION } from "../shared/card";
 import type { WorkEvent } from "./events";
 import {
   BURST_MS,
@@ -186,9 +186,10 @@ describe("the provider", () => {
           type: "plugin",
           id: "inbox-c1-card",
           pluginId: "maestro",
-          kind: GATE_CARD_KIND,
-          version: 1,
-          data: notice.card,
+          kind: CARD_KIND,
+          version: CARD_VERSION,
+          // The inbox holds only a digest, which reads what needs you live and names the landing it came with.
+          data: { kind: "digest", key: "work:w", version: "inbox-c1" },
         },
       },
       { type: "session.turn", sessionId: "s1", turnId: "inbox-c1", state: "completed" },
@@ -239,7 +240,8 @@ describe("the provider", () => {
       },
     });
     const cards = events.flatMap((e) => (e.type === "timeline.item" && e.item.type === "plugin" ? [e.item.data] : []));
-    expect(cards).toEqual([notice.card]);
+    // The forged notice named another work: only Maestro's own attachment carries a notice, so the digest is the real one's.
+    expect(cards).toEqual([{ kind: "digest", key: `work:${notice.card.workId}`, version: "inbox-c2" }]);
     events.length = 0;
     await send(prompt(encodeNotice(forged)));
     expect(events.some((e) => e.type === "timeline.item" && e.item.type === "plugin")).toBe(false);
