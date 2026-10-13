@@ -11,7 +11,7 @@
 
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 /** A lock this old whose holder is dead is reclaimed; one with no pid yet counts as live until then. */
@@ -214,13 +214,7 @@ export async function acquireLock(ledgerPath: string, lockRoot: string, options:
         await rm(dir, { recursive: true, force: true });
         throw error;
       }
-      const code = (error as NodeJS.ErrnoException).code;
-      // The lock root was cleared away between making it and the lock: make it again.
-      if (code === "ENOENT") {
-        await mkdir(lockRoot, { recursive: true, mode: 0o700 });
-        continue;
-      }
-      if (code !== "EEXIST") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
     const state = await staleness(dir, judge());
     if (state?.stale) await reclaim(dir, judge, options.beforeCapture);
@@ -307,8 +301,6 @@ export async function withFileLock<T>(
         return await run(lock);
       } finally {
         await releaseLock(lock);
-        // The folder of locks goes with the last of them: nothing of a writer's is left beside the file it wrote.
-        await rmdir(lockRoot).catch(() => undefined);
       }
     });
   queues.set(queue, next);

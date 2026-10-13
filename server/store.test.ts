@@ -80,7 +80,7 @@ describe("two stores on one work root (two daemons)", () => {
     );
     expect(new Set(made.map((item) => item.dir)).size).toBe(8);
     expect((await readdir(work)).sort()).toEqual(
-      ["same-title", ...Array.from({ length: 7 }, (_, n) => `same-title-${n + 2}`)].sort(),
+      [".locks", "same-title", ...Array.from({ length: 7 }, (_, n) => `same-title-${n + 2}`)].sort(),
     );
     for (const item of made) expect((await readdir(item.dir)).sort()).toEqual(["_events.jsonl", "_work.md"]);
     expect((await new WorkStore(work).scan()).warnings).toEqual([]);
@@ -91,7 +91,8 @@ describe("two stores on one work root (two daemons)", () => {
     const store = new WorkStore(work);
     const made = await store.create(input("Clean", dir));
     await store.mutate(made.contract.id, () => ({ events: [note("x")] }));
-    expect((await readdir(work)).sort()).toEqual(["clean"]);
+    expect((await readdir(work)).sort()).toEqual([".locks", "clean"]);
+    expect(await readdir(join(work, ".locks"))).toEqual([]);
   });
 });
 

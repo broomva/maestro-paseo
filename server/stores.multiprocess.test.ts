@@ -79,9 +79,10 @@ describe("two processes on one work item", () => {
     // The created receipt is first, so the counts read 1, 2, 3 ... 2 * each, each once, in order.
     expect(counts).toEqual(Array.from({ length: 2 * each }, (_, n) => n + 1));
     expect(item.contract.id).toBe(id);
-    // No temp file and no lock is left, and the lock folder itself is gone.
+    // No temp file and no lock is left: the item is its two files, and the folder of locks is empty.
     expect((await readdir(made.dir)).sort()).toEqual(["_events.jsonl", "_work.md"]);
-    expect(await readdir(work)).toEqual([made.rel]);
+    expect((await readdir(work)).sort()).toEqual([".locks", made.rel]);
+    expect(await readdir(join(work, ".locks"))).toEqual([]);
   }, 60_000);
 
   test("two processes filing one title each get a folder of their own: none is overwritten", async () => {
@@ -126,9 +127,38 @@ describe("two processes on one ledger", () => {
         );
       }
       expect(rows.every((row) => row.pad.length === 6000)).toBe(true);
-      expect(await readdir(join(dir, "state"))).toEqual(["log.jsonl"]);
+      expect((await readdir(join(dir, "state"))).sort()).toEqual([".locks", "log.jsonl"]);
+      expect(await readdir(join(dir, "state", ".locks"))).toEqual([]);
     }, 60_000);
   }
+});
+
+describe("two processes on the wake log, which rewrites itself", () => {
+  test("a trim by one never drops an entry the other has just added: each one's survivors have no gap", async () => {
+    const dir = await root();
+    const path = join(dir, "wake-log.jsonl");
+    const go = join(dir, "go");
+    const each = 900;
+    await together(
+      [
+        ["wake", path, String(each), "a", go],
+        ["wake", path, String(each), "b", go],
+      ],
+      go,
+    );
+    const ids = (await lines(path)).map((line) => (JSON.parse(line) as { tickId: string }).tickId);
+    expect(ids.length).toBeLessThanOrEqual(1000);
+    for (const tag of ["a", "b"]) {
+      const mine = ids.filter((id) => id.startsWith(tag)).map((id) => Number(id.slice(1)));
+      // A trim keeps the newest, so one writer may have none left; what is left of a writer's is one unbroken run, in
+      // order. An entry another process's trim dropped from the middle would leave a gap.
+      const first = mine[0] ?? 0;
+      expect(mine).toEqual(Array.from({ length: mine.length }, (_, n) => first + n));
+    }
+    expect(ids.length).toBeGreaterThan(0);
+    expect((await readdir(dir)).sort()).toEqual([".locks", "go", "wake-log.jsonl"]);
+    expect(await readdir(join(dir, ".locks"))).toEqual([]);
+  }, 120_000);
 });
 
 describe("two processes reading one owner-verb ledger (BRO-3080)", () => {
@@ -170,7 +200,8 @@ describe("two processes reading one owner-verb ledger (BRO-3080)", () => {
     const claims = ledger.filter((line) => line.kind === "verb.claimed");
     expect(claims.map((line) => line.receipt).sort()).toEqual(applied.sort());
     expect(new Set(claims.map((line) => line.pid)).size).toBeGreaterThanOrEqual(1);
-    expect(await readdir(dir).then((names) => names.sort())).toEqual(["applied.log", "go", "verbs.jsonl"]);
+    expect(await readdir(dir).then((names) => names.sort())).toEqual([".locks", "applied.log", "go", "verbs.jsonl"]);
+    expect(await readdir(join(dir, ".locks"))).toEqual([]);
   }, 60_000);
 
   test("a claimant that died is not applied again: the verb settles as dropped, saying it is not known", async () => {

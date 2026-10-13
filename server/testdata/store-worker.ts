@@ -6,12 +6,14 @@
 //   bun store-worker.ts ledger <path> <count> <tag> <go>               long lines onto one JSON-lines ledger
 //   bun store-worker.ts verbs <path> <log> <go>                        resumes the verbs ledger, applying what is due
 //   bun store-worker.ts receipts <path> <count> <tag> <go>             the ask receipts' appender
+//   bun store-worker.ts wake <path> <count> <tag> <go>                 the wake log, which trims itself past 1000 lines
 
 import { appendFileSync, existsSync } from "node:fs";
 import type { OwnerVerb } from "../../shared/verbs";
 import { appendAskReceipt } from "../ask-receipts";
 import { appendJsonLine } from "../jsonl";
 import { OwnerVerbs } from "../owner-verbs";
+import { WakeLog } from "../wake-log";
 import { WorkStore } from "../store";
 
 const [mode, ...args] = process.argv.slice(2) as [string, ...string[]];
@@ -53,6 +55,25 @@ if (mode === "events") {
   for (let i = 0; i < Number(count); i += 1) {
     const line = { tag, i, pad };
     await (mode === "ledger" ? appendJsonLine(path, line) : appendAskReceipt(path, line));
+  }
+} else if (mode === "wake") {
+  const [path, count, tag, go] = args as [string, string, string, string];
+  const log = new WakeLog(path, () => undefined);
+  await waitFor(go);
+  for (let i = 0; i < Number(count); i += 1) {
+    await log.append({
+      tickId: `${tag}${i}`,
+      cause: "timer",
+      wokeAt: new Date().toISOString(),
+      dispatched: [],
+      deferred: [],
+      needsYou: { gate: 0, stuck: 0, asking: 0 },
+      quiet: [],
+      unasked: [],
+      flagged: [],
+      cleared: [],
+      narrative: [],
+    });
   }
 } else if (mode === "verbs") {
   const [path, log, go] = args as [string, string, string];

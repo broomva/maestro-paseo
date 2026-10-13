@@ -35,7 +35,8 @@ describe("withFileLock", () => {
       ),
     );
     expect(order).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
-    expect(await readdir(dir)).toEqual(["shared.jsonl"]);
+    expect((await readdir(dir)).sort()).toEqual([".locks", "shared.jsonl"]);
+    expect(await readdir(locks)).toEqual([]);
   });
 
   test("a failing writer releases the lock for the next", async () => {
@@ -46,7 +47,8 @@ describe("withFileLock", () => {
       }),
     ).rejects.toThrow("boom");
     expect(await withFileLock(file, locks, async () => "next")).toBe("next");
-    expect(await readdir(dir)).toEqual(["shared.jsonl"]);
+    expect(await readdir(locks)).toEqual([]);
+    expect((await readdir(dir)).sort()).toEqual([".locks", "shared.jsonl"]);
   });
 
   test("a live holder in another process is waited on, never reclaimed, however old; the refusal names it", async () => {
