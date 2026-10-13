@@ -1,0 +1,26 @@
+$ MAESTRO_PASEO_SOCKET=<sandbox> bun bin/maestro.ts ls   (sandbox, titles are seeded fixtures)
+Work in <sandbox>/work
+
+Needs you (2)
+  edc754cd-45ef-4d07-855e-ff434d76db44  Rotate the staging deploy key  <sandbox>/repos/infra
+  1d4e773e-2857-4f77-8fea-f74bd2471718  Publish the build cache to the shared bucket  <sandbox>/repos/infra
+
+Stuck (2)
+  60bd6456-c648-4b8a-bbbb-57886882b9cd  Migrate webhooks to the v3 signing scheme  <sandbox>/repos/checkout
+      The provider stopped the turn: the context window is full
+  b39befe4-9e83-41c3-872b-f559ed1d704c  Alert on p95 latency regressions  <sandbox>/repos/platform
+      Checks failed
+
+Running (1)
+  055d4f84-a961-45d0-b955-e72b49109828  Add request tracing to the API gateway  <sandbox>/repos/platform
+
+Queued (3)
+  160214fa-808c-4fc3-a85f-1ea8f3b838e3  Write the Q4 reliability review  <sandbox>/repos/platform
+  2db147b0-47e7-48ac-9333-186a8cebe3a9  Persist the cart across devices  <sandbox>/repos/checkout
+  4813b4ab-6e62-4bf6-b922-ee42ea3dab4c  Cache the Rust build in CI  <sandbox>/repos/platform
+
+Done (4)
+  7c2e5a0c-60da-4edd-a534-f29725acea97  BRO-3100 throwaway: dogfood new work  <sandbox>/repos/platform
+  51e7cf64-90f9-47e0-bf43-e5c354bf49cf  Show tax lines in the order summary  <sandbox>/repos/checkout
+  7abd57cd-f3be-476c-9f23-f345358dda10  Try a one-page checkout experiment  <sandbox>/repos/checkout
+  8e2b821f-8e3c-46af-aee6-31f32f7f520f  Pin the Node version in CI  <sandbox>/repos/platform
