@@ -136,7 +136,8 @@ export function Deck<T>({
 
   return (
     <View testID="deck" style={{ gap: 10 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+      {/* Above the cards: the workspace and presence menus open from here and must paint over them. */}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, zIndex: 20 }}>
         <Text accessibilityRole="header" style={{ flex: 1, color: kit.fg, fontSize: 24, fontWeight: "700" }}>
           {title}
         </Text>

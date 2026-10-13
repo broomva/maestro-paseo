@@ -565,7 +565,7 @@ export function holdInspector(entry: NeedEntry, now: number): InspectorItem {
   }
 }
 
-const LIFECYCLE: readonly { label: string; reached: (item: WorkItem) => boolean }[] = [
+export const LIFECYCLE: readonly { label: string; reached: (item: WorkItem) => boolean }[] = [
   { label: "Queued", reached: () => true },
   {
     label: "Running",

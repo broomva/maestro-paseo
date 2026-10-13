@@ -30,8 +30,7 @@ import {
   stateText,
   stuckText,
   summaryText,
-  viewFor,
-  viewsFor,
+  VIEWS,
   visibleFilters,
   workerText,
 } from "./plane-model";
@@ -109,31 +108,8 @@ describe("work at the gate: a held action needs you, finished work is watched (A
 });
 
 describe("views", () => {
-  test("compact shows the feed, or History when it is chosen", () => {
-    expect(viewFor("board", true)).toBe("feed");
-    expect(viewFor("list", true)).toBe("feed");
-    expect(viewFor("history", true)).toBe("history");
-    expect(viewFor("board", false)).toBe("board");
-    expect(viewFor("list", false)).toBe("list");
-    expect(viewFor("history", false)).toBe("history");
-  });
-
-  test("compact offers the feed, History and every system view; wide offers all ten, in two groups", () => {
-    expect(viewFor("fleet", true)).toBe("fleet");
-    expect(viewFor("decisions", true)).toBe("decisions");
-    expect(viewFor("timeline", true)).toBe("timeline");
-    expect(viewFor("initiatives", true)).toBe("initiatives");
-    expect(viewFor("loops", true)).toBe("loops");
-    expect(viewsFor(true).map((view) => view.label)).toEqual([
-      "Feed",
-      "History",
-      "Fleet",
-      "Decisions",
-      "Timeline",
-      "Initiatives",
-      "Loops",
-    ]);
-    expect(groupedViews(viewsFor(false)).map((group) => [group.label, group.views.map((view) => view.label)])).toEqual([
+  test("the desktop offers all ten, in two groups (the phone has tabs and pages instead)", () => {
+    expect(groupedViews(VIEWS).map((group) => [group.label, group.views.map((view) => view.label)])).toEqual([
       ["Work", ["Feed", "Board", "List", "History", "Overview"]],
       ["System", ["Fleet", "Decisions", "Timeline", "Initiatives", "Loops"]],
     ]);

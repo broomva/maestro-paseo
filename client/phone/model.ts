@@ -259,8 +259,11 @@ export function feedCounts(
  * The sources needs.list could not read, in words (BRO-3008): a hold of one is missing because the read failed, not
  * because it was answered. null when every source was read.
  */
-export function unreadWords(unread: readonly string[] | undefined): string | null {
-  return unread?.length ? `Couldn't read ${unread.join(", ")}: what needs you may be missing holds.` : null;
+export function unreadWords(unread: readonly string[] | undefined, tab: PhoneTab = "feed"): string | null {
+  if (!unread?.length) return null;
+  return tab === "health"
+    ? `Couldn't read ${unread.join(", ")}: notices may be missing.`
+    : `Couldn't read ${unread.join(", ")}: what needs you may be missing holds.`;
 }
 
 /**
@@ -271,9 +274,13 @@ export function deckEmptyWords(
   tab: PhoneTab,
   unread: readonly string[] | undefined = undefined,
 ): string {
-  if (read === "pending") return "Reading what needs you…";
-  if (read === "error") return "Couldn't read what needs you.";
-  if (unread?.length) return `Couldn't read what needs you (${unread.join(", ")}).`;
+  // Health's deck is the notices, Work's the work that needs you: what each could not read is that, not "what needs you".
+  const what = tab === "health" ? "the notices" : tab === "work" ? "the work that needs you" : "what needs you";
+  if (read === "pending") return `Reading ${what}…`;
+  if (read === "error") return `Couldn't read ${what}.`;
+  if (unread?.length) return `Couldn't read ${what} (${unread.join(", ")}).`;
+  if (tab === "health") return "Nothing is asking for a look.";
+  if (tab === "work") return "No work needs you.";
   return tab === "decisions" ? "No decision waits on you." : "Nothing needs you.";
 }
 
@@ -312,4 +319,43 @@ export function answersCounts(status: AnswersStatus | null): SheetCount[] {
     { id: "acted", label: `${status.acted} acted` },
     { id: "held", label: `${status.held} held` },
   ];
+}
+
+// ── Pages ────────────────────────────────────────────────────────────────────
+
+/** A page that rises over the surface: Health's sheet reaches the first four, the presence menu the last. */
+export type PhonePage =
+  | { kind: "initiatives" }
+  | { kind: "fleet"; scope: string | null; tick: number | null }
+  | { kind: "timeline" }
+  | { kind: "loops" };
+
+/** The page an intent opens on the phone, or null when it opens a tab or something else (Decisions, work). */
+export function pageOfIntent(intent: MaestroIntent): PhonePage | null {
+  switch (intent.kind) {
+    case "fleet":
+      return { kind: "fleet", scope: intent.scope, tick: null };
+    case "timeline":
+      return { kind: "timeline" };
+    case "loops":
+      return { kind: "loops" };
+    case "initiatives":
+      return { kind: "initiatives" };
+    default:
+      return null;
+  }
+}
+
+/** Where you are, for a page's header ("from Health" over the list M8 reaches from Health's sheet). */
+export function pageTrail(page: PhonePage): string[] {
+  switch (page.kind) {
+    case "initiatives":
+      return ["from Health"];
+    case "fleet":
+      return ["Fleet"];
+    case "timeline":
+      return ["Timeline"];
+    case "loops":
+      return ["Loops"];
+  }
 }

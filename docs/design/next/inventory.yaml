@@ -329,7 +329,7 @@ pages:
     components: [C-work-row, C-segmented, C-state-label, C-button, C-undertow, C-inspector, C-swipe-row]
     reads: [I-work-list, I-work-history]
     writes: [I-work-cancel, I-work-stop, I-session-prompt, I-approval-decide, I-undo]
-    code: [client/work-board.tsx, client/work-model.ts, client/use-inspector.ts, client/plane-views.tsx, client/history.tsx]
+    code: [client/work-board.tsx, client/work-model.ts, client/use-inspector.ts, client/plane-views.tsx, client/history.tsx, client/phone/work-tab.tsx, client/phone/tabs-model.ts]
   P-health:
     name: J7 Health — verdict, tick grid, sessions, schedules, the conductor and lanes, notices with what closes each. M7 on the phone
     status: change
@@ -340,7 +340,7 @@ pages:
     components: [C-tick-strip, C-notice-card, C-roster, C-segmented, C-pill, C-button, C-glance-tile, C-deck, C-undertow, C-swipe-row]
     reads: [I-fleet-get, I-fleet-tick, I-timeline-get, I-loops-get, I-lanes-get, I-needs-list, I-notices-list]
     writes: [I-work-adopt, I-session-prompt, I-work-stop, I-notice-snooze, I-fleet-tick-run, I-fleet-mode-set, I-loop-control, I-undo]
-    code: [client/health.tsx, client/health-model.ts, client/fleet.tsx, client/fleet-health.tsx, client/fleet-roster.tsx, client/timeline.tsx, client/loops.tsx]
+    code: [client/health.tsx, client/health-model.ts, client/fleet.tsx, client/fleet-health.tsx, client/fleet-roster.tsx, client/timeline.tsx, client/loops.tsx, client/phone/health-tab.tsx, client/phone/tabs-model.ts, client/phone/page-body.tsx]
   P-initiatives:
     name: J8 Initiatives — lateness loudest; a due review is an Ask on its due date in the Feed deck (B2). M8 on the phone
     status: change
@@ -351,7 +351,7 @@ pages:
     components: [C-initiative-card, C-decision-card, C-button, C-inspector, C-detail-header]
     reads: [I-initiatives-list, I-needs-list]
     writes: [I-ask-answer, I-initiatives-file, I-initiatives-review, I-undo]
-    code: [client/initiatives-board.tsx, client/initiatives-board-model.ts, client/initiatives.tsx]
+    code: [client/initiatives-board.tsx, client/initiatives-board-model.ts, client/initiatives.tsx, client/phone/initiatives-page.tsx, client/phone/page-panel.tsx]
   P-new-work:
     name: J9 New work — grows from New work over a dimmed Feed; who starts it (the lane, A8). M9 grows from +
     status: change

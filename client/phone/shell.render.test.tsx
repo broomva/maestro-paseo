@@ -61,6 +61,19 @@ mock.module("@getpaseo/plugin/client/react-native", () => ({
   useRevealedText: (text: string) => text,
 }));
 
+// Settings' own controls are the host's: the settings card draws them, a test only needs them to be there.
+mock.module("@getpaseo/plugin/client/ui", () => {
+  const part = ({ label }: { label?: string }) => <web.Text>{label ?? ""}</web.Text>;
+  return {
+    SettingsAction: part,
+    SettingsCard: ({ children }: { children?: ReactNode }) => children,
+    SettingsInput: part,
+    SettingsSection: ({ children }: { children?: ReactNode }) => children,
+    SettingsSelect: part,
+    SettingsSwitch: part,
+  };
+});
+
 const { act } = await import("react");
 const { createRoot } = require("react-dom/client") as {
   createRoot(container: unknown): { render(node: ReactNode): void; unmount(): void };
@@ -76,6 +89,7 @@ const { PhoneSurface } = await import("./shell");
 const { CONFIRM_MS } = await import("./model");
 const { NEEDS_KEY } = await import("../hooks");
 type PhoneTab = import("./model").PhoneTab;
+type PhonePage = import("./model").PhonePage;
 type HomeFocus = import("../home").HomeFocus;
 
 const FRAME = { width: 375, height: 812 };
@@ -132,6 +146,27 @@ const reviewOf = (id: string): Initiative =>
     stale: { kind: "overdue", date: "2026-10-08" },
   }) as unknown as Initiative;
 
+/** An initiative as initiatives.list returns it: the review's stale date and the file's own fields. */
+const initiativeFile = (review: Initiative): Initiative => ({
+  ...review,
+  home: main,
+  error: null,
+  intentSource: null,
+  status: "active",
+  stated: null,
+  reviewBy: "2026-10-08",
+  wake: null,
+  linear: [],
+  prs: [],
+  repos: [],
+  asks: [],
+  exit: null,
+  closedAt: null,
+  outcome: null,
+  local: [],
+  ideas: { open: 0, triaged: 0 },
+});
+
 type Pending = {
   receipt: string;
   verb: string;
@@ -152,6 +187,11 @@ let workListPrompt: string | null = null;
 /** While set, needs.list answers only once it resolves: a read still on its way. */
 let needsHeld: Promise<void> | null = null;
 let pending: Pending[] = [];
+let unblockFail: string | null = null;
+let noticesFail: string | null = null;
+let noticesUnread: string[] = [];
+let workListFail: string | null = null;
+let initiativesFail: string | null = null;
 const calls: { method: string; input: unknown }[] = [];
 
 function reset() {
@@ -203,6 +243,11 @@ function reset() {
   workListPrompt = null;
   needsHeld = null;
   pending = [];
+  unblockFail = null;
+  noticesFail = null;
+  noticesUnread = [];
+  workListFail = null;
+  initiativesFail = null;
   calls.length = 0;
   toasts.length = 0;
 }
@@ -218,6 +263,11 @@ const ledgerEntry = (method: string, key: string, label: string): Pending => ({
   remainingMs: 8_000,
 });
 
+const withUnread = <T extends { summary: { unread: string[] } }>(notices: T): T => ({
+  ...notices,
+  summary: { ...notices.summary, unread: noticesUnread },
+});
+
 const invoke = async (method: string, input: unknown) => {
   calls.push({ method, input });
   switch (method) {
@@ -226,6 +276,7 @@ const invoke = async (method: string, input: unknown) => {
       if (needsFail) throw new Error(needsFail);
       return unreadNow ? { ...needsNow(), unread: unreadNow } : needsNow();
     case "work.list":
+      if (workListFail) throw new Error(workListFail);
       return {
         root: "/work",
         items: workListPrompt
@@ -250,9 +301,12 @@ const invoke = async (method: string, input: unknown) => {
     case "handled.list":
       return { rows: [], today: { closedForYou: 22, byYou: 4, asksAnswered: 3 } };
     case "notices.list":
-      return noticesOf(
-        { items, fleet: [], timeline: [], loops: [], reviews: [], snoozed: new Map<string, string>() },
-        Date.now(),
+      if (noticesFail) throw new Error(noticesFail);
+      return withUnread(
+        noticesOf(
+          { items, fleet: [], timeline: [], loops: [], reviews: [], snoozed: new Map<string, string>() },
+          Date.now(),
+        ),
       );
     case "asks.workspace":
       return { controlRepo: "/Users/me/broomva", main: null, decisions: asks, fleet: [], warnings: [] };
@@ -271,6 +325,50 @@ const invoke = async (method: string, input: unknown) => {
       const entry = ledgerEntry(method, "ask", "Answered");
       pending = [entry, ...pending];
       return { ask: asks[0], warning: null, receipt: entry.receipt, appliesAt: entry.appliesAt };
+    }
+    case "fleet.get":
+      return { scopes: [], detail: null, error: null };
+    case "loops.get":
+      return { now: new Date().toISOString(), ledger: null, rows: [], ledgerErrors: [], warnings: [] };
+    case "loop.get":
+      return { minutes: 15, nextAt: null, ticking: false, recent: [] };
+    case "config.get":
+      return {
+        workRoot: "/work",
+        provider: "claude/opus",
+        modeId: null,
+        isolation: "worktree",
+        concurrencyCap: null,
+        archiveOnApprove: false,
+        defaultGate: "human",
+        loopMinutes: 15,
+      };
+    case "work.unblock": {
+      if (unblockFail) throw new Error(unblockFail);
+      const { id } = input as { id: string };
+      const entry = ledgerEntry(method, `work:${id}`, "Unblocked");
+      pending = [entry, ...pending];
+      return { item: items.find((one) => one.id === id), receipt: entry.receipt, appliesAt: entry.appliesAt };
+    }
+    case "notice.snooze": {
+      const { key } = input as { key: string };
+      const entry = ledgerEntry(method, key, "Snoozed 4h");
+      pending = [entry, ...pending];
+      return { receipt: entry.receipt, appliesAt: entry.appliesAt };
+    }
+    case "initiatives.list":
+      if (initiativesFail) throw new Error(initiativesFail);
+      return {
+        controlRepo: "/Users/me/broomva",
+        today: "2026-10-10",
+        initiatives: reviews.map(initiativeFile),
+        ideas: [],
+        warnings: [],
+      };
+    case "initiatives.review": {
+      const entry = ledgerEntry(method, `review:${(input as { id: string }).id}`, "Kept driving");
+      pending = [entry, ...pending];
+      return { receipt: entry.receipt, appliesAt: entry.appliesAt };
     }
     case "verb.undo":
       pending = pending.filter((verb) => verb.receipt !== (input as { receipt: string }).receipt);
@@ -297,7 +395,14 @@ interface El {
 }
 const mounted: (() => void)[] = [];
 
-async function mount(props: { tab?: PhoneTab; focus?: HomeFocus | null; cached?: ReturnType<typeof needsNow> } = {}) {
+async function mount(
+  props: {
+    tab?: PhoneTab;
+    focus?: HomeFocus | null;
+    cached?: ReturnType<typeof needsNow>;
+    page?: PhonePage | null;
+  } = {},
+) {
   const container = win.document.createElement("div");
   win.document.body.appendChild(container);
   const root = createRoot(container);
@@ -305,7 +410,9 @@ async function mount(props: { tab?: PhoneTab; focus?: HomeFocus | null; cached?:
   // A read left in the cache by an earlier visit: it may be old, and says nothing about the hold until read again.
   if (props.cached) client.setQueryData(NEEDS_KEY, props.cached);
   let tab: PhoneTab = props.tab ?? "feed";
+  let page: PhonePage | null = props.page ?? null;
   const handled: number[] = [];
+  const pages: (PhonePage | null)[] = [];
   const node = () => (
     <QueryClientProvider client={client}>
       <PluginRpcProvider invoke={invoke}>
@@ -323,7 +430,13 @@ async function mount(props: { tab?: PhoneTab; focus?: HomeFocus | null; cached?:
           onFocusHandled={() => void handled.push(1)}
           onNew={() => undefined}
           onOpenWork={() => undefined}
-          classic={<web.Text>classic body</web.Text>}
+          page={page}
+          onPage={(next) => {
+            page = next;
+            pages.push(next);
+            void act(() => root.render(node()));
+          }}
+          onOpenDecision={() => undefined}
           frame={FRAME}
         />
       </PluginRpcProvider>
@@ -340,6 +453,7 @@ async function mount(props: { tab?: PhoneTab; focus?: HomeFocus | null; cached?:
   const all = (selector: string) => [...(box.querySelectorAll(selector) as unknown as El[])];
   return {
     handled,
+    pages,
     text: () => box.textContent ?? "",
     all,
     id: (testID: string) => box.querySelector(`[data-testid="${testID}"]`),
@@ -371,6 +485,7 @@ afterAll(async () => {
   consoleError.mockRestore();
   mock.module("@getpaseo/plugin/client/react-native", () => ({}));
   mock.module("react-native", () => ({}));
+  mock.module("@getpaseo/plugin/client/ui", () => ({}));
   for (const key of added) delete (globalThis as Record<string, unknown>)[key];
   await win.happyDOM.close();
 });
@@ -731,15 +846,240 @@ describe("M10, opening on the same hold from a push", () => {
   });
 });
 
-// ── The interim bodies ───────────────────────────────────────────────────────
+// ── M6: Work ─────────────────────────────────────────────────────────────────
 
-describe("Work and Health", () => {
-  test("show today's body under the same tab bar until M6 and M7", async () => {
+describe("M6, Work at 375 x 812", () => {
+  test("the deck holds the work that needs you, with its hold, lifecycle and receipts; never an Approve", async () => {
     const view = await mount({ tab: "work" });
-    expect(view.text()).toContain("classic body");
-    expect(view.id("tab-bar") !== null).toBe(true);
-    expect(view.id("pull-sheet-rider") === null).toBe(true);
-    const work = view.all('[role="tab"]').find((tab) => tab.getAttribute("aria-label") === "Work");
-    expect(work?.getAttribute("aria-current")).toBe("true");
+    const workHolds = needsNow().rows.filter((row) => row.key.startsWith("work:"));
+    expect(workHolds.length).toBeGreaterThan(0);
+    expect(view.text()).toContain("Work");
+    expect(view.text()).toContain(`1 of ${workHolds.length}`);
+    expect(view.text()).toContain("Merge workspace 933");
+    expect(view.text()).toContain("Its hold: approval");
+    expect(view.text()).toContain("LIFECYCLE");
+    expect(view.text()).toContain("RECEIPTS");
+    expect(view.label("Open the hold") !== null || view.text().includes("Open the hold")).toBe(true);
+    expect(view.text()).not.toMatch(/\bApprove\b/);
+    // BRO-3001: Work carries no badge, as M1 and M6 draw it; the other three do.
+    const tabs = view.all('[role="tab"]').map((tab) => tab.getAttribute("aria-label"));
+    expect(tabs[2]).toBe("Work");
+  });
+
+  test("the sheet is the board with a lane switcher, and its counts are the lengths of its lanes", async () => {
+    const view = await mount({ tab: "work" });
+    expect(view.text()).toContain("The board");
+    expect(view.text()).toContain("2 running");
+    expect(view.text()).toContain("1 queued");
+    expect(view.text()).toContain("0 standing");
+    await view.press(view.label("Raise the sheet"));
+    // Running opens first, and its rows wear the Undertow; no other lane's do (B1).
+    expect(view.text()).toContain("Provable Outlook reads");
+    expect(view.all('[data-testid="undertow-halo"]').length).toBe(2);
+    await view.press(view.label("Queued, 1"));
+    expect(view.text()).toContain("Close leftover fleet items");
+    expect(view.all('[data-testid="undertow-halo"]').length).toBe(0);
+    await view.press(view.label("Standing, 0"));
+    expect(view.text()).toContain("Nothing is standing.");
+  });
+
+  test("Open the hold goes to the same card the Feed opens", async () => {
+    const view = await mount({ tab: "work" });
+    const open = view.all("[role='button']").find((el) => el.textContent === "Open the hold");
+    await view.press(open);
+    expect(view.id("detail-header") !== null).toBe(true);
+    expect(view.text()).toContain("Approval");
+  });
+
+  test("a running row opens its card, with the lifecycle and its session", async () => {
+    const view = await mount({ tab: "work" });
+    await view.press(view.label("Raise the sheet"));
+    const row = view.all("[role='button']").find((el) => (el.textContent ?? "").includes("Provable Outlook reads"));
+    await view.press(row);
+    expect(view.id("detail-header") !== null).toBe(true);
+    expect(view.text()).toContain("Running");
+  });
+
+  test("a work list that failed beside a good needs.list is not 'no work needs you'", async () => {
+    workListFail = "daemon down";
+    const view = await mount({ tab: "work" });
+    expect(view.text()).toContain("Couldn't read the work that needs you.");
+    expect(view.text()).not.toContain("No work needs you.");
+  });
+
+  test("a failed read says so: never 'no work needs you'", async () => {
+    needsFail = "daemon down";
+    const view = await mount({ tab: "work" });
+    expect(view.text()).toContain("Couldn't read the work that needs you.");
+    expect(view.text()).not.toContain("No work needs you.");
+  });
+});
+
+// ── M7: Health ───────────────────────────────────────────────────────────────
+
+describe("M7, Health at 375 x 812", () => {
+  test("the deck holds the notices, stuck first, each with what closes it and its one verb", async () => {
+    items.push(
+      fakeWork(
+        "w-quiet-7e1",
+        "running",
+        { agentId: "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d", workspaceId: "ws1" },
+        {
+          project: "sri",
+          ticket: "STI-3617",
+          title: "Eve turn latency",
+          flag: {
+            kind: "quiet",
+            reason: "Quiet for 808 minutes.",
+            at: new Date(Date.now() - 808 * 60_000).toISOString(),
+          },
+        },
+      ),
+    );
+    const view = await mount({ tab: "health" });
+    const total = noticesOf(
+      { items, fleet: [], timeline: [], loops: [], reviews: [], snoozed: new Map<string, string>() },
+      Date.now(),
+    ).summary.total;
+    expect(total).toBe(2);
+    // The Health tab's badge, the deck's length and notices.list agree.
+    const tabs = view.all('[role="tab"]').map((tab) => tab.getAttribute("aria-label"));
+    expect(tabs[3]).toBe(`Health, ${total}`);
+    expect(view.text()).toContain(`1 of ${total}`);
+    expect(view.text()).toContain("Stuck");
+    expect(view.text()).toContain("Credits ledger: ended mid-turn");
+    expect(view.text()).toContain("Closes when");
+    expect(view.text()).toContain("Unblock…");
+  });
+
+  test("Unblock asks for words in a sheet of ours and sends them; the sheet closes only when they were sent", async () => {
+    unblockFail = "daemon down";
+    const view = await mount({ tab: "health" });
+    await view.press(view.all("[role='button']").find((el) => el.textContent === "Unblock…"));
+    expect(view.id("unblock-sheet") !== null).toBe(true);
+    const field = view.label("A prompt for the session of Credits ledger: ended mid-turn");
+    await act(async () => {
+      const proto = win.HTMLTextAreaElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(field, "Pick up at the refund test");
+      (field as unknown as { dispatchEvent(event: unknown): boolean }).dispatchEvent(
+        new win.Event("input", { bubbles: true }),
+      );
+    });
+    await view.press(view.all("[role='button']").find((el) => el.textContent === "Send"));
+    // The call failed: nothing was sent, so the sheet stays and the words are still there.
+    expect(sent("work.unblock")).toEqual([{ id: "w-stuck-3c4", note: "Pick up at the refund test" }]);
+    expect(view.id("unblock-sheet") !== null).toBe(true);
+    unblockFail = null;
+    await view.press(view.all("[role='button']").find((el) => el.textContent === "Send"));
+    expect(sent("work.unblock")).toHaveLength(2);
+    expect(view.id("unblock-sheet") === null).toBe(true);
+  });
+
+  test("a quiet notice is snoozed with the 8 s undo; its verb cannot be pressed again while it waits", async () => {
+    items.splice(
+      0,
+      items.length,
+      fakeWork(
+        "w-quiet-7e1",
+        "running",
+        { agentId: "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d", workspaceId: "ws1" },
+        {
+          project: "sri",
+          title: "Eve turn latency",
+          flag: {
+            kind: "quiet",
+            reason: "Quiet for 808 minutes.",
+            at: new Date(Date.now() - 808 * 60_000).toISOString(),
+          },
+        },
+      ),
+    );
+    const view = await mount({ tab: "health" });
+    expect(view.text()).toContain("Quiet");
+    await view.press(view.all("[role='button']").find((el) => el.textContent === "Snooze 4h"));
+    expect(sent("notice.snooze")).toEqual([{ key: "quiet:w-quiet-7e1", hours: 4 }]);
+    await settle(60);
+    expect(view.text()).toContain("Snoozed 4h");
+    const again = view.all("[role='button']").find((el) => el.textContent === "Snooze 4h");
+    await view.press(again);
+    expect(sent("notice.snooze")).toHaveLength(1);
+  });
+
+  test("the sheet is the fleet at a glance: four tiles, then schedules and the views Health reaches", async () => {
+    const view = await mount({ tab: "health" });
+    expect(view.text()).toContain("The fleet");
+    await view.press(view.label("Raise the sheet"));
+    for (const word of ["Fleet ticks", "Sessions", "Schedules", "Conductor"]) expect(view.text()).toContain(word);
+    // Sessions counts running work in its own unit.
+    expect(view.text()).toContain("Sessions2running1 stuck");
+    expect(view.text()).toContain("No loop or schedule is registered or observed.");
+    await view.press(view.label("Initiatives, 1 review due"));
+    expect(view.pages).toEqual([{ kind: "initiatives" }]);
+  });
+
+  test("a source the notices could not read is said above the deck, with cards and without", async () => {
+    noticesUnread = ["the fleet"];
+    const view = await mount({ tab: "health" });
+    expect(view.id("unread-sources")?.textContent).toBe("Couldn't read the fleet: notices may be missing.");
+    expect(view.text()).toContain("Credits ledger: ended mid-turn");
+    items.splice(0, items.length);
+    const empty = await mount({ tab: "health" });
+    expect(empty.text()).toContain("Couldn't read the notices (the fleet).");
+    expect(empty.text()).not.toContain("Nothing is asking for a look.");
+  });
+
+  test("a notices read that failed says so; it is never 'nothing is asking for a look'", async () => {
+    noticesFail = "daemon down";
+    const view = await mount({ tab: "health" });
+    expect(view.text()).toContain("Couldn't read the notices.");
+    expect(view.text()).not.toContain("Nothing is asking for a look.");
+    // The tab's badge is missing too, not zero.
+    expect(view.all('[role="tab"]').map((tab) => tab.getAttribute("aria-label"))[3]).toBe("Health");
+  });
+});
+
+// ── M8: Initiatives ──────────────────────────────────────────────────────────
+
+describe("M8, Initiatives from Health's sheet", () => {
+  test("a page with lateness first; a due review opens as the hold the Feed's deck shows", async () => {
+    const view = await mount({ tab: "health", page: { kind: "initiatives" } });
+    expect(view.text()).toContain("from Health");
+    expect(view.text()).toContain("Initiatives");
+    expect(view.text()).toContain("skene");
+    expect(view.text()).toContain("2 d late");
+    expect(view.text()).toContain("no driver");
+    await view.press(view.id("initiative-skene"));
+    // The review's three answers, in the card over the page.
+    expect(view.id("detail-header") !== null).toBe(true);
+    expect(view.text()).toContain("Review · 1 of 1");
+    expect(view.text()).toContain("It stays active; its next review date moves on.");
+  });
+
+  test("answering a review from the page leaves the Feed's deck where it was", async () => {
+    // The Decisions deck is on its second ask; the review answered on the page is not that deck's hold to move past.
+    const second = needsNow().rows.filter((row) => row.key.startsWith("ask:"))[1]?.key as string;
+    const view = await mount({ tab: "decisions", focus: { hold: second, at: 1 }, page: { kind: "initiatives" } });
+    for (let at = 0; at < 3; at += 1) await settle();
+    const before = /(\d) of 2/.exec(view.text())?.[0];
+    expect(before).toBe("2 of 2");
+    await view.press(view.id("initiative-skene"));
+    await view.press(view.label("Keep"));
+    await view.press(view.label("Answer"));
+    expect(sent("initiatives.review")).toHaveLength(1);
+    expect(/(\d) of 2/.exec(view.text())?.[0]).toBe(before);
+  });
+
+  test("a read that failed says so and offers Try again, never an empty list", async () => {
+    initiativesFail = "control repo missing";
+    const view = await mount({ tab: "health", page: { kind: "initiatives" } });
+    expect(view.id("initiatives-unread") !== null).toBe(true);
+    expect(view.text()).toContain("Couldn't read your initiatives");
+    expect(view.text()).not.toContain("Nothing here.");
+  });
+
+  test("the chevron closes the page", async () => {
+    const view = await mount({ tab: "health", page: { kind: "initiatives" } });
+    await view.press(view.label("Close"));
+    expect(view.pages).toEqual([null]);
   });
 });
