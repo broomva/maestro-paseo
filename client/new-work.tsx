@@ -35,6 +35,7 @@ import {
   contractPromises,
   contractSummary,
   createInput,
+  dispatchStep,
   EMPTY_AGENT,
   type FeatureDef,
   family,
@@ -180,6 +181,8 @@ export interface ComposerState {
   pending: boolean;
   /** A prompt-free run's first Dispatch was pressed: the next one starts it. */
   confirming: boolean;
+  /** What a prompt-free run says while it waits for the second Dispatch, to show beside the verb; null when it is not one. */
+  warning: string | null;
   /** Something was typed: closing it would lose it. */
   dirty: boolean;
   save: () => void;
@@ -222,6 +225,9 @@ export function Composer({
   const [error, setError] = useState<string | null>(null);
   /** The prompt-free run a first Dispatch was pressed for; the next Dispatch of the same run starts it. */
   const [armed, setArmed] = useState<string | null>(null);
+  /** When the first Dispatch armed the run, and whether a create is in flight: both read at press time, not render time. */
+  const armedAt = useRef(0);
+  const inFlight = useRef(false);
   const briefRef = useRef<NativeTextInput>(null);
   const searchRef = useRef<NativeTextInput>(null);
 
@@ -389,11 +395,18 @@ export function Composer({
   const pending = verbs.create.isPending;
   /** Every Dispatch, button or return, comes here: a prompt-free run takes a second press. */
   const submit = (dispatch: boolean) => {
-    if (!ready || pending) return;
-    if (dispatch && unattended && !confirming) {
-      setMenu(null);
-      setArmed(runKey);
-      return;
+    // Two presses in one frame both see the render's `pending` as false: the ref is set by the first.
+    if (!ready || pending || inFlight.current) return;
+    if (dispatch) {
+      const step = dispatchStep(unattended, confirming ? Date.now() - armedAt.current : null);
+      if (step === "arm") {
+        setMenu(null);
+        armedAt.current = Date.now();
+        setArmed(runKey);
+        return;
+      }
+      // The button relabels under the finger: a second press that soon is the first one's echo, not a decision.
+      if (step === "wait") return;
     }
     send(dispatch);
   };
@@ -401,11 +414,17 @@ export function Composer({
     setMenu(null);
     setError(null);
     setArmed(null);
+    inFlight.current = true;
     verbs.create.mutate(
       createInput({ title, brief, repo, check, gate, initiative, isolation }, agent, shown, dispatch),
       {
-        onSuccess: ({ item }) => {
-          toast.show(dispatch ? "Dispatched" : "Saved to the queue", { variant: "success" });
+        onSettled: () => {
+          inFlight.current = false;
+        },
+        onSuccess: ({ item, notice }) => {
+          // Work created but not started (the concurrency cap) says why: it was not dispatched.
+          if (dispatch && notice) toast.show(notice);
+          else toast.show(dispatch ? "Dispatched" : "Saved to the queue", { variant: "success" });
           setTitle("");
           setBrief("");
           setCheck("");
@@ -426,6 +445,7 @@ export function Composer({
       ready,
       pending,
       confirming,
+      warning: confirming ? `${SKIPS_WARNING} Dispatch again to start it.` : null,
       dirty,
       save: () => latest.current.submit(false),
       dispatch: () => latest.current.submit(true),

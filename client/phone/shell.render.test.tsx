@@ -189,6 +189,7 @@ let needsHeld: Promise<void> | null = null;
 let pending: Pending[] = [];
 let unblockFail: string | null = null;
 let noticesFail: string | null = null;
+let settingsReadsFail = false;
 let noticesUnread: string[] = [];
 let workListFail: string | null = null;
 let initiativesFail: string | null = null;
@@ -245,6 +246,7 @@ function reset() {
   pending = [];
   unblockFail = null;
   noticesFail = null;
+  settingsReadsFail = false;
   noticesUnread = [];
   workListFail = null;
   initiativesFail = null;
@@ -326,6 +328,12 @@ const invoke = async (method: string, input: unknown) => {
       pending = [entry, ...pending];
       return { ask: asks[0], warning: null, receipt: entry.receipt, appliesAt: entry.appliesAt };
     }
+    case "fleet.get":
+    case "loops.get":
+    case "config.get":
+      if (settingsReadsFail) throw new Error("daemon down");
+  }
+  switch (method) {
     case "fleet.get":
       return { scopes: [], detail: null, error: null };
     case "loops.get":
@@ -1111,6 +1119,27 @@ describe("M11, Settings from the presence menu", () => {
     }
     expect(view.text()).toContain("Changes apply after the 8 s undo");
     expect(view.text()).toContain("conductor + 0");
+  });
+
+  test("a read that failed is 'not read' on every row, never a zero or an empty list", async () => {
+    settingsReadsFail = true;
+    noticesFail = "daemon down";
+    const view = await mount({ page: { kind: "settings", page: "root" } });
+    for (const row of ["Runs and gate", "Lanes", "Loops", "Notices"]) {
+      expect(view.label(`${row}, not read`) !== null).toBe(true);
+    }
+    expect(view.text()).not.toContain("conductor + 0");
+  });
+
+  test("Notices and Lanes say they could not read, not 'none' or 'no fleet scope'", async () => {
+    settingsReadsFail = true;
+    noticesFail = "daemon down";
+    const notices = await mount({ page: { kind: "settings", page: "notices" } });
+    expect(notices.text()).toContain("Couldn't read the notices.");
+    expect(notices.text()).not.toContain("Stuck runs");
+    const lanes = await mount({ page: { kind: "settings", page: "lanes" } });
+    expect(lanes.text()).toContain("Couldn't read the fleet, so its lanes are not listed.");
+    expect(lanes.text()).not.toContain("No fleet scope is configured.");
   });
 
   test("a row goes one level deeper and the chevron comes back", async () => {

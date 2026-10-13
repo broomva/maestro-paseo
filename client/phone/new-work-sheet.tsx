@@ -20,6 +20,7 @@ const NONE: ComposerState = {
   ready: false,
   pending: false,
   confirming: false,
+  warning: null,
   dirty: false,
   save: () => undefined,
   dispatch: () => undefined,
@@ -116,6 +117,16 @@ export function NewWorkSheet({
         >
           <Composer theme={theme} compact heading={false} onClose={close} onCreated={onCreated} onState={publish} />
         </ScrollView>
+        {state.warning ? (
+          // Beside the verb that will start it, never under the keyboard in the scroll area.
+          <View
+            accessibilityRole="alert"
+            testID="dispatch-warning"
+            style={{ paddingHorizontal: 16, paddingVertical: 10, backgroundColor: kit.warnSoft }}
+          >
+            <Text style={{ color: kit.warn, fontSize: 13.5, lineHeight: 19, fontWeight: "600" }}>{state.warning}</Text>
+          </View>
+        ) : null}
         {discarding ? (
           <View
             accessibilityRole="alert"

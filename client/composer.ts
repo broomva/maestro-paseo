@@ -120,6 +120,16 @@ export function modeShown(modes: readonly ModeDef[], input: ModeInput): ModeDef 
   return modes.find((mode) => mode.id === wanted) ?? null;
 }
 
+/** A prompt-free run's Dispatch asks twice: a second press this soon after the first is the same thumb, not a decision. */
+export const CONFIRM_DISPATCH_MS = 500;
+
+/** Whether a press on Dispatch, with the run armed `armedFor` ms ago (null: not armed), arms, waits or sends. */
+export function dispatchStep(unattended: boolean, armedFor: number | null): "arm" | "wait" | "send" {
+  if (!unattended) return "send";
+  if (armedFor === null) return "arm";
+  return armedFor < CONFIRM_DISPATCH_MS ? "wait" : "send";
+}
+
 /** Picking a model starts its thinking and features over; a mode survives only within one provider. */
 export function withModel(draft: AgentDraft, next: string, shownFamily: string | null): AgentDraft {
   return {
@@ -246,7 +256,7 @@ export function contractPromises(input: {
       label: "Who starts it",
       text: `You do: Dispatch starts a session ${
         input.isolation === "worktree" ? "in its own worktree" : `in ${where}`
-      } now. Save to queue starts nothing: it waits in Queued for you. Maestro never starts work on its own (A8).`,
+      } now, or leaves it queued with the reason when the concurrency cap is full. Save to queue starts nothing: it waits in Queued for you. Maestro never starts work on its own (A8).`,
     },
   ];
 }

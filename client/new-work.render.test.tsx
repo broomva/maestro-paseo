@@ -81,7 +81,10 @@ mock.module("@getpaseo/plugin/client/react-native", () => ({
   Modal: Object.assign(({ open, children }: { open: boolean; children: ReactNode }) => (open ? children : null), {
     Content: ({ children }: { children: ReactNode }) => children,
   }),
-  useToast: () => ({ show() {}, error() {} }),
+  useToast: () => ({
+    show: (message: string) => void toasts.push(message),
+    error: (message: string) => void toasts.push(message),
+  }),
   useRevealedText: (text: string) => text,
 }));
 
@@ -92,6 +95,7 @@ const { createRoot } = require("react-dom/client") as {
 const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
 const { PaseoApiProvider, PluginRpcProvider } = await import("@getpaseo/plugin/client/host");
 const { NewWorkPane, NewWork } = await import("./new-work");
+const { CONFIRM_DISPATCH_MS } = await import("./composer");
 
 const theme = {
   colors: {
@@ -176,6 +180,9 @@ const settings: MaestroConfig = {
   loopMinutes: null,
 };
 const created: Record<string, unknown>[] = [];
+const toasts: string[] = [];
+/** What work.create says besides the item: a reason the work was created but not started (the concurrency cap). */
+let createNotice: string | null = null;
 const inspected: string[] = [];
 const item = (id: string): WorkItem => ({
   id,
@@ -212,7 +219,7 @@ const invoke = async (method: string, input: unknown) => {
     }
     case "work.create":
       created.push(input as Record<string, unknown>);
-      return { item: item(`w${created.length}`) };
+      return { item: item(`w${created.length}`), notice: createNotice };
     case "folder.inspect": {
       const path = (input as { path: string }).path;
       inspected.push(path);
@@ -313,6 +320,8 @@ afterEach(() => {
   for (const unmount of mounted.splice(0)) unmount();
   reads = answers();
   created.length = 0;
+  toasts.length = 0;
+  createNotice = null;
   inspected.length = 0;
   settings.provider = "claude/haiku";
   settings.modeId = null;
@@ -476,18 +485,60 @@ describe("what Dispatch sends", () => {
     await view.key(brief(), "Enter");
     expect(created).toHaveLength(0);
     expect(view.one('[aria-label="Confirm dispatch"]')).not.toBeNull();
+    // A deliberate second press, not the first one's echo.
+    await settle(CONFIRM_DISPATCH_MS + 50);
     await view.key(brief(), "Enter");
     expect(created.map((input) => [input.modeId, input.dispatch])).toEqual([["bypassPermissions", true]]);
 
     await view.type(brief(), "Trim it again");
     await view.press(view.one('[aria-label="Dispatch"]'));
     expect(created).toHaveLength(1);
+    await settle(CONFIRM_DISPATCH_MS + 50);
     await view.press(view.one('[aria-label="Confirm dispatch"]'));
     expect(created.map((input) => input.dispatch)).toEqual([true, true]);
 
     await view.type(brief(), "Queue this one");
     await view.key(brief(), "Enter", { metaKey: true });
     expect(created.map((input) => input.dispatch)).toEqual([true, true, false]);
+  });
+
+  it("a second Dispatch right after the first, before the thumb could have decided, starts nothing", async () => {
+    const view = await mount(pane());
+    const brief = () => view.one('textarea[aria-label="Brief"]');
+    await view.type(brief(), "Trim the cache");
+    await view.press(view.pill("Mode"));
+    await view.press(view.all('[role="menuitemradio"]')[1]);
+    await view.press(view.one('[aria-label="Dispatch"]'));
+    // The button now reads Confirm dispatch under the same finger: a press one render later is its echo.
+    await act(async () => view.one('[aria-label="Confirm dispatch"]')?.click());
+    expect(created).toHaveLength(0);
+    await settle(CONFIRM_DISPATCH_MS + 50);
+    await view.press(view.one('[aria-label="Confirm dispatch"]'));
+    expect(created.map((input) => input.dispatch)).toEqual([true]);
+  });
+
+  it("two presses in one frame create the work once", async () => {
+    const view = await mount(pane());
+    await view.type(view.one('textarea[aria-label="Brief"]'), "Queue this");
+    const save = view.one('[aria-label="Save to queue"]');
+    await act(async () => {
+      save?.click();
+      save?.click();
+    });
+    await settle(150);
+    expect(created).toHaveLength(1);
+  });
+
+  it("work created but not started says why, and is not called Dispatched", async () => {
+    createNotice = "Created w1, not started. 3 runs are going: the cap is full.";
+    const view = await mount(pane());
+    await view.type(view.one('textarea[aria-label="Brief"]'), "Run this");
+    await view.press(view.one('[aria-label="Dispatch"]'));
+    await settle(150);
+    expect(created).toHaveLength(1);
+    expect(toasts).toContain("Created w1, not started. 3 runs are going: the cap is full.");
+    expect(toasts).not.toContain("Dispatched");
+    expect(view.one('[data-testid="promise-starts"]')?.textContent).toContain("when the concurrency cap is full");
   });
 
   it("Dispatch stays off until there is a brief or a title", async () => {

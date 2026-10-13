@@ -239,7 +239,9 @@ describe("what the work must land to reach you (J9)", () => {
 
   test("you start it: Dispatch does, Save to queue does not, and Maestro never does (A8)", () => {
     const starts = row(base, "starts");
-    expect(starts).toStartWith("You do: Dispatch starts a session in its own worktree now.");
+    expect(starts).toStartWith("You do: Dispatch starts a session in its own worktree now,");
+    // At the concurrency cap the work is created and not started, and the row says so before you press it.
+    expect(starts).toContain("leaves it queued with the reason when the concurrency cap is full");
     expect(starts).toContain("Save to queue starts nothing: it waits in Queued for you.");
     expect(starts).toContain("Maestro never starts work on its own (A8)");
     expect(starts).not.toContain("lane");

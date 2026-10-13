@@ -5,6 +5,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { FleetView } from "../fleet";
+import { LoopPanel } from "../loop";
 import { LoopsView } from "../loops";
 import type { PresenceRead } from "../presence";
 import { TimelineView } from "../timeline";
@@ -69,7 +70,12 @@ export function PageBody({
         />
       );
     case "loops":
-      return <LoopsView theme={theme} />;
+      return (
+        <>
+          <LoopPanel theme={theme} onClose={() => onPage(null)} />
+          <LoopsView theme={theme} />
+        </>
+      );
     case "settings":
       return (
         <SettingsPage

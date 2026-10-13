@@ -93,6 +93,7 @@ const { createRoot } = require("react-dom/client") as {
 const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
 const { PaseoApiProvider, PluginRpcProvider } = await import("@getpaseo/plugin/client/host");
 const { fakeWork } = await import("../fake-work");
+const { CONFIRM_DISPATCH_MS } = await import("../composer");
 const { NewWorkSheet } = await import("./new-work-sheet");
 const { keyboardLift } = await import("./keyboard-lift");
 
@@ -305,6 +306,7 @@ afterEach(() => {
   reads = answers();
   created.length = 0;
   keyboardListeners.clear();
+  settings.modeId = null;
   const logged = consoleError.mock.calls.map((args) => String(args[0]));
   consoleError.mockClear();
   expect(logged).toEqual([]);
@@ -351,6 +353,43 @@ describe("M9, New work grows from the +", () => {
     await view.press(button(view, "Dispatch"));
     expect(created).toHaveLength(2);
     expect(created[1]?.dispatch).toBe(true);
+  });
+
+  it("a prompt-free run says so beside the verbs, and a second tap in the same breath does not start it", async () => {
+    settings.modeId = "bypassPermissions";
+    const view = await mount(sheet());
+    await view.type(view.one("textarea"), "Trim the cache");
+    expect(view.one('[data-testid="dispatch-warning"]')).toBeNull();
+    await view.press(button(view, "Dispatch"));
+    expect(created).toHaveLength(0);
+    expect(view.one('[data-testid="dispatch-warning"]')?.textContent).toContain("Dispatch again to start it.");
+    // The button reads Confirm dispatch under the same finger: a tap one render later is the first one's echo.
+    await act(async () => button(view, "Confirm dispatch")?.click());
+    expect(created).toHaveLength(0);
+    await settle(CONFIRM_DISPATCH_MS + 50);
+    await view.press(button(view, "Confirm dispatch"));
+    expect(created.map((input) => input.dispatch)).toEqual([true]);
+  });
+
+  it("two taps on Save to queue in one frame create it once", async () => {
+    const view = await mount(sheet());
+    await view.type(view.one("textarea"), "Queue this");
+    const save = button(view, "Save to queue");
+    await act(async () => {
+      save?.click();
+      save?.click();
+    });
+    await settle(150);
+    expect(created).toHaveLength(1);
+  });
+
+  it("listens for the keyboard only while it is mounted", async () => {
+    await mount(sheet());
+    expect(keyboardListeners.get("keyboardDidShow")).toHaveLength(1);
+    expect(keyboardListeners.get("keyboardDidHide")).toHaveLength(1);
+    act(() => mounted.pop()?.());
+    expect(keyboardListeners.get("keyboardDidShow")).toHaveLength(0);
+    expect(keyboardListeners.get("keyboardDidHide")).toHaveLength(0);
   });
 
   it("closing with something typed asks first; with nothing typed it just closes", async () => {
