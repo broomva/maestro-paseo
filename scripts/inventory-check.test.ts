@@ -392,6 +392,45 @@ describe("writerLeaks", () => {
     }
   });
 
+  test("a Bun.write in a file that is no store's writer fails, and so do the Sync writes and a write stream", () => {
+    const dir = tree({
+      "server/ledger.ts": WRITES,
+      "server/sneaky.ts": "await Bun.write(path, text);\n",
+      "server/sync.ts": "writeFileSync(path, text);\n",
+      "server/append.ts": "appendFileSync(path, text);\n",
+      "server/stream.ts": "const out = createWriteStream(path);\n",
+    });
+    try {
+      const found = writerLeaks(inv(["server/ledger.ts"]), dir).join("\n");
+      for (const name of ["sneaky", "sync", "append", "stream"]) expect(found).toContain(`server/${name}.ts`);
+      expect(found).not.toContain("server/ledger.ts");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a write in a subfolder of server/, or in bin/, is found; testdata and tests there are not", () => {
+    const dir = tree({ "server/ledger.ts": WRITES });
+    mkdirSync(join(dir, "server", "deep"));
+    mkdirSync(join(dir, "server", "testdata"));
+    mkdirSync(join(dir, "bin"));
+    writeFileSync(join(dir, "server", "deep", "hidden.ts"), "writeFileSync(path, text);\n");
+    writeFileSync(join(dir, "server", "deep", "hidden.test.ts"), "writeFileSync(path, text);\n");
+    writeFileSync(join(dir, "server", "testdata", "fixture.ts"), "writeFileSync(path, text);\n");
+    writeFileSync(join(dir, "bin", "tool.ts"), "await Bun.write(path, text);\n");
+    try {
+      const found = writerLeaks(inv(["server/ledger.ts"]), dir);
+      // Each is named twice: no store's writer, and a bare write.
+      expect(new Set(found.map((line) => line.split(":")[0]))).toEqual(
+        new Set(["server/deep/hidden.ts", "bin/tool.ts"]),
+      );
+      expect(found.join("\n")).toContain("server/deep/hidden.ts");
+      expect(found.join("\n")).toContain("bin/tool.ts");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a call in a comment or a test file is no write; a read-only file passes", () => {
     const dir = tree({
       "server/reads.ts":

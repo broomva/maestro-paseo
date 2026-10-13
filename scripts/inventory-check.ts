@@ -323,10 +323,12 @@ export function check(inv: Inventory, root: string): string[] {
 // One writer per store, enforced on the source (BRO-2997). The rule above counts the modules a store names; this one
 // reads the server's files and fails any that writes a file without being named a store's writer, so a second writer
 // of a store cannot appear without the inventory saying so. A call counts when it is a write primitive: writeFile,
-// appendFile, rename, or one of Maestro's own appenders (server/atomic.ts, server/jsonl.ts).
+// appendFile (and their Sync forms), createWriteStream, Bun.write, rename, or one of Maestro's own appenders
+// (server/atomic.ts, server/jsonl.ts). Every .ts file under server/ (subfolders too) and bin/ is read; tests and
+// testdata are left out on purpose: they write fixtures and are no part of what runs.
 const WRITE_CALL =
-  /\b(writeFile|appendFile|writeFileAtomic|appendJsonLine|appendJsonLines|appendLinesLocked|rename)\s*\(/;
-const RAW_WRITE = /\b(writeFile|appendFile)\s*\(/;
+  /\b(writeFile|appendFile|writeFileSync|appendFileSync|createWriteStream|writeFileAtomic|appendJsonLine|appendJsonLines|appendLinesLocked|rename|renameSync)\s*\(|\bBun\.write\s*\(/;
+const RAW_WRITE = /\b(writeFile|appendFile|writeFileSync|appendFileSync|createWriteStream)\s*\(|\bBun\.write\s*\(/;
 /** Files that may write with a bare writeFile or appendFile, and why: every other write is atomic or an append under the lock. */
 export const RAW_WRITE_OK: Record<string, string> = {
   "server/control-asks.ts":
@@ -346,6 +348,18 @@ function codeOf(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
 
+/** The non-test .ts files under a folder, subfolders included, as root-relative paths; testdata is no source. */
+function sourcesUnder(root: string, folder: string): string[] {
+  const dir = join(root, folder);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const rel = `${folder}/${entry.name}`;
+    if (entry.isDirectory())
+      return entry.name === "testdata" || entry.name === "node_modules" ? [] : sourcesUnder(root, rel);
+    return entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts") ? [rel] : [];
+  });
+}
+
 export function writerLeaks(inv: Inventory, root: string): string[] {
   const out: string[] = [];
   const named = new Map<string, string>();
@@ -358,9 +372,8 @@ export function writerLeaks(inv: Inventory, root: string): string[] {
     }
   }
   const files = [
-    ...readdirSync(join(root, "server"))
-      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
-      .map((f) => `server/${f}`),
+    ...sourcesUnder(root, "server"),
+    ...sourcesUnder(root, "bin"),
     ...(existsSync(join(root, "index.server.ts")) ? ["index.server.ts"] : []),
   ];
   for (const file of files) {
