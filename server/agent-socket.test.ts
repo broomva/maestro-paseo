@@ -14,6 +14,7 @@ import {
   EXTERNAL_HOLD,
   keepServing,
   MAX_LINE,
+  MAX_OPEN_EXTERNAL,
   serveAgents,
 } from "./agent-socket";
 import { Approvals } from "./approvals";
@@ -602,6 +603,25 @@ describe("who is asking (BRO-2996)", () => {
       // The hold is Maestro's, never the input's: asking for none still leaves it held.
       expect(item.nextRun?.held).toBe(EXTERNAL_HOLD);
       expect(fake.created).toEqual([]);
+    });
+
+    test("only so many wait at once: the next is refused until one is cancelled, and a session's own are not counted (BRO-3088)", async () => {
+      const { repo, ask, engine } = await setup();
+      const ids: string[] = [];
+      for (let n = 1; n <= MAX_OPEN_EXTERNAL; n += 1) {
+        const made = await ask("work.create", external(repo, { title: `Alert ${n}` }), null, null);
+        if (!made.ok) throw new Error(made.error);
+        ids.push((made.output as { item: WorkItem }).item.id);
+      }
+      const over = await ask("work.create", external(repo, { title: "One too many" }), null, null);
+      expect(over.ok).toBe(false);
+      if (!over.ok) expect(over.error).toContain(`${MAX_OPEN_EXTERNAL} items filed from outside any session`);
+      expect((await engine.list()).items).toHaveLength(MAX_OPEN_EXTERNAL);
+      // A verified session files its own, whatever is waiting.
+      expect((await ask("work.create", external(repo, { title: "Mine" }))).ok).toBe(true);
+      // Cancel one: room for one more.
+      await engine.cancel(ids[0] as string);
+      expect((await ask("work.create", external(repo, { title: "After room" }), null, null)).ok).toBe(true);
     });
 
     test("naming a session that is not verified is still refused: only naming none is outside", async () => {

@@ -579,7 +579,7 @@ interfaces:
     callers: [ui]
     gate: owner
     stores: [S-ask-receipts, S-answers-branch]
-    code: [server/control-home.ts, server/control-asks.ts]
+    code: [server/control-home.ts, server/control-asks.ts, server/answers-branch.ts]
   I-approval-decide:
     name: approval.decide (Allow or Deny, against the exact action)
     status: new
@@ -631,7 +631,7 @@ interfaces:
   I-approval-apply: { name: "approval.apply (runs the allowed exact action)", status: new, handler: plugin, callers: [conductor], note: "Not built: BRO-2999 tells the requesting session its answer (approval.decide); a session or the conductor runs what was allowed." }
   I-answer-route: { name: "answer.route (to the asker, a sibling, the driver; else a lane.assign candidate for the conductor)", status: change, handler: plugin, callers: [conductor], stores: [S-ask-receipts], code: [server/answer-routes.ts] }
   I-conductor-decide: { name: "conductor.decide and conductor.undo (file an answer that waits for the conductor as queued work, or dismiss it; 8 s undo)", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-ask-receipts, S-work], code: [server/answer-routes.ts, client/conductor-answers.tsx] }
-  I-answers-land: { name: "answers.land (one PR for maestro/answers)", status: change, handler: plugin, callers: [conductor], stores: [S-answers-branch], code: [server/answers-landing.ts] }
+  I-answers-land: { name: "answers.land (one PR for maestro/answers)", status: change, handler: plugin, callers: [conductor], stores: [S-answers-branch, S-answers-landing], code: [server/answers-landing.ts] }
   I-ask-default: { name: "ask.default (a reversible ask takes its default after 30 min, A4)", status: new, handler: plugin, callers: [conductor], stores: [S-ask-receipts] }
   I-inbox-push: { name: "the inbox echo session that makes a push", status: change, handler: plugin, callers: [plugin], stores: [S-inbox], code: [server/inbox.ts] }
   I-paseo-events: { name: "Paseo hooks (turn started and ended, permission, archived)", status: keep, handler: plugin, callers: [paseo], code: [index.server.ts] }
@@ -666,29 +666,36 @@ stores:
     status: change
     owner: plugin
     modules: [server/store.ts]
-    code: [server/store.ts]
+    code: [server/store.ts, server/locks.ts, server/atomic.ts, server/jsonl.ts]
+    note: "BRO-2997: one lock per item id, a file lock in <workRoot>/.locks (server/locks.ts), so a second daemon on the same root waits its turn; _work.md replaced through a temp file and a rename, the first one included; events appended whole under the lock, a torn last line repaired. The in-memory Map is gone."
   S-wake-log: { name: "~/.config/maestro-paseo/wake-log.jsonl", status: keep, owner: plugin, modules: [server/wake-log.ts], code: [server/wake-log.ts] }
   S-ask-receipts:
     name: ~/.local/state/maestro-paseo/asks.jsonl
     status: change
     owner: plugin
-    modules: [server/control-asks.ts, server/answer-routes.ts]
-    exception: two appenders on different in-process chains, no file lock, until BRO-2997
-    code: [server/control-asks.ts, server/answer-routes.ts]
+    modules: [server/ask-receipts.ts]
+    code: [server/ask-receipts.ts, server/control-asks.ts, server/answer-routes.ts, server/reviews.ts, server/jsonl.ts]
+    note: "BRO-2997: every receipt line (an answer's, what became of it, a review's) is appended through server/ask-receipts.ts, which takes the file's lock, so two daemons never interleave a line."
   S-answers-branch:
     name: the maestro/answers worktree and branch
     status: change
     owner: plugin
-    modules: [server/control-home.ts, server/answers-landing.ts]
-    exception: serialized in process only, until BRO-2997
-    code: [server/control-home.ts, server/answers-landing.ts]
+    modules: [server/answers-branch.ts]
+    code: [server/answers-branch.ts, server/control-home.ts, server/answers-landing.ts]
+    note: "BRO-2997: the worktree and the branch change only in server/answers-branch.ts (make, bring up to main, commit, merge, reset, push), every change under one lock held across processes. control-home.ts commits through it and answers-landing.ts lands through it; neither runs a git command that writes."
+  S-answers-landing:
+    name: "~/.local/state/maestro-paseo/answers-landing.json: where the batch stands (stage, PR, conflict)"
+    status: keep
+    owner: plugin
+    modules: [server/answers-landing.ts]
+    code: [server/answers-landing.ts]
   S-asks-ledgers:
     name: <checkout>/.control/asks/*.yaml — asks, approvals, owner steps, finished, proposals
     status: change
     owner: bstack
-    modules: [server/control-asks.ts, bstack ask_ledger.py]
-    exception: Maestro writes answers itself instead of through the ledger library, until BRO-2997
-    code: [server/control-asks.ts]
+    modules: [server/control-asks.ts]
+    code: [server/control-asks.ts, server/locks.ts]
+    note: "BRO-2997: Maestro's one writer of an ask ledger is control-asks.ts, under the §5.5 lock it shares with bstack's ask_ledger.py (server/locks.ts), a temp file renamed over the ledger. The library's own write is bstack's; Maestro still edits the answer's bytes itself until the ask CLI has an answer verb (BRO-3098)."
   S-verbs: { name: "~/.local/state/maestro-paseo/verbs.jsonl (the owner-verb ledger: pending, undone, applied, dropped)", status: new, owner: plugin, modules: [server/owner-verbs.ts], code: [server/owner-verbs.ts] }
   S-approvals: { name: "~/.local/state/maestro-paseo/approvals.jsonl (approval.request and what became of each)", status: new, owner: plugin, modules: [server/approvals.ts], code: [server/approvals.ts] }
   S-notices-state: { name: "notice state (raised, snoozed, resolved by key; today only snoozes: ~/.local/state/maestro-paseo/notice-snoozes.jsonl)", status: new, owner: plugin, modules: [server/notice-snoozes.ts], code: [server/notice-snoozes.ts] }
@@ -706,15 +713,16 @@ stores:
     name: <fleet state>/.control/asks/*.yaml
     status: change
     owner: bstack
-    modules: [server/fleet.ts, fleet-reconcile tick.sh]
-    exception: Maestro writes the fleet's ledger directly, until BRO-2997
-    code: [server/fleet.ts]
+    modules: [server/control-asks.ts]
+    code: [server/fleet.ts, server/control-asks.ts]
+    note: "BRO-2997: fleet-reconcile's own writers take the same lock; Maestro's one writer is control-asks.ts, reached through Fleet.answer, until the fleet CLI has an answer verb (BRO-3098)."
   S-fleet-reviews:
     name: <fleet state>/proposal-reviews.jsonl
     status: change
     owner: bstack
-    modules: [server/fleet.ts]
-    code: [server/fleet.ts]
+    modules: [server/fleet-reviews.ts]
+    code: [server/fleet-reviews.ts, server/fleet.ts]
+    note: "BRO-2997: written only by server/fleet-reviews.ts, under the ask ledgers' lock root, guarded (no link followed, one hard link), all lines or none and flushed; the fleet CLI has no review verb yet (BRO-3098)."
   S-initiatives: { name: ".control/initiatives/*.yaml", status: keep, owner: bstack, code: [server/initiatives.ts] }
   S-p9: { name: "~/.config/broomva/p9 (CI waits)", status: keep, owner: bstack, code: [server/p9.ts] }
   S-launchd: { name: "~/Library/LaunchAgents plists and logs (read only)", status: keep, owner: bstack, code: [server/launchd.ts] }
@@ -892,24 +900,26 @@ findings:
   FND-multi-writer-stores:
     name: asks.jsonl, the answers branch, the ask ledgers and the fleet's ledgers each have two writer modules
     severity: major
-    state: open
+    state: fixed
     ticket: BRO-2997
     about: [S-ask-receipts, S-answers-branch, S-asks-ledgers, S-fleet-asks]
-    code: [server/control-asks.ts:882, server/answer-routes.ts:755, server/answers-landing.ts:331]
+    code: [server/ask-receipts.ts, server/answers-branch.ts, server/control-asks.ts, server/fleet-reviews.ts]
+    note: "One writer module each, a file lock held across processes under all of them, and scripts/inventory-check.ts fails a server file that writes without being named a store's writer."
   FND-work-lock:
     name: The work store has only an in-memory lock; two daemons on one workRoot race
     severity: major
-    state: open
+    state: fixed
     ticket: BRO-2997
     about: [S-work]
-    code: [server/store.ts:46, server/store.ts:252]
+    code: [server/store.ts, server/locks.ts]
   FND-writes-fleet-state:
     name: Maestro writes fleet-reconcile's ledgers and reviews directly
     severity: major
     state: open
-    ticket: BRO-2997
+    ticket: BRO-3098
     about: [S-fleet-asks, S-fleet-reviews, I-fleet-ask-answer, I-proposal-review]
-    code: [server/fleet.ts:893, server/fleet.ts:975]
+    code: [server/fleet.ts, server/fleet-reviews.ts, server/control-asks.ts]
+    note: "BRO-2997 narrowed it to one guarded writer for each file (a lock shared with the fleet's own writers, a guarded append); the fleet CLI has no answer or review verb, so Maestro still writes them. BRO-3098 asks for the verbs."
   FND-live-script:
     name: The daemon pipes origin/main:scripts/broomva_home.py into python3 on drift writes
     severity: major

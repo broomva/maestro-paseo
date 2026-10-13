@@ -929,6 +929,20 @@ export class Engine {
 
   // ── Human verbs ────────────────────────────────────────────────────────────
 
+  /**
+   * Work filed from outside any session (an alerter, a script) that has not been started or cancelled: held for you,
+   * and each a "Start it yourself" row in Needs you. Counted from the work folders, so a second daemon counts the same.
+   */
+  async openExternalWork(): Promise<number> {
+    const { store } = await this.store();
+    const { items } = await store.scan();
+    return items.filter(
+      (item) =>
+        item.contract.state === "proposed" &&
+        item.events.some((event) => event.type === "created" && event.actor === "agent" && event.via === "external"),
+    ).length;
+  }
+
   async create(paseo: Paseo | null, input: CreateInput, origin: Origin = BY_HUMAN): Promise<WorkItem> {
     // Before anything is written: work a caller may not start is not created half-way by asking for it to start.
     const launch = input.dispatch ? launchRefusal(origin) : null;

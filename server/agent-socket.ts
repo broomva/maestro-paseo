@@ -97,6 +97,9 @@ function requireApprovals(approvals: Approvals | null): Approvals {
   if (!approvals) throw new UserError("This Maestro keeps no approval requests.");
   return approvals;
 }
+/** Work held for you, filed by a caller that names no session, is kept to this many open at once. */
+export const MAX_OPEN_EXTERNAL = 20;
+
 const ForAgent = z.object({ agentId: z.string().min(1).optional() });
 
 const AgentCreate = z.object({
@@ -177,6 +180,14 @@ export function agentMethods(
           );
         }
         if (caller) return engine.createWork(paseo(), input, origin(caller));
+        // Nothing names a session to cap per session, so the open ones are capped as a whole (BRO-3088): a loop that
+        // files work without end is noise in Needs you, never a start, and it is told to stop.
+        const open = await engine.openExternalWork();
+        if (open >= MAX_OPEN_EXTERNAL) {
+          throw new UserError(
+            `${open} items filed from outside any session are still waiting for you, which is the most Maestro holds. Cancel or start some in Maestro, then file this again.`,
+          );
+        }
         const made = await engine.createWork(paseo(), { ...input, hold: EXTERNAL_HOLD }, EXTERNAL);
         // Held work is yours to start, in Needs you at once: the loop flags it so on a wake, which may be off or hours
         // away, and an alert nobody sees is no alert.
