@@ -19,7 +19,8 @@ const USAGE = `bun scripts/dogfood/shot.ts --out <dir> [options]
   --path <surface>     Maestro surface id (default maestro), or an app path starting with / ({server} is replaced)
   --open <title>       Click this work item and save its detail (default: the seeded Needs you item)
   --no-open            Skip the detail shot
-  --steps "a|b|c"      After the desktop shot (and --open), click each name in turn and save step-N after each
+  --steps "a|b|c"      After the desktop shot (and --open), click each name in turn and save step-N after each;
+                       a step "type:words" types them into the first visible text area (the New work brief)
   --wait-for <text>    Text that proves the surface rendered (default: the --open title)
   --state <dir>        The sandbox (default: MAESTRO_DOGFOOD_STATE, then the one up.ts last started here)
   --chrome <path>      Chromium binary (default: newest Playwright Chromium, then DOGFOOD_CHROME)
@@ -149,6 +150,19 @@ export class Page {
     const { data } = await this.send<{ data: string }>("Page.captureScreenshot", { format: "png" });
     await writeFile(path, Buffer.from(data, "base64"));
     console.log(`Saved ${path}`);
+  }
+
+  /** Type `text` into the first visible text area, as a keyboard would (real input events, not a value set). */
+  async type(text: string): Promise<void> {
+    const focused = await this.evaluate<boolean>(`(() => {
+      const el = [...document.querySelectorAll('textarea')].find((one) => one.getBoundingClientRect().width > 0);
+      if (!el) return false;
+      el.focus();
+      return true;
+    })()`);
+    if (!focused) throw new Error("no text area to type in");
+    await this.send("Input.insertText", { text });
+    console.log(`Typed "${text.slice(0, 60)}"`);
   }
 
   /**
@@ -322,7 +336,8 @@ async function main(): Promise<void> {
       // Steps change state (an answer is written once), so they run on the first viewport only.
       if (shot !== shots[0]) continue;
       for (const [index, step] of steps.entries()) {
-        await page.click(step);
+        if (step.startsWith("type:")) await page.type(step.slice("type:".length));
+        else await page.click(step);
         await sleep(1500);
         await page.screenshot(join(out, `maestro-step-${index + 1}-${shot.name}-${theme}.png`));
       }

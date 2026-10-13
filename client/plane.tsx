@@ -396,7 +396,8 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
             onWorkspace={setWorkspace}
             focus={homeFocus}
             onFocusHandled={() => setHomeFocus(null)}
-            onNew={() => setCreating(true)}
+            creating={creating}
+            onCreating={setCreating}
             onOpenWork={setSelected}
             page={phonePage}
             onPage={setPhonePage}

@@ -35,6 +35,7 @@ import {
   contractPromises,
   contractSummary,
   createInput,
+  dispatchStep,
   EMPTY_AGENT,
   type FeatureDef,
   family,
@@ -172,7 +173,34 @@ export function NewWork({
   );
 }
 
-function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPaneProps & { heading: boolean }) {
+/** What a host that draws Save to queue and Dispatch itself (the phone's pinned verbs, M9) is told after every change. */
+export interface ComposerState {
+  /** A title or brief and a place are given: the verbs may be pressed. */
+  ready: boolean;
+  /** The create call is in flight. */
+  pending: boolean;
+  /** A prompt-free run's first Dispatch was pressed: the next one starts it. */
+  confirming: boolean;
+  /** What a prompt-free run says while it waits for the second Dispatch, to show beside the verb; null when it is not one. */
+  warning: string | null;
+  /** Something was typed: closing it would lose it. */
+  dirty: boolean;
+  save: () => void;
+  dispatch: () => void;
+}
+
+export function Composer({
+  theme,
+  compact,
+  onCreated,
+  onClose,
+  heading,
+  onState,
+}: NewWorkPaneProps & {
+  heading: boolean;
+  /** When given, the composer leaves Save to queue and Dispatch to the host and reports their state here. */
+  onState?: (state: ComposerState) => void;
+}) {
   const paseo = usePaseo();
   const verbs = useVerbs();
   const toast = useToast();
@@ -197,6 +225,9 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
   const [error, setError] = useState<string | null>(null);
   /** The prompt-free run a first Dispatch was pressed for; the next Dispatch of the same run starts it. */
   const [armed, setArmed] = useState<string | null>(null);
+  /** When the first Dispatch armed the run, and whether a create is in flight: both read at press time, not render time. */
+  const armedAt = useRef(0);
+  const inFlight = useRef(false);
   const briefRef = useRef<NativeTextInput>(null);
   const searchRef = useRef<NativeTextInput>(null);
 
@@ -364,11 +395,18 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
   const pending = verbs.create.isPending;
   /** Every Dispatch, button or return, comes here: a prompt-free run takes a second press. */
   const submit = (dispatch: boolean) => {
-    if (!ready || pending) return;
-    if (dispatch && unattended && !confirming) {
-      setMenu(null);
-      setArmed(runKey);
-      return;
+    // Two presses in one frame both see the render's `pending` as false: the ref is set by the first.
+    if (!ready || pending || inFlight.current) return;
+    if (dispatch) {
+      const step = dispatchStep(unattended, confirming ? Date.now() - armedAt.current : null);
+      if (step === "arm") {
+        setMenu(null);
+        armedAt.current = Date.now();
+        setArmed(runKey);
+        return;
+      }
+      // The button relabels under the finger: a second press that soon is the first one's echo, not a decision.
+      if (step === "wait") return;
     }
     send(dispatch);
   };
@@ -376,11 +414,17 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
     setMenu(null);
     setError(null);
     setArmed(null);
+    inFlight.current = true;
     verbs.create.mutate(
       createInput({ title, brief, repo, check, gate, initiative, isolation }, agent, shown, dispatch),
       {
-        onSuccess: ({ item }) => {
-          toast.show(dispatch ? "Dispatched" : "Saved to the queue", { variant: "success" });
+        onSettled: () => {
+          inFlight.current = false;
+        },
+        onSuccess: ({ item, notice }) => {
+          // Work created but not started (the concurrency cap) says why: it was not dispatched.
+          if (dispatch && notice) toast.show(notice);
+          else toast.show(dispatch ? "Dispatched" : "Saved to the queue", { variant: "success" });
           setTitle("");
           setBrief("");
           setCheck("");
@@ -391,6 +435,22 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
       },
     );
   };
+
+  // A host that draws the verbs itself is told their state, and calls the same submit (a prompt-free run still asks twice).
+  const latest = useRef({ submit });
+  latest.current = { submit };
+  const dirty = title.trim() !== "" || brief.trim() !== "";
+  useEffect(() => {
+    onState?.({
+      ready,
+      pending,
+      confirming,
+      warning: confirming ? `${SKIPS_WARNING} Dispatch again to start it.` : null,
+      dirty,
+      save: () => latest.current.submit(false),
+      dispatch: () => latest.current.submit(true),
+    });
+  }, [onState, ready, pending, confirming, dirty]);
 
   const onBriefKey = (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
     if (!keyboard) return;
@@ -1028,59 +1088,63 @@ function Composer({ theme, compact, onCreated, onClose, heading }: NewWorkPanePr
 
           <View style={{ flexGrow: 1 }} />
 
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Save to queue"
-            accessibilityState={{ disabled: !ready || pending }}
-            disabled={!ready || pending}
-            onPress={() => submit(false)}
-            style={({ pressed }) => ({
-              height: compact ? 36 : 30,
-              paddingHorizontal: space[2],
-              justifyContent: "center",
-              borderRadius: 15,
-              backgroundColor: pressed ? theme.colors.surface2 : "transparent",
-              opacity: !ready || pending ? 0.5 : 1,
-            })}
-          >
-            <Text style={{ color: theme.colors.foregroundMuted, fontSize: size.sm }}>Save to queue</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={confirming ? "Confirm dispatch" : "Dispatch"}
-            accessibilityState={{ disabled: !ready || pending, busy: pending }}
-            disabled={!ready || pending}
-            onPress={() => submit(true)}
-            style={({ pressed }) => ({
-              height: compact ? 36 : 30,
-              paddingHorizontal: space[3],
-              flexDirection: "row",
-              alignItems: "center",
-              gap: space[2],
-              borderRadius: 15,
-              backgroundColor: ready ? theme.colors.accent : theme.colors.surface2,
-              opacity: pending ? 0.7 : pressed ? 0.85 : 1,
-            })}
-          >
-            <Text
-              style={{
-                color: ready ? theme.colors.accentForeground : theme.colors.foregroundMuted,
-                fontSize: size.sm,
-                fontWeight: "600",
-              }}
-            >
-              {confirming ? "Confirm dispatch" : "Dispatch"}
-            </Text>
-            {pending ? (
-              <ActivityIndicator size="small" color={theme.colors.accentForeground} />
-            ) : (
-              <Icon
-                name="CornerDownLeft"
-                size={14}
-                color={ready ? theme.colors.accentForeground : theme.colors.foregroundMuted}
-              />
-            )}
-          </Pressable>
+          {onState ? null : (
+            <>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Save to queue"
+                accessibilityState={{ disabled: !ready || pending }}
+                disabled={!ready || pending}
+                onPress={() => submit(false)}
+                style={({ pressed }) => ({
+                  height: compact ? 36 : 30,
+                  paddingHorizontal: space[2],
+                  justifyContent: "center",
+                  borderRadius: 15,
+                  backgroundColor: pressed ? theme.colors.surface2 : "transparent",
+                  opacity: !ready || pending ? 0.5 : 1,
+                })}
+              >
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: size.sm }}>Save to queue</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={confirming ? "Confirm dispatch" : "Dispatch"}
+                accessibilityState={{ disabled: !ready || pending, busy: pending }}
+                disabled={!ready || pending}
+                onPress={() => submit(true)}
+                style={({ pressed }) => ({
+                  height: compact ? 36 : 30,
+                  paddingHorizontal: space[3],
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: space[2],
+                  borderRadius: 15,
+                  backgroundColor: ready ? theme.colors.accent : theme.colors.surface2,
+                  opacity: pending ? 0.7 : pressed ? 0.85 : 1,
+                })}
+              >
+                <Text
+                  style={{
+                    color: ready ? theme.colors.accentForeground : theme.colors.foregroundMuted,
+                    fontSize: size.sm,
+                    fontWeight: "600",
+                  }}
+                >
+                  {confirming ? "Confirm dispatch" : "Dispatch"}
+                </Text>
+                {pending ? (
+                  <ActivityIndicator size="small" color={theme.colors.accentForeground} />
+                ) : (
+                  <Icon
+                    name="CornerDownLeft"
+                    size={14}
+                    color={ready ? theme.colors.accentForeground : theme.colors.foregroundMuted}
+                  />
+                )}
+              </Pressable>
+            </>
+          )}
         </View>
       </View>
 
