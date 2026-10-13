@@ -92,6 +92,8 @@ export interface OwnerVerbsOptions {
 
 /** What a settled verb's text says when apply returned nothing. */
 const DID = "Done.";
+/** How long the receipt of a verb that already took effect waits for the ledger. */
+const SETTLE_WAIT_MS = 60_000;
 /** What a verb says when the process that was applying it is gone: whether it took effect is not known. */
 const CLAIMANT_GONE =
   "Maestro stopped while it was taking effect, so it is not known whether it did. It was not applied again.";
@@ -134,8 +136,8 @@ export class OwnerVerbs {
    * Run `work` holding the ledger's lock, after every writer before it, in this process and in any other: a verb is
    * read, decided and recorded without another writer between. Every `write` is made inside one.
    */
-  private serial<T>(work: () => Promise<T>): Promise<T> {
-    return withFileLock(this.path, lockRootBeside(this.path), work, { what: "the verbs ledger" });
+  private serial<T>(work: () => Promise<T>, waitMs?: number): Promise<T> {
+    return withFileLock(this.path, lockRootBeside(this.path), work, { what: "the verbs ledger", waitMs });
   }
 
   /** Protected so a test can hold a read open: the race with another process's write is its to stage. */
@@ -371,13 +373,16 @@ export class OwnerVerbs {
         outcome = "dropped";
         if (!(error instanceof UserError)) this.log(`${entry.verb} ${receipt}: ${(error as Error).message}`);
       }
-      await this.serial(() =>
-        this.write({
-          kind: outcome === "applied" ? "verb.applied" : "verb.dropped",
-          receipt,
-          at: this.stamp(),
-          detail,
-        }),
+      await this.serial(
+        () =>
+          this.write({
+            kind: outcome === "applied" ? "verb.applied" : "verb.dropped",
+            receipt,
+            at: this.stamp(),
+            detail,
+          }),
+        // The verb has taken effect: its receipt waits as long as another writer needs, rather than say it did not.
+        SETTLE_WAIT_MS,
       );
       return outcome;
     } finally {

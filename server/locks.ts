@@ -326,7 +326,8 @@ export async function awaitUnlocked(
 ): Promise<void> {
   const deadline = Date.now() + (options.waitMs ?? 2000);
   // This process's own writers first: they hold the file lock, and they are in memory.
-  await queues.get(`${lockRoot}|${path}`)?.catch(() => undefined);
+  const queued = queues.get(`${lockRoot}|${path}`)?.catch(() => undefined);
+  if (queued) await Promise.race([queued, sleep(options.waitMs ?? 2000)]);
   const key = await lockKey(path).catch(() => null);
   // No folder for the locks yet: nothing has ever been locked there.
   if (key === null) return;
