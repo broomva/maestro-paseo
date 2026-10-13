@@ -7,6 +7,7 @@ import {
   dateLine,
   defaultWake,
   driverText,
+  dueReviewCount,
   evidenceUrl,
   ideaOutcome,
   ideasText,
@@ -127,5 +128,16 @@ describe("the wake date", () => {
     expect(wakeProblem("tomorrow", "2026-10-05")).toBe("Write the date as YYYY-MM-DD.");
     // A day the calendar lacks, which Date.parse alone would roll into March.
     expect(wakeProblem("2027-02-30", "2026-10-05")).toBe("Write the date as YYYY-MM-DD.");
+  });
+});
+
+describe("the due reviews needs.list holds (BRO-3001, BRO-3008)", () => {
+  const rows = [{ key: "review:skene" }, { key: "work:w-1" }, { key: 'ask:["origin/main","a.yaml",null,"A1"]' }];
+  test("counts the review holds; none read is null, and so is a read that could not read the reviews", () => {
+    expect(dueReviewCount({ rows })).toBe(1);
+    expect(dueReviewCount({ rows: [] })).toBe(0);
+    expect(dueReviewCount(null)).toBeNull();
+    expect(dueReviewCount({ rows, unread: ["asks"] })).toBe(1);
+    expect(dueReviewCount({ rows: [], unread: ["reviews"] })).toBeNull();
   });
 });

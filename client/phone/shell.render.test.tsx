@@ -145,6 +145,7 @@ let asks: DecisionAsk[] = [];
 let reviews: Initiative[] = [];
 let needsFail: string | null = null;
 let decideFail: string | null = null;
+let unreadNow: string[] | undefined;
 let pending: Pending[] = [];
 const calls: { method: string; input: unknown }[] = [];
 
@@ -193,6 +194,7 @@ function reset() {
   reviews = [reviewOf("skene")];
   needsFail = null;
   decideFail = null;
+  unreadNow = undefined;
   pending = [];
   calls.length = 0;
   toasts.length = 0;
@@ -214,7 +216,7 @@ const invoke = async (method: string, input: unknown) => {
   switch (method) {
     case "needs.list":
       if (needsFail) throw new Error(needsFail);
-      return needsNow();
+      return unreadNow ? { ...needsNow(), unread: unreadNow } : needsNow();
     case "work.list":
       return {
         root: "/work",
@@ -408,6 +410,32 @@ describe("M1, the Feed at 375 x 812", () => {
     for (let at = 0; at < 3; at += 1) await settle();
     expect(view.text()).toContain("1 of 4");
     expect(view.text()).not.toContain("Couldn't read what needs you.");
+  });
+
+  test("a source needs.list could not read is named over the deck, never hidden (BRO-3008)", async () => {
+    unreadNow = ["asks"];
+    const view = await mount();
+    expect(view.id("unread-sources")?.textContent).toBe("Couldn't read asks: what needs you may be missing holds.");
+    // What it did read is still there to act on.
+    expect(view.text()).toContain("1 of 4");
+  });
+
+  test("an empty deck over an unread source says it could not read, not that nothing needs you", async () => {
+    items = items.filter((item) => item.state !== "review" && item.state !== "blocked");
+    asks = [];
+    reviews = [];
+    unreadNow = ["work"];
+    const view = await mount();
+    expect(view.text()).toContain("Couldn't read what needs you (work).");
+    expect(view.text()).not.toContain("Nothing needs you.");
+  });
+
+  test("a hold that is missing because its source was unread is not said to be answered", async () => {
+    unreadNow = ["work"];
+    const view = await mount({ focus: { hold: "work:w-long-gone-0000", at: 1, from: "push" } });
+    for (let at = 0; at < 3; at += 1) await settle();
+    expect(view.text()).not.toContain("That hold is no longer waiting on you");
+    expect(view.text()).toContain("Couldn't read work");
   });
 
   test("with nothing held, it says nothing needs you, once the read said so", async () => {

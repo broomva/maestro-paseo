@@ -30,12 +30,12 @@ import { holdOf } from "../shared/needs";
 import { sameAsk } from "./decisions";
 import { fateLine, homeText } from "./decisions-model";
 import { errorText } from "./format";
-import { holdsByTab } from "./header-count";
 import { useNeeds, useRefresh } from "./hooks";
 import {
   dateLine,
   defaultWake,
   driverText,
+  dueReviewCount,
   evidenceUrl,
   INTENT_NOT_STATED,
   ideaMeta,
@@ -638,7 +638,7 @@ export function InitiativesView({
   const read = useInitiatives();
   // The tab's "need you" is needs.list's due reviews, the same rows the header counts (BRO-3001).
   const needsRead = useNeeds();
-  const dueReviews = needsRead.data ? holdsByTab(needsRead.data.rows).initiatives : null;
+  const dueReviews = dueReviewCount(needsRead.data);
   const [inbox, setInbox] = useState(false);
   // An answer goes into every read held at once, so the card and the counts say so before the next poll.
   const onAnswered = (answered: DecisionAsk) =>

@@ -61,6 +61,7 @@ import {
   resolveIndex,
   type SheetRow,
   sheetTitle,
+  unreadWords,
 } from "./model";
 import { SheetRows } from "./sheet-rows";
 
@@ -112,6 +113,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const asks = asksRead.data ? decisionAsks(asksRead.data) : [];
   const rows = needs.data?.rows ?? null;
   const read: Read = needs.data ? "ok" : needs.isError ? "error" : "pending";
+  // Sources needs.list could not read (BRO-3008): their holds are missing because the read failed, never answered.
+  const unread = needs.data?.unread;
 
   // Every hold, joined to its work or ask: the deck and the card read this, and every verb sends from it.
   const everyHold = useMemo(() => needsSection(rows ?? [], items, asks), [rows, items, asks]);
@@ -324,8 +327,11 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const empty = (
     <View style={{ paddingVertical: 28, gap: 10, alignItems: "flex-start" }}>
       {read === "pending" ? <ActivityIndicator color={kit.muted} /> : null}
-      <Text accessibilityRole="alert" style={{ color: read === "error" ? kit.danger : kit.muted, fontSize: 16 }}>
-        {deckEmptyWords(read, tab)}
+      <Text
+        accessibilityRole="alert"
+        style={{ color: read === "error" || unread?.length ? kit.danger : kit.muted, fontSize: 16 }}
+      >
+        {deckEmptyWords(read, tab, unread)}
       </Text>
       {read === "error" ? (
         <>
@@ -386,7 +392,12 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
               <Text style={{ color: kit.needs, fontSize: 12.5, fontWeight: "600" }}>From the push · same hold</Text>
             </View>
           ) : null}
-          {gone ? (
+          {unread?.length ? (
+            <Text testID="unread-sources" accessibilityRole="alert" style={{ color: kit.danger, fontSize: 13.5 }}>
+              {unreadWords(unread)}
+            </Text>
+          ) : null}
+          {gone && !unread?.length ? (
             <Text accessibilityRole="alert" style={{ color: kit.warn, fontSize: 13.5 }}>
               That hold is no longer waiting on you: it was answered, or it closed.
             </Text>

@@ -4,7 +4,7 @@
 
 import type { DecisionAsk } from "../shared/fleet";
 import type { Initiative, InitiativeStatus, WaitingOn } from "../shared/initiatives";
-import type { NeedRow } from "../shared/needs";
+import { holdOf, type NeedRow } from "../shared/needs";
 
 export const STATUS_TEXT: Record<InitiativeStatus, string> = {
   active: "Active",
@@ -169,4 +169,15 @@ export function reviewNoticeText(rows: readonly Pick<NeedRow, "title" | "body">[
 /** The ideas for one initiative, open first. */
 export function ideasOf(ideas: readonly DecisionAsk[], initiative: string): DecisionAsk[] {
   return ideas.filter((ask) => ask.idea?.initiative === initiative);
+}
+
+/**
+ * The due reviews needs.list holds (the tab's "need you"): null when needs.list was not read, or could not read the
+ * reviews (`unread`), where "none" would be a guess (BRO-3008).
+ */
+export function dueReviewCount(
+  needs: { rows: readonly Pick<NeedRow, "key">[]; unread?: readonly string[] } | null | undefined,
+): number | null {
+  if (!needs || needs.unread?.includes("reviews")) return null;
+  return needs.rows.filter((row) => holdOf(row.key)?.kind === "review").length;
 }

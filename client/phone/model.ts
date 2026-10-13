@@ -255,10 +255,25 @@ export function feedCounts(
   ];
 }
 
-/** "What the Feed's deck says when nothing holds on you", and when it could not be read, never "nothing". */
-export function deckEmptyWords(read: "pending" | "error" | "ok", tab: PhoneTab): string {
+/**
+ * The sources needs.list could not read, in words (BRO-3008): a hold of one is missing because the read failed, not
+ * because it was answered. null when every source was read.
+ */
+export function unreadWords(unread: readonly string[] | undefined): string | null {
+  return unread?.length ? `Couldn't read ${unread.join(", ")}: what needs you may be missing holds.` : null;
+}
+
+/**
+ * What the deck says when it is empty: never "nothing needs you" over a read that failed or left a source unread.
+ */
+export function deckEmptyWords(
+  read: "pending" | "error" | "ok",
+  tab: PhoneTab,
+  unread: readonly string[] | undefined = undefined,
+): string {
   if (read === "pending") return "Reading what needs you…";
   if (read === "error") return "Couldn't read what needs you.";
+  if (unread?.length) return `Couldn't read what needs you (${unread.join(", ")}).`;
   return tab === "decisions" ? "No decision waits on you." : "Nothing needs you.";
 }
 
