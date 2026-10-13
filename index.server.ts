@@ -21,7 +21,7 @@ import { Launchd, launchdPresence } from "./server/launchd";
 import { Loop } from "./server/loop";
 import { homeWriter, Loops } from "./server/loops";
 import { gitLedger, loopPaths, loopReposPath, multiLedger } from "./server/loops-ledger";
-import { firstSeenMemory, handledOf, needsOf } from "./server/needs";
+import { firstSeenMemory, handledOf, readNeeds } from "./server/needs";
 import { NoticeSnoozes } from "./server/notice-snoozes";
 import { noticesOf } from "./server/notices";
 import { OwnerVerbs } from "./server/owner-verbs";
@@ -97,16 +97,7 @@ import {
 } from "./shared/initiatives";
 import { galleryEnabled, kitGallery } from "./shared/kit";
 import { getLoops } from "./shared/loops";
-import {
-  askHoldKey,
-  listHandled,
-  listNeeds,
-  NEED_SOURCES,
-  type NeedKind,
-  type NeedSource,
-  type Needs,
-  workKey,
-} from "./shared/needs";
+import { askHoldKey, listHandled, listNeeds, type NeedKind, type Needs, workKey } from "./shared/needs";
 import { listNotices, snoozeNotice } from "./shared/notices";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
 import { getTimeline, getTimelineLog } from "./shared/timeline";
@@ -487,73 +478,21 @@ export default function contribute(host: PluginServerContext) {
   // When an undated hold was first seen (an undated ask, the answers batch), in memory only: its `since`
   // holds still across reads, and a hold that went is forgotten, so one that comes back starts again.
   const firstSeen = firstSeenMemory();
-  const needsNow = async (kind?: NeedKind): Promise<Needs> => {
-    // A source that cannot be read this time costs its rows, never their first-seen times; it is named in `unread`,
-    // so a card whose hold is missing can tell a failed read from an answered hold.
-    const unread = new Set<NeedSource>();
-    let decisionsRead = true;
-    const [read, [asks, asksRead], reviews, landing, sessionAgents, open, waiting] = await Promise.all([
-      workItems(),
-      allAsks(),
-      dueReviews().catch((error) => {
-        unread.add("reviews");
-        log(`needs: reading the initiatives: ${(error as Error).message}`);
-        return [];
-      }),
-      (lander?.state() ?? Promise.resolve(null)).catch(() => {
-        unread.add("answers");
-        return null;
-      }),
-      // Which Paseo agent each Claude session is, from the fleet's reports: one prompt counts once.
-      fleet.sessionAgents().catch((error) => {
-        log(`needs: reading the fleet's sessions: ${(error as Error).message}`);
-        return new Map<string, string>();
-      }),
-      // What agents asked leave for, and your decisions still in their window: files, read as they stand.
-      approvals.open().catch((error) => {
-        unread.add("approvals");
-        log(`needs: reading the approval requests: ${(error as Error).message}`);
-        return [];
-      }),
-      verbs.list().catch((error) => {
-        decisionsRead = false;
-        log(`needs: reading your decisions: ${(error as Error).message}`);
-        return { pending: [], recent: [] };
-      }),
-    ]);
-    if (read === null) unread.add("work");
-    if (!asksRead) unread.add("asks");
-    const pending = new Map(
-      waiting.pending
-        .filter((verb) => verb.verb === "approval.decide")
-        .map((verb) => [verb.key, { receipt: verb.receipt, label: verb.label, appliesAt: verb.appliesAt }]),
-    );
-    // The work that could not be read costs its own rows, never the asks', the reviews' or the batch's.
-    const items = read ?? [];
-    const now = Date.now();
-    const needs = needsOf(
+  const needsNow = (kind?: NeedKind): Promise<Needs> =>
+    readNeeds(
       {
-        items,
-        asks,
-        reviews,
-        // The batch with the answers given since its last check: the hold, the badge and J5's tile say one number.
-        landing: landingNow(landing, asks, now),
-        sessionAgents,
-        workspace: workspaceName,
-        approvals: open,
-        pending,
+        work: workItems,
+        asks: allAsks,
+        reviews: dueReviews,
+        landing: () => lander?.state() ?? Promise.resolve(null),
+        // Which Paseo agent each Claude session is, from the fleet's reports: one prompt counts once.
+        sessionAgents: () => fleet.sessionAgents(),
+        // What agents asked leave for, and your decisions still in their window: files, read as they stand.
+        approvals: () => approvals.open(),
+        decisions: () => verbs.list(),
       },
-      now,
-      kind,
-      firstSeen.at,
+      { workspace: workspaceName, now: Date.now(), kind, firstSeen, landing: landingNow, log },
     );
-    if (!kind)
-      firstSeen.keep(
-        needs.rows.map((row) => row.key),
-        unread.size === 0 && decisionsRead,
-      );
-    return unread.size ? { ...needs, unread: NEED_SOURCES.filter((source) => unread.has(source)) } : needs;
-  };
   server.handle(listNeeds, ({ kind }) => needsNow(kind));
   server.handle(listHandled, async () => {
     const [read, [asks]] = await Promise.all([workItems(), allAsks()]);

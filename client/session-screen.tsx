@@ -166,12 +166,19 @@ export function SessionScreen({
             <Chip theme={theme} icon="Timer" label={duration(Date.now() - Date.parse(item.createdAt))} />
           </>
         ) : (
-          <Chip theme={theme} icon="CircleDashed" label="Not tracked as work" />
+          <Chip
+            theme={theme}
+            icon="CircleDashed"
+            label={
+              found.isError ? "Couldn't read its work" : found.isPending ? "Reading its work" : "Not tracked as work"
+            }
+          />
         )}
       </View>
     </View>
   );
 
+  const unreadSources = needs.data?.unread ?? [];
   const heldBy = (
     <Panel theme={theme} label={`Holds on this session${holds.length ? " · the same card as in the chat" : ""}`}>
       {needs.isError ? (
@@ -180,26 +187,55 @@ export function SessionScreen({
         </Text>
       ) : needs.isPending ? (
         <ActivityIndicator color={kit.muted} />
+      ) : holds.length === 0 && unreadSources.length > 0 ? (
+        // A source that could not be read may hold something: that is not "nothing holds on this session".
+        <Text testID="session-holds-unread" style={{ color: kit.fg2, fontSize: 14 }}>
+          {`Couldn't read what holds this session: ${unreadSources.join(", ")} could not be read. Try again in a moment.`}
+        </Text>
       ) : holds.length === 0 ? (
         <Text testID="session-no-holds" style={{ color: kit.fg2, fontSize: 14 }}>
           Nothing holds on this session.
         </Text>
       ) : (
-        holds.map(({ card }) => (
-          <SessionCard
-            key={`${card.key}:${card.version}`}
-            data={card}
-            host={agentId}
-            theme={theme}
-            compact={!wide}
-            actions={actions}
-          />
-        ))
+        <>
+          {holds.map(({ card }) => (
+            <SessionCard
+              key={`${card.key}:${card.version}`}
+              data={card}
+              host={agentId}
+              theme={theme}
+              compact={!wide}
+              actions={actions}
+            />
+          ))}
+          {unreadSources.length > 0 ? (
+            <Text testID="session-holds-unread" style={{ color: kit.warn, fontSize: 12.5 }}>
+              {`Couldn't read ${unreadSources.join(", ")}: more may hold on this session.`}
+            </Text>
+          ) : null}
+        </>
       )}
     </Panel>
   );
 
-  const work = item ? (
+  // A read that failed is not "Maestro keeps no work": it says so, and offers nothing to track.
+  const workUnread = found.isError ? (
+    <Panel theme={theme} label="Work">
+      <Text testID="session-work-unread" style={{ color: kit.fg2, fontSize: 14, lineHeight: 20 }}>
+        {`Couldn't read this session's work: ${errorText(found.error)}`}
+      </Text>
+      <View style={{ flexDirection: "row" }}>
+        <Button theme={theme} label="Try again" compact={!wide} onPress={() => void found.refetch()} />
+      </View>
+    </Panel>
+  ) : found.isPending ? (
+    <Panel theme={theme} label="Work">
+      <ActivityIndicator color={kit.muted} />
+    </Panel>
+  ) : null;
+  const work = workUnread ? (
+    workUnread
+  ) : item ? (
     <Panel theme={theme} label="Work">
       <Fact theme={theme} label="Brief" value={detail.data?.brief ? briefLine(detail.data.brief) : "—"} />
       <Fact theme={theme} label="Changed" value={changedLine(item) ?? "nothing read yet"} />

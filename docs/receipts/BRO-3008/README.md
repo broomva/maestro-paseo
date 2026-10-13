@@ -2,8 +2,7 @@
 
 `bun scripts/dogfood/up.ts --plugin .`, `control.ts` (an ask stamped with `origin.agent_id` of the second session),
 then `bun scripts/dogfood/cards.ts --out <dir> [--theme dark]`: real Chromium against the throwaway daemon, real
-stand-in sessions paused on `git push`. Ids in the run are in their real shapes: agent `a2371a91-…`, work
-`w-…` uuid and permission request `perm_…` are three different strings.
+stand-in sessions paused on `git push`. Ids in the run are in their real shapes: the Paseo agent id, the work id and the permission request id are three different strings.
 
 | File | What it shows (frame) |
 | --- | --- |

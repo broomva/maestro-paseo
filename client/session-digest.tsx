@@ -68,6 +68,11 @@ export function DigestCard({
             <DigestLine key={row.key} row={row} theme={theme} actions={actions} />
           ))}
           {state.more > 0 ? <Text style={{ color: kit.muted, fontSize: 12.5 }}>{`and ${state.more} more`}</Text> : null}
+          {state.unread.length > 0 ? (
+            <Text testID="card-unread" style={{ color: kit.warn, fontSize: 12.5 }}>
+              {`Couldn't read ${state.unread.join(", ")}: more may need you.`}
+            </Text>
+          ) : null}
           <View style={{ flexDirection: "row" }}>
             <OpenLink theme={theme} onPress={actions.maestro} />
           </View>

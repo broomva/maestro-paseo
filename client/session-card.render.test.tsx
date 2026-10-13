@@ -11,7 +11,7 @@
 import { afterAll, afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { Window } from "happy-dom";
 import type { ComponentProps, ReactNode } from "react";
-import type { CardData } from "../shared/card";
+import { type CardData, holdVersion } from "../shared/card";
 
 const SLOW = 30_000;
 const it = (name: string, run: () => Promise<void>) => test(name, run, SLOW);
@@ -120,6 +120,8 @@ interface Sim {
   workFail: string | null;
   /** needs.list waits for this before it answers: a daemon that is slow to read everything. */
   needsHeld: Promise<void> | null;
+  /** work.for-agent fails with this. */
+  agentWorkFail: string | null;
   /** A reason approval.decide refuses with. */
   refuse: string | null;
   events: { ts: string; type: string; actor: "human" | "agent" | "maestro"; text: string; detail: string | null }[];
@@ -137,6 +139,7 @@ const blank = (): Sim => ({
   workFail: null,
   refuse: null,
   needsHeld: null,
+  agentWorkFail: null,
   events: [],
   calls: [],
 });
@@ -268,6 +271,7 @@ const invoke = async (method: string, input: unknown) => {
       };
     }
     case "work.for-agent": {
+      if (sim.agentWorkFail) throw new Error(sim.agentWorkFail);
       const { agentId } = input as { agentId: string };
       return { item: sim.items.find((entry) => entry.worker?.agentId === agentId) ?? null };
     }
@@ -444,7 +448,7 @@ const askFixture = (extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
 const askCardOf = (ask: DecisionAsk): CardData => {
   const row = holdsNow().rows.find((one) => one.key === askHoldKey(ask));
   if (!row) throw new Error("the ask is not a hold");
-  return { kind: "ask", key: row.key, version: row.since };
+  return { kind: "ask", key: row.key, version: holdVersion(row) };
 };
 
 // ── Approval ─────────────────────────────────────────────────────────────────
@@ -628,6 +632,21 @@ describe("a failed read is never 'nothing pending' or 'resolved'", () => {
     expect(view.byId("card-settled")).toBeNull();
   });
 
+  it("an unread source together with a failed ledger is unread and keeps reading: it never settles into 'resolved'", async () => {
+    sim.items = [];
+    sim.unread = ["work"];
+    sim.ledgerFail = "verbs.list timed out";
+    const view = await mount(card(approvalCard));
+    await view.until(() => view.byId("card-unread") !== null);
+    expect(view.byId("card-settled")).toBeNull();
+    // It is still live: when the reads come back with the hold, the card offers it again, with no remount.
+    sim.items = [asking()];
+    sim.unread = [];
+    sim.ledgerFail = null;
+    await view.refetch();
+    await view.until(() => view.byLabel("Allow") !== null);
+  });
+
   it("a ledger that failed hides a decision already waiting, so the verbs are not offered blind", async () => {
     sim.items = [asking()];
     sim.ledgerFail = "verbs.list timed out";
@@ -722,7 +741,7 @@ describe("an owner step card", () => {
   it("says where it is done and how Maestro knows, and Start it dispatches the work", async () => {
     sim.items = [stuck()];
     const row = holdsNow().rows[0];
-    const data: CardData = { kind: "owner_step", key: "work:w-install-hooks", version: row?.since ?? "" };
+    const data: CardData = { kind: "owner_step", key: "work:w-install-hooks", version: row ? holdVersion(row) : "" };
     const view = await mount(card(data, null));
     expect(view.text()).toContain("Owner step");
     expect(view.text()).toContain("Start it yourself");
@@ -734,7 +753,7 @@ describe("an owner step card", () => {
   it("with no session it opens the hold on the Feed, not a session page", async () => {
     sim.items = [stuck()];
     const row = holdsNow().rows[0];
-    const data: CardData = { kind: "owner_step", key: "work:w-install-hooks", version: row?.since ?? "" };
+    const data: CardData = { kind: "owner_step", key: "work:w-install-hooks", version: row ? holdVersion(row) : "" };
     const view = await mount(card(data, null));
     await view.press(view.byLabel("Open in Maestro"));
     expect(went).toEqual(["hold:work:w-install-hooks"]);
@@ -948,6 +967,24 @@ describe("the inbox digest", () => {
     expect(view.byLabel("The inventory checker landed, Finished · BRO-2917")).not.toBeNull();
   });
 
+  it("a source that could not be read is named, never 'Nothing needs you now'", async () => {
+    sim.items = [];
+    sim.unread = ["asks"];
+    const view = await mount(card(digest, null));
+    await view.until(() => view.byId("card-unread") !== null);
+    expect(view.byId("card-unread")?.textContent).toContain("Couldn't read what needs you (asks)");
+    expect(view.text()).not.toContain("Nothing needs you");
+  });
+
+  it("holds listed with a source unread: the digest lists them and says more may need you", async () => {
+    sim.items = [asking()];
+    sim.unread = ["reviews"];
+    const view = await mount(card(digest, null));
+    await view.until(() => view.byId("card-unread") !== null);
+    expect(view.text()).toContain("1 thing needs you");
+    expect(view.byId("card-unread")?.textContent).toContain("Couldn't read reviews: more may need you.");
+  });
+
   it("a needs.list that failed is not 'Nothing needs you now'", async () => {
     sim.items = [asking()];
     sim.needsFail = "socket closed";
@@ -1061,6 +1098,39 @@ describe("the session page (K2)", () => {
     await view.until(() => view.byId("session-holds-unread") !== null);
     expect(view.byId("session-holds-unread")?.textContent).toContain("Couldn't read what holds this session");
     expect(view.byId("session-no-holds")).toBeNull();
+  });
+
+  it("a source that could not be read is not 'nothing holds': it says what it could not read", async () => {
+    sim.items = [asking({ permission: null })];
+    sim.unread = ["work", "asks"];
+    const view = await mount(screen(AGENT));
+    await view.until(() => view.byId("session-holds-unread") !== null);
+    expect(view.byId("session-holds-unread")?.textContent).toContain("work, asks could not be read");
+    expect(view.byId("session-no-holds")).toBeNull();
+  });
+
+  it("with holds listed and a source unread, the holds show and the page says more may hold", async () => {
+    sim.items = [asking()];
+    sim.unread = ["asks"];
+    const view = await mount(screen(AGENT));
+    await view.until(() => view.byLabel("Allow") !== null);
+    expect(view.byId("session-holds-unread")?.textContent).toContain(
+      "Couldn't read asks: more may hold on this session",
+    );
+  });
+
+  it("a work read that failed is not 'Maestro keeps no work': it says it could not read, and offers nothing to track", async () => {
+    sim.items = [asking({ permission: null })];
+    sim.agentWorkFail = "daemon busy";
+    const view = await mount(screen(AGENT));
+    await view.until(() => view.byId("session-work-unread") !== null);
+    expect(view.byId("session-work-unread")?.textContent).toContain("Couldn't read this session's work: daemon busy");
+    expect(view.text()).not.toContain("Maestro keeps no work");
+    expect(view.byLabel("Track as work")).toBeNull();
+    expect(view.text()).toContain("Couldn't read its work");
+    sim.agentWorkFail = null;
+    await view.press(view.byLabel("Try again"));
+    await view.until(() => view.byId("session-work-unread") === null);
   });
 
   it("a session Maestro does not track still opens, shows its holds and offers to track it", async () => {

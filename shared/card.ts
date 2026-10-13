@@ -49,14 +49,24 @@ export const cardId = (card: CardData): string => `${CARD_KIND}:${card.kind}:${c
 /** The key a digest has when it accompanies no one landing. */
 export const DIGEST_KEY = "needs";
 
+/** A short stable word for some content: FNV-1a over its JSON, as eight hex digits. */
+export function wordOf(value: unknown): string {
+  let hash = 0x811c9dc5;
+  for (const char of JSON.stringify(value) ?? "") hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193) >>> 0;
+  return hash.toString(16).padStart(8, "0");
+}
+
 /**
- * Which raise of its key a hold is: a permission prompt is its request id (a session that raises another prompt is
- * another hold under the same key); an `approval:<id>` already names its request; any other hold is when it began
- * waiting, which holds still for as long as the hold lasts (server/needs.ts firstSeenMemory).
+ * Which raise of its key a hold is, from durable data only: a permission prompt is its request id (a session that
+ * raises another prompt is another hold under the same key); an `approval:<id>` already names its request; any
+ * other hold is a word of what it says (its key, its title and its body). Never a first-seen time kept in memory:
+ * an undated ask or the answers batch would then get a new version, and a new card, with every daemon restart. The
+ * same hold says the same words, so a card appended again after a restart replaces itself; a hold whose question
+ * was edited is another raise, which the older card says.
  */
 export function holdVersion(row: NeedRow): string {
   if (row.kind === "approval") return row.body.requestId ?? row.key;
-  return row.since;
+  return wordOf([row.key, row.title, row.body]);
 }
 
 /** The card a hold gets in its own session, or null when it has none (a hold that names no session). */

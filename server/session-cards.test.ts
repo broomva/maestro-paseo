@@ -3,22 +3,22 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeWork } from "../client/fake-work";
-import { CARD_KIND, CARD_VERSION, CardSchema, cardId } from "../shared/card";
+import { CARD_KIND, CARD_VERSION, CardSchema, cardId, holdCard, holdVersion, wordOf } from "../shared/card";
 import type { MaestroConfig, WorkItem } from "../shared/contracts";
+import type { DecisionAsk } from "../shared/fleet";
 import { type NeedRow, workKey } from "../shared/needs";
 import { defaultConfig } from "./config";
 import { Engine, UNDO_MS } from "./engine";
 import type { WorkEvent } from "./events";
 import { fakePaseo } from "./fake-paseo";
-import { needsOf, type OpenApproval } from "./needs";
+import { answersNeed, askNeed, needsOf, type OpenApproval } from "./needs";
 import {
   APPEND_MS,
-  CARD_ATTEMPTS,
+  backoffMs,
   cardsDue,
   type Landing,
   landingOf,
   lastLanding,
-  reasonVersion,
   SessionCards,
   STUCK_CARD_MS,
 } from "./session-cards";
@@ -39,6 +39,83 @@ const AGENT = "6f1c2e0a-93b4-4d7e-8a15-2c9d0b7e41aa";
 const OTHER_AGENT = "b3d9a7f2-0c51-4e8a-9f6d-71e2a4c85b03";
 const WORK = "w-20261012-ledger-1f3a";
 const worker = { agentId: AGENT, workspaceId: "ws-5d2" };
+
+const askFixture = (extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
+  ledger: "sti-3587.yaml",
+  uid: null,
+  id: "A1",
+  hash: "0123456789abcdef",
+  arc: null,
+  headline: "Approve STIMULUS.md as the seed?",
+  question: null,
+  stakes: "Every lane waits on it.",
+  whyYou: "It sets the voice.",
+  options: [{ id: "approve", label: "Approve", consequence: "Lanes align.", reversible: true, recommended: true }],
+  fallback: null,
+  blocking: true,
+  askedAt: null,
+  answeredAt: null,
+  answer: null,
+  answerOption: null,
+  state: "open",
+  origin: { agentId: AGENT, cwd: null },
+  refusal: null,
+  home: { kind: "main", path: "/ctl", branch: null },
+  batched: false,
+  waiting: true,
+  ...extra,
+});
+
+describe("a card's version is durable: a restart appends the same id, never a newer card", () => {
+  const NOW = Date.parse("2026-10-12T15:00:00.000Z");
+  const idAfterRestart = (ask: DecisionAsk, first: string, then: string) => {
+    // Two processes of the plugin: each first saw an undated ask at its own time (firstSeenMemory is in memory only).
+    const before = askNeed(ask, "broomva", NOW, () => first);
+    const after = askNeed(ask, "broomva", NOW + 3_600_000, () => then);
+    if (!before || !after) throw new Error("not a hold");
+    return [holdCard(before)?.card, holdCard(after)?.card] as const;
+  };
+
+  test("an undated ask is the same card after a restart, though its first-seen time moved", () => {
+    const [before, after] = idAfterRestart(askFixture(), "2026-10-12T14:00:00.000Z", "2026-10-12T15:00:00.000Z");
+    expect(before).toEqual(after);
+    expect(cardId(before as never)).toBe(cardId(after as never));
+  });
+
+  test("a dated ask is the same card too, and an ask whose question was edited is another raise", () => {
+    const dated = askFixture({ askedAt: "2026-10-12T13:00:00.000Z" });
+    const [before, after] = idAfterRestart(dated, "x", "y");
+    expect(before).toEqual(after);
+    const edited = askNeed(
+      askFixture({ ...dated, headline: "Approve STIMULUS.md, revised?" }),
+      "broomva",
+      NOW,
+      () => "x",
+    );
+    expect(holdCard(edited as NeedRow)?.card.version).not.toBe(before?.version);
+  });
+
+  test("the answers batch, undated, keeps its version across restarts (its last check moves on with every wake)", () => {
+    const landing = {
+      stage: "waiting",
+      pending: 2,
+      asks: [],
+      pr: { number: 915, url: "https://github.com/broomva/workspace/pull/915" },
+      conflict: null,
+      error: null,
+      landed: null,
+      checkedAt: "2026-10-12T14:00:00.000Z",
+    } as never;
+    const one = answersNeed(landing, "broomva", NOW, () => "first");
+    const two = answersNeed(
+      { ...(landing as object), checkedAt: "2026-10-12T15:00:00.000Z" } as never,
+      "broomva",
+      NOW,
+      () => "later",
+    );
+    expect(holdVersion(one as NeedRow)).toBe(holdVersion(two as NeedRow));
+  });
+});
 
 describe("which cards are due (cardsDue)", () => {
   const NOW = Date.parse("2026-10-12T15:00:00.000Z");
@@ -82,7 +159,7 @@ describe("which cards are due (cardsDue)", () => {
       session: { agentId: AGENT, name: "6f1c2e0a", waiting: true },
     } as NeedRow;
     expect(cardsDue({ holds: [row], items: [], landings: none, now: NOW })).toEqual([
-      { agentId: AGENT, card: { kind: "owner_step", key: "work:w-yours", version: "2026-10-12T12:00:00.000Z" } },
+      { agentId: AGENT, card: { kind: "owner_step", key: "work:w-yours", version: holdVersion(row) } },
     ]);
   });
 
@@ -117,12 +194,12 @@ describe("which cards are due (cardsDue)", () => {
     expect(due).toEqual([
       {
         agentId: AGENT,
-        card: { kind: "health", key: workKey(WORK), version: reasonVersion("Session ended mid-turn") },
+        card: { kind: "health", key: workKey(WORK), version: wordOf("Session ended mid-turn") },
       },
     ]);
     // The same cause is the same card however often the work is written; another cause is another card.
-    expect(reasonVersion("a")).toBe(reasonVersion("a"));
-    expect(reasonVersion("a")).not.toBe(reasonVersion("b"));
+    expect(wordOf("a")).toBe(wordOf("a"));
+    expect(wordOf("a")).not.toBe(wordOf("b"));
   });
 });
 
@@ -142,6 +219,11 @@ async function setup(options: { settleMs?: number } = {}) {
   const fake = fakePaseo();
   const logs: string[] = [];
   const log = (message: string) => logs.push(message);
+  /** The cards' own clock (their backoff); a test moves it on by hand. */
+  let wall = Date.now();
+  const advance = (ms: number) => {
+    wall += ms;
+  };
   /** One plugin process: an engine and its cards. A second call is the plugin after a restart. */
   const boot = () => {
     // The cards read as the daemon does: the holds needs.list projects, and the work as the store has it.
@@ -163,7 +245,7 @@ async function setup(options: { settleMs?: number } = {}) {
           ).rows,
       },
       log,
-      { settleMs: options.settleMs ?? 60_000, appendMs: 300 },
+      { settleMs: options.settleMs ?? 60_000, appendMs: 300, now: () => wall },
     );
     const engine = new Engine({
       now: () => new Date(clock),
@@ -202,7 +284,7 @@ async function setup(options: { settleMs?: number } = {}) {
     await first.engine.sweep(fake.paseo);
     return (await first.engine.get(id)).item;
   };
-  return { ...first, boot, fake, logs, create, endTurn, decide };
+  return { ...first, boot, fake, logs, create, endTurn, decide, advance };
 }
 
 describe("the cards in the session's own timeline", () => {
@@ -302,21 +384,121 @@ describe("the cards in the session's own timeline", () => {
     expect(passing.fake.appended).toEqual([]);
   });
 
-  test("an append that fails is logged and tried on the next pass, three times, and the landing stands", async () => {
-    const { create, endTurn, fake, engine, logs, cards } = await setup();
+  test("a daemon that is down for many passes is not given up on: the card is delivered once it is back, once", async () => {
+    const { create, endTurn, fake, engine, logs, cards, advance } = await setup();
     fake.setAppend("throw");
     const item = await create();
     await endTurn();
-    for (let pass = 0; pass < CARD_ATTEMPTS + 2; pass += 1) await cards.reconcile();
+    // Seven sweeps with Paseo refusing; each waits out its backoff, so each really tries.
+    for (let pass = 1; pass <= 7; pass += 1) {
+      await cards.reconcile();
+      advance(backoffMs(pass) + 1);
+    }
+    expect(fake.appended).toHaveLength(7);
     const { item: landed, events } = await engine.get(item.id);
     expect(landed.state).toBe("review");
     expect(events.at(-1)?.text).toBe("Waiting on you");
-    expect(fake.appended).toHaveLength(CARD_ATTEMPTS);
-    expect(logs.some((line) => line.includes("not added to agent-1: agent is not loaded"))).toBe(true);
-    // A daemon that comes back is not asked for a card it was let go of; a new raise is another card.
+    expect(logs.some((line) => line.includes("not added to agent-1 (try 7): agent is not loaded"))).toBe(true);
     fake.setAppend("ok");
     await cards.reconcile();
-    expect(fake.appended).toHaveLength(CARD_ATTEMPTS);
+    expect(fake.appended).toHaveLength(8);
+    // And it is left: later passes add nothing.
+    await cards.reconcile();
+    await cards.reconcile();
+    expect(fake.appended).toHaveLength(8);
+  });
+
+  test("a failed card waits out its backoff, which grows and stops at five minutes", async () => {
+    const { create, endTurn, fake, cards, advance } = await setup();
+    fake.setAppend("throw");
+    await create();
+    await endTurn();
+    await cards.reconcile();
+    // Looked again at once, it is not tried: it is still inside its first backoff.
+    await cards.reconcile();
+    expect(fake.appended).toHaveLength(1);
+    advance(backoffMs(1) + 1);
+    await cards.reconcile();
+    expect(fake.appended).toHaveLength(2);
+    expect(backoffMs(1)).toBeLessThan(backoffMs(2));
+    expect(backoffMs(40)).toBe(5 * 60_000);
+  });
+
+  test("every hold is carded once however many passes look: two passes, one append per hold", async () => {
+    const { create, endTurn, fake, engine, cards } = await setup();
+    const item = await create();
+    await endTurn();
+    await engine.onPermissionRequested(
+      { id: "agent-1" },
+      { id: "p1", name: "Bash", title: "Run a command", description: "git push" },
+    );
+    await cards.reconcile();
+    await cards.reconcile();
+    await cards.reconcile();
+    expect(fake.appended.map((entry) => entry.item.data)).toEqual([
+      { kind: "approval", key: workKey(item.id), version: "p1" },
+    ]);
+  });
+
+  test("a hold that went and came back is carded afresh: what is no longer due is forgotten", async () => {
+    const fake = fakePaseo();
+    const asked: OpenApproval = {
+      id: "e4a1c0",
+      at: "2026-10-12T09:00:00.000Z",
+      agentId: AGENT,
+      action: "git push origin main",
+      heldBy: "gate",
+      title: "Push",
+      scope: "broomva",
+      evidence: [],
+      after: [],
+    };
+    fake.addSession(AGENT);
+    let open: OpenApproval[] = [asked];
+    const cards = new SessionCards(
+      () => fake.paseo,
+      {
+        holds: async () =>
+          needsOf({ items: [], asks: [], reviews: [], landing: null, workspace: "w", approvals: open }, Date.now())
+            .rows,
+        work: async () => [],
+      },
+      () => undefined,
+      { settleMs: 60_000 },
+    );
+    await cards.reconcile();
+    expect(fake.appended).toHaveLength(1);
+    open = [];
+    await cards.reconcile();
+    open = [asked];
+    await cards.reconcile();
+    expect(fake.appended).toHaveLength(2);
+  });
+
+  test("a session that is archived gets no card: Stop archives it and marks the work stuck, and the next pass would card it", async () => {
+    const fake = fakePaseo();
+    const stuck = fakeWork(WORK, "blocked", worker, { reason: "Stopped by you", updatedAt: new Date().toISOString() });
+    fake.addSession(AGENT);
+    const agent = fake.agents.get(AGENT);
+    if (agent) agent.archivedAt = new Date().toISOString();
+    const cards = new SessionCards(
+      () => fake.paseo,
+      { holds: async () => [], work: async () => [stuck] },
+      () => undefined,
+      { settleMs: 60_000 },
+    );
+    await cards.reconcile();
+    expect(fake.appended).toEqual([]);
+    // The same stop in a session that is live is carded.
+    if (agent) agent.archivedAt = null;
+    const later = new SessionCards(
+      () => fake.paseo,
+      { holds: async () => [], work: async () => [stuck] },
+      () => undefined,
+      { settleMs: 60_000 },
+    );
+    await later.reconcile();
+    expect(fake.appended.map((entry) => entry.item.data)).toMatchObject([{ kind: "health", key: workKey(WORK) }]);
   });
 
   test("an append that never answers is given up on, not waited for: the pass ends and the landing stands", async () => {
@@ -339,6 +521,7 @@ describe("the cards in the session's own timeline", () => {
   test("a source that cannot be read costs the pass, logged, and the next one reads again", async () => {
     const fake = fakePaseo();
     const logs: string[] = [];
+    fake.addSession(AGENT);
     let failing = true;
     const asked: OpenApproval = {
       id: "e4a1c0",

@@ -11,10 +11,11 @@
 //   - stuck work: work that stopped within the last quarter hour, in the session it stopped in.
 //
 // A card is advisory and carries only {kind, key, version} (shared/card.ts): it reads the hold live. An append that
-// fails is logged and tried again on the next pass, three times, never touching the landing or the sweep.
+// fails is logged and tried again on later passes, with backoff, for as long as the hold is live; it never touches
+// the landing or the sweep. A session that is archived or gone gets no card.
 // Cards are never added to a session Maestro does not track, because only a hold, a landing or stuck work names one.
 
-import { CARD_KIND, CARD_VERSION, type CardData, cardId, holdCard } from "../shared/card";
+import { CARD_KIND, CARD_VERSION, type CardData, cardId, holdCard, wordOf } from "../shared/card";
 import type { WorkItem } from "../shared/contracts";
 import { type NeedRow, workKey } from "../shared/needs";
 import { type WorkEvent, workerOf } from "./events";
@@ -49,8 +50,8 @@ export function landingOf(before: Pick<StoredWork, "events">, after: Pick<Stored
 export const STUCK_CARD_MS = 15 * 60_000;
 /** How long a landing waits before it is carded, so a prompt raised with it is seen first and carded as the approval. */
 export const SETTLE_MS = 2_000;
-/** How many times a card is tried, across passes, before it is let go (a session that is gone refuses every one). */
-export const CARD_ATTEMPTS = 3;
+/** How long a failed card waits before its next try: 15 s, doubling, never more than 5 min. */
+export const backoffMs = (failures: number): number => Math.min(5 * 60_000, 15_000 * 2 ** Math.max(0, failures - 1));
 
 /** How long one append may take before the pass stops waiting for it and counts it failed. */
 export const APPEND_MS = 10_000;
@@ -70,13 +71,6 @@ export interface Landing {
 export interface Due {
   agentId: string;
   card: CardData;
-}
-
-/** A short stable word for a stop's reason, so one cause is one card however often the work is written. */
-export function reasonVersion(reason: string | null): string {
-  let hash = 0x811c9dc5;
-  for (const char of reason ?? "") hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193) >>> 0;
-  return hash.toString(16).padStart(8, "0");
 }
 
 /**
@@ -107,7 +101,7 @@ export function cardsDue(input: {
     if (input.now - Date.parse(item.updatedAt) > STUCK_CARD_MS) continue;
     due.push({
       agentId: item.worker.agentId,
-      card: { kind: "health", key: workKey(item.id), version: reasonVersion(item.reason) },
+      card: { kind: "health", key: workKey(item.id), version: wordOf(item.reason) },
     });
   }
   return due;
@@ -129,8 +123,8 @@ export interface SessionCardOptions {
 }
 
 export class SessionCards {
-  /** Per card id, how many times appending it has failed; `CARD_ATTEMPTS` is a card let go, 0 a card left. */
-  private readonly tried = new Map<string, number>();
+  /** Per card id: left (`done`), or failing, with when it may be tried again. Forgotten once the card is not due. */
+  private readonly tried = new Map<string, { done: true } | { done: false; failures: number; retryAt: number }>();
   /** Per work id, the latest landing seen live: the only finished card that is raised. */
   private readonly landings = new Map<string, Landing>();
   private running: Promise<void> | null = null;
@@ -210,13 +204,22 @@ export class SessionCards {
     }
     this.forget(items);
     const due = cardsDue({ holds, items, landings: this.landings, now: this.now() });
+    const live = new Set(due.map(({ card }) => cardId(card)));
+    // What is no longer due (the hold was answered, the stop is old) is forgotten, so a hold that comes back is carded
+    // afresh; and what is due is carded once, however many passes look.
+    for (const id of this.tried.keys()) if (!live.has(id)) this.tried.delete(id);
     for (const { agentId, card } of due) {
       const id = cardId(card);
-      const failed = this.tried.get(id) ?? 0;
-      if (failed === -1 || failed >= CARD_ATTEMPTS) continue;
-      // Claimed before the append, so a pass that starts meanwhile (it cannot: one at a time) still leaves it once.
-      this.tried.set(id, -1);
+      const seen = this.tried.get(id);
+      if (seen?.done) continue;
+      if (seen && seen.retryAt > this.now()) continue;
       try {
+        // A session that is archived or gone cannot show a card (Stop archives the session and marks the work stuck).
+        if (await this.gone(paseo, agentId)) {
+          this.tried.set(id, { done: true });
+          if (card.kind === "finished") this.landings.delete(card.key.slice("work:".length));
+          continue;
+        }
         await within(
           paseo.agents.ref(agentId).timeline.append({
             type: "plugin",
@@ -227,11 +230,25 @@ export class SessionCards {
           }),
           this.appendMs,
         );
+        this.tried.set(id, { done: true });
         if (card.kind === "finished") this.landings.delete(card.key.slice("work:".length));
       } catch (error) {
-        this.tried.set(id, failed + 1);
-        this.log(`card ${id} not added to ${agentId}: ${(error as Error).message}`);
+        // Never given up on while the hold is live: tried again on a later pass, further apart each time.
+        const failures = (seen?.failures ?? 0) + 1;
+        this.tried.set(id, { done: false, failures, retryAt: this.now() + backoffMs(failures) });
+        this.log(`card ${id} not added to ${agentId} (try ${failures}): ${(error as Error).message}`);
       }
+    }
+  }
+
+  /** Whether the session is archived or no longer there: nothing to leave a card in. Any other failure throws. */
+  private async gone(paseo: Paseo, agentId: string): Promise<boolean> {
+    try {
+      const found = await within(paseo.agents.ref(agentId).refresh(), this.appendMs);
+      return !found || Boolean(found.agent.archivedAt);
+    } catch (error) {
+      if (/not found/i.test((error as Error).message)) return true;
+      throw error;
     }
   }
 

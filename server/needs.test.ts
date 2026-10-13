@@ -18,6 +18,7 @@ import {
   type NeedSources,
   needsOf,
   type OpenApproval,
+  readNeeds,
   reviewNeed,
   sortNeeds,
   summaryOf,
@@ -716,5 +717,75 @@ describe("handled.list", () => {
       },
     ]);
     expect(handled.today).toEqual({ closedForYou: 1, byYou: 1, asksAnswered: 1 });
+  });
+});
+
+describe("readNeeds names the sources it could not read (BRO-3008)", () => {
+  const NOW_MS = Date.parse("2026-10-10T15:00:00.000Z");
+  const held = fakeWork("perm", "review", live, {
+    permission: { requestId: "r1", title: "Run bash", detail: "git push" },
+  });
+  const whole = (extra: Partial<Parameters<typeof readNeeds>[0]> = {}): Parameters<typeof readNeeds>[0] => ({
+    work: async () => [held],
+    asks: async () => [[ask("A1", { blocking: true, askedAt: "2026-10-10T10:00:00.000Z" })], true],
+    reviews: async () => [initiative("skene")],
+    landing: async () => landing(),
+    sessionAgents: async () => new Map(),
+    approvals: async () => [asked()],
+    decisions: async () => ({ pending: [] }),
+    ...extra,
+  });
+  const run = (reads: Parameters<typeof readNeeds>[0], keep = (_keys: readonly string[], _complete: boolean) => {}) =>
+    readNeeds(reads, {
+      workspace: "broomva",
+      now: NOW_MS,
+      firstSeen: { at: (_key, at) => new Date(at).toISOString(), keep },
+    });
+  const keys = (needs: { rows: NeedRow[] }): string[] => needs.rows.map((row) => String(holdOf(row.key)?.kind)).sort();
+
+  test("every source read: every kind of hold, and no `unread` field at all", async () => {
+    const needs = await run(whole());
+    expect(keys(needs)).toEqual(["answers", "approval", "ask", "review", "work"]);
+    expect("unread" in needs).toBe(false);
+  });
+
+  const boom = async (): Promise<never> => {
+    throw new Error("unreadable");
+  };
+  const cases: Array<[string, Partial<Parameters<typeof readNeeds>[0]>, string, string]> = [
+    ["the work", { work: boom }, "work", "work"],
+    ["the work, answering null", { work: async () => null }, "work", "work"],
+    ["the asks, not whole", { asks: async () => [[], false] }, "asks", "ask"],
+    ["the asks, rejecting", { asks: boom }, "asks", "ask"],
+    ["the reviews", { reviews: boom }, "reviews", "review"],
+    ["the answers batch", { landing: boom }, "answers", "answers"],
+    ["the approvals", { approvals: boom }, "approvals", "approval"],
+  ];
+  for (const [what, reads, source, lost] of cases) {
+    test(`${what} unread: it is named, its holds are missing, and every other source is still read`, async () => {
+      const needs = await run(whole(reads));
+      expect(needs.unread).toEqual([source as never]);
+      const expected = ["answers", "approval", "ask", "review", "work"].filter((kind) => kind !== lost);
+      expect(keys(needs)).toEqual(expected);
+    });
+  }
+
+  test("several sources unread are all named, in the contract's order", async () => {
+    const needs = await run(whole({ approvals: boom, work: boom, landing: boom }));
+    expect(needs.unread).toEqual(["work", "answers", "approvals"]);
+  });
+
+  test("a read that was not whole forgets no first-seen time; a whole one does", async () => {
+    const seen: boolean[] = [];
+    await run(whole({ asks: async () => [[], false] }), (_keys, complete) => void seen.push(complete));
+    await run(whole({ decisions: boom }), (_keys, complete) => void seen.push(complete));
+    await run(whole(), (_keys, complete) => void seen.push(complete));
+    expect(seen).toEqual([false, false, true]);
+  });
+
+  test("the sources that cannot be read are not ones the decisions or the fleet sessions are: they cost no rows", async () => {
+    const needs = await run(whole({ sessionAgents: boom }));
+    expect("unread" in needs).toBe(false);
+    expect(keys(needs)).toEqual(["answers", "approval", "ask", "review", "work"]);
   });
 });

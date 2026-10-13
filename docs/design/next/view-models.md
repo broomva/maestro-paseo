@@ -247,6 +247,30 @@ A session may withdraw its own request; **it can never decide one** (`approval.d
 Allow or Deny tells the session the exact action in words; whatever was allowed is run by the session or the
 conductor, never by Maestro (A8).
 
+### Cards in sessions (K0–K2, BRO-3008)
+
+The card lives in the session that asked; the inbox session holds only a digest. `server/session-cards.ts` appends it
+with `timeline.append` (`kind: "maestro-card"`, id `maestro-card:<kind>:<key>:<version>`, so a card appended again
+after a restart replaces itself), from `needs.list`'s own rows on every sweep and a moment after an event
+(a prompt raised, an `approval.request`, a landing). The row's data is only `{ kind, key, version }`:
+
+| Kind | Key it reads | Version | Raised |
+|---|---|---|---|
+| `approval`, `ask`, `owner_step` | the hold's `key` (`work:<id>`, `approval:<id>`, `ask:[…]`) | a prompt's request id; `approval:<id>` its key; else `since` | every hold that names a session |
+| `finished` | `work:<id>` | the landing's index | a landing seen live that nothing holds after a 2 s settle |
+| `health` | `work:<id>` | a hash of the stop's reason | work that stopped in the last 15 min, in its own session |
+| `digest` | `work:<id>` of the landing it came with | the inbox turn | by the inbox, with each notice |
+
+A card reads live (client/card-model.ts) and is in one of: pending, undo window (any decision of yours on its key,
+from the card or from J1: the same window and Undo), receipt (it took effect), resolved elsewhere, or superseded (its
+`version` is no longer current). Two more say what it cannot offer: **could not read** (a failed read is never
+"nothing pending" or "resolved": `needs.list` names the sources it could not read in `unread`, and a hold missing from
+an unread source is unread, not resolved) and **held** (finished work that now asks permission: the approval card has
+the verbs). At most two verbs plus Open in Maestro, and only verbs that change something; Change course is a prompt to
+the session (`session.prompt`), not the work's retired verdict. Open in Maestro is
+`openScreen({ screenId: "session", params: { agentId } })` (K2), and a hold with no session opens
+`openScreen({ screenId: "maestro", params: { hold: key } })`.
+
 ## Invariants (each one a test)
 
 1. `summary.total == rows.length ==` the header badge `==` the Feed tab badge `==` the Needs you

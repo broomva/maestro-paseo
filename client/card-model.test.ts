@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { needsOf, type OpenApproval } from "../server/needs";
-import type { CardData } from "../shared/card";
+import { type CardData, holdVersion } from "../shared/card";
 import type { WorkItem } from "../shared/contracts";
 import type { NeedRow, Needs } from "../shared/needs";
 import type { PendingVerb, SettledVerb } from "../shared/verbs";
@@ -217,6 +217,22 @@ describe("a failed read is never 'nothing pending' or 'resolved'", () => {
     expect(state).toEqual({ phase: "unread", words: "Couldn't read your decisions: verbs.list timed out" });
   });
 
+  test("a failed decisions read and an unread source together are unread, in either order: never resolved, and still live", () => {
+    const lost: Needs = { ...needsRead([]), unread: ["work"] };
+    const both = holdState({ card: approvalCard, needs: ok(lost), ledger: failed("verbs.list timed out") });
+    expect(both.phase).toBe("unread");
+    expect(cardLive(both)).toBe(true);
+    // The source is asked first: its words say what could not be read, whichever read was slower.
+    expect(both.phase === "unread" && both.words).toContain("the work it comes from");
+    expect(holdState({ card: approvalCard, needs: ok(lost), ledger: loading }).phase).toBe("unread");
+    // The hold is missing and the ledger failed, with every source read: it may have taken effect (a receipt), so no verdict.
+    const missing = holdState({ card: approvalCard, needs: ok(needsRead([])), ledger: failed("verbs.list timed out") });
+    expect(missing).toEqual({ phase: "unread", words: "Couldn't read your decisions: verbs.list timed out" });
+    expect(cardLive(missing)).toBe(true);
+    // Both read: it is resolved, and only then.
+    expect(holdState({ card: approvalCard, needs: ok(needsRead([])), ledger: ok(noLedger) }).phase).toBe("resolved");
+  });
+
   test("loading is loading: neither a verb nor a verdict", () => {
     expect(holdState({ card: approvalCard, needs: loading, ledger: ok(noLedger) })).toEqual({ phase: "loading" });
     expect(holdState({ card: approvalCard, needs: ok(needsRead([asking])), ledger: loading })).toEqual({
@@ -242,7 +258,7 @@ describe("an ask card and an owner step card", () => {
       body: { why: "", cost: "", options: [], goesTo: "origin/main" },
       ...state,
     }) as NeedRow;
-  const askCard: CardData = { kind: "ask", key: ask().key, version: "2026-10-12T13:00:00.000Z" };
+  const askCard: CardData = { kind: "ask", key: ask().key, version: holdVersion(ask()) };
   const read = (rows: NeedRow[], unread?: Needs["unread"]): Needs => ({
     rows,
     summary: { total: rows.length, byKind: { ask: rows.length, approval: 0, owner_step: 0 } },
@@ -267,8 +283,13 @@ describe("an ask card and an owner step card", () => {
     expect(holdState({ card: askCard, needs: ok(read([], ["asks"])), ledger: ok(noLedger) }).phase).toBe("unread");
   });
 
-  test("an ask that came back later (a new first-seen time) is a newer hold: the older card is superseded", () => {
-    const again = ask({ since: "2026-10-12T14:30:00.000Z" });
+  test("an ask whose question was edited is a newer raise: the older card is superseded; a moved first-seen time is not", () => {
+    // since is a first-seen time kept in memory: it is no part of a card's version (a restart would supersede it).
+    expect(
+      holdState({ card: askCard, needs: ok(read([ask({ since: "2026-10-12T14:30:00.000Z" })])), ledger: ok(noLedger) })
+        .phase,
+    ).toBe("open");
+    const again = ask({ title: "Install the three Claude Code mods, one worktree first?" });
     expect(holdState({ card: askCard, needs: ok(read([again])), ledger: ok(noLedger) })).toMatchObject({
       phase: "superseded",
     });
@@ -277,7 +298,7 @@ describe("an ask card and an owner step card", () => {
   test("an owner step reads by its work key and its flag's time; its Done is not a ledger verb, so it has no undo", () => {
     const rows = needsRead([yours]).rows;
     const row = rows[0] as NeedRow;
-    const card: CardData = { kind: "owner_step", key: "work:w-yours", version: row.since };
+    const card: CardData = { kind: "owner_step", key: "work:w-yours", version: holdVersion(row) };
     expect(holdState({ card, needs: ok({ ...needsRead([yours]) }), ledger: ok(noLedger) }).phase).toBe("open");
     expect(CARD_VERBS.owner_step).toEqual([]);
     expect(holdState({ card, needs: ok(needsRead([])), ledger: ok(noLedger) }).phase).toBe("resolved");
@@ -459,6 +480,22 @@ describe("the inbox digest", () => {
       state(0, ok({ ...landed, state: "running" })).phase === "rows" &&
         (state(0, ok({ ...landed, state: "running" })) as { rows: unknown[] }).rows,
     ).toEqual([]);
+  });
+
+  test("a source needs.list could not read is named: with nothing listed it is unread, with holds listed they say what is missing", () => {
+    const none = digestOf({ card: digest, needs: ok({ ...needsRead([]), unread: ["asks", "work"] }), work: null });
+    expect(none).toEqual({
+      phase: "unread",
+      words: "Couldn't read what needs you (asks, work): try again in a moment",
+    });
+    const some = digestOf({
+      card: digest,
+      needs: ok({ rows: rowsOf(1), summary: needsRead([]).summary, unread: ["reviews"] }),
+      work: null,
+    });
+    expect(some).toMatchObject({ phase: "rows", total: 1, unread: ["reviews"] });
+    // Nothing unread: no word of it.
+    expect(state(1)).toMatchObject({ unread: [] });
   });
 
   test("a needs read that failed is unread, never 'Nothing needs you now'", () => {

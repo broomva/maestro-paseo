@@ -117,22 +117,20 @@ export function holdState(input: { card: CardData; needs: Read<Needs>; ledger: R
   if (needs.status === "error") return { phase: "unread", words: couldNot("what needs you", needs.message) };
   if (needs.status === "loading") return { phase: "loading" };
   const row = needs.value.rows.find((one) => one.key === card.key) ?? null;
-  if (ledger.status === "loading") return { phase: "loading" };
-  // Without the ledger a decision already waiting cannot be seen, so a hold is not offered again blind.
-  if (ledger.status === "error") {
-    return row
-      ? { phase: "unread", words: couldNot("your decisions", ledger.message) }
-      : { phase: "resolved", words: GONE_ELSEWHERE };
+  // A hold missing from needs.list is only resolved when the source it comes from was read: a read that failed lost
+  // the row, not the hold. This is asked before anything that could say "resolved", whatever the ledger says.
+  const source = sourceOf(card.key);
+  if (!row && source && needs.value.unread?.includes(source)) {
+    return { phase: "unread", words: couldNot(`the ${source} it comes from`, "try again in a moment") };
   }
+  if (ledger.status === "loading") return { phase: "loading" };
+  // Without the ledger a decision already waiting, or one that took effect, cannot be seen: a hold is not offered
+  // again blind, and a missing one is not called resolved. Never "resolved" off a failed read.
+  if (ledger.status === "error") return { phase: "unread", words: couldNot("your decisions", ledger.message) };
   const waiting = pendingOn(ledger.value, card.key, card.kind)[0];
   if (row) {
     if (holdVersion(row) !== card.version) return { phase: "superseded", words: SUPERSEDED_HOLD };
     return waiting ? undoOf(waiting) : { phase: "open", row, item: null };
-  }
-  // Missing is only resolved when its source was read: a read that failed lost the row, not the hold.
-  const source = sourceOf(card.key);
-  if (source && needs.value.unread?.includes(source)) {
-    return { phase: "unread", words: couldNot(`the ${source} it comes from`, "try again in a moment") };
   }
   if (waiting) return undoOf(waiting);
   const settled = settledOn(ledger.value, card.key, card.kind);
@@ -257,7 +255,15 @@ export interface DigestRow {
 export type DigestState =
   | { phase: "loading" }
   | { phase: "unread"; words: string }
-  | { phase: "rows"; total: number; rows: DigestRow[]; more: number; words: string };
+  | {
+      phase: "rows";
+      total: number;
+      rows: DigestRow[];
+      more: number;
+      words: string;
+      /** The sources needs.list could not read, named: the list is then not the whole of what needs you. */
+      unread: string[];
+    };
 
 const KIND_WORD: Record<DigestRow["kind"], string> = {
   approval: "Approval",
@@ -282,6 +288,11 @@ export function digestOf(input: { card: CardData; needs: Read<Needs>; work: Read
   if (needs.status === "error") return { phase: "unread", words: couldNot("what needs you", needs.message) };
   if (needs.status === "loading") return { phase: "loading" };
   const rows = needs.value.rows;
+  const unread = [...(needs.value.unread ?? [])];
+  // Nothing listed and a source unread is not "nothing needs you": it says what it could not read.
+  if (rows.length === 0 && unread.length > 0) {
+    return { phase: "unread", words: couldNot(`what needs you (${unread.join(", ")})`, "try again in a moment") };
+  }
   const named: DigestRow[] = rows.map((row) => ({
     key: row.key,
     kind: row.kind,
@@ -314,6 +325,7 @@ export function digestOf(input: { card: CardData; needs: Read<Needs>; work: Read
     rows: named.slice(0, DIGEST_ROWS),
     more: Math.max(0, named.length - DIGEST_ROWS),
     words: digestWords(total),
+    unread,
   };
 }
 
