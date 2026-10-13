@@ -19,8 +19,8 @@ import contribute from "./index.server";
 import { loadConfig } from "./server/config";
 import { Engine } from "./server/engine";
 import { fakePaseo } from "./server/fake-paseo";
-import { LOOPS_VIEW_MS } from "./server/loops";
 import { acquireLock, releaseLock } from "./server/locks";
+import { LOOPS_VIEW_MS } from "./server/loops";
 import type { Paseo } from "./server/runs";
 
 setDefaultTimeout(120_000);

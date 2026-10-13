@@ -14,6 +14,7 @@ import { Engine, UserError } from "./server/engine";
 import { AwakeClock, Fleet, wallClock } from "./server/fleet";
 import { inspectFolder as inspect } from "./server/folders";
 import { GhaSchedules } from "./server/gha";
+import { FetchGate } from "./server/git";
 import { createInboxProvider, Inbox } from "./server/inbox";
 import { agentIds, driverRelay, ghRun, ideaWork, prStates, workspaceInitiatives } from "./server/initiatives";
 import { paseoLabel } from "./server/labels";
@@ -176,6 +177,8 @@ export default function contribute(host: PluginServerContext) {
   // The workspace's own asks: the control repo's ledgers, at their homes (spec #861 §5.2).
   const control = controlRepoPaths();
   const askPaths = controlAskPaths();
+  // origin is fetched once, for the asks and the loop ledger both (server/git.ts).
+  const fetchGate = new FetchGate();
   const workspace = control.repo
     ? new WorkspaceAsks({
         controlRepo: control.repo,
@@ -183,6 +186,7 @@ export default function contribute(host: PluginServerContext) {
         lockRoot: askPaths.locks,
         receipts: askPaths.receipts,
         fetchEveryMs: fetchEvery(),
+        fetchGate,
         log,
       })
     : null;
@@ -349,8 +353,9 @@ export default function contribute(host: PluginServerContext) {
   const loops = new Loops({
     // Plus every repo loop-repos.json names, each at its own ref (BRO-2942): one orchestrator per owning repo.
     ledger: control.repo
-      ? multiLedger(gitLedger(control.repo, { fetch: true, fetchEveryMs: fetchEvery(), log }), {
+      ? multiLedger(gitLedger(control.repo, { fetch: true, fetchEveryMs: fetchEvery(), fetchGate, log }), {
           reposPath: loopReposPath(),
+          fetchGate,
           log,
         })
       : null,

@@ -30,7 +30,7 @@ import {
   SUBSTRATE_KINDS,
   type SubstrateKind,
 } from "../shared/loops";
-import { catFiles, git } from "./control-home";
+import { catFiles, FetchGate, git } from "./git";
 import { broomvaHome, configPath, expandHome } from "./paths";
 
 /** The ledger folder, repo-relative. */
@@ -278,24 +278,19 @@ export function gitLedger(
     owns?: LoopScope | null;
     /** How often a read asked to fetch fetches at most; LEDGER_FETCH_MS unless the plugin says. */
     fetchEveryMs?: number;
+    /** The fetch of origin, shared with the control repo's asks (server/git.ts); a private one when none is given. */
+    fetchGate?: FetchGate;
   } = {},
 ): LedgerSource {
   const now = options.now ?? Date.now;
   const ref = options.ref ?? MAIN_REF;
   const branch = ref.startsWith("origin/") ? ref.slice("origin/".length) : null;
-  let fetchedAt = Number.NEGATIVE_INFINITY;
-  let fetching: Promise<void> | null = null;
+  const gate = options.fetchGate ?? new FetchGate(now);
   const fetchMain = async () => {
-    if (!options.fetch || now() - fetchedAt < (options.fetchEveryMs ?? LEDGER_FETCH_MS)) return;
-    fetchedAt = now();
-    if (!branch) return;
-    fetching ??= git(repo, ["fetch", "-q", "origin", branch], 60_000)
-      .then(() => undefined)
-      .catch((error) => options.log?.(`loops: fetching ${ref} in ${repo}: ${(error as Error).message}`))
-      .finally(() => {
-        fetching = null;
-      });
-    await fetching;
+    if (!options.fetch || !branch) return;
+    await gate.due(repo, branch, options.fetchEveryMs ?? LEDGER_FETCH_MS, (message) =>
+      options.log?.(`loops: ${message}`),
+    );
   };
   return {
     where: { repo, path: `${ref}:${LEDGER_DIR}` },
@@ -413,11 +408,20 @@ export function multiLedger(
     /** The file's text; null only when there is no file. Anything else unreadable throws, and is said. */
     readText?: (path: string) => Promise<string | null>;
     log?: (message: string) => void;
+    /** The fetch every reader of an origin shares (server/git.ts), so one repo is fetched once. */
+    fetchGate?: FetchGate;
   },
 ): LedgerSource {
   const make =
     options.source ??
-    ((one: LoopRepo) => gitLedger(one.repo, { fetch: true, ref: one.ref, owns: one.owns, log: options.log }));
+    ((one: LoopRepo) =>
+      gitLedger(one.repo, {
+        fetch: true,
+        ref: one.ref,
+        owns: one.owns,
+        log: options.log,
+        fetchGate: options.fetchGate,
+      }));
   const readText =
     options.readText ??
     ((path: string) =>

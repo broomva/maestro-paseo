@@ -5,7 +5,6 @@
 
 import {
   DRIFT_WORDS,
-  type DriftClass,
   driftName,
   type LoopDrift,
   type LoopNotice,

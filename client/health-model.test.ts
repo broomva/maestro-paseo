@@ -81,7 +81,7 @@ const detail = (id: string, ticks: FleetTick[], sessions: FleetSession[] = []): 
     roster: { tick: 24, at: ago(H), sessions },
   }) as FleetDetail;
 
-const allOk = (id: string) => Array.from({ length: 24 }, (_, at) => tick(24 - at, at + 0.5));
+const allOk = (_id: string) => Array.from({ length: 24 }, (_, at) => tick(24 - at, at + 0.5));
 const reads: ScopeRead[] = [
   {
     scope: scope("broomva"),

@@ -66,14 +66,14 @@ import {
   tickRows,
   withReviews,
 } from "./fleet-model";
+import { appendReviews } from "./fleet-reviews";
 import { dropLeftovers } from "./locks";
-import { controlAskPaths, expandHome, fleetPaths } from "./paths";
+import { ASKS_DIR, controlAskPaths, expandHome, fleetPaths } from "./paths";
 
 export const REVIEWS_FILE = "proposal-reviews.jsonl";
 /** tick.sh leaves this in the state dir while the kill switch is off. */
 export const DISABLED_NOTICE = ".disabled-notice";
 /** The fleet's registered ask root in its state dir (the control interface spec §5.6). */
-export const ASK_ROOT = join(".control", "asks");
 /** tick.log is searched for a tick's lines within this much of its end. */
 const TICK_LOG_SEARCH = 2 * 1024 * 1024;
 /** install.sh's LaunchAgent for a scope. */
@@ -385,7 +385,6 @@ export class Fleet {
   private readonly reports = new Map<string, { stamp: Stamp; summary: ReportSummary | null; error: string | null }>();
   /** The scopes the config last named: a config caught mid-edit keeps them rather than lose the state dirs it names. */
   private lastGood: ScopeConfig[] | null = null;
-  private writes: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: FleetOptions) {
     const paths = fleetPaths();
@@ -704,12 +703,12 @@ export class Fleet {
     const { scopes, error } = await this.scopes();
     const roots = await Promise.all(
       scopes.map((config) => {
-        const root = join(config.stateDir, ASK_ROOT);
+        const root = join(config.stateDir, ASKS_DIR);
         return realpath(root).catch(() => root);
       }),
     );
     const firsts = scopes.filter((_, at) => roots.indexOf(roots[at] as string) === at);
-    const reads = await Promise.all(firsts.map((config) => readDecisions(join(config.stateDir, ASK_ROOT))));
+    const reads = await Promise.all(firsts.map((config) => readDecisions(join(config.stateDir, ASKS_DIR))));
     const asks = reads.flatMap((read, at) => read.asks.map((ask) => ({ ...ask, scope: firsts[at]?.id ?? null })));
     return {
       asks,
@@ -781,7 +780,7 @@ export class Fleet {
       });
       if (read !== chosen) continue;
       const numbers = [...new Set([...read.fold.ticks.keys(), ...read.tickDirs])].sort((a, b) => b - a).slice(0, ticks);
-      const askRoot = join(stateDir, ASK_ROOT);
+      const askRoot = join(stateDir, ASKS_DIR);
       const decisions = await readDecisions(askRoot);
       warnings.push(...decisions.warnings);
       const reports = new Map<number, ReportSummary>();
@@ -887,22 +886,21 @@ export class Fleet {
   /**
    * Clears ledger locks this process left behind (§5.5), so no other writer
    * waits on one: the plugin sweep's, at each sweep (server/sweep.ts), never
-   * a read's. Queued on the answers' own chain, so it never runs while an
-   * answer here holds or is taking a lock.
+   * a read's. It runs between this process's lock steps (server/locks.ts
+   * exclusive), never while an answer here holds or is taking a lock.
    */
   sweepLocks(): Promise<void> {
     const locks = this.options.askLocks ?? controlAskPaths().locks;
-    const swept = this.writes.catch(() => undefined).then(() => dropLeftovers(locks).catch(() => undefined));
-    this.writes = swept;
-    return swept;
+    return dropLeftovers(locks).catch(() => undefined);
   }
 
   /**
    * Writes your answer into a ledger in the scope's ask root, under the
-   * ledger lock every writer shares (server/control-asks.ts). Writes run one
-   * at a time here as well.
+   * ledger lock every writer shares (server/locks.ts). The fleet CLI has no
+   * verb for an answer yet (BRO-3098), so the ledger is written by
+   * server/control-asks.ts, the one writer Maestro has of any ask ledger.
    */
-  answer(input: {
+  async answer(input: {
     scope: string;
     ledger: string;
     uid: string | null;
@@ -911,36 +909,28 @@ export class Fleet {
     option: string | null;
     note: string;
   }): Promise<{ ask: DecisionAsk; warning: string | null }> {
-    const next = this.writes
-      .catch(() => undefined)
-      .then(async () => {
-        const config = await this.scopeNamed(input.scope);
-        if (!/^[^./][^/]*\.ya?ml$/.test(input.ledger)) throw new UserError(`${input.ledger} is not a ledger name.`);
-        // The root's folders are the fleet's own, never a link out of its state dir (into a git checkout, say).
-        for (const folder of [join(config.stateDir, ".control"), join(config.stateDir, ASK_ROOT)]) {
-          if ((await lstat(folder).catch(() => null))?.isDirectory() !== true) {
-            throw new UserError(`${folder} is not a folder of the fleet's own, so no answer was written there.`);
-          }
-        }
-        const path = join(config.stateDir, ASK_ROOT, input.ledger);
-        const paths = controlAskPaths();
-        const answered = await answerDecision(
-          path,
-          { uid: input.uid, id: input.id, hash: input.hash, option: input.option, note: input.note },
-          {
-            lockRoot: this.options.askLocks ?? paths.locks,
-            receipts: this.options.askReceipts ?? paths.receipts,
-            now: this.now,
-            log: this.log,
-          },
-        );
-        this.log(
-          `fleet ${config.id}: you answered ${input.ledger} ${input.id}${input.option ? ` (${input.option})` : ""}`,
-        );
-        return answered;
-      });
-    this.writes = next;
-    return next;
+    const config = await this.scopeNamed(input.scope);
+    if (!/^[^./][^/]*\.ya?ml$/.test(input.ledger)) throw new UserError(`${input.ledger} is not a ledger name.`);
+    // The root's folders are the fleet's own, never a link out of its state dir (into a git checkout, say).
+    for (const folder of [join(config.stateDir, ".control"), join(config.stateDir, ASKS_DIR)]) {
+      if ((await lstat(folder).catch(() => null))?.isDirectory() !== true) {
+        throw new UserError(`${folder} is not a folder of the fleet's own, so no answer was written there.`);
+      }
+    }
+    const path = join(config.stateDir, ASKS_DIR, input.ledger);
+    const paths = controlAskPaths();
+    const answered = await answerDecision(
+      path,
+      { uid: input.uid, id: input.id, hash: input.hash, option: input.option, note: input.note },
+      {
+        lockRoot: this.options.askLocks ?? paths.locks,
+        receipts: this.options.askReceipts ?? paths.receipts,
+        now: this.now,
+        log: this.log,
+      },
+    );
+    this.log(`fleet ${config.id}: you answered ${input.ledger} ${input.id}${input.option ? ` (${input.option})` : ""}`);
+    return answered;
   }
 
   // ── Your verdict ───────────────────────────────────────────────────────────
@@ -951,20 +941,10 @@ export class Fleet {
    * must be one the fleet proposes now, else nothing is written. A key binds
    * the words you saw (session, class and action, or a verb's target and
    * text), and each line names the tick you saw them at, so a tick landing as
-   * you decide changes nothing a verdict says. Writes run one at a time.
+   * you decide changes nothing a verdict says. Written under the file's lock
+   * (server/fleet-reviews.ts), so two verdicts never interleave.
    */
-  review(input: {
-    scope: string;
-    keys: readonly string[];
-    verdict: ReviewVerdict;
-    note: string;
-  }): Promise<{ proposals: FleetProposal[] }> {
-    const next = this.writes.catch(() => undefined).then(() => this.reviewNow(input));
-    this.writes = next;
-    return next;
-  }
-
-  private async reviewNow(input: {
+  async review(input: {
     scope: string;
     keys: readonly string[];
     verdict: ReviewVerdict;
@@ -997,33 +977,8 @@ export class Fleet {
       return reviewRecord({ scope: config.id, proposal, verdict: input.verdict, note: input.note, at, seq: this.seq });
     });
     const path = join(config.stateDir, REVIEWS_FILE);
-    const flags = constants.O_RDWR | constants.O_APPEND | constants.O_CREAT;
     try {
-      await withRegular(
-        path,
-        flags,
-        async (handle) => {
-          const { size } = await handle.stat();
-          let lead = "";
-          if (size > 0) {
-            // A line torn by a crash must not join the next one.
-            const last = Buffer.alloc(1);
-            await handle.read(last, 0, 1, size - 1);
-            lead = last[0] === 0x0a ? "" : "\n";
-          }
-          const lines = Buffer.from(`${lead}${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
-          try {
-            const { bytesWritten } = await handle.write(lines);
-            if (bytesWritten !== lines.length) throw new Error(`wrote ${bytesWritten} of ${lines.length} bytes`);
-            await handle.sync();
-          } catch (error) {
-            // All or none: lines that made it in before a short write are taken back out.
-            await handle.truncate(size).catch(() => undefined);
-            throw error;
-          }
-        },
-        0o600,
-      );
+      await appendReviews(path, records, this.options.askLocks ?? controlAskPaths().locks);
     } catch (error) {
       throw new UserError(
         `Your verdict was not recorded: ${REVIEWS_FILE} could not be written (${(error as Error).message}).`,

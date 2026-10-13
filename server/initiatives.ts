@@ -40,7 +40,8 @@ import {
 } from "../shared/initiatives";
 import { clipWords } from "../shared/text";
 import { canonical, dayOf, isRow, localDay, type Row, text } from "./control-asks";
-import { blobId, catFiles, git, isLocal, MAIN_REF, parseWorktrees, type WorkspaceAsks } from "./control-home";
+import { blobId, isLocal, parseWorktrees, type WorkspaceAsks } from "./control-home";
+import { catFiles, git, MAIN_REF } from "./git";
 import type { Paseo } from "./runs";
 
 export const INITIATIVES_DIR = join(".control", "initiatives");
