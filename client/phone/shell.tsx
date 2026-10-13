@@ -263,16 +263,17 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const cardItem = inspected ?? keep.current;
   const cardIndex = selection?.kind === "hold" ? Math.max(0, keys.indexOf(selection.key)) : 0;
   const cardTotal = selection?.kind === "hold" ? Math.max(1, keys.length) : 1;
-  const onCardVerb = (id: string, choice?: string) => {
+  const onCardVerb = async (id: string, choice?: string) => {
     if (!selection) return;
     if (openEntry && cardItem && (id === "answer" || id === "skip")) {
-      if (id === "answer") return void answer(openEntry, cardItem, choice, true);
+      if (id === "answer") return answer(openEntry, cardItem, choice, true);
       inspector.setOpen(false);
       return advance(openEntry.row.key);
     }
     const heldKey = openEntry?.row.key ?? null;
-    inspector.onVerb(id, choice);
-    if (id !== "open" && id !== "cancel") {
+    // The card closes and the deck moves on only when the verb was sent: a refused one leaves both where they are.
+    const sent = await inspector.onVerb(id, choice);
+    if (sent && id !== "open" && id !== "cancel") {
       inspector.setOpen(false);
       if (heldKey) advance(heldKey);
     }

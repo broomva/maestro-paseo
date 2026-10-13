@@ -7,7 +7,7 @@ light and dark, against `docs/design/next/m1-feed-home-mobile.png`, `m2-m4-brief
 
 | File | Shows |
 |---|---|
-| `m1-feed-deck-{light,dark}.png` | the Feed: "Needs you" with the workspace and presence chips, one hold (an ask here, its options as 44 pt rows, the silent default), Skip and Answer as 52 pt pills, the tab bar (Feed 5, Decisions 1, Health 3) on the sheet's top edge, "Everything else" with its four counts |
+| `m1-feed-deck-{light,dark}.png` | the Feed: "Needs you" with the workspace and presence chips, one hold (an ask here, its options as 44 pt rows, the silent default), Skip and Answer as 52 pt pills, the tab bar (Feed 4, Decisions 1, and no Health badge: notices.list was empty when this shot was taken; the other shots were taken later and show Health with a badge) on the sheet's top edge, "Everything else" with its four counts |
 | `m1-feed-deck-hold2-approval-{light,dark}.png` | an approval hold: the kind's evidence, Deny… and the action named in the primary ("Allow push") |
 | `m2-approval-card-{light,dark}.png` | Details: the card rises with the detail header ("Approval · 2 of 4", one segment per hold), the action, the evidence, what happens after you allow, the session; Deny… and Allow pinned |
 | `m1-sheet-up-{light,dark}.png` | the sheet pulled up: the tab bar rode up with it; Queued, Running, Health, Finished as rows (no hold among them) |

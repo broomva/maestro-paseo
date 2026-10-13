@@ -59,7 +59,7 @@ export interface Inspector {
   /** A card's own verb: Deny and Answer open the inspector, the rest are sent. */
   onCardVerb: (hold: NeedEntry, id: string) => void;
   /** The inspector's verb, with the option chosen and the words typed. */
-  onVerb: (id: string, choice?: string, words?: string) => void;
+  onVerb: (id: string, choice?: string, words?: string) => Promise<boolean>;
   /** Walk to the next (1) or previous (-1) hold. */
   walk: (step: 1 | -1) => void;
   undo: ReturnType<typeof useUndoToast>;
@@ -147,6 +147,8 @@ export function useInspector({
       }
       if (out.receipt) undo.show(undoEntry(out.receipt, out.done, Date.now(), out.appliesAt, "applies in"));
       else toast.show(out.done);
+      // A prompt that changed since it was read answers nothing: it says so and reads again, and was not sent.
+      if (plan.call === "stale") sent = false;
     } catch (error) {
       sent = false;
       toast.error(errorText(error));
@@ -163,18 +165,18 @@ export function useInspector({
     else void act(id as VerbId, targetOf(hold));
   };
   const armedCancel = useRef<{ key: string; at: number } | null>(null);
-  const onVerb = (id: string, choice?: string, words?: string) => {
+  const onVerb = (id: string, choice?: string, words?: string): Promise<boolean> => {
     if (id === "cancel" && item) {
       // "Cancel work…": the first press arms it, the second on the same item does it.
       const step = cancelStep(armedCancel.current, item.id, Date.now());
       if (step === "arm") {
         armedCancel.current = { key: item.id, at: Date.now() };
         toast.show(`Press Cancel work… again within ${CANCEL_ARM_MS / 1000} s to cancel it`);
-        return;
+        return Promise.resolve(false);
       }
       armedCancel.current = null;
     }
-    void act(id as VerbId, targetOf(entry), choice, words);
+    return act(id as VerbId, targetOf(entry), choice, words);
   };
 
   const walk = (step: 1 | -1) => {

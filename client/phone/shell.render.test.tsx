@@ -74,6 +74,7 @@ const { fakeWork } = await import("../fake-work");
 const { GALLERY_LIGHT } = await import("../kit/gallery-data");
 const { PhoneSurface } = await import("./shell");
 const { CONFIRM_MS } = await import("./model");
+const { NEEDS_KEY } = await import("../hooks");
 type PhoneTab = import("./model").PhoneTab;
 type HomeFocus = import("../home").HomeFocus;
 
@@ -146,6 +147,10 @@ let reviews: Initiative[] = [];
 let needsFail: string | null = null;
 let decideFail: string | null = null;
 let unreadNow: string[] | undefined;
+/** While set, work.list reports the gate item's session on this prompt: the card was read on another. */
+let workListPrompt: string | null = null;
+/** While set, needs.list answers only once it resolves: a read still on its way. */
+let needsHeld: Promise<void> | null = null;
 let pending: Pending[] = [];
 const calls: { method: string; input: unknown }[] = [];
 
@@ -195,6 +200,8 @@ function reset() {
   needsFail = null;
   decideFail = null;
   unreadNow = undefined;
+  workListPrompt = null;
+  needsHeld = null;
   pending = [];
   calls.length = 0;
   toasts.length = 0;
@@ -215,12 +222,19 @@ const invoke = async (method: string, input: unknown) => {
   calls.push({ method, input });
   switch (method) {
     case "needs.list":
+      if (needsHeld) await needsHeld;
       if (needsFail) throw new Error(needsFail);
       return unreadNow ? { ...needsNow(), unread: unreadNow } : needsNow();
     case "work.list":
       return {
         root: "/work",
-        items,
+        items: workListPrompt
+          ? items.map((item) =>
+              item.permission
+                ? { ...item, permission: { ...item.permission, requestId: workListPrompt as string } }
+                : item,
+            )
+          : items,
         warnings: [],
         scoreboard: {
           unsupervisedMs: 0,
@@ -283,11 +297,13 @@ interface El {
 }
 const mounted: (() => void)[] = [];
 
-async function mount(props: { tab?: PhoneTab; focus?: HomeFocus | null } = {}) {
+async function mount(props: { tab?: PhoneTab; focus?: HomeFocus | null; cached?: ReturnType<typeof needsNow> } = {}) {
   const container = win.document.createElement("div");
   win.document.body.appendChild(container);
   const root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // A read left in the cache by an earlier visit: it may be old, and says nothing about the hold until read again.
+  if (props.cached) client.setQueryData(NEEDS_KEY, props.cached);
   let tab: PhoneTab = props.tab ?? "feed";
   const handled: number[] = [];
   const node = () => (
@@ -477,6 +493,33 @@ describe("acting on a hold", () => {
     expect(view.text()).toContain("2 of 4");
   });
 
+  test("a verb refused from the card leaves the card open and the deck on its hold", async () => {
+    decideFail = "refused";
+    const view = await mount();
+    await view.press(view.all('[role="link"]')[0]);
+    await view.press(view.id("inspector-card-bar")?.querySelector('[aria-label^="Allow"]') as El);
+    expect(toasts.join(" ")).toContain("refused");
+    expect(view.id("inspector-card") !== null).toBe(true);
+    expect(view.id("detail-header")?.textContent).toContain("Approval · 1 of 4");
+    expect(view.text()).not.toContain("2 of 4");
+    decideFail = null;
+    await view.press(view.id("inspector-card-bar")?.querySelector('[aria-label^="Allow"]') as El);
+    expect(sent("approval.decide")).toHaveLength(2);
+    expect(view.id("inspector-card") === null).toBe(true);
+    expect(view.text()).toContain("2 of 4");
+  });
+
+  test("a prompt that changed since it was read sends nothing, and the deck stays on it", async () => {
+    // needs.list read the card with one prompt, and work.list now has the session on another (client/verbs.ts decideApproval).
+    workListPrompt = "req-a-newer-prompt";
+    const view = await mount();
+    await view.press(view.labelled("Allow")[0]);
+    expect(sent("approval.decide")).toHaveLength(0);
+    expect(toasts.join(" ")).toContain("That prompt changed");
+    expect(view.text()).toContain("1 of 4");
+    expect(view.id("undo-toast") === null).toBe(true);
+  });
+
   test("two presses in a breath send one: a verb is never fired twice", async () => {
     const view = await mount();
     const allow = view.labelled("Allow")[0];
@@ -657,6 +700,26 @@ describe("M10, opening on the same hold from a push", () => {
     expect(view.id("from-the-push")?.textContent).toBe("From the push · same hold");
     expect(view.text()).toContain(`${rows.findIndex((row) => row.key === second?.key) + 1} of ${rows.length}`);
     expect(view.handled).toHaveLength(1);
+  });
+
+  test("a hold missing from a cached read is not 'closed' until a read made since this screen mounted says so", async () => {
+    // The cache holds an old read without the hold; the read since mount (still on its way) has it.
+    const stale = needsNow();
+    stale.rows = stale.rows.filter((row) => row.key !== "work:w-gate-9a1");
+    let release: () => void = () => undefined;
+    needsHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const view = await mount({ cached: stale, focus: { hold: "work:w-gate-9a1", at: 1, from: "push" } });
+    for (let at = 0; at < 3; at += 1) await settle();
+    expect(view.text()).not.toContain("That hold is no longer waiting on you");
+    expect(view.handled).toHaveLength(0);
+    release();
+    for (let at = 0; at < 4; at += 1) await settle();
+    // The fresh read holds it: the deck opens on it, from the push.
+    expect(view.id("from-the-push")?.textContent).toBe("From the push · same hold");
+    expect(view.text()).toContain("Merge workspace 933");
+    expect(view.text()).not.toContain("That hold is no longer waiting on you");
   });
 
   test("a hold that closed since the push says so, and shows the deck from its start", async () => {

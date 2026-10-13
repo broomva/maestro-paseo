@@ -4135,6 +4135,42 @@ describe("drilling in", () => {
     expect(opened).toEqual(["agent-asker"]);
   });
 
+  test("an ask with no decision layer: its first sentence leads, the rest behind Full question; answered in words", async () => {
+    // The card's own folds are live on the desktop in the Fleet view's ledgers (the phone's deck has its own words field).
+    decisionsNow = [
+      {
+        ...decisionFixture(),
+        id: "A1",
+        headline: null,
+        question: "Rename this session to stoic-bedbug so peers can address it? The name is set only by --name.",
+        stakes: null,
+        whyYou: null,
+        options: [],
+        fallback: "continue as stoic-bedbug-9e",
+        audit: { class: "external", gates: ["lane-rename"] },
+      },
+    ];
+    const view = await mount(surface(false));
+    await view.goto("Fleet");
+    await view.press(view.byLabel("Read and answer the fleet's decisions, broomva"));
+    const text = view.text();
+    expect(text).toContain("Rename this session to stoic-bedbug so peers can address it?");
+    expect(text).not.toContain("The name is set only by --name.");
+    expect(text).toContain("No options were written for this ask: answer it in your own words.");
+    expect(text).toContain("If you say nothing: continue as stoic-bedbug-9e");
+    await view.press(view.byLabel("Show the full question of A1"));
+    expect(view.text()).toContain("The name is set only by --name.");
+    await view.press(view.byLabel("Show the details of A1"));
+    expect(view.text()).toContain("Class: external");
+    expect(view.text()).toContain("Gates: lane-rename");
+    expect(view.text()).not.toContain("Tried before asking");
+    expect(view.byLabel("Answer A1")?.getAttribute("aria-disabled")).toBe("true");
+    await view.type(view.byLabel("Your words for A1"), "Keep the name.");
+    await view.press(view.byLabel("Answer A1"));
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: null, note: "Keep the name." })]);
+    expect(view.text()).toContain("Answered just now");
+  });
+
   test("answered in the Fleet view, the ask stays filed under its scope in Decisions, and under its ledger here", async () => {
     decisionsNow = [decisionFixture()];
     const view = await mount(surface(false));
