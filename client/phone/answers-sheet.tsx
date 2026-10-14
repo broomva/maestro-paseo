@@ -9,6 +9,8 @@ import type { StageTiles, WentRow } from "../decisions-stage-model";
 import { GlanceTile } from "../kit/glance-tile";
 import { Pill } from "../kit/parts";
 import { kitOf } from "../kit/tokens";
+import type { OpenAskRow } from "./model";
+import { LedgerWarnings, OpenAsks } from "./open-asks";
 
 const CHIP_TONE = { ok: "ok", info: "info", warn: "warn", muted: "muted" } as const;
 
@@ -17,6 +19,9 @@ export function AnswersSheet({
   tiles,
   held,
   went,
+  open,
+  warnings,
+  onOpenAsk,
   onOpenPr,
 }: {
   theme: PluginTheme;
@@ -25,6 +30,11 @@ export function AnswersSheet({
   held: number | null;
   /** Where your last answers went; null when answers.status could not be read (said, never an empty list). */
   went: readonly WentRow[] | null;
+  /** The open asks that do not wait on you (BRO-3108); null when asks.workspace could not be read (said, never "none"). */
+  open: readonly OpenAskRow[] | null;
+  /** asks.workspace's ledger read warnings; null when it could not be read. */
+  warnings: readonly string[] | null;
+  onOpenAsk: (key: string) => void;
   onOpenPr: (url: string) => void;
 }) {
   const kit = kitOf(theme);
@@ -33,6 +43,14 @@ export function AnswersSheet({
   const verb = tiles.landing.verb;
   return (
     <View style={{ gap: 14 }}>
+      {warnings ? <LedgerWarnings theme={theme} warnings={warnings} /> : null}
+      {open === null ? (
+        <Text accessibilityRole="alert" style={{ color: kit.warn, fontSize: 13.5, paddingHorizontal: 4 }}>
+          Couldn't read the open asks: the ones that do not block you may be missing.
+        </Text>
+      ) : (
+        <OpenAsks theme={theme} rows={open} onOpen={onOpenAsk} />
+      )}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
         {(
           [

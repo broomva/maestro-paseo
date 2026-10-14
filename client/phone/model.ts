@@ -8,10 +8,12 @@
 
 import type { AnswersStatus } from "../../shared/answers";
 import type { WorkItem } from "../../shared/contracts";
-import type { Handled } from "../../shared/needs";
+import type { DecisionAsk } from "../../shared/fleet";
+import { askRowOf, type Handled } from "../../shared/needs";
 import { isStanding } from "../../shared/needs-you";
 import type { NoticeRow } from "../../shared/notices";
 import { ticketOf } from "../../shared/text";
+import { headlineOf, isTriaged, ledgerName, ledgerOf, reversibility, silenceOf } from "../decisions-model";
 import type { NeedEntry } from "../feed-model";
 import { ago } from "../format";
 import { tabOf } from "../header-count";
@@ -320,6 +322,85 @@ export function answersCounts(status: AnswersStatus | null): SheetCount[] {
     { id: "acted", label: `${status.acted} acted` },
     { id: "held", label: `${status.held} held` },
   ];
+}
+
+/**
+ * The line of counts the Decisions sheet adds to answersCounts (BRO-3108): the open asks that do not wait on you, and
+ * the ledgers that could not be read. Each is the length of what the sheet lists (`rows`, `warnings`); an ask read
+ * that failed says so, never "0 open".
+ */
+export function openAskCounts(rows: readonly OpenAskRow[] | null, warnings: readonly string[] | null): SheetCount[] {
+  if (rows === null) return [{ id: "open-unread", label: "open asks: not read", tone: "warn" }];
+  return [
+    ...(rows.length > 0 ? [{ id: "open", label: `${rows.length} open` }] : []),
+    ...(warnings?.length
+      ? [
+          {
+            id: "warnings",
+            label: `${warnings.length} unread ${warnings.length === 1 ? "ledger" : "ledgers"}`,
+            tone: "warn" as const,
+          },
+        ]
+      : []),
+  ];
+}
+
+// ── The open asks the deck does not hold ─────────────────────────────────────
+
+/**
+ * An open ask that does not wait on you: answerable, never a hold (isWaiting: the ledger forbids `blocking` beside a
+ * reversible default), so needs.list leaves it out and the deck never shows it. The Decisions sheet lists it under
+ * "Open, not blocking" (BRO-3108), as the desktop's Decisions does; `entry` is the hold the inspector card opens, so
+ * its answer is the same verb as a deck hold's.
+ */
+export interface OpenAskRow {
+  key: string;
+  title: string;
+  /** Its ledger, and whether it can be undone: "sri · leadership-20261013 · reversible". */
+  meta: string;
+  age: string;
+  /** What happens if you say nothing ("silent → hold"); null when the ledger does not say. */
+  silent: string | null;
+  entry: NeedEntry;
+}
+
+/** The name needs.list gives the control repo's own asks (server/needs.ts: its folder's name, else "workspace"). */
+export function workspaceNameOf(controlRepo: string | null | undefined): string {
+  return controlRepo?.split("/").filter(Boolean).pop() ?? "workspace";
+}
+
+/**
+ * The open asks beside the deck: those the desktop lists (open, ideas aside: answered in Initiatives) that are not
+ * holds, oldest first, in the workspace chosen (`scope`, null: all). `workspace` is the name needs.list gives the
+ * control repo's own asks (server/needs.ts), so the chip narrows both the same. Pure.
+ */
+export function openAsks(
+  asks: readonly DecisionAsk[],
+  workspace: string,
+  scope: string | null,
+  now: number,
+): OpenAskRow[] {
+  return asks
+    .filter((ask) => isTriaged(ask) && !ask.waiting && (scope === null || (ask.scope ?? workspace) === scope))
+    .sort((a, b) => (a.askedAt ?? "\uffff").localeCompare(b.askedAt ?? "\uffff") || a.id.localeCompare(b.id))
+    .map((ask) => {
+      const row = askRowOf(ask, workspace, ask.askedAt ?? "");
+      const undo = reversibility(ask.options);
+      const silence = silenceOf(ask);
+      return {
+        key: row.key,
+        title: headlineOf(ask).headline,
+        meta: [
+          ledgerName(ledgerOf(ask)),
+          undo === true ? "reversible" : undo === false ? "an option cannot be undone" : null,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        age: ago(ask.askedAt, now),
+        silent: silence ? `silent → ${silence.text.replace(/^If you say nothing: /, "")}` : null,
+        entry: { row, item: null, ask },
+      };
+    });
 }
 
 // ── Pages ────────────────────────────────────────────────────────────────────
