@@ -18,9 +18,7 @@ export function LedgerWarnings({ theme, warnings }: { theme: PluginTheme; warnin
       style={{ borderRadius: 14, backgroundColor: kit.hairline, paddingVertical: 10, paddingHorizontal: 14, gap: 4 }}
     >
       <Text style={{ color: kit.warn, fontSize: 13.5, fontWeight: "600" }}>
-        {warnings.length === 1
-          ? "1 ledger could not be read, so its asks may be missing."
-          : `${warnings.length} ledgers could not be read, so their asks may be missing.`}
+        {`${warnings.length === 1 ? "A read warning" : `${warnings.length} read warnings`}: some asks may be missing.`}
       </Text>
       {warnings.map((warning) => (
         <Text key={warning} numberOfLines={2} style={{ color: kit.muted, fontSize: 12.5 }}>
@@ -57,7 +55,7 @@ export function OpenAsks({
           <Pressable
             key={row.key}
             accessibilityRole="button"
-            accessibilityLabel={`${row.title}. ${row.meta}${row.age ? `. asked ${row.age} ago` : ""}. Open to answer`}
+            accessibilityLabel={`${row.title}. ${row.meta}${row.age ? `. asked ${row.age === "now" ? "just now" : `${row.age} ago`}` : ""}. Open to answer`}
             onPress={() => onOpen(row.key)}
             style={({ pressed }) => ({
               minHeight: 44,

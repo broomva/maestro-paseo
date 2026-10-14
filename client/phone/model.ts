@@ -337,7 +337,7 @@ export function openAskCounts(rows: readonly OpenAskRow[] | null, warnings: read
       ? [
           {
             id: "warnings",
-            label: `${warnings.length} unread ${warnings.length === 1 ? "ledger" : "ledgers"}`,
+            label: `${warnings.length} read ${warnings.length === 1 ? "warning" : "warnings"}`,
             tone: "warn" as const,
           },
         ]

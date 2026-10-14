@@ -367,6 +367,12 @@ describe("the open asks beside the deck", () => {
       ask("W1", { askedAt: hours(1) }),
       quiet("Q1", { askedAt: hours(5) }),
       quiet("Q2", { askedAt: hours(2) }),
+      // Not blocking, but it recommends what cannot be undone: a hold (isWaiting), so the deck's, never the list's.
+      quiet("W2", {
+        waiting: true,
+        options: [{ id: "all", label: "Install fleet-wide", consequence: null, reversible: false, recommended: true }],
+        askedAt: hours(4),
+      }),
       quiet("I1", { idea: { initiative: "skene", idea: "an idea", source: null, evidence: null, wake: null } }),
       ask("D1", { state: "answered", waiting: false }),
     ];
@@ -375,7 +381,7 @@ describe("the open asks beside the deck", () => {
     );
     const listed = openAsks(asks, "broomva", null, NOW);
     expect(listed.map((row) => row.entry.ask?.id)).toEqual(["Q1", "Q2"]);
-    expect(held).toHaveLength(1);
+    expect(held).toHaveLength(2);
     // The same key a hold of it would carry, so the card and the answer name the same ask.
     expect(listed.every((row) => !held.includes(row.key))).toBe(true);
     expect(held.length + listed.length).toBe(asks.filter((one) => one.state === "open" && !one.idea).length);
@@ -418,9 +424,9 @@ describe("the open asks beside the deck", () => {
     expect(openAskCounts(rows, [])).toEqual([{ id: "open", label: "2 open" }]);
     expect(openAskCounts(rows, ["a", "b"])).toEqual([
       { id: "open", label: "2 open" },
-      { id: "warnings", label: "2 unread ledgers", tone: "warn" },
+      { id: "warnings", label: "2 read warnings", tone: "warn" },
     ]);
-    expect(openAskCounts([], ["a"])).toEqual([{ id: "warnings", label: "1 unread ledger", tone: "warn" }]);
+    expect(openAskCounts([], ["a"])).toEqual([{ id: "warnings", label: "1 read warning", tone: "warn" }]);
     expect(openAskCounts([], [])).toEqual([]);
     expect(openAskCounts(null, null)).toEqual([{ id: "open-unread", label: "open asks: not read", tone: "warn" }]);
   });

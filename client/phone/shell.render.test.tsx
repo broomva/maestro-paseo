@@ -883,9 +883,9 @@ describe("M5, Decisions", () => {
         "The ask ledger dogfood-20261013-2245-launch.yaml could not be read: Map keys must be unique",
       ];
       const view = await mount({ tab: "decisions" });
-      expect(view.text()).toContain("2 unread ledgers");
+      expect(view.text()).toContain("2 read warnings");
       await open(view);
-      expect(view.text()).toContain("2 ledgers could not be read");
+      expect(view.text()).toContain("2 read warnings: some asks may be missing.");
       expect(view.text()).toContain("sri-coordinator-20261013.yaml could not be read: Map keys must be unique");
     });
 
