@@ -33,6 +33,7 @@ import {
   type ApprovalBody,
   approvalKey,
   askHoldKey,
+  askRowOf,
   type Closer,
   type Evidence,
   type Handled,
@@ -243,14 +244,6 @@ export function approvalNeed(approval: OpenApproval, pending?: ReadonlyMap<strin
   };
 }
 
-/** Where an answer to this ask is written and acted on, in words. */
-function goesTo(ask: DecisionAsk): string {
-  if (ask.home.kind === "root") return `the fleet's own ledger${ask.scope ? ` for ${ask.scope}` : ""}`;
-  if (ask.home.kind === "checkout")
-    return `the checkout ${ask.home.path}${ask.home.branch ? ` (${ask.home.branch})` : ""}`;
-  return "origin/main, through Maestro's answers batch";
-}
-
 /** A decision ask's hold, when it waits on you (isWaiting); null for one that does not, and for an idea. */
 export function askNeed(
   ask: DecisionAsk,
@@ -259,32 +252,8 @@ export function askNeed(
   seen: FirstSeen = (_key, at) => new Date(at).toISOString(),
 ): NeedRow | null {
   if (!isWaiting(ask) || ask.idea) return null;
-  const key = askHoldKey(ask);
-  const recommended = ask.options.find((option) => option.recommended)?.id;
-  return {
-    kind: "ask",
-    key,
-    title: ask.headline ?? ask.question ?? ask.id,
-    scope: ask.scope ?? workspace,
-    ...(ask.origin
-      ? { session: { agentId: ask.origin.agentId, name: shortId(ask.origin.agentId), waiting: ask.blocking } }
-      : {}),
-    // An ask its ledger left undated waits from when it was first seen: never ahead of a dated one by a guess.
-    since: ask.askedAt ?? seen(key, now),
-    blocksWork: ask.blocking,
-    verbs: [...KIND_VERBS.ask],
-    body: {
-      why: ask.whyYou ?? ask.question ?? "",
-      cost: ask.stakes ?? "",
-      options: ask.options.map((option) => ({
-        id: option.id,
-        label: option.label,
-        consequence: option.consequence,
-      })),
-      ...(recommended ? { recommended } : {}),
-      goesTo: goesTo(ask),
-    },
-  };
+  // An ask its ledger left undated waits from when it was first seen: never ahead of a dated one by a guess.
+  return askRowOf(ask, workspace, ask.askedAt ?? seen(askHoldKey(ask), now));
 }
 
 /** Local midnight of a YYYY-MM-DD day, as ISO: when a dated review started waiting. */

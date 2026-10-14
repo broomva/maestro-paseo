@@ -132,6 +132,47 @@ export const workKey = (id: string): string => `work:${id}`;
 export const askHoldKey = (ask: Pick<DecisionAsk, "home" | "ledger" | "uid" | "id">): string =>
   `ask:${JSON.stringify([homeKey(ask.home), ask.ledger, ask.uid, ask.id])}`;
 export const reviewKey = (initiative: string): string => `review:${initiative}`;
+
+/** Where an answer to this ask is written and acted on, in words. */
+function goesTo(ask: DecisionAsk): string {
+  if (ask.home.kind === "root") return `the fleet's own ledger${ask.scope ? ` for ${ask.scope}` : ""}`;
+  if (ask.home.kind === "checkout")
+    return `the checkout ${ask.home.path}${ask.home.branch ? ` (${ask.home.branch})` : ""}`;
+  return "origin/main, through Maestro's answers batch";
+}
+
+/**
+ * An open decision ask as an ask row: what needs.list holds for one that waits on you (server/needs.ts askNeed), and
+ * what the phone's Decisions sheet opens for one that does not (BRO-3108), so both read the same body and are
+ * answered by the same verb. `since` is when it started waiting; `blocksWork` is the ask's own `blocking`.
+ */
+export function askRowOf(ask: DecisionAsk, workspace: string, since: string): Extract<NeedRow, { kind: "ask" }> {
+  const recommended = ask.options.find((option) => option.recommended)?.id;
+  return {
+    kind: "ask",
+    key: askHoldKey(ask),
+    title: ask.headline ?? ask.question ?? ask.id,
+    scope: ask.scope ?? workspace,
+    ...(ask.origin
+      ? { session: { agentId: ask.origin.agentId, name: ask.origin.agentId.slice(0, 8), waiting: ask.blocking } }
+      : {}),
+    since,
+    blocksWork: ask.blocking,
+    verbs: [...KIND_VERBS.ask],
+    body: {
+      why: ask.whyYou ?? ask.question ?? "",
+      cost: ask.stakes ?? "",
+      options: ask.options.map((option) => ({
+        id: option.id,
+        label: option.label,
+        consequence: option.consequence,
+      })),
+      ...(recommended ? { recommended } : {}),
+      goesTo: goesTo(ask),
+    },
+  };
+}
+
 /** An action an agent asked leave for (approval.request): `approval:<id>`. */
 export const approvalKey = (id: string): string => `approval:${id}`;
 

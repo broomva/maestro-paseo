@@ -59,6 +59,8 @@ import {
   feedDeck,
   feedSheet,
   irreversibleChoice,
+  openAskCounts,
+  openAsks,
   openingChoice,
   type PhonePage,
   type PhoneTab,
@@ -70,6 +72,7 @@ import {
   type SheetRow,
   sheetTitle,
   unreadWords,
+  workspaceNameOf,
 } from "./model";
 import { NewWorkSheet } from "./new-work-sheet";
 import { PageBody } from "./page-body";
@@ -139,6 +142,16 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
 
   const items = list.data?.items ?? [];
   const asks = asksRead.data ? decisionAsks(asksRead.data) : [];
+  // The open asks that are not holds (BRO-3108): null when asks.workspace could not be read, never "none".
+  const openRows = useMemo(
+    () =>
+      asksRead.data
+        ? openAsks(asks, workspaceNameOf(asksRead.data.controlRepo), workspace, now)
+        : asksRead.isError
+          ? null
+          : [],
+    [asksRead.data, asksRead.isError, asks, workspace, now],
+  );
   const rows = needs.data?.rows ?? null;
   const read: Read = needs.data ? "ok" : needs.isError ? "error" : "pending";
   // Sources needs.list could not read (BRO-3008): their holds are missing because the read failed, never answered.
@@ -146,6 +159,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
 
   // Every hold, joined to its work or ask: the deck and the card read this, and every verb sends from it.
   const everyHold = useMemo(() => needsSection(rows ?? [], items, asks), [rows, items, asks]);
+  // The open asks that are not holds open the same card (an answer is the same verb), but are not on the deck.
+  const inspectable = useMemo(() => [...everyHold, ...(openRows ?? []).map((row) => row.entry)], [everyHold, openRows]);
   const entries = useMemo(() => {
     const scoped = everyHold.filter((entry) => workspace === null || entry.row.scope === workspace);
     return tab === "decisions" ? decisionsDeck(scoped) : tab === "feed" ? feedDeck(scoped) : [];
@@ -203,7 +218,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
 
   const inspector = useInspector({
     items,
-    entries: everyHold,
+    entries: inspectable,
     holdKeys: keys,
     navigation,
     onOpenWork: props.onOpenWork,
@@ -676,12 +691,15 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
         : null}
       {measured && tab === "decisions"
         ? sheet(
-            answersCounts(answersRead.data ?? null),
+            [...answersCounts(answersRead.data ?? null), ...openAskCounts(openRows, asksRead.data?.warnings ?? null)],
             <AnswersSheet
               theme={theme}
               tiles={stageTiles(queue, needs.data ?? null, answersRead.data ?? null, now)}
               held={answersRead.data?.held ?? null}
               went={answersRead.data ? wentRows(answersRead.data.recent) : null}
+              open={openRows}
+              warnings={asksRead.data?.warnings ?? null}
+              onOpenAsk={(key) => inspector.selectHold(key)}
               onOpenPr={openUrl}
             />,
           )

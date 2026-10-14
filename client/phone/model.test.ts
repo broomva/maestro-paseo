@@ -23,6 +23,8 @@ import {
   feedDeck,
   feedSheet,
   irreversibleChoice,
+  openAskCounts,
+  openAsks,
   openingChoice,
   PHONE_TABS,
   pageOfIntent,
@@ -31,6 +33,7 @@ import {
   phoneTabs,
   resolveIndex,
   unreadWords,
+  workspaceNameOf,
 } from "./model";
 
 const NOW = Date.parse("2026-10-12T15:00:00.000Z");
@@ -350,5 +353,81 @@ describe("pages and what each tab's empty deck says", () => {
     expect(deckEmptyWords("pending", "work")).toBe("Reading the work that needs you…");
     expect(deckEmptyWords("ok", "health")).toBe("Nothing is asking for a look.");
     expect(deckEmptyWords("ok", "work")).toBe("No work needs you.");
+  });
+});
+
+// BRO-3108: the open asks that do not wait on you, which needs.list never holds and the deck never shows.
+describe("the open asks beside the deck", () => {
+  const quiet = (id: string, extra: Partial<DecisionAsk> = {}) =>
+    ask(id, { blocking: false, waiting: false, ...extra });
+  const hours = (n: number) => new Date(NOW - n * 3_600_000).toISOString();
+
+  test("every open ask is on the deck or in the list: the desktop's open asks, none lost, none twice", () => {
+    const asks = [
+      ask("W1", { askedAt: hours(1) }),
+      quiet("Q1", { askedAt: hours(5) }),
+      quiet("Q2", { askedAt: hours(2) }),
+      // Not blocking, but it recommends what cannot be undone: a hold (isWaiting), so the deck's, never the list's.
+      quiet("W2", {
+        waiting: true,
+        options: [{ id: "all", label: "Install fleet-wide", consequence: null, reversible: false, recommended: true }],
+        askedAt: hours(4),
+      }),
+      quiet("I1", { idea: { initiative: "skene", idea: "an idea", source: null, evidence: null, wake: null } }),
+      ask("D1", { state: "answered", waiting: false }),
+    ];
+    const held = needsOf({ items: [], asks, reviews: [], landing: null, workspace: "broomva" }, NOW).rows.map(
+      (row) => row.key,
+    );
+    const listed = openAsks(asks, "broomva", null, NOW);
+    expect(listed.map((row) => row.entry.ask?.id)).toEqual(["Q1", "Q2"]);
+    expect(held).toHaveLength(2);
+    // The same key a hold of it would carry, so the card and the answer name the same ask.
+    expect(listed.every((row) => !held.includes(row.key))).toBe(true);
+    expect(held.length + listed.length).toBe(asks.filter((one) => one.state === "open" && !one.idea).length);
+  });
+
+  test("a row names its ledger, whether it can be undone, its age and what silence does", () => {
+    const [row] = openAsks(
+      [
+        quiet("Q1", {
+          ledger: "leadership-20261013.yaml",
+          scope: "sri",
+          askedAt: hours(3),
+          fallback: "off",
+          options: [{ id: "off", label: "Keep them off", consequence: null, reversible: true, recommended: true }],
+        }),
+      ],
+      "broomva",
+      null,
+      NOW,
+    );
+    expect(row).toMatchObject({
+      title: "Install the three mods Q1?",
+      meta: "sri · leadership-20261013 · reversible",
+      age: "3h",
+      silent: "silent → Keep them off",
+    });
+  });
+
+  test("a workspace chip narrows them as it narrows the holds: the control repo's own asks carry its name", () => {
+    const asks = [quiet("Q1"), quiet("Q2", { scope: "sri" })];
+    expect(openAsks(asks, "broomva", null, NOW)).toHaveLength(2);
+    expect(openAsks(asks, "broomva", "sri", NOW).map((row) => row.entry.ask?.id)).toEqual(["Q2"]);
+    expect(openAsks(asks, "broomva", "broomva", NOW).map((row) => row.entry.ask?.id)).toEqual(["Q1"]);
+    expect(workspaceNameOf("/Users/me/broomva")).toBe("broomva");
+    expect(workspaceNameOf(undefined)).toBe("workspace");
+  });
+
+  test("its counts are the lengths of what the sheet lists; a failed read says so, never 0 open", () => {
+    const rows = openAsks([quiet("Q1"), quiet("Q2")], "broomva", null, NOW);
+    expect(openAskCounts(rows, [])).toEqual([{ id: "open", label: "2 open" }]);
+    expect(openAskCounts(rows, ["a", "b"])).toEqual([
+      { id: "open", label: "2 open" },
+      { id: "warnings", label: "2 read warnings", tone: "warn" },
+    ]);
+    expect(openAskCounts([], ["a"])).toEqual([{ id: "warnings", label: "1 read warning", tone: "warn" }]);
+    expect(openAskCounts([], [])).toEqual([]);
+    expect(openAskCounts(null, null)).toEqual([{ id: "open-unread", label: "open asks: not read", tone: "warn" }]);
   });
 });

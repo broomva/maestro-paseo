@@ -189,6 +189,8 @@ let needsHeld: Promise<void> | null = null;
 let pending: Pending[] = [];
 let unblockFail: string | null = null;
 let noticesFail: string | null = null;
+let askWarnings: string[] = [];
+let asksFail: string | null = null;
 let settingsReadsFail = false;
 let noticesUnread: string[] = [];
 let workListFail: string | null = null;
@@ -246,6 +248,8 @@ function reset() {
   pending = [];
   unblockFail = null;
   noticesFail = null;
+  askWarnings = [];
+  asksFail = null;
   settingsReadsFail = false;
   noticesUnread = [];
   workListFail = null;
@@ -311,7 +315,8 @@ const invoke = async (method: string, input: unknown) => {
         ),
       );
     case "asks.workspace":
-      return { controlRepo: "/Users/me/broomva", main: null, decisions: asks, fleet: [], warnings: [] };
+      if (asksFail) throw new Error(asksFail);
+      return { controlRepo: "/Users/me/broomva", main: null, decisions: asks, fleet: [], warnings: askWarnings };
     case "answers.status":
       return answersStatus(asks, null);
     case "verbs.list":
@@ -814,6 +819,91 @@ describe("M5, Decisions", () => {
     await view.press(view.label("Raise the sheet"));
     for (const word of ["Waiting to land", "Routed", "Acted on", "Held", "Where your last answers went"])
       expect(view.text()).toContain(word);
+  });
+
+  // BRO-3108: an ask that is answerable but never a hold (a reversible default forbids `blocking`) was unreachable here.
+  describe("the open asks that do not block you", () => {
+    const quiet = (id: string, extra: Partial<DecisionAsk> = {}) =>
+      ask(id, {
+        blocking: false,
+        waiting: false,
+        ledger: "leadership-20261013.yaml",
+        headline: `Quiet question ${id}?`,
+        ...extra,
+      });
+    const open = (view: Awaited<ReturnType<typeof mount>>) => view.press(view.label("Raise the sheet"));
+
+    test("the sheet lists every open ask the deck does not hold, oldest first; the deck is unchanged", async () => {
+      asks = [
+        ask("A1"),
+        quiet("Q2", { askedAt: new Date(Date.now() - 3 * 3_600_000).toISOString() }),
+        quiet("Q1", { askedAt: new Date(Date.now() - 9 * 3_600_000).toISOString() }),
+        quiet("Q3", { askedAt: new Date(Date.now() - 1 * 3_600_000).toISOString() }),
+        ask("D1", { state: "answered", answerOption: "off", answer: "Keep them off", headline: "Merge #933?" }),
+      ];
+      const view = await mount({ tab: "decisions" });
+      // The deck is still the holds needs.list lists: the one blocking ask, whose badge is its length.
+      expect(needsNow().rows.filter((row) => row.key.startsWith("ask:"))).toHaveLength(1);
+      expect(view.text()).toContain("1 of 1");
+      expect(view.text()).toContain("3 open");
+      await open(view);
+      expect(view.text()).toContain("Open, not blocking");
+      const text = view.text();
+      const at = ["Quiet question Q1?", "Quiet question Q2?", "Quiet question Q3?"].map((title) => text.indexOf(title));
+      expect(at.every((index) => index >= 0)).toBe(true);
+      expect(at).toEqual([...at].sort((a, b) => a - b));
+      // The waiting ask is on the deck, not listed twice; the answered one is not open.
+      expect(text.split("headless mods A1?")).toHaveLength(2);
+      expect(view.labelled("Merge #933?")).toHaveLength(0);
+    });
+
+    test("a row opens the ask's card, and Answer sends that ask's ids, as the deck's does", async () => {
+      asks = [quiet("Q1")];
+      const view = await mount({ tab: "decisions" });
+      expect(view.text()).toContain("No decision waits on you.");
+      await open(view);
+      await view.press(view.labelled("Quiet question Q1?")[0]);
+      await view.press(view.labelled("Keep them off")[0]);
+      await view.press(view.labelled("Answer")[0]);
+      expect(sent("ask.answer")).toEqual([
+        expect.objectContaining({
+          ledger: "leadership-20261013.yaml",
+          uid: asks[0]?.uid,
+          id: "Q1",
+          hash: asks[0]?.hash,
+          option: "off",
+        }),
+      ]);
+    });
+
+    test("a ledger that could not be read is said on the sheet and in its counts, with its words", async () => {
+      asks = [quiet("Q1")];
+      askWarnings = [
+        "The ask ledger sri-coordinator-20261013.yaml could not be read: Map keys must be unique",
+        "The ask ledger dogfood-20261013-2245-launch.yaml could not be read: Map keys must be unique",
+      ];
+      const view = await mount({ tab: "decisions" });
+      expect(view.text()).toContain("2 read warnings");
+      await open(view);
+      expect(view.text()).toContain("2 read warnings: some asks may be missing.");
+      expect(view.text()).toContain("sri-coordinator-20261013.yaml could not be read: Map keys must be unique");
+    });
+
+    test("with every ledger read there is no warning, and no open ask is no section", async () => {
+      asks = [ask("A1")];
+      const view = await mount({ tab: "decisions" });
+      await open(view);
+      expect(view.text()).not.toContain("could not be read");
+      expect(view.text()).not.toContain("Open, not blocking");
+    });
+
+    test("an asks read that failed says so: never 'no open asks'", async () => {
+      asksFail = "asks are down";
+      const view = await mount({ tab: "decisions" });
+      expect(view.text()).toContain("open asks: not read");
+      await open(view);
+      expect(view.text()).toContain("Couldn't read the open asks");
+    });
   });
 });
 
