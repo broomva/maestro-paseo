@@ -163,8 +163,11 @@ maestro mine                   # the work this session is running
   isolation, mode, thinking, features): when you start it, it takes your Settings. That is no more
   than a session can already do: Paseo's own `create_agent` tool, which every session holds, starts
   an agent in any mode. The one choice a session may name is the **tier** (`maestro new --tier
-  standard`): a label for the [economy](#the-economy) that changes nothing about how a run starts.
-  `--provider` and `--thinking` are accepted by the CLI, set aside, and the answer says so.
+  standard`): a label for the [economy](#the-economy), which dispatch resolves to a provider and
+  thinking level through the **tier ladder** in Settings (yours: `tierLadder` in the config, default
+  haiku-5-5 low, sonnet-5-5 medium, opus-5-5 high, fable-5-1 high). A provider or thinking level the
+  work chose itself beats the ladder, and the ladder beats Settings' provider. `--provider` and
+  `--thinking` are accepted by the CLI, set aside, and the answer says so.
 
 Off by default. Give it a period in Settings (`loopMinutes`) and Maestro wakes on that schedule to
 look after the work. **It never starts work** (owner answer A8, BRO-2990): the plugin queues, and

@@ -46,6 +46,7 @@ import type { LoopNotice, LoopRow, LoopsView } from "../shared/loops";
 import type { NeedKind } from "../shared/needs";
 import type { HistoryEvent } from "../shared/records";
 import { groupOf, type OrchState } from "../shared/states";
+import { DEFAULT_TIER_LADDER } from "../shared/tiers";
 import type { TimelineNotice, TimelineRun, TimelineSource, TimelineView } from "../shared/timeline";
 
 // A cold first mount alone can pass bun's 5 s default under load; that is not a failure of the surface.
@@ -393,6 +394,7 @@ const settingsFixture = (): MaestroConfig => ({
   archiveOnApprove: true,
   defaultGate: "auto",
   loopMinutes: null,
+  tierLadder: DEFAULT_TIER_LADDER,
 });
 let settings = settingsFixture();
 /** What work.stop refuses with when it is not told to discard, as the host does for a worktree with uncommitted work. */

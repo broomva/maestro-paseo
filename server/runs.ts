@@ -75,24 +75,30 @@ export function providerFamily(selection: string): string {
 /**
  * How this item's runs start: what the work chose, else Settings. A mode is a
  * provider's own, so the Settings mode applies only while the run uses the
- * Settings provider; thinking and features are the work's alone. Dispatch
+ * Settings provider; features are the work's alone. A work that declares a tier
+ * takes its provider and thinking level from the tier ladder in Settings
+ * (BRO-3118), unless it chose them itself. Dispatch
  * starts from this, and the wire shows it as `nextRun`, so the card and the
  * run cannot disagree.
  */
 export function runSettings(config: MaestroConfig, item: StoredWork) {
   const contract = item.contract;
-  const selection = contract.provider ?? config.provider;
+  // A declared tier resolves through the owner's ladder (Settings); what the work chose itself beats it.
+  const rung = contract.tier ? config.tierLadder[contract.tier] : null;
+  const selection = contract.provider ?? rung?.provider ?? config.provider;
   const sameProvider = providerFamily(selection) === providerFamily(config.provider);
   const modeId = contract.modeId ?? (sameProvider ? config.modeId : null);
   const fromSettings: NextRun["fromSettings"] = [];
-  if (!contract.provider) fromSettings.push("provider");
+  if (!contract.provider) fromSettings.push(rung ? "tierProvider" : "provider");
   if (!contract.isolation) fromSettings.push("isolation");
   if (!contract.modeId && modeId) fromSettings.push("modeId");
+  const thinkingOptionId = contract.thinkingOptionId ?? rung?.thinkingOptionId ?? null;
+  if (!contract.thinkingOptionId && rung) fromSettings.push("tierThinking");
   return {
     selection,
     isolation: contract.isolation ?? config.isolation,
     modeId,
-    thinkingOptionId: contract.thinkingOptionId,
+    thinkingOptionId,
     tier: contract.tier,
     featureValues: contract.featureValues,
     fromSettings,

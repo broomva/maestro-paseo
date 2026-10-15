@@ -1067,13 +1067,23 @@ describe("the socket", () => {
     const output = response.output as { item: WorkItem; notice: string | null };
     expect(output.notice).toContain("Set aside: provider, thinkingOptionId");
     expect(output.notice).not.toContain("Set aside: tier");
+    expect(output.notice).toContain("tier ladder in your Settings");
     expect(output.item.nextRun?.tier).toBe("standard");
     const file = await readFile(join(config.workRoot, output.item.path, "_work.md"), "utf8");
     expect(file).toContain("tier: standard\n");
     for (const key of ["provider:", "thinking:"]) expect(file).not.toContain(key);
-    // Started by you, the run takes your Settings' model, and the receipt carries the declared tier.
+    // Started by you, the run takes what your tier ladder says the tier is, never what the session named.
+    expect(output.item.nextRun).toMatchObject({
+      provider: "claude/claude-sonnet-5-5",
+      thinkingOptionId: "medium",
+      fromSettings: expect.arrayContaining(["tierProvider", "tierThinking"]),
+    });
     const running = await engine.dispatch(fake.paseo, output.item.id);
-    expect(running.worker).toMatchObject({ provider: "claude/test-model", tier: "standard" });
+    expect(running.worker).toMatchObject({
+      provider: "claude/claude-sonnet-5-5",
+      thinkingOptionId: "medium",
+      tier: "standard",
+    });
     // A tier that is no tier is refused; no choices named means no notice.
     expect((await ask("work.create", { title: "Bad", repo, tier: "premium" })).ok).toBe(false);
     const quiet = await ask("work.create", { title: "Quiet", repo, tier: "apex" });

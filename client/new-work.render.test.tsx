@@ -24,6 +24,7 @@ import { Window } from "happy-dom";
 import type { ReactNode } from "react";
 import type { MaestroConfig, WorkItem } from "../shared/contracts";
 import { FAKE_PROVIDERS } from "../shared/fake-providers";
+import { DEFAULT_TIER_LADDER } from "../shared/tiers";
 
 const SLOW = 30_000;
 const it = (name: string, run: () => Promise<void>) => test(name, run, SLOW);
@@ -178,6 +179,7 @@ const settings: MaestroConfig = {
   archiveOnApprove: false,
   defaultGate: "human",
   loopMinutes: null,
+  tierLadder: DEFAULT_TIER_LADDER,
 };
 const created: Record<string, unknown>[] = [];
 const toasts: string[] = [];

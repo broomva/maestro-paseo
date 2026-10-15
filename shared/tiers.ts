@@ -32,6 +32,25 @@ export function tierOfModel(model: string | null | undefined): Tier | null {
   return null;
 }
 
+/** How one tier runs: the provider and model it asks for, and the thinking level. */
+export interface Rung {
+  provider: string;
+  thinkingOptionId: string;
+}
+
+/**
+ * The tier ladder: what a declared tier resolves to at dispatch (Settings, `tierLadder`, the owner's). The default is
+ * the workspace's ladder (scripts/delegation.py LADDER): keep the two equal.
+ */
+export type TierLadder = Record<Tier, Rung>;
+
+export const DEFAULT_TIER_LADDER: TierLadder = {
+  mechanical: { provider: "claude/claude-haiku-5-5", thinkingOptionId: "low" },
+  standard: { provider: "claude/claude-sonnet-5-5", thinkingOptionId: "medium" },
+  frontier: { provider: "claude/claude-opus-5-5", thinkingOptionId: "high" },
+  apex: { provider: "claude/claude-fable-5-1", thinkingOptionId: "high" },
+};
+
 /** The model of a `provider/model` selection (`claude/claude-sonnet-5-5`), or null for a bare provider. */
 export function modelOfProvider(provider: string | null | undefined): string | null {
   const text = (provider ?? "").trim();

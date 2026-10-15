@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigSchema, LOOP_MAX_MINUTES } from "../shared/contracts";
+import { DEFAULT_TIER_LADDER } from "../shared/tiers";
 import { defaultConfig, loadConfig, saveConfig } from "./config";
 
 const roots: string[] = [];
@@ -27,6 +28,7 @@ test("a file written before the cap, archive, default gate and loop settings loa
     archiveOnApprove: false,
     defaultGate: "human",
     loopMinutes: null,
+    tierLadder: DEFAULT_TIER_LADDER,
   });
   expect(defaultConfig()).toMatchObject({
     concurrencyCap: 3,
@@ -34,6 +36,18 @@ test("a file written before the cap, archive, default gate and loop settings loa
     defaultGate: "human",
     loopMinutes: null,
   });
+});
+
+test("the tier ladder defaults to the workspace's, loads from a file, and needs every rung whole", async () => {
+  expect(defaultConfig().tierLadder).toEqual(DEFAULT_TIER_LADDER);
+  expect(DEFAULT_TIER_LADDER.standard).toEqual({ provider: "claude/claude-sonnet-5-5", thinkingOptionId: "medium" });
+  const ladder = { ...DEFAULT_TIER_LADDER, apex: { provider: " claude/claude-fable-5-2 ", thinkingOptionId: "max" } };
+  const loaded = await loadConfig(await file({ ...older, tierLadder: ladder }));
+  expect(loaded.tierLadder.apex).toEqual({ provider: "claude/claude-fable-5-2", thinkingOptionId: "max" });
+  const broken = { ...DEFAULT_TIER_LADDER, standard: { provider: "", thinkingOptionId: "low" } };
+  await expect(loadConfig(await file({ ...older, tierLadder: broken }))).rejects.toThrow("needs a provider");
+  const { apex: _apex, ...partial } = DEFAULT_TIER_LADDER;
+  await expect(loadConfig(await file({ ...older, tierLadder: partial }))).rejects.toThrow();
 });
 
 test("the loop is off by default, and wakes every whole number of minutes from 1 to a day", async () => {

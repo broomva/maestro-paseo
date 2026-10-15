@@ -26,9 +26,10 @@ const USAGE = `maestro: operate Maestro from a Paseo session
       --brief <text>                  What to do and why
       --repo <path>                   Where runs happen (default: this directory)
       --initiative <name>             Group it under a folder
-      --tier <t>                      mechanical | standard | frontier | apex: what the work is meant to get
-      --provider <p>                  claude/claude-sonnet-5-5 style: how the work asks its runs to start
-      --thinking <id>                 The thinking level it asks for
+      --tier <t>                      mechanical | standard | frontier | apex: what the work is meant to get;
+                                      the owner's tier ladder in Settings turns it into a provider and thinking level
+      --provider <p>                  claude/claude-sonnet-5-5 style (owner's to set: set aside from a session)
+      --thinking <id>                 The thinking level (owner's to set: set aside from a session)
   maestro track [--title <text>] [--ticket <id>]  Track this session as work (or --agent <id>, a session it started)
   maestro mine                        The work this session is running (or --agent <id>, a session it started)
   maestro config                      Where work lives and how runs start
@@ -51,8 +52,9 @@ here. Allow, Deny, change of course, unblock and cancel are yours too: work is n
 approved, gates merge it. A session can only ask leave for an action (approval request);
 it cannot decide it, pass its own gate, restart stuck work, or write a done check.
 
-The tier is recorded with the work and counted in Maestro's economy. How a run starts (--provider, --thinking)
-is the owner's to set in Maestro: a session's choice of either is set aside, and the answer says so.`;
+The tier is recorded with the work, counted in Maestro's economy, and resolved at dispatch through the tier
+ladder in Maestro's Settings. How a run starts (--provider, --thinking) is the owner's to set in Maestro: a
+session's choice of either is set aside, and the answer says so.`;
 
 /** The command line does not say what to do. */
 export class Usage extends Error {}

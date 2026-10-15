@@ -121,7 +121,7 @@ function setAside(raw: unknown): string | null {
   const named = OWNERS_CHOICES.filter((key) => said[key] !== undefined && said[key] !== null && said[key] !== "");
   return named.length === 0
     ? null
-    : `Set aside: ${named.join(", ")}. How a run starts is yours, not a session's: only the tier is taken.`;
+    : `Set aside: ${named.join(", ")}. How a run starts is yours, not a session's: only the tier is taken, and it resolves to a provider and thinking level through the tier ladder in your Settings.`;
 }
 
 /**

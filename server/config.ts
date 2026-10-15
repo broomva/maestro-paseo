@@ -8,6 +8,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { ConfigSchema, type MaestroConfig } from "../shared/contracts";
+import { DEFAULT_TIER_LADDER } from "../shared/tiers";
 import { writeFileAtomic } from "./atomic";
 import { configPath, expandHome } from "./paths";
 
@@ -23,6 +24,7 @@ export function defaultConfig(): MaestroConfig {
     archiveOnApprove: false,
     defaultGate: "human",
     loopMinutes: null,
+    tierLadder: structuredClone(DEFAULT_TIER_LADDER),
   };
 }
 

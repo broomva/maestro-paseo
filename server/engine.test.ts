@@ -3114,6 +3114,76 @@ describe("the composer's choices", () => {
     expect(await readFile(join(config.workRoot, plain.path, WORK_FILE), "utf8")).not.toContain("tier:");
   });
 
+  test("a declared tier resolves through the tier ladder: its provider and thinking, over Settings", async () => {
+    const { engine, fake, repo } = await setup({ provider: "claude/sonnet" });
+    const item = await engine.create(fake.paseo, { ...draft(repo), title: "Ladder", tier: "frontier" });
+    expect(item.nextRun).toMatchObject({
+      provider: "claude/claude-opus-5-5",
+      thinkingOptionId: "high",
+      tier: "frontier",
+      fromSettings: ["tierProvider", "isolation", "tierThinking"],
+    });
+    const line = nextRunCopy(item.nextRun, "queued").line;
+    expect(line).toContain("claude/claude-opus-5-5 (from the frontier tier in Settings)");
+    expect(line).toContain("thinking high (from the frontier tier in Settings)");
+    expect(line).not.toContain("claude/claude-opus-5-5 (from Settings)");
+    const running = await engine.dispatch(fake.paseo, item.id);
+    expect((fake.created[0] as { config: Record<string, unknown> }).config).toMatchObject({
+      provider: "claude/claude-opus-5-5",
+      thinkingOptionId: "high",
+    });
+    expect(running.worker).toMatchObject({ provider: "claude/claude-opus-5-5", thinkingOptionId: "high" });
+  });
+
+  test("what the work chose beats the ladder; the ladder beats Settings; no tier is Settings as before", async () => {
+    const { engine, fake, repo } = await setup({ provider: "claude/sonnet" });
+    const provider = await engine.create(fake.paseo, {
+      ...draft(repo),
+      title: "Own provider",
+      tier: "mechanical",
+      provider: "claude/opus",
+    });
+    // The provider is the work's; the thinking level still comes from the tier's rung.
+    expect(provider.nextRun).toMatchObject({ provider: "claude/opus", thinkingOptionId: "low" });
+    expect(provider.nextRun?.fromSettings).toContain("tierThinking");
+    expect(provider.nextRun?.fromSettings).not.toContain("tierProvider");
+    expect(provider.nextRun?.fromSettings).not.toContain("provider");
+    const thinking = await engine.create(fake.paseo, {
+      ...draft(repo),
+      title: "Own thinking",
+      tier: "apex",
+      thinkingOptionId: "xhigh",
+    });
+    expect(thinking.nextRun).toMatchObject({ provider: "claude/claude-fable-5-1", thinkingOptionId: "xhigh" });
+    expect(thinking.nextRun?.fromSettings).toContain("tierProvider");
+    expect(thinking.nextRun?.fromSettings).not.toContain("tierThinking");
+    const none = await engine.create(fake.paseo, { ...draft(repo), title: "No tier" });
+    expect(none.nextRun).toMatchObject({ provider: "claude/sonnet", thinkingOptionId: null, tier: null });
+    expect(none.nextRun?.fromSettings).toEqual(["provider", "isolation"]);
+    await engine.dispatch(fake.paseo, none.id);
+    expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({ provider: "claude/sonnet" });
+  });
+
+  test("editing the ladder changes the next dispatch, and a tier of a bare provider's family keeps Settings' mode only when it matches", async () => {
+    const { engine, fake, repo, config } = await setup({ modeId: "bypassPermissions" });
+    const item = await engine.create(fake.paseo, { ...draft(repo), title: "Edited", tier: "standard" });
+    config.tierLadder.standard = { provider: "claude/claude-sonnet-5-6", thinkingOptionId: "high" };
+    expect((await engine.get(item.id)).item.nextRun).toMatchObject({
+      provider: "claude/claude-sonnet-5-6",
+      thinkingOptionId: "high",
+    });
+    await engine.dispatch(fake.paseo, item.id);
+    expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({
+      provider: "claude/claude-sonnet-5-6",
+      modeId: "bypassPermissions",
+      thinkingOptionId: "high",
+    });
+    // A ladder that points at another provider's family does not carry the Settings mode over.
+    config.tierLadder.mechanical = { provider: "codex/gpt-5.5", thinkingOptionId: "low" };
+    const other = await engine.create(fake.paseo, { ...draft(repo), title: "Other family", tier: "mechanical" });
+    expect(other.nextRun).toMatchObject({ provider: "codex/gpt-5.5", modeId: null });
+  });
+
   test("a session may declare a tier on the work it files, and nothing else about how its runs start", async () => {
     const { engine, fake, repo, config } = await setup();
     const { item } = await engine.createWork(
@@ -4520,7 +4590,9 @@ describe("run.economy: what each run's session has used (BRO-3118)", () => {
       agentId: "agent-1",
       tier: "standard",
       tierSource: "declared",
-      provider: "claude/sonnet",
+      provider: "claude/claude-sonnet-5-5",
+      model: "claude-sonnet-5-5",
+      thinkingOptionId: "medium",
       measured: true,
       tokens: { input: 200, output: 20, cacheRead: 0, cacheCreation: 0 },
       subagentTokens: null,
@@ -4529,7 +4601,7 @@ describe("run.economy: what each run's session has used (BRO-3118)", () => {
       assistantMessages: 2,
     });
     expect(first?.backfilled).toBeUndefined();
-    expect(asked.at(-1)).toEqual(["agent-1", "claude/sonnet"]);
+    expect(asked.at(-1)).toEqual(["agent-1", "claude/claude-sonnet-5-5"]);
     // The same numbers on the next turn's end: nothing is added.
     await engine.unblock(fake.paseo, item.id, "").catch(() => undefined);
     reading(measured(2));
@@ -4631,6 +4703,38 @@ describe("run.economy: what each run's session has used (BRO-3118)", () => {
     expect(Object.keys(written.tiers)).toEqual(["mechanical", "standard", "frontier", "apex", "unknown"]);
     expect(written.tiers.standard).toMatchObject({ runs: 1, works: 1, tokens: 220 });
     expect(written.totals.runs).toBe(1);
+  });
+
+  test("economy.json carries the keys the workspace reads", async () => {
+    const { engine, fake, repo, file, reading } = await boot();
+    await filed(engine, fake, repo, "standard");
+    reading(measured(1));
+    await engine.economySweep();
+    const written = JSON.parse(await readFile(file, "utf8"));
+    expect(Object.keys(written).sort()).toEqual(["generatedAt", "tiers", "totals", "windowDays"]);
+    expect(typeof written.generatedAt).toBe("string");
+    expect(written.windowDays).toBe(7);
+    const keys = [
+      "approved",
+      "cacheRead",
+      "cacheReadPerApproved",
+      "escalations",
+      "firstPass",
+      "raisedRuns",
+      "raises",
+      "runs",
+      "sentBack",
+      "tokens",
+      "tokensPerApproved",
+      "unmeasured",
+      "works",
+    ];
+    for (const bucket of ["mechanical", "standard", "frontier", "apex", "unknown"]) {
+      expect(Object.keys(written.tiers[bucket]).sort()).toEqual(keys);
+    }
+    expect(Object.keys(written.totals).sort()).toEqual(keys);
+    // Nothing approved yet: the ratios are null, never missing.
+    expect(written.tiers.standard).toMatchObject({ runs: 1, tokensPerApproved: null, firstPass: null, raises: 0 });
   });
 
   test("the sweep backfills a past run once, only when its transcript can be read, and writes the file at most once a minute", async () => {
