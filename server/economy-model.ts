@@ -46,8 +46,9 @@ const tokensOf = (tokens: Tokens): Tokens => ({ ...tokens });
 
 /**
  * The `run.economy` event for one run. Its tier is the declared one, else the one its model implies. `raises` counts
- * the models the run used above that tier: each subagent transcript that ran on one, and each other model the main
- * thread switched to; a run with no tier has no baseline to be raised above.
+ * what the run used above that tier, by tier and however a model is spelled (an alias, a dated id): the dispatched
+ * model itself when its tier is above the declared one, each higher tier the main thread switched to, and each
+ * subagent transcript that ran on a higher tier. A run with no tier has no baseline to be raised above.
  */
 export function economyEvent(
   ts: string,
@@ -71,6 +72,10 @@ export function economyEvent(
     thinkingOptionId: bind.thinkingOptionId,
   };
   const marked = backfilled ? { backfilled: true as const } : {};
+  const own = tierRank(tier);
+  const tierAbove = (candidate: string | null) => own >= 0 && tierRank(tierOfModel(candidate)) > own;
+  // The dispatched model is itself above the tier the work declared: a raise a missing transcript cannot hide.
+  const dispatchedRaise = bind.declaredTier && tierAbove(model) ? 1 : 0;
   if (!usage) {
     return {
       ...base,
@@ -79,18 +84,22 @@ export function economyEvent(
       tokens: { ...NO_TOKENS },
       subagentTokens: null,
       subagentModels: null,
-      raises: 0,
+      raises: dispatchedRaise,
       maxSubagentTier: null,
       peakContext: null,
       assistantMessages: 0,
       ...marked,
     };
   }
-  const own = tierRank(tier);
-  const above = (candidate: string) => own >= 0 && tierRank(tierOfModel(candidate)) > own;
-  const subagentFiles = usage.subagents?.files ?? [];
-  const raisedFiles = subagentFiles.filter((file) => file.models.some(above)).length;
-  const switched = usage.mainModels.filter((candidate) => candidate !== model && above(candidate)).length;
+  const raisedFiles = (usage.subagents?.files ?? []).filter((file) => file.models.some(tierAbove)).length;
+  // Tiers, not model strings: `claude/opus` and `claude-opus-5-5-20261001` are one tier, and the dispatched one is counted.
+  const dispatchedTier = tierOfModel(model);
+  const switched = new Set(
+    usage.mainModels.flatMap((candidate) => {
+      const tierOfCandidate = tierOfModel(candidate);
+      return tierOfCandidate && tierOfCandidate !== dispatchedTier && tierAbove(candidate) ? [tierOfCandidate] : [];
+    }),
+  ).size;
   let maxSubagentTier: string | null = null;
   for (const name of Object.keys(usage.subagents?.byModel ?? {})) {
     maxSubagentTier = higherTier(maxSubagentTier, tierOfModel(name));
@@ -101,7 +110,7 @@ export function economyEvent(
     tokens: tokensOf(usage.tokens),
     subagentTokens: usage.subagents ? tokensOf(usage.subagents.tokens) : null,
     subagentModels: usage.subagents ? { ...usage.subagents.byModel } : null,
-    raises: raisedFiles + switched,
+    raises: dispatchedRaise + raisedFiles + switched,
     maxSubagentTier,
     peakContext: usage.peakContext,
     assistantMessages: usage.assistantMessages,
@@ -163,7 +172,10 @@ const bucketOf = (tier: string | null): EconomyBucketName =>
 
 const sumOf = (tokens: Tokens | null | undefined) => (tokens ? billed(tokens) : 0);
 
-/** Each run of one work: its effective tier, and what it used, from its latest reading. Receipt order. */
+/**
+ * Each run of one work: its effective tier, and what it used, from its latest reading. Receipt order. A run with no
+ * reading is unmeasured, and so is one whose reading says it could not be read.
+ */
 function runsOf(work: EconomyWork, cutoff: number): Map<string, Run> {
   const runs = new Map<string, Run>();
   for (const event of work.events) {
@@ -175,7 +187,8 @@ function runsOf(work: EconomyWork, cutoff: number): Map<string, Run> {
       bucket: "unknown" as EconomyBucketName,
       tokens: 0,
       cacheRead: 0,
-      unmeasured: false,
+      // Until a reading says otherwise, a run has none: unmeasured, never a measured zero.
+      unmeasured: true,
       raises: 0,
       inWindow: false,
     };
@@ -198,12 +211,13 @@ function runsOf(work: EconomyWork, cutoff: number): Map<string, Run> {
 const empty = (): Acc => ({
   runs: new Set(),
   works: new Set(),
-  approved: new Set(),
-  firstPass: new Set(),
+  approved: 0,
+  approvedMeasured: 0,
+  firstPass: 0,
   sentBack: 0,
   tokens: 0,
   cacheRead: 0,
-  escalated: new Set(),
+  escalations: 0,
   raises: 0,
   raisedRuns: 0,
   unmeasured: 0,
@@ -212,30 +226,31 @@ const empty = (): Acc => ({
 interface Acc {
   runs: Set<string>;
   works: Set<string>;
-  approved: Set<string>;
-  firstPass: Set<string>;
+  approved: number;
+  /** Approvals credited to a run whose usage was read: the only ones tokens per approved divides by. */
+  approvedMeasured: number;
+  firstPass: number;
   sentBack: number;
   tokens: number;
   cacheRead: number;
-  escalated: Set<string>;
+  escalations: number;
   raises: number;
   raisedRuns: number;
   unmeasured: number;
 }
 
 function finish(acc: Acc): EconomyBucket {
-  const approved = acc.approved.size;
   return {
     runs: acc.runs.size,
     works: acc.works.size,
-    approved,
+    approved: acc.approved,
     sentBack: acc.sentBack,
     tokens: acc.tokens,
     cacheRead: acc.cacheRead,
-    tokensPerApproved: approved > 0 ? Math.round(acc.tokens / approved) : null,
-    cacheReadPerApproved: approved > 0 ? Math.round(acc.cacheRead / approved) : null,
-    firstPass: approved > 0 ? acc.firstPass.size / approved : null,
-    escalations: acc.escalated.size,
+    tokensPerApproved: acc.approvedMeasured > 0 ? Math.round(acc.tokens / acc.approvedMeasured) : null,
+    cacheReadPerApproved: acc.approvedMeasured > 0 ? Math.round(acc.cacheRead / acc.approvedMeasured) : null,
+    firstPass: acc.approved > 0 ? acc.firstPass / acc.approved : null,
+    escalations: acc.escalations,
     raises: acc.raises,
     raisedRuns: acc.raisedRuns,
     unmeasured: acc.unmeasured,
@@ -243,14 +258,10 @@ function finish(acc: Acc): EconomyBucket {
 }
 
 /**
- * Every tier's cost and pass rate over the last `days` days (by receipt time). A run counts when a receipt of it
- * falls in the window: its dispatch, adoption or reading. A verdict counts when it was made in the window, and is
- * credited to the tier of the latest run before it.
- *
- * - `approved`: work an approve verdict followed; `firstPass`: of those, work with one dispatch and no send-back;
- * - `sentBack`: revise verdicts; `escalations`: work whose next dispatch moved up a tier, credited to the tier it
- *   moved to (work is counted once per tier it escalated into);
- * - `tokens`: each run's latest cumulative input, output and cache creation, subagents included; cache reads apart.
+ * Every tier's cost and pass rate over the last `days` days (by receipt time). The definitions are in
+ * shared/economy.ts (EconomyBucketSchema), and the totals are the sum of the buckets (work counted once overall).
+ * A run counts when a receipt of it falls in the window: its dispatch, adoption or reading. A verdict counts when it
+ * was made in the window, and is credited to the tier of the latest run before it.
  */
 export function summarizeEconomy(
   works: readonly EconomyWork[],
@@ -281,34 +292,51 @@ export function summarizeEconomy(
       });
     }
     // Verdicts and dispatches in order: each is credited to the run that was latest when it happened.
-    const dispatches = work.events.filter((event) => event.type === "dispatched").length;
-    const everSentBack = work.events.some((event) => event.type === "gate" && event.verdict === "revise");
+    const gated = work.events.some((event) => event.type === "gate" && event.verdict === "approve");
     let latest: Run | null = null;
     let previous: Run | null = null;
+    let binds = 0;
+    let revised = false;
+    // The work is approved once: by its last approval in the window, judged as things stood at that approval.
+    let approval: { run: Run; clean: boolean } | null = null;
     for (const event of work.events) {
       if (event.type === "dispatched" || event.type === "adopted") {
         const run = runs.get(event.agentId) ?? null;
+        binds += 1;
         if (event.type === "dispatched" && run && previous && run.agentId !== previous.agentId) {
           const moved = tierRank(run.bucket) > tierRank(previous.bucket) && tierRank(previous.bucket) >= 0;
-          if (moved && Date.parse(event.ts) >= cutoff) credit(run.bucket, (acc) => acc.escalated.add(work.id));
+          if (moved && Date.parse(event.ts) >= cutoff) {
+            credit(run.bucket, (acc) => {
+              acc.escalations += 1;
+            });
+          }
         }
         latest = run;
         if (event.type === "dispatched") previous = run;
         continue;
       }
-      if (event.type !== "gate" || Date.parse(event.ts) < cutoff || !latest) continue;
-      if (event.verdict === "revise") {
-        credit(latest.bucket, (acc) => {
-          acc.sentBack += 1;
-        });
+      const inWindow = Date.parse(event.ts) >= cutoff;
+      if (event.type === "gate" && event.verdict === "revise") {
+        revised = true;
+        if (inWindow && latest) {
+          credit(latest.bucket, (acc) => {
+            acc.sentBack += 1;
+          });
+        }
       }
-      if (event.verdict === "approve") {
-        const clean = dispatches === 1 && !everSentBack;
-        credit(latest.bucket, (acc) => {
-          acc.approved.add(work.id);
-          if (clean) acc.firstPass.add(work.id);
-        });
-      }
+      // An approve verdict, or, for work no gate verdict closed (an auto gate's checks, a merged branch), its landing as done.
+      const approves =
+        (event.type === "gate" && event.verdict === "approve") ||
+        (event.type === "state" && event.to === "done" && !gated && !revised);
+      if (approves && inWindow && latest) approval = { run: latest, clean: binds === 1 && !revised };
+    }
+    if (approval) {
+      const { run, clean } = approval;
+      credit(run.bucket, (acc) => {
+        acc.approved += 1;
+        if (!run.unmeasured) acc.approvedMeasured += 1;
+        if (clean) acc.firstPass += 1;
+      });
     }
   }
   return {

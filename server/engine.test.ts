@@ -3164,6 +3164,30 @@ describe("the composer's choices", () => {
     expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({ provider: "claude/sonnet" });
   });
 
+  test("a rung's thinking level goes only to a run of the rung's provider family", async () => {
+    const { engine, fake, repo } = await setup();
+    const other = await engine.create(fake.paseo, {
+      ...draft(repo),
+      title: "Other family",
+      tier: "standard",
+      provider: "codex/gpt-5.5",
+    });
+    // The work's provider is codex: claude's "medium" is no codex thinking level, so none is taken.
+    expect(other.nextRun).toMatchObject({ provider: "codex/gpt-5.5", thinkingOptionId: null });
+    expect(other.nextRun?.fromSettings).not.toContain("tierThinking");
+    await engine.dispatch(fake.paseo, other.id);
+    expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({ provider: "codex/gpt-5.5" });
+    // The same family keeps the rung's thinking level.
+    const same = await engine.create(fake.paseo, {
+      ...draft(repo),
+      title: "Same family",
+      tier: "standard",
+      provider: "claude/opus",
+    });
+    expect(same.nextRun).toMatchObject({ provider: "claude/opus", thinkingOptionId: "medium" });
+    expect(same.nextRun?.fromSettings).toContain("tierThinking");
+  });
+
   test("editing the ladder changes the next dispatch, and a tier of a bare provider's family keeps Settings' mode only when it matches", async () => {
     const { engine, fake, repo, config } = await setup({ modeId: "bypassPermissions" });
     const item = await engine.create(fake.paseo, { ...draft(repo), title: "Edited", tier: "standard" });
@@ -4541,13 +4565,27 @@ describe("run.economy: what each run's session has used (BRO-3118)", () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "maestro-economy-")));
     roots.push(root);
     const file = join(root, "economy.json");
+    // The economy file's trailing scan, fired by hand after moving the same clock the engine reads.
+    const trailing: Array<{ run: () => void; canceled: boolean }> = [];
+    const economy = new EconomyFile({
+      path: file,
+      now: () => new Date(clock),
+      refreshMs: 60_000,
+      timer: (run) => {
+        const entry = { run, canceled: false };
+        trailing.push(entry);
+        return () => {
+          entry.canceled = true;
+        };
+      },
+    });
     const env = await setup(overrides, {
       usage: async (agentId, provider) => {
         asked.push([agentId, provider]);
         if (next instanceof Error) throw next;
         return next;
       },
-      economy: new EconomyFile({ path: file, now: () => new Date(clock), refreshMs: 60_000 }),
+      economy,
     });
     const economyOf = async (id: string) =>
       (await env.store.findById(id)).events.filter(
@@ -4557,6 +4595,13 @@ describe("run.economy: what each run's session has used (BRO-3118)", () => {
       ...env,
       asked,
       file,
+      economyFile: economy,
+      /** Let the trailing scan the coalescing left run, and wait for it. */
+      fireTrailing: async () => {
+        for (const entry of trailing.splice(0)) if (!entry.canceled) entry.run();
+        await economy.settled();
+      },
+      trailingCount: () => trailing.filter((entry) => !entry.canceled).length,
       economyOf,
       reading: (value: UsageRead | Error) => {
         next = value;
@@ -4737,37 +4782,118 @@ describe("run.economy: what each run's session has used (BRO-3118)", () => {
     expect(written.tiers.standard).toMatchObject({ runs: 1, tokensPerApproved: null, firstPass: null, raises: 0 });
   });
 
-  test("the sweep backfills a past run once, only when its transcript can be read, and writes the file at most once a minute", async () => {
-    const { engine, fake, repo, economyOf, reading, file, asked } = await boot();
+  test("a backfill of a transcript that cannot be read records one unmeasured reading, with why, and is not asked again", async () => {
+    const { engine, fake, repo, economyOf, reading, asked } = await boot();
     const item = await filed(engine, fake, repo);
-    // Nothing readable yet: no receipt, and the agent is not asked again by the next sweep.
     reading({ measured: false, reason: "transcript not found" });
     await engine.economySweep();
-    expect(await economyOf(item.id)).toEqual([]);
+    const [only, ...rest] = await economyOf(item.id);
+    expect(rest).toEqual([]);
+    expect(only).toMatchObject({
+      backfilled: true,
+      measured: false,
+      reason: "transcript not found",
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+    });
     const askedOnce = asked.length;
     reading(measured(2));
     await engine.economySweep();
     expect(asked.length).toBe(askedOnce);
-    expect(await economyOf(item.id)).toEqual([]);
-    // A new process (a fresh engine over the same files) tries again, and the readable transcript is backfilled.
-    const second = await boot();
-    const other = await filed(second.engine, second.fake, second.repo);
-    second.reading(measured(2));
-    await second.engine.economySweep();
-    const [backfilled, ...rest] = await second.economyOf(other.id);
+    expect(await economyOf(item.id)).toHaveLength(1);
+    // A fresh engine over the same files finds the receipt and does not ask either.
+    const again = await boot();
+    again.reading(measured(2));
+    await again.engine.economySweep();
+    expect(again.asked).toEqual([]);
+  });
+
+  test("a backfill of a readable transcript records it, once, and the file is written at most once a minute", async () => {
+    const { engine, fake, repo, economyOf, reading, file } = await boot();
+    const item = await filed(engine, fake, repo);
+    reading(measured(2));
+    await engine.economySweep();
+    const [backfilled, ...rest] = await economyOf(item.id);
     expect(backfilled).toMatchObject({ backfilled: true, measured: true, tokens: { input: 200 } });
     expect(rest).toEqual([]);
-    await second.engine.economySweep();
-    expect(await second.economyOf(other.id)).toHaveLength(1);
+    await engine.economySweep();
+    expect(await economyOf(item.id)).toHaveLength(1);
     // The file was written for the receipt just added; a later sweep inside the minute leaves it alone.
-    const stamp = JSON.parse(await readFile(second.file, "utf8")).generatedAt;
+    const stamp = JSON.parse(await readFile(file, "utf8")).generatedAt;
     tickMs(30_000);
-    await second.engine.economySweep();
-    expect(JSON.parse(await readFile(second.file, "utf8")).generatedAt).toBe(stamp);
+    await engine.economySweep();
+    expect(JSON.parse(await readFile(file, "utf8")).generatedAt).toBe(stamp);
     tickMs(31_000);
-    await second.engine.economySweep();
-    expect(JSON.parse(await readFile(second.file, "utf8")).generatedAt).not.toBe(stamp);
-    expect(file).not.toBe(second.file);
+    await engine.economySweep();
+    expect(JSON.parse(await readFile(file, "utf8")).generatedAt).not.toBe(stamp);
+  });
+
+  test("overlapping sweeps share one backfill: no run is read twice", async () => {
+    const { engine, fake, repo, economyOf, reading, asked } = await boot();
+    const item = await filed(engine, fake, repo);
+    reading(measured(1));
+    asked.length = 0;
+    await Promise.all([engine.economySweep(), engine.economySweep(), engine.economySweep()]);
+    expect(asked).toHaveLength(1);
+    expect(await economyOf(item.id)).toHaveLength(1);
+  });
+
+  test("a reading that read fewer messages than the last is out of order and is not recorded", async () => {
+    const { engine, fake, repo, economyOf, reading } = await boot();
+    const item = await filed(engine, fake, repo);
+    reading(measured(5));
+    await endTurn(engine, fake);
+    await engine.economySettled();
+    reading(measured(3));
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "x" }] as never,
+      "t2",
+    );
+    await engine.economySettled();
+    const all = await economyOf(item.id);
+    expect(all).toHaveLength(1);
+    expect(all[0]?.assistantMessages).toBe(5);
+    reading(measured(6));
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "y" }] as never,
+      "t3",
+    );
+    await engine.economySettled();
+    expect((await economyOf(item.id)).map((e) => e.assistantMessages)).toEqual([5, 6]);
+  });
+
+  test("economy.json is not rewritten by every reading: a reading inside the interval trails, and the last one lands", async () => {
+    const { engine, fake, repo, reading, file, fireTrailing, trailingCount } = await boot();
+    await filed(engine, fake, repo, "standard");
+    reading(measured(1));
+    await endTurn(engine, fake);
+    await engine.economySettled();
+    // The first reading is written at once.
+    expect(JSON.parse(await readFile(file, "utf8")).tiers.standard.tokens).toBe(110);
+    // Two more inside the interval: the file still says the first, and one scan waits to trail them.
+    for (const [count, turn] of [
+      [2, "t2"],
+      [4, "t3"],
+    ] as const) {
+      tickMs(5_000);
+      reading(measured(count));
+      await engine.onTurnEnded(
+        { id: "agent-1" },
+        { kind: "completed" },
+        [{ type: "assistant_message", text: turn }] as never,
+        turn,
+      );
+      await engine.economySettled();
+    }
+    expect(JSON.parse(await readFile(file, "utf8")).tiers.standard.tokens).toBe(110);
+    expect(trailingCount()).toBe(1);
+    tickMs(30_000);
+    await fireTrailing();
+    expect(JSON.parse(await readFile(file, "utf8")).tiers.standard.tokens).toBe(440);
+    expect(trailingCount()).toBe(0);
   });
 
   test("a backfill reads at most BACKFILL_PER_SWEEP runs a sweep", async () => {

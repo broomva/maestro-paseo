@@ -20,30 +20,45 @@ export const TokensSchema = z.object({
 });
 export type Tokens = z.infer<typeof TokensSchema>;
 
-/** One bucket's numbers. The key names are read by the workspace coordinator: keep them. */
+/**
+ * One bucket's numbers. The key names are read by the workspace coordinator: keep them. A run is in the bucket of its
+ * effective tier: its latest reading's, else the one declared at dispatch, else the one its model implies, else
+ * `unknown`. The totals are the sum of the buckets (`works` is counted once overall).
+ */
 export const EconomyBucketSchema = z.object({
-  /** Distinct sessions (agent ids) that ran. */
+  /** Distinct sessions (agent ids) with a receipt in the window. */
   runs: z.number(),
   /** Distinct work items with at least one run here. */
   works: z.number(),
-  /** Work whose approve verdict followed a run here. */
+  /**
+   * Work approved in the window: by an approve verdict, or, for work no verdict closed (an auto gate's checks, a merged
+   * branch), by landing as done with no send-back. Each work counts once, in the bucket of the latest run before its
+   * last approval.
+   */
   approved: z.number(),
-  /** Send-back verdicts that followed a run here. */
+  /** Send-back (revise) verdicts made in the window, in the bucket of the latest run before each. */
   sentBack: z.number(),
-  /** Each run's latest cumulative input + output + cache creation, subagents included. */
+  /** Each measured run's latest cumulative input + output + cache creation, subagents included. A run never read adds none. */
   tokens: z.number(),
   cacheRead: z.number(),
+  /** tokens over the approvals credited to a run whose usage was read; null when there are none. */
   tokensPerApproved: z.number().nullable(),
   cacheReadPerApproved: z.number().nullable(),
-  /** Approved work with one dispatch and no send-back, over approved: 0 to 1, null when nothing is approved. */
+  /**
+   * Over approved, 0 to 1 (null when nothing is approved): approvals with no send-back and no second run (dispatch or
+   * adoption) before them, judged as things stood at the approval.
+   */
   firstPass: z.number().nullable(),
-  /** Work whose later dispatch moved up a tier into this bucket. */
+  /** Re-dispatches that moved up a tier from the previous run, counted in the tier moved to: one per event. */
   escalations: z.number(),
-  /** Subagents (and mid-run model switches) above the run's own tier, summed over the runs. */
+  /**
+   * What runs used above their own tier, by tier however a model is spelled: the dispatched model above the declared
+   * tier, a main-thread switch to a higher tier, and each subagent transcript (at any depth) on a higher tier.
+   */
   raises: z.number(),
   /** Runs with at least one raise. */
   raisedRuns: z.number(),
-  /** Runs whose usage could not be read. */
+  /** Runs whose usage was not read: no reading yet, or a reading that says why not. */
   unmeasured: z.number(),
 });
 export type EconomyBucket = z.infer<typeof EconomyBucketSchema>;

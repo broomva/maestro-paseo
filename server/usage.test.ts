@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { economyEvent } from "./economy-model";
 import { newId, registryAt } from "./registry-fixture";
 import {
   findTranscript,
@@ -9,7 +10,10 @@ import {
   projectFolderOf,
   readTranscriptUsage,
   registrySession,
+  subagentFiles,
   transcriptUsageReader,
+  USAGE_LIMITS,
+  type UsageLimits,
 } from "./usage";
 
 const line = (value: unknown) => JSON.stringify(value);
@@ -167,8 +171,13 @@ async function fixture() {
 }
 
 describe("reading the files", () => {
-  test("the project folder is the working directory with slashes and dots as dashes", () => {
+  test("the project folder is the working directory with every character that is not a letter or digit as a dash", () => {
     expect(projectFolderOf("/Users/broomva/.paseo/worktrees/x")).toBe("-Users-broomva--paseo-worktrees-x");
+    // As Claude Code names it: an underscore is a dash too (a real folder is -Users-broomva--config-broomva-ci-runner-r1--work--temp).
+    expect(projectFolderOf("/Users/broomva/.config/broomva/ci-runner-r1/_work/_temp")).toBe(
+      "-Users-broomva--config-broomva-ci-runner-r1--work--temp",
+    );
+    expect(projectFolderOf("/tmp/my project (2)/é")).toBe("-tmp-my-project--2---");
   });
 
   test("the registry gives the session, and the transcript is found in its project folder", async () => {
@@ -202,5 +211,107 @@ describe("reading the files", () => {
     });
     const lost = transcriptUsageReader({ agentsDir: f.agents, projectsDir: join(f.root, "nowhere") });
     expect(await lost(f.agentId, "claude")).toEqual({ measured: false, reason: "transcript not found" });
+  });
+});
+
+/** A session with a main transcript and subagents at any depth, as Claude Code lays them out. */
+async function nested() {
+  const root = await mkdtemp(join(tmpdir(), "maestro-usage-nested-"));
+  dirs.push(root);
+  const transcript = join(root, "session-1.jsonl");
+  await writeFile(transcript, assistant("m1", { in: 1, out: 1 }, { model: "claude-sonnet-5-5" }));
+  const base = join(root, "session-1", "subagents");
+  const put = async (relative: string, text: string) => {
+    await mkdir(join(base, relative, ".."), { recursive: true });
+    await writeFile(join(base, relative), text);
+  };
+  await put("agent-top.jsonl", assistant("t1", { in: 1, out: 1 }, { sidechain: true, model: "claude-sonnet-5-5" }));
+  await put("agent-top.meta.json", "{}");
+  await put(
+    "workflows/wf_740d54de-42d/agent-deep.jsonl",
+    assistant("d1", { in: 10, out: 20, create: 5 }, { sidechain: true, model: "claude-opus-5-5" }),
+  );
+  await put(
+    "workflows/wf_740d54de-42d/agent-deeper.jsonl",
+    assistant("d2", { in: 2, out: 2 }, { sidechain: true, model: "claude-sonnet-5-5" }),
+  );
+  return { root, transcript, base };
+}
+
+describe("subagents at any depth", () => {
+  test("a session's subagent files are found under workflows/wf_<id>/ too, by path relative to subagents/", async () => {
+    const f = await nested();
+    expect(await subagentFiles(f.base, 1000)).toEqual([
+      "agent-top.jsonl",
+      "workflows/wf_740d54de-42d/agent-deep.jsonl",
+      "workflows/wf_740d54de-42d/agent-deeper.jsonl",
+    ]);
+    expect(await subagentFiles(join(f.root, "nowhere"), 1000)).toBeNull();
+  });
+
+  test("a nested Workflow agent on a higher tier is counted, and is a raise", async () => {
+    const f = await nested();
+    const usage = await readTranscriptUsage(f.transcript);
+    expect(usage.subagents?.files.map((file) => file.file)).toEqual([
+      "agent-top.jsonl",
+      "workflows/wf_740d54de-42d/agent-deep.jsonl",
+      "workflows/wf_740d54de-42d/agent-deeper.jsonl",
+    ]);
+    expect(usage.subagents?.tokens).toEqual({ input: 13, output: 23, cacheRead: 0, cacheCreation: 5 });
+    expect(usage.subagents?.byModel).toEqual({ "claude-sonnet-5-5": 6, "claude-opus-5-5": 35 });
+    const event = economyEvent(
+      "2026-10-15T12:00:00.000Z",
+      { agentId: "a1", provider: "claude/claude-sonnet-5-5", declaredTier: null, thinkingOptionId: null, at: "" },
+      { measured: true, usage },
+    );
+    // Only the nested file ran above the run's tier; the two on its own tier are not raises.
+    expect(event.raises).toBe(1);
+    expect(event.maxSubagentTier).toBe("frontier");
+  });
+});
+
+describe("read bounds: past one the session is unmeasured, never partly counted", () => {
+  const limits = (over: Partial<UsageLimits>): UsageLimits => ({ ...USAGE_LIMITS, ...over });
+
+  test("the bounds are 400 MB a file, 1 GB a session and 1,000 subagent files", () => {
+    expect(USAGE_LIMITS).toEqual({ fileBytes: 400_000_000, sessionBytes: 1_000_000_000, subagentFiles: 1000 });
+  });
+
+  test("a file over the bound, a session over its total and too many subagent files are each unmeasured with a reason", async () => {
+    const f = await nested();
+    await expect(readTranscriptUsage(f.transcript, limits({ fileBytes: 100 }))).rejects.toThrow("over the");
+    await expect(readTranscriptUsage(f.transcript, limits({ sessionBytes: 400 }))).rejects.toThrow("total over");
+    await expect(readTranscriptUsage(f.transcript, limits({ subagentFiles: 2 }))).rejects.toThrow(
+      "more than 2 subagent transcripts",
+    );
+    // Within every bound it reads.
+    expect((await readTranscriptUsage(f.transcript, limits({ subagentFiles: 3 }))).subagents?.files).toHaveLength(3);
+  });
+
+  test("the reader says so as a reading that is not measured, with zero numbers to present", async () => {
+    const root = await mkdtemp(join(tmpdir(), "maestro-usage-bound-"));
+    dirs.push(root);
+    const cwd = "/Users/test/.paseo/worktrees/abc/bounded";
+    const agentId = newId();
+    const sessionId = newId();
+    const registry = registryAt(join(root, "agents"));
+    await registry.add({ id: agentId, cwd, sessionId });
+    const projects = join(root, "projects");
+    const folder = join(projects, projectFolderOf(cwd));
+    await mkdir(join(folder, sessionId, "subagents"), { recursive: true });
+    await writeFile(join(folder, `${sessionId}.jsonl`), assistant("m1", { in: 1 }));
+    for (const name of ["a", "b", "c"]) {
+      await writeFile(
+        join(folder, sessionId, "subagents", `agent-${name}.jsonl`),
+        assistant(name, { in: 1 }, { sidechain: true }),
+      );
+    }
+    const read = transcriptUsageReader({
+      agentsDir: registry.dir,
+      projectsDir: projects,
+      limits: limits({ subagentFiles: 2 }),
+    });
+    const result = await read(agentId, "claude/claude-sonnet-5-5");
+    expect(result).toEqual({ measured: false, reason: "not read: more than 2 subagent transcripts" });
   });
 });

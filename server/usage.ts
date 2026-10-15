@@ -16,8 +16,29 @@ import { paseoAgentsDir } from "./paths";
 
 export const NO_TOKENS: Tokens = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
 
-/** A file larger than this is not read at all: a transcript that size is a runaway, and a daemon must not stall on it. */
-export const MAX_TRANSCRIPT_BYTES = 1_500_000_000;
+/**
+ * How much of one session Maestro reads. Past any of these the session is unmeasured (`measured: false`, and why),
+ * never partial numbers presented as measured: a transcript that size is a runaway, and a daemon must not stall on it.
+ * The largest transcript on a busy Mac is about 300 MB.
+ */
+export interface UsageLimits {
+  /** One transcript file. */
+  fileBytes: number;
+  /** The main transcript and every subagent's together. */
+  sessionBytes: number;
+  /** Subagent transcript files, however deep they sit. */
+  subagentFiles: number;
+}
+
+export const USAGE_LIMITS: UsageLimits = { fileBytes: 400_000_000, sessionBytes: 1_000_000_000, subagentFiles: 1000 };
+
+/** The session is past a limit: its numbers would be partial, so it is not read. */
+export class UsageBound extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UsageBound";
+  }
+}
 
 interface Seen {
   tokens: Tokens;
@@ -165,9 +186,6 @@ export function parseTranscriptUsage(main: string, subagents: Record<string, str
 }
 
 async function feed(collector: UsageCollector, path: string, file: string | null): Promise<void> {
-  const info = await stat(path);
-  if (info.size > MAX_TRANSCRIPT_BYTES)
-    throw new Error(`transcript is ${Math.round(info.size / 1e6)} MB: too large to read`);
   const lines = createInterface({
     input: createReadStream(path, { encoding: "utf8" }),
     crlfDelay: Number.POSITIVE_INFINITY,
@@ -175,18 +193,63 @@ async function feed(collector: UsageCollector, path: string, file: string | null
   for await (const line of lines) collector.push(line, file);
 }
 
-/** Usage from a session's transcript file and its `<session>/subagents/*.jsonl` folder, streamed. */
-export async function readTranscriptUsage(transcript: string): Promise<TranscriptUsage> {
-  const collector = new UsageCollector();
-  await feed(collector, transcript, null);
+/** How deep under `subagents/` a transcript may sit: Workflow agents are at `workflows/wf_<id>/agent-<id>.jsonl`. */
+const SUBAGENT_DEPTH = 8;
+
+/**
+ * Every `.jsonl` under a session's `subagents/` folder, at any depth (Claude Code writes Workflow-tool agents to
+ * `subagents/workflows/wf_<id>/agent-<id>.jsonl`), by path relative to it, with `/` between parts, in a stable order.
+ * Null when there is no folder. More than `limit` files is a bound crossed: it stops there and says so.
+ */
+export async function subagentFiles(folder: string, limit: number): Promise<string[] | null> {
+  const found: string[] = [];
+  const walk = async (dir: string, prefix: string, depth: number): Promise<boolean> => {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => null);
+    if (!entries) return false;
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (found.length > limit) break;
+      if (entry.isDirectory() && depth < SUBAGENT_DEPTH) {
+        await walk(join(dir, entry.name), `${prefix}${entry.name}/`, depth + 1);
+      } else if (entry.isFile() && entry.name.endsWith(".jsonl")) found.push(`${prefix}${entry.name}`);
+    }
+    return true;
+  };
+  return (await walk(folder, "", 0)) ? found : null;
+}
+
+/**
+ * Usage from a session's transcript file and everything under its `<session>/subagents/` folder, streamed. Past a
+ * limit (USAGE_LIMITS) it throws UsageBound before reading a line: the session is unmeasured, not partly counted.
+ */
+export async function readTranscriptUsage(
+  transcript: string,
+  limits: UsageLimits = USAGE_LIMITS,
+): Promise<TranscriptUsage> {
   const folder = join(transcript.replace(/\.jsonl$/, ""), "subagents");
-  const names = await readdir(folder).catch(() => null);
-  if (names) {
-    collector.markSubagentsFolder();
-    for (const name of names.filter((n) => n.endsWith(".jsonl")).sort()) {
-      await feed(collector, join(folder, name), name);
+  const names = await subagentFiles(folder, limits.subagentFiles);
+  if (names && names.length > limits.subagentFiles) {
+    throw new UsageBound(`more than ${limits.subagentFiles} subagent transcripts`);
+  }
+  const paths: Array<[string, string | null]> = [
+    [transcript, null],
+    ...(names ?? []).map((name): [string, string] => [join(folder, name), name]),
+  ];
+  let total = 0;
+  for (const [path] of paths) {
+    const size = (await stat(path)).size;
+    if (size > limits.fileBytes) {
+      throw new UsageBound(
+        `a transcript is ${Math.round(size / 1e6)} MB: over the ${Math.round(limits.fileBytes / 1e6)} MB bound`,
+      );
+    }
+    total += size;
+    if (total > limits.sessionBytes) {
+      throw new UsageBound(`the session's transcripts total over ${Math.round(limits.sessionBytes / 1e6)} MB`);
     }
   }
+  const collector = new UsageCollector();
+  if (names) collector.markSubagentsFolder();
+  for (const [path, file] of paths) await feed(collector, path, file);
   return collector.result();
 }
 
@@ -221,8 +284,8 @@ export async function registrySession(agentId: string, agentsDir = paseoAgentsDi
   return null;
 }
 
-/** Claude Code's project folder for a working directory: its path with every slash and dot turned to a dash. */
-export const projectFolderOf = (cwd: string): string => cwd.replace(/[/.]/g, "-");
+/** Claude Code's project folder for a working directory: its path with every character that is not a letter or digit turned to a dash. */
+export const projectFolderOf = (cwd: string): string => cwd.replace(/[^A-Za-z0-9]/g, "-");
 
 /** The transcript of a Claude session: in its project folder when the folder is known, else the first project that holds it. */
 export async function findTranscript(
@@ -256,7 +319,9 @@ export type UsageReader = (agentId: string, provider: string) => Promise<UsageRe
  * The real reader: the Claude transcript of the agent, through Paseo's registry. Another provider's usage is not read
  * (Codex keeps its own format), so it is unmeasured, and says why. Never throws: a read that fails is unmeasured too.
  */
-export function transcriptUsageReader(options: { agentsDir?: string; projectsDir?: string } = {}): UsageReader {
+export function transcriptUsageReader(
+  options: { agentsDir?: string; projectsDir?: string; limits?: UsageLimits } = {},
+): UsageReader {
   return async (agentId, provider) => {
     const family = provider.trim().split("/")[0] ?? "";
     if (family !== "claude") return { measured: false, reason: `${family || "this provider"} transcript not read` };
@@ -265,9 +330,15 @@ export function transcriptUsageReader(options: { agentsDir?: string; projectsDir
       if (!session?.sessionId) return { measured: false, reason: "session not found in Paseo's registry" };
       const transcript = await findTranscript(session.sessionId, session.cwd, options.projectsDir);
       if (!transcript) return { measured: false, reason: "transcript not found" };
-      return { measured: true, usage: await readTranscriptUsage(transcript) };
+      return { measured: true, usage: await readTranscriptUsage(transcript, options.limits) };
     } catch (error) {
-      return { measured: false, reason: `transcript not read: ${(error as Error).message}` };
+      return {
+        measured: false,
+        reason:
+          error instanceof UsageBound
+            ? `not read: ${error.message}`
+            : `transcript not read: ${(error as Error).message}`,
+      };
     }
   };
 }

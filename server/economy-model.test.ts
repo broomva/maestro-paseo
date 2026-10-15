@@ -69,6 +69,15 @@ const gate = (ts: string, verdict: "approve" | "revise" | "block"): Ev => ({
   note: "",
 });
 
+const done = (ts: string, actor: "human" | "maestro" = "maestro"): Ev => ({
+  ts,
+  type: "state",
+  actor,
+  from: "review",
+  to: "done",
+  reason: null,
+});
+
 const SONNET = "claude/claude-sonnet-5-5";
 const OPUS = "claude/claude-opus-5-5";
 
@@ -155,6 +164,36 @@ describe("economyEvent", () => {
     expect(economyEvent(day(0), bind, read(text)).raises).toBe(1);
     const none = economyEvent(day(0), { ...bind, provider: "codex/gpt-5.5" }, read(text));
     expect(none.raises).toBe(0);
+  });
+
+  test("raises compare tiers, not model strings: an alias and a dated id are one tier", () => {
+    const aliasBind = { ...bind, provider: "claude/opus" };
+    // Dispatched on the `opus` alias, the transcript says the dated id: same tier, no switch.
+    const same = economyEvent(day(0), aliasBind, read(message("m", "claude-opus-5-5-20261001")));
+    expect(same.raises).toBe(0);
+    expect(same.tier).toBe("frontier");
+    // A sonnet run that switches to opus under any spelling is one raise, however many spellings it used.
+    const text = [
+      message("a", "claude-sonnet-5-5"),
+      message("b", "claude-opus-5-5"),
+      message("c", "claude-opus-5-5-20261001"),
+      message("d", "opus"),
+    ].join("\n");
+    expect(economyEvent(day(0), bind, read(text)).raises).toBe(1);
+    // A switch to a lower tier is not a raise.
+    expect(economyEvent(day(0), aliasBind, read(message("a", "claude-haiku-5-5"))).raises).toBe(0);
+  });
+
+  test("a run whose dispatched model is above its declared tier is a raise, with or without a transcript", () => {
+    const declared = { ...bind, provider: "claude/opus", declaredTier: "standard" };
+    const measuredRun = economyEvent(day(0), declared, read(message("m", "claude-opus-5-5-20261001")));
+    // The dispatched model is the raise; the main thread running on it is not a second one.
+    expect(measuredRun.raises).toBe(1);
+    expect(measuredRun.tier).toBe("standard");
+    const lost = economyEvent(day(0), declared, { measured: false, reason: "transcript not found" });
+    expect(lost.raises).toBe(1);
+    // A declared tier at or above the model is none.
+    expect(economyEvent(day(0), { ...declared, declaredTier: "frontier" }, read("")).raises).toBe(0);
   });
 
   test("a backfilled reading says so", () => {
@@ -359,5 +398,125 @@ describe("summarizeEconomy", () => {
     // An approval before the window is not counted.
     const stale = sum([{ id: "w", events: [dispatched(day(9), "r1", SONNET, "standard"), gate(day(8), "approve")] }]);
     expect(stale.tiers.standard.approved).toBe(0);
+  });
+
+  test("a run with no reading is unmeasured, not a measured zero: it adds no tokens and no approvals to the ratio", () => {
+    const works = [
+      {
+        id: "read",
+        events: [
+          dispatched(day(2), "a1", SONNET, "standard"),
+          economy(day(2, 1), "a1", "standard", { tokens: tokens(100, 100, 0, 100) }),
+          gate(day(1), "approve"),
+        ],
+      },
+      {
+        id: "never-read",
+        events: [dispatched(day(2), "a2", SONNET, "standard"), gate(day(1), "approve")],
+      },
+      { id: "adopted-never-read", events: [adopted(day(2), "a3", "claude/claude-sonnet-5-5")] },
+    ];
+    const standard = sum(works).tiers.standard;
+    expect(standard).toMatchObject({ runs: 3, approved: 2, unmeasured: 2, tokens: 300 });
+    // 300 tokens over the one approval whose run was read, not over two.
+    expect(standard.tokensPerApproved).toBe(300);
+    // Only unread approvals: no ratio at all.
+    const none = sum([works[1] as (typeof works)[number]]).tiers.standard;
+    expect(none).toMatchObject({ approved: 1, unmeasured: 1, tokens: 0, tokensPerApproved: null });
+    expect(none.cacheReadPerApproved).toBeNull();
+    // A reading that says it could not read is unmeasured too, as before.
+    const said = sum([
+      {
+        id: "w",
+        events: [
+          dispatched(day(1), "a9", SONNET, "standard"),
+          economy(day(1, 1), "a9", "standard", { measured: false }),
+        ],
+      },
+    ]);
+    expect(said.tiers.standard.unmeasured).toBe(1);
+  });
+
+  test("the totals are the sum of the buckets, escalations too: one per re-dispatch that moved up", () => {
+    const climbing = {
+      id: "climbing",
+      events: [
+        dispatched(day(5), "c1", "claude/claude-haiku-5-5", "mechanical"),
+        dispatched(day(4), "c2", SONNET, "standard"),
+        dispatched(day(3), "c3", OPUS, "frontier"),
+        dispatched(day(2), "c4", OPUS, "frontier"),
+      ],
+    };
+    const jump = {
+      id: "jump",
+      events: [dispatched(day(5), "j1", SONNET, "standard"), dispatched(day(4), "j2", OPUS, "frontier")],
+    };
+    const summary = sum([climbing, jump]);
+    // The first work escalated twice (standard, then frontier), the second once (frontier): three events.
+    expect(summary.tiers.standard.escalations).toBe(1);
+    expect(summary.tiers.frontier.escalations).toBe(2);
+    expect(summary.totals.escalations).toBe(3);
+    for (const key of [
+      "runs",
+      "approved",
+      "sentBack",
+      "tokens",
+      "cacheRead",
+      "escalations",
+      "raises",
+      "raisedRuns",
+      "unmeasured",
+    ] as const) {
+      const buckets = Object.values(summary.tiers).reduce((total, bucket) => total + bucket[key], 0);
+      expect(summary.totals[key]).toBe(buckets);
+    }
+  });
+
+  test("work that lands done without a gate verdict is approved if it was never sent back; a send-back is not", () => {
+    const auto = { id: "auto", events: [dispatched(day(2), "a1", SONNET, "standard"), done(day(1))] };
+    const merged = {
+      id: "merged",
+      events: [adopted(day(2), "m1", SONNET), done(day(1))],
+    };
+    const revised = {
+      id: "revised",
+      events: [dispatched(day(3), "r1", SONNET, "standard"), gate(day(2), "revise"), done(day(1))],
+    };
+    const gatedOnce = {
+      id: "gated",
+      events: [dispatched(day(2), "g1", SONNET, "standard"), gate(day(1, 1), "approve"), done(day(1), "human")],
+    };
+    const standard = sum([auto, merged, revised, gatedOnce]).tiers.standard;
+    // auto, merged and the gated one; the gate's own landing is not a second approval of it.
+    expect(standard.approved).toBe(3);
+    expect(standard.sentBack).toBe(1);
+    // An approval before the window is not counted, nor a done that long ago.
+    expect(
+      sum([{ id: "old", events: [dispatched(day(12), "o1", SONNET, "standard"), done(day(10))] }]).tiers.standard
+        .approved,
+    ).toBe(0);
+  });
+
+  test("first pass is judged at the approval: a run or a send-back after it does not undo it, an adoption before it does", () => {
+    const later = {
+      id: "later",
+      events: [
+        dispatched(day(4), "l1", SONNET, "standard"),
+        gate(day(3), "approve"),
+        // Reopened and run again after the approval: the first approval was still a first pass.
+        dispatched(day(2), "l2", SONNET, "standard"),
+      ],
+    };
+    const adoptedFirst = {
+      id: "adopted-first",
+      events: [adopted(day(4), "af1", SONNET), dispatched(day(3), "af2", SONNET, "standard"), gate(day(2), "approve")],
+    };
+    const sentBackLater = {
+      id: "sent-back-later",
+      events: [dispatched(day(4), "s1", SONNET, "standard"), gate(day(3), "approve"), gate(day(1), "revise")],
+    };
+    const standard = sum([later, adoptedFirst, sentBackLater]).tiers.standard;
+    expect(standard.approved).toBe(3);
+    expect(standard.firstPass).toBeCloseTo(2 / 3);
   });
 });

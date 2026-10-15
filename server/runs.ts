@@ -92,8 +92,10 @@ export function runSettings(config: MaestroConfig, item: StoredWork) {
   if (!contract.provider) fromSettings.push(rung ? "tierProvider" : "provider");
   if (!contract.isolation) fromSettings.push("isolation");
   if (!contract.modeId && modeId) fromSettings.push("modeId");
-  const thinkingOptionId = contract.thinkingOptionId ?? rung?.thinkingOptionId ?? null;
-  if (!contract.thinkingOptionId && rung) fromSettings.push("tierThinking");
+  // A rung's thinking level is the rung's provider's own: a work that chose another provider family takes none from it.
+  const ladderThinking = rung && providerFamily(selection) === providerFamily(rung.provider) ? rung : null;
+  const thinkingOptionId = contract.thinkingOptionId ?? ladderThinking?.thinkingOptionId ?? null;
+  if (!contract.thinkingOptionId && ladderThinking) fromSettings.push("tierThinking");
   return {
     selection,
     isolation: contract.isolation ?? config.isolation,

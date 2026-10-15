@@ -543,6 +543,8 @@ export class Engine {
   private readonly readings = new Set<Promise<unknown>>();
   /** Agents a backfill has already tried this process: a transcript that could not be read is not tried every sweep. */
   private readonly backfilled = new Set<string>();
+  /** The backfill in flight, if any: one at a time. */
+  private backfilling: Promise<void> | null = null;
   /** Each session's labels as Maestro last asked for them: when, and how many asks in a row failed. */
   private readonly labelled = new Map<string, { key: string; at: number; failures: number; flying: boolean }>();
   /** Label calls run one at a time: each is a paseo CLI process (server/labels.ts). */
@@ -649,6 +651,7 @@ export class Engine {
     this.abort.abort();
     for (const cancel of this.armed.values()) cancel();
     this.armed.clear();
+    this.economy?.stop();
   }
 
   private stamp(): string {
@@ -2384,8 +2387,9 @@ export class Engine {
 
   /**
    * Read one run's usage and record it when the numbers moved since its last reading. A reading that failed after a
-   * good one records nothing (the cumulative count must never fall back to zero); a backfill records only a
-   * transcript it could read. Returns whether a receipt was added.
+   * good one records nothing (the cumulative count must never fall back to zero), and neither does one that read
+   * fewer messages than the last (an out-of-order read). A backfill of a transcript that cannot be read records one
+   * unmeasured reading, with the reason, so it is not asked again. Returns whether a receipt was added.
    */
   private async measure(store: WorkStore, item: StoredWork, bind: RunBinding, backfilled: boolean): Promise<boolean> {
     const reader = this.usage;
@@ -2396,7 +2400,6 @@ export class Engine {
     } catch (error) {
       read = { measured: false, reason: `usage not read: ${(error as Error).message}` };
     }
-    if (backfilled && !read.measured) return false;
     let appended = false;
     await store.mutate(
       item.contract.id,
@@ -2404,6 +2407,7 @@ export class Engine {
         const event = economyEvent(this.stamp(), bind, read, backfilled);
         const last = lastEconomy(fresh.events, bind.agentId);
         if (last && (backfilled || sameReading(last, event) || (last.measured && !event.measured))) return null;
+        if (last?.measured && event.assistantMessages < last.assistantMessages) return null;
         appended = true;
         return { events: [event] };
       },
@@ -2431,12 +2435,22 @@ export class Engine {
   }
 
   /**
-   * The sweep's economy step: a past run with no `run.economy` and a transcript that can be read gets one
-   * (`backfilled`), at most once per agent and BACKFILL_PER_SWEEP runs a sweep, then the summary file is written
-   * (at once when a receipt was added, else at most once a minute).
+   * The sweep's economy step: a past run with no `run.economy` gets one (`backfilled`: its usage, or unmeasured and
+   * why when its transcript cannot be read), at most once per agent and BACKFILL_PER_SWEEP runs a sweep, then the
+   * summary file is written (when a receipt was added, coalesced; else at most once a minute).
    */
   async economySweep(): Promise<void> {
     if (!this.usage) return;
+    // One at a time: a sweep flight that overlaps a running backfill leaves it to finish, so no run is read twice.
+    if (this.backfilling) return this.backfilling;
+    const run = this.backfillOnce().finally(() => {
+      this.backfilling = null;
+    });
+    this.backfilling = run;
+    return run;
+  }
+
+  private async backfillOnce(): Promise<void> {
     const { store } = await this.store();
     const { items } = await store.scan();
     const cutoff = this.now().getTime() - (this.economy?.windowDays ?? ECONOMY_DAYS.default) * 24 * 60 * 60 * 1000;

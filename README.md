@@ -609,7 +609,7 @@ work card says it beside the provider and thinking level.
 
 When a turn ends, Maestro reads what the run's session has used from its Claude transcript (Paseo's
 registry gives the session; `~/.claude/projects/*/<session>.jsonl` and its `subagents/` folder hold
-the messages, each counted once by its message id) and, only if the numbers moved, appends a
+the messages, each counted once by its message id; subagents are read at any depth, Workflow agents under `subagents/workflows/`; a session past 400 MB a file, 1 GB in all or 1,000 subagent files is unmeasured, never partly counted) and, only if the numbers moved, appends a
 `run.economy` receipt: tier (declared, else implied by the model: haiku mechanical, sonnet standard,
 opus frontier, fable apex), tokens, the subagents' tokens and models, the peak context, and `raises`:
 the subagent transcripts, and the mid-run switches of model, that ran above the run's own tier. A
@@ -622,8 +622,11 @@ added and otherwise at most once a minute, through a temp file and a rename. The
 reads it: `{ generatedAt, windowDays, tiers: { mechanical, standard, frontier, apex, unknown }, totals }`,
 each bucket with `runs`, `works`, `approved`, `sentBack`, `tokens`, `cacheRead`, `tokensPerApproved`,
 `cacheReadPerApproved`, `firstPass`, `escalations`, `raises`, `raisedRuns` and `unmeasured`, over the last
-7 days. An approval is credited to the tier of the latest run before it; first pass is approved work
-with one dispatch and no send-back; an escalation is a later dispatch on a higher tier.
+7 days. Work is approved by an approve verdict, or by landing done with no send-back when no verdict closed it,
+credited to the tier of the latest run before it; first pass is an approval with no send-back and no second run
+before it; an escalation is a re-dispatch on a higher tier than the run before, counted once per event. A run
+with no reading is unmeasured, and adds no tokens. `economy.json` is written by at most one scan every 30 seconds,
+with a trailing scan so the last reading lands.
 
 The Fleet view's **Economy** section shows one row per tier that ran and a line for the whole, from
 `economy.get`, a pure read.

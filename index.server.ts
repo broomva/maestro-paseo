@@ -171,7 +171,7 @@ export default function contribute(host: PluginServerContext) {
     landed: (before, after) => Promise.all([cards.landed(before, after), inbox.landed(before, after)]),
     // What each run's session has used, read from its Claude transcript, and the summary the coordinator reads (BRO-3118).
     usage: transcriptUsageReader(),
-    economy: new EconomyFile({ path: economyPath() }),
+    economy: new EconomyFile({ path: economyPath(), log }),
   });
   // Every verb of yours that changes state takes effect 8 s after you make it, and leaves a receipt (B4,
   // server/owner-verbs.ts); what agents asked leave for waits in its own file (server/approvals.ts).
