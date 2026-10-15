@@ -44,6 +44,7 @@ import {
   teachQueue,
   verdictOf,
 } from "./fleet-cockpit-model";
+import { EconomySection } from "./fleet-economy";
 import { HealthBand, KpiRow, type KpiValue } from "./fleet-health";
 import { HEALTH_LABEL, healthTone, noticeText } from "./fleet-model";
 import { NeedsYouQueue, type ScopeContext, TeachTheFleet } from "./fleet-queue";
@@ -600,6 +601,8 @@ export function FleetView({
       </View>
 
       {teachView}
+
+      <EconomySection theme={theme} phone={phone} />
 
       <TickSheet
         theme={theme}

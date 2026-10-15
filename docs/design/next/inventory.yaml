@@ -633,6 +633,7 @@ interfaces:
   I-conductor-decide: { name: "conductor.decide and conductor.undo (file an answer that waits for the conductor as queued work, or dismiss it; 8 s undo)", status: new, handler: plugin, callers: [ui], gate: owner, stores: [S-ask-receipts, S-work], code: [server/answer-routes.ts, client/conductor-answers.tsx] }
   I-answers-land: { name: "answers.land (one PR for maestro/answers)", status: change, handler: plugin, callers: [conductor], stores: [S-answers-branch, S-answers-landing], code: [server/answers-landing.ts] }
   I-ask-default: { name: "ask.default (a reversible ask takes its default after 30 min, A4)", status: new, handler: plugin, callers: [conductor], stores: [S-ask-receipts] }
+  I-economy-sweep: { name: "the sweep's economy step: reads each run's usage, backfills past runs, writes economy.json (BRO-3118)", status: new, handler: plugin, callers: [plugin], stores: [S-economy, S-work], code: [server/engine.ts, server/economy.ts] }
   I-inbox-push: { name: "the inbox echo session that makes a push", status: change, handler: plugin, callers: [plugin], stores: [S-inbox], code: [server/inbox.ts] }
   I-paseo-events: { name: "Paseo hooks (turn started and ended, permission, archived)", status: keep, handler: plugin, callers: [paseo], code: [index.server.ts] }
 
@@ -699,6 +700,7 @@ stores:
   S-verbs: { name: "~/.local/state/maestro-paseo/verbs.jsonl (the owner-verb ledger: pending, undone, applied, dropped)", status: new, owner: plugin, modules: [server/owner-verbs.ts], code: [server/owner-verbs.ts] }
   S-approvals: { name: "~/.local/state/maestro-paseo/approvals.jsonl (approval.request and what became of each)", status: new, owner: plugin, modules: [server/approvals.ts], code: [server/approvals.ts] }
   S-notices-state: { name: "notice state (raised, snoozed, resolved by key; today only snoozes: ~/.local/state/maestro-paseo/notice-snoozes.jsonl)", status: new, owner: plugin, modules: [server/notice-snoozes.ts], code: [server/notice-snoozes.ts] }
+  S-economy: { name: "~/.config/maestro-paseo/economy.json (what each tier of model cost and how often its work passed: the workspace coordinator reads it; BRO-3118)", status: new, owner: plugin, modules: [server/economy.ts], code: [server/economy.ts, server/economy-model.ts] }
   S-presence: { name: "owner presence (present, away, off)", status: new, owner: plugin }
   S-inbox: { name: "~/.config/maestro-paseo/inbox.json", status: change, owner: plugin, modules: [server/inbox.ts], code: [server/inbox.ts] }
   S-conductor-state: { name: "the conductor's state.yaml and ticks ledger", status: new, owner: conductor }
@@ -758,7 +760,7 @@ loops:
     status: change
     scheduler: plugin timer, every 30 s while the plugin runs (MAESTRO_PASEO_SWEEP_SECONDS), apart from the loop's period; one at a time under a lease; the loop's wake (I-sweep-wake) runs one first
     owner: plugin
-    calls: [I-verb-apply, I-notice-resolve, I-drift-record]
+    calls: [I-verb-apply, I-notice-resolve, I-drift-record, I-economy-sweep]
     code: [server/sweep.ts, server/engine.ts, server/loops.ts, index.server.ts]
     note: "BRO-2995: the one place outside a hook or a verb where the plugin writes on its own. Reads (work.list, work.attention, loops.get and the views they reach) write nothing; what they did on the side (reconcile, due decisions, drift, the asks' and ledger's fetch, leftover locks) runs here. Its period is not the loop's: with the loop off (the default) the cards still stay true."
   L-undo-window:

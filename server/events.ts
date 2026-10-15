@@ -14,6 +14,7 @@ import type {
   WorkEventWire,
   Worker,
 } from "../shared/contracts";
+import type { Tokens } from "../shared/economy";
 import { describeRun } from "../shared/run";
 import type { OrchState, Verdict } from "../shared/states";
 import { clipWords, inlinePlain, plainMarkdown, tailWords } from "../shared/text";
@@ -40,6 +41,34 @@ interface Base {
   ts: string;
 }
 
+/** Cumulative usage of one run's agent (BRO-3118). `tier` is the declared one at dispatch, else the model's. */
+export interface RunEconomy {
+  type: "run.economy";
+  actor: "maestro";
+  agentId: string;
+  tier: string | null;
+  tierSource: "declared" | "model" | null;
+  /** The provider as dispatched, `claude/claude-sonnet-5-5`. */
+  provider: string;
+  model: string | null;
+  thinkingOptionId: string | null;
+  /** False when no transcript could be read: `reason` says why and the tokens are zero. */
+  measured: boolean;
+  reason?: string;
+  tokens: Tokens;
+  subagentTokens: Tokens | null;
+  /** Subagent model id to tokens (input + output + cache creation); null with no subagents folder. */
+  subagentModels: Record<string, number> | null;
+  /** Models above the run's own tier that it used: subagent transcripts, and a mid-run switch of model. */
+  raises: number;
+  /** The highest tier a subagent's model implies. */
+  maxSubagentTier: string | null;
+  /** The most context a main-thread message carried: input + cache read + cache creation. */
+  peakContext: number | null;
+  assistantMessages: number;
+  backfilled?: true;
+}
+
 export type WorkEvent = Base &
   (
     | ({ type: "created" } & Origin)
@@ -55,6 +84,8 @@ export type WorkEvent = Base &
         /** What the agent was started with beyond the provider; absent on older receipts. */
         modeId?: string | null;
         thinkingOptionId?: string | null;
+        /** The delegation tier the work declared at dispatch (BRO-3118); null when undeclared, absent on older receipts. */
+        tier?: string | null;
         featureValues?: FeatureValues | null;
         /** On an adoption: the adopting session's own work, when Maestro tracks it (BRO-2908); absent on older receipts. */
         parentWork?: string | null;
@@ -62,6 +93,10 @@ export type WorkEvent = Base &
         ticket?: string | null;
       } & Origin)
     | { type: "turn.started"; actor: "agent"; agentId: string }
+    // What one run's session has used so far (server/economy-model.ts economyEvent), cumulative: written when a turn
+    // ends and the numbers moved, and once for a past run with none (`backfilled`). Bookkeeping, never a receipt a
+    // person reads: it shows nowhere (toWireEvent) and moves no clock (lastActivityOf).
+    | RunEconomy
     | {
         type: "turn.ended";
         actor: "agent";
@@ -153,6 +188,7 @@ export function workerOf(events: readonly WorkEvent[]): Worker | null {
     cwd: bind.cwd,
     modeId: bind.modeId ?? null,
     thinkingOptionId: bind.thinkingOptionId ?? null,
+    tier: bind.tier ?? null,
     featureValues: bind.featureValues ?? null,
     startedWith: describeRun(bind),
   };
@@ -221,12 +257,13 @@ export type FlaggedEvent = Extract<WorkEvent, { type: "loop.flagged" }>;
  * event is a flag.
  */
 export function flagOf(events: readonly WorkEvent[]): FlaggedEvent | null {
-  const last = events[events.length - 1];
+  // A meter reading (run.economy) is no change to the work: it never takes a flag down.
+  const last = events.findLast((event) => event.type !== "run.economy");
   return last?.type === "loop.flagged" ? last : null;
 }
 
-/** The loop's remarks about the work: its flag, and its taking a flag down. Neither changes the work. */
-const LOOP_REMARKS = new Set<WorkEventType>(["loop.flagged", "flag.cleared"]);
+/** The loop's remarks about the work (its flag, and its taking a flag down) and Maestro's meter readings. None changes the work. */
+const LOOP_REMARKS = new Set<WorkEventType>(["loop.flagged", "flag.cleared", "run.economy"]);
 
 /**
  * The latest event that is not one of the loop's remarks (its flag, or its
@@ -783,6 +820,9 @@ export function toWireEvent(event: WorkEvent, settled = false): WorkEventWire | 
         detail: [event.provider, byline(event)].filter(Boolean).join(" "),
       };
     case "turn.started":
+      return null;
+    // A meter reading, not a thing that happened to the work: the Fleet's Economy shows it, receipts do not.
+    case "run.economy":
       return null;
     case "turn.ended":
       return {

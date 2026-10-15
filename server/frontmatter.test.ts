@@ -112,6 +112,31 @@ describe("how runs start, as the work chose", () => {
     expect(readContract(parseWorkDoc(newWorkSource(base))).isolation).toBeNull();
   });
 
+  test("the tier is one of four names; anything else reads as none, never an error", () => {
+    for (const tier of ["mechanical", "standard", "frontier", "apex"] as const) {
+      const source = newWorkSource({ ...base, run: { tier } });
+      expect(source).toContain(`tier: ${tier}\n`);
+      expect(readContract(parseWorkDoc(source)).tier).toBe(tier);
+    }
+    expect(readContract(parseWorkDoc(newWorkSource(base))).tier).toBeNull();
+    expect(newWorkSource(base)).not.toContain("tier:");
+    const edited = (value: string) =>
+      readContract(parseWorkDoc(newWorkSource(base).replace("gate: human\n", `gate: human\ntier: ${value}\n`)));
+    expect(edited("Standard").tier).toBeNull();
+    expect(edited("premium").tier).toBeNull();
+    expect(edited("3").tier).toBeNull();
+    expect(edited("standard").tier).toBe("standard");
+  });
+
+  test("setting the tier on an existing file writes it back, and clearing it removes the key", () => {
+    const work = parseWorkDoc(newWorkSource(base));
+    setFields(work, { tier: "frontier" });
+    expect(renderWorkDoc(work)).toContain("tier: frontier\n");
+    expect(readContract(parseWorkDoc(renderWorkDoc(work))).tier).toBe("frontier");
+    setFields(work, { tier: null });
+    expect(renderWorkDoc(work)).not.toContain("tier:");
+  });
+
   test("a hand-edited isolation or features block that does not fit is an error, not a silent default", () => {
     const file = (extra: string) => `---\nid: a\nstate: proposed\ngate: human\n${extra}\n---\n`;
     expect(() => readContract(parseWorkDoc(file("isolation: sandbox")))).toThrow("unknown isolation");

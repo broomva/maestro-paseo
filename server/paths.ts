@@ -104,6 +104,16 @@ export function approvalsPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(homedir(), ".local", "state", "maestro-paseo", "approvals.jsonl");
 }
 
+/**
+ * The economy summary the workspace coordinator reads (server/economy.ts): beside the config, in `economy.json`.
+ * Under `bun test` a test that names none gets a scratch file of its own.
+ */
+export function economyPath(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.MAESTRO_PASEO_ECONOMY) return env.MAESTRO_PASEO_ECONOMY;
+  if (env.NODE_ENV === "test") return join(scratch("economy"), "economy.json");
+  return join(dirname(configPath(env)), "economy.json");
+}
+
 /** The loop's wake log sits beside the config too (server/wake-log.ts). */
 export function wakeLogPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.MAESTRO_PASEO_WAKE_LOG ?? join(dirname(configPath(env)), "wake-log.jsonl");

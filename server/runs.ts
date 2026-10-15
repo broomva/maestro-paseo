@@ -93,6 +93,7 @@ export function runSettings(config: MaestroConfig, item: StoredWork) {
     isolation: contract.isolation ?? config.isolation,
     modeId,
     thinkingOptionId: contract.thinkingOptionId,
+    tier: contract.tier,
     featureValues: contract.featureValues,
     fromSettings,
   };
@@ -106,6 +107,7 @@ export function nextRun(config: MaestroConfig, item: StoredWork): NextRun {
     isolation: run.isolation,
     modeId: run.modeId ?? null,
     thinkingOptionId: run.thinkingOptionId ?? null,
+    tier: run.tier,
     featureValues: run.featureValues ? { ...run.featureValues } : null,
     fromSettings: run.fromSettings,
     held: filedBeforeA8(item) ? FILED_BEFORE_A8 : item.contract.hold,
@@ -199,6 +201,7 @@ export async function startRun(paseo: Paseo, config: MaestroConfig, item: Stored
     cwd: agent.cwd ?? workspace.directory ?? repo,
     modeId: run.modeId ?? null,
     thinkingOptionId: run.thinkingOptionId ?? null,
+    tier: run.tier,
     featureValues: run.featureValues ? { ...run.featureValues } : null,
   };
 }

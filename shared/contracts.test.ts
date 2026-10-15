@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createWork } from "./contracts";
+import { createWork, NextRunSchema } from "./contracts";
 
 const base = { brief: "Trim the cache", repo: "/repo", gate: "human", check: "", initiative: "", dispatch: false };
 
@@ -27,6 +27,28 @@ describe("work.create input", () => {
     expect(createWork.input.safeParse({ ...base, featureValues: { budget: Number.POSITIVE_INFINITY } }).success).toBe(
       false,
     );
+  });
+
+  test("a tier is one of four names, optional", () => {
+    for (const tier of ["mechanical", "standard", "frontier", "apex"] as const) {
+      expect(createWork.input.parse({ ...base, tier }).tier).toBe(tier);
+    }
+    expect(createWork.input.parse(base).tier).toBeUndefined();
+    expect(createWork.input.safeParse({ ...base, tier: "premium" }).success).toBe(false);
+  });
+
+  test("a next run from an older daemon has no tier; a newer one may say null or a tier", () => {
+    const next = {
+      provider: "claude",
+      isolation: "worktree",
+      modeId: null,
+      thinkingOptionId: null,
+      featureValues: null,
+      fromSettings: [],
+    };
+    expect(NextRunSchema.safeParse(next).success).toBe(true);
+    expect(NextRunSchema.parse({ ...next, tier: null }).tier).toBeNull();
+    expect(NextRunSchema.parse({ ...next, tier: "standard" }).tier).toBe("standard");
   });
 
   test("feature values are bounded: 32 of them, 200 characters each", () => {

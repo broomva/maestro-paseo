@@ -162,7 +162,9 @@ maestro mine                   # the work this session is running
 - **Work a session creates carries none of the run choices the composer offers you** (provider,
   isolation, mode, thinking, features): when you start it, it takes your Settings. That is no more
   than a session can already do: Paseo's own `create_agent` tool, which every session holds, starts
-  an agent in any mode.
+  an agent in any mode. The one choice a session may name is the **tier** (`maestro new --tier
+  standard`): a label for the [economy](#the-economy) that changes nothing about how a run starts.
+  `--provider` and `--thinking` are accepted by the CLI, set aside, and the answer says so.
 
 Off by default. Give it a period in Settings (`loopMinutes`) and Maestro wakes on that schedule to
 look after the work. **It never starts work** (owner answer A8, BRO-2990): the plugin queues, and
@@ -595,6 +597,33 @@ Nothing else in the fleet's files is written:
 - not its config, mode, dry run or kill switch.
 
 Verdicts are yours alone, so the agent socket refuses `fleet.review`.
+
+### The economy
+
+Work can declare a **tier**, `tier: mechanical | standard | frontier | apex` in `_work.md` (any other
+value reads as none). The dispatch and adoption receipts carry it (`tier`, null when undeclared), and the
+work card says it beside the provider and thinking level.
+
+When a turn ends, Maestro reads what the run's session has used from its Claude transcript (Paseo's
+registry gives the session; `~/.claude/projects/*/<session>.jsonl` and its `subagents/` folder hold
+the messages, each counted once by its message id) and, only if the numbers moved, appends a
+`run.economy` receipt: tier (declared, else implied by the model: haiku mechanical, sonnet standard,
+opus frontier, fable apex), tokens, the subagents' tokens and models, the peak context, and `raises`:
+the subagent transcripts, and the mid-run switches of model, that ran above the run's own tier. A
+provider other than Claude is recorded as unmeasured, with the reason. Receipts are bookkeeping: they
+appear in no history or detail, move no quiet clock and take no flag down.
+
+The plugin sweep backfills a past run that has none (once per agent, at most 20 transcripts a sweep) and
+writes `~/.config/maestro-paseo/economy.json` (`MAESTRO_PASEO_ECONOMY`), at once when a receipt was
+added and otherwise at most once a minute, through a temp file and a rename. The workspace coordinator
+reads it: `{ generatedAt, windowDays, tiers: { mechanical, standard, frontier, apex, unknown }, totals }`,
+each bucket with `runs`, `works`, `approved`, `sentBack`, `tokens`, `cacheRead`, `tokensPerApproved`,
+`cacheReadPerApproved`, `firstPass`, `escalations`, `raises`, `raisedRuns` and `unmeasured`, over the last
+7 days. An approval is credited to the tier of the latest run before it; first pass is approved work
+with one dispatch and no send-back; an escalation is a later dispatch on a higher tier.
+
+The Fleet view's **Economy** section shows one row per tier that ran and a line for the whole, from
+`economy.get`, a pure read.
 
 ### Answering a decision ask
 

@@ -20,8 +20,10 @@ import {
   SUMMARY_MAX,
   scoreboard,
   section,
+  toWireEvents,
   verdictOf,
   type WorkEvent,
+  workerOf,
 } from "./events";
 
 const T0 = Date.parse("2026-09-22T08:00:00.000Z");
@@ -660,5 +662,65 @@ describe("who closed it, and who adopted it (BRO-2906)", () => {
       adoptedByOf([...adopted("agent", "SRI Orchestrator"), { ...dispatched, ts: at(9) }]),
       adoptedByOf(toReview),
     ]).toEqual([{ by: "SRI Orchestrator" }, { by: null }, null, null, null]);
+  });
+});
+
+describe("run.economy (BRO-3118)", () => {
+  const reading: WorkEvent = {
+    ts: at(30),
+    type: "run.economy",
+    actor: "maestro",
+    agentId: "a1",
+    tier: "standard",
+    tierSource: "model",
+    provider: "claude/claude-sonnet-5-5",
+    model: "claude-sonnet-5-5",
+    thinkingOptionId: null,
+    measured: true,
+    tokens: { input: 1, output: 2, cacheRead: 3, cacheCreation: 4 },
+    subagentTokens: null,
+    subagentModels: null,
+    raises: 0,
+    maxSubagentTier: null,
+    peakContext: 8,
+    assistantMessages: 1,
+  };
+
+  test("a meter reading is no receipt: the history and the detail do not list it", () => {
+    expect(toWireEvents([dispatched, reading]).map((event) => event.type)).toEqual(["dispatched"]);
+  });
+
+  test("it moves no clock and takes no flag down", () => {
+    const flagged: FlaggedEvent = {
+      ts: at(20),
+      type: "loop.flagged",
+      actor: "maestro",
+      kind: "quiet",
+      reason: "quiet",
+    };
+    expect(lastActivityOf([dispatched, flagged, reading])).toEqual(dispatched);
+    expect(flagOf([dispatched, flagged, reading])).toEqual(flagged);
+    expect(flagOf([dispatched, flagged, reading, { ...reading, ts: at(40) }])).toEqual(flagged);
+  });
+
+  test("dispatch and adoption receipts carry the declared tier, and older ones without it still read", () => {
+    const old = parseEvents(JSON.stringify(dispatched)).events;
+    expect(old).toHaveLength(1);
+    expect(workerOf(old)?.tier).toBeNull();
+    const declared: WorkEvent = { ...dispatched, tier: "standard" };
+    expect(workerOf([declared])).toMatchObject({ tier: "standard", startedWith: "claude/sonnet (tier standard)" });
+    const adopted: WorkEvent = {
+      ts: at(1),
+      type: "adopted",
+      actor: "agent",
+      by: null,
+      agentId: "a2",
+      workspaceId: null,
+      provider: "claude",
+      branch: null,
+      cwd: null,
+      tier: null,
+    };
+    expect(workerOf([adopted])?.tier).toBeNull();
   });
 });

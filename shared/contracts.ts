@@ -9,6 +9,7 @@ import { InitiativeNoticeSchema } from "./initiatives";
 import { LoopNoticeSchema } from "./loops";
 import { GATE_MODES, GROUP_ORDER, KINDS, ORCH_STATES, VERDICTS } from "./states";
 import { TICKET } from "./text";
+import { TIERS } from "./tiers";
 import { TimelineNoticeSchema } from "./timeline";
 
 /** Bounds on what a work may pass to a provider as feature values. */
@@ -35,6 +36,8 @@ export const WorkerSchema = z.object({
   /** How the run was started, beyond the provider; absent on runs recorded before these were kept. */
   modeId: z.string().nullable().optional(),
   thinkingOptionId: z.string().nullable().optional(),
+  /** The delegation tier declared at dispatch (BRO-3118); null or absent when none, and on older runs. */
+  tier: z.string().nullable().optional(),
   featureValues: FeatureValuesSchema.nullable().optional(),
   /** The same, in words: `claude/opus (mode bypassPermissions, thinking high)`. */
   startedWith: z.string().optional(),
@@ -99,6 +102,8 @@ export const NextRunSchema = z.object({
   isolation: z.enum(ISOLATIONS),
   modeId: z.string().nullable(),
   thinkingOptionId: z.string().nullable(),
+  /** The delegation tier the work declares (BRO-3118); absent from an older daemon. */
+  tier: z.string().nullable().optional(),
   featureValues: FeatureValuesSchema.nullable(),
   /** The fields above that came from Settings because the work left them unset. */
   fromSettings: z.array(z.enum(SETTINGS_FIELDS)),
@@ -313,6 +318,8 @@ export const RunChoicesSchema = z.object({
   provider: z.string().trim().min(1).optional(),
   modeId: z.string().trim().min(1).optional(),
   thinkingOptionId: z.string().trim().min(1).optional(),
+  /** The delegation tier the work declares (BRO-3118). */
+  tier: z.enum(TIERS).optional(),
   featureValues: FeatureValuesSchema.optional(),
 });
 export type RunChoices = z.infer<typeof RunChoicesSchema>;

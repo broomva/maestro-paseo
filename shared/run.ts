@@ -7,11 +7,14 @@ export interface RunShape {
   provider: string;
   modeId?: string | null;
   thinkingOptionId?: string | null;
+  /** The delegation tier declared for the run (BRO-3118). */
+  tier?: string | null;
   featureValues?: FeatureValues | null;
 }
 
 export function runTerms(run: Omit<RunShape, "provider">): string[] {
   const terms: string[] = [];
+  if (run.tier) terms.push(`tier ${run.tier}`);
   if (run.modeId) terms.push(`mode ${run.modeId}`);
   if (run.thinkingOptionId) terms.push(`thinking ${run.thinkingOptionId}`);
   for (const [id, value] of Object.entries(run.featureValues ?? {})) {
@@ -122,7 +125,7 @@ export function nextRunCopy(
   );
   const terms = [
     ...(next.modeId ? [mark("modeId", `mode ${next.modeId}`)] : []),
-    ...runTerms({ thinkingOptionId: next.thinkingOptionId, featureValues: next.featureValues }),
+    ...runTerms({ tier: next.tier, thinkingOptionId: next.thinkingOptionId, featureValues: next.featureValues }),
   ];
   const how = `${mark("provider", next.provider)}${terms.length > 0 ? `: ${terms.join(", ")}` : ""}`;
   const skips = skipsPrompts(next);
