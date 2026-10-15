@@ -472,7 +472,7 @@ describe("summarizeEconomy", () => {
     }
   });
 
-  test("work that lands done without a gate verdict is approved if it was never sent back; a send-back is not", () => {
+  test("work that lands done without a gate verdict is approved; one sent back first is approved but not a first pass", () => {
     const auto = { id: "auto", events: [dispatched(day(2), "a1", SONNET, "standard"), done(day(1))] };
     const merged = {
       id: "merged",
@@ -487,14 +487,43 @@ describe("summarizeEconomy", () => {
       events: [dispatched(day(2), "g1", SONNET, "standard"), gate(day(1, 1), "approve"), done(day(1), "human")],
     };
     const standard = sum([auto, merged, revised, gatedOnce]).tiers.standard;
-    // auto, merged and the gated one; the gate's own landing is not a second approval of it.
-    expect(standard.approved).toBe(3);
+    // All four; the gate's own landing is not a second approval of the gated one.
+    expect(standard.approved).toBe(4);
     expect(standard.sentBack).toBe(1);
+    // The revised one is no first pass.
+    expect(standard.firstPass).toBe(3 / 4);
     // An approval before the window is not counted, nor a done that long ago.
     expect(
       sum([{ id: "old", events: [dispatched(day(12), "o1", SONNET, "standard"), done(day(10))] }]).tiers.standard
         .approved,
     ).toBe(0);
+  });
+
+  test("an approval of a run from before the window counts as approved but not toward tokens per approved", () => {
+    const old = {
+      id: "old-run",
+      events: [
+        dispatched(day(12), "o1", SONNET, "standard"),
+        economy(day(11), "o1", "standard", { tokens: tokens(900, 0, 0, 0) }),
+        gate(day(1), "approve"),
+      ],
+    };
+    const inside = {
+      id: "inside",
+      events: [
+        dispatched(day(2), "i1", SONNET, "standard"),
+        economy(day(2, 1), "i1", "standard", { tokens: tokens(300) }),
+        gate(day(1), "approve"),
+      ],
+    };
+    // Only the old run's approval: it is approved, its run is not in the window, and there is no ratio.
+    const alone = sum([old]).tiers.standard;
+    expect(alone).toMatchObject({ runs: 0, approved: 1, tokens: 0, tokensPerApproved: null });
+    expect(alone.cacheReadPerApproved).toBeNull();
+    // Beside a run inside the window: the 300 tokens are divided by the one approval they belong to, not two.
+    const both = sum([old, inside]).tiers.standard;
+    expect(both).toMatchObject({ runs: 1, approved: 2, tokens: 300, tokensPerApproved: 300 });
+    expect(both.firstPass).toBe(1);
   });
 
   test("first pass is judged at the approval: a run or a send-back after it does not undo it, an adoption before it does", () => {

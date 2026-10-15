@@ -52,6 +52,7 @@ import { runChecks } from "./checks";
 import { loadConfig } from "./config";
 import type { EconomyFile } from "./economy";
 import {
+  billedOf,
   bindingsOf,
   type EconomyWork,
   economyEvent,
@@ -2387,8 +2388,8 @@ export class Engine {
 
   /**
    * Read one run's usage and record it when the numbers moved since its last reading. A reading that failed after a
-   * good one records nothing (the cumulative count must never fall back to zero), and neither does one that read
-   * fewer messages than the last (an out-of-order read). A backfill of a transcript that cannot be read records one
+   * good one records nothing (the cumulative count must never fall back to zero), unless the session crossed a read
+   * bound (then it is unmeasured from here on), and neither does one that saw less than the last (an out-of-order read). A backfill of a transcript that cannot be read records one
    * unmeasured reading, with the reason, so it is not asked again. Returns whether a receipt was added.
    */
   private async measure(store: WorkStore, item: StoredWork, bind: RunBinding, backfilled: boolean): Promise<boolean> {
@@ -2406,8 +2407,15 @@ export class Engine {
       (fresh): Mutation | null => {
         const event = economyEvent(this.stamp(), bind, read, backfilled);
         const last = lastEconomy(fresh.events, bind.agentId);
-        if (last && (backfilled || sameReading(last, event) || (last.measured && !event.measured))) return null;
-        if (last?.measured && event.assistantMessages < last.assistantMessages) return null;
+        // A read that merely failed after a good one records nothing; one that found the session past a read bound
+        // (`bound`) does: the run is unmeasured from then on, and its earlier numbers must not stand as its cost.
+        const failedAfterGood = last?.measured && !event.measured && !(!read.measured && read.bound);
+        if (last && (backfilled || sameReading(last, event) || failedAfterGood)) return null;
+        // Out of order: a read that saw less than the last (fewer messages, or as many and fewer tokens) is older.
+        if (last?.measured && event.measured) {
+          if (event.assistantMessages < last.assistantMessages) return null;
+          if (event.assistantMessages === last.assistantMessages && billedOf(event) < billedOf(last)) return null;
+        }
         appended = true;
         return { events: [event] };
       },

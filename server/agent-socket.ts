@@ -113,12 +113,21 @@ const AgentCreate = z.object({
 });
 
 /** The run choices a session may name and Maestro does not take: how runs start is yours (Engine.create). */
-const OWNERS_CHOICES = ["provider", "thinkingOptionId", "modeId", "isolation", "featureValues"] as const;
+const OWNERS_CHOICES = {
+  provider: "--provider",
+  thinkingOptionId: "--thinking",
+  modeId: "mode",
+  isolation: "isolation",
+  featureValues: "features",
+} as const;
 
 /** A sentence naming the run choices a request carried that Maestro set aside, or null. */
 function setAside(raw: unknown): string | null {
   const said = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
-  const named = OWNERS_CHOICES.filter((key) => said[key] !== undefined && said[key] !== null && said[key] !== "");
+  // Named as the CLI names them (maestro new --provider, --thinking), not by the wire's keys.
+  const named = (Object.keys(OWNERS_CHOICES) as Array<keyof typeof OWNERS_CHOICES>)
+    .filter((key) => said[key] !== undefined && said[key] !== null && said[key] !== "")
+    .map((key) => OWNERS_CHOICES[key]);
   return named.length === 0
     ? null
     : `Set aside: ${named.join(", ")}. How a run starts is yours, not a session's: only the tier is taken, and it resolves to a provider and thinking level through the tier ladder in your Settings.`;

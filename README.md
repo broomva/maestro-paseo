@@ -609,7 +609,7 @@ work card says it beside the provider and thinking level.
 
 When a turn ends, Maestro reads what the run's session has used from its Claude transcript (Paseo's
 registry gives the session; `~/.claude/projects/*/<session>.jsonl` and its `subagents/` folder hold
-the messages, each counted once by its message id; subagents are read at any depth, Workflow agents under `subagents/workflows/`; a session past 400 MB a file, 1 GB in all or 1,000 subagent files is unmeasured, never partly counted) and, only if the numbers moved, appends a
+the messages, each counted once by its message id; subagents are read at any depth, Workflow agents under `subagents/workflows/`; a session past 400 MB a file, 1 GB in all or 1,000 subagent files is unmeasured, never partly counted: a live run that crosses a bound gets an unmeasured reading that supersedes its earlier ones, while a read that merely fails leaves the last good reading standing) and, only if the numbers moved, appends a
 `run.economy` receipt: tier (declared, else implied by the model: haiku mechanical, sonnet standard,
 opus frontier, fable apex), tokens, the subagents' tokens and models, the peak context, and `raises`:
 the subagent transcripts, and the mid-run switches of model, that ran above the run's own tier. A
@@ -623,8 +623,9 @@ reads it: `{ generatedAt, windowDays, tiers: { mechanical, standard, frontier, a
 each bucket with `runs`, `works`, `approved`, `sentBack`, `tokens`, `cacheRead`, `tokensPerApproved`,
 `cacheReadPerApproved`, `firstPass`, `escalations`, `raises`, `raisedRuns` and `unmeasured`, over the last
 7 days. Work is approved by an approve verdict, or by landing done with no send-back when no verdict closed it,
-credited to the tier of the latest run before it; first pass is an approval with no send-back and no second run
-before it; an escalation is a re-dispatch on a higher tier than the run before, counted once per event. A run
+credited to the tier of the latest run before it (even a run from before the window, so a tier can show approvals
+with no runs); work sent back and then landed is approved but not a first pass; first pass is an approval with no
+send-back and no second run before it; an escalation is a re-dispatch on a higher tier than the run before, counted once per event. A run
 with no reading is unmeasured, and adds no tokens. `economy.json` is written by at most one scan every 30 seconds,
 with a trailing scan so the last reading lands.
 

@@ -56,6 +56,8 @@ export class EconomyFile {
   private dirty = false;
   private latest: Works | null = null;
   private cancelTrailing: (() => void) | null = null;
+  /** The plugin is shutting down: nothing is armed or started again, whatever a scan in flight finds when it ends. */
+  private stopped = false;
 
   constructor(options: EconomyFileOptions) {
     this.path = options.path;
@@ -73,6 +75,7 @@ export class EconomyFile {
    * a scan already running or one that will trail it).
    */
   write(works: Works, force: boolean): Promise<EconomySummary | null> {
+    if (this.stopped) return Promise.resolve(null);
     if (!force && this.now().getTime() - this.wroteAt < this.refreshMs) return Promise.resolve(null);
     this.latest = works;
     if (this.flight) {
@@ -97,13 +100,14 @@ export class EconomyFile {
 
   /** Cancel the trailing scan: the plugin is shutting down. */
   stop(): void {
+    this.stopped = true;
     this.cancelTrailing?.();
     this.cancelTrailing = null;
   }
 
   private trail(): void {
     const works = this.latest;
-    if (!works) return;
+    if (!works || this.stopped) return;
     if (this.flight) {
       this.dirty = true;
       return;
@@ -123,7 +127,9 @@ export class EconomyFile {
       return summary;
     })().finally(() => {
       this.flight = null;
-      if (this.dirty) this.write(this.latest ?? works, true).catch(() => undefined);
+      if (this.dirty && !this.stopped) {
+        this.write(this.latest ?? works, true).catch((error) => this.log(`economy.json: ${(error as Error).message}`));
+      }
     });
     this.flight = flight;
     return flight;

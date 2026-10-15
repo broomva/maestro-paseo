@@ -4865,6 +4865,74 @@ describe("run.economy: what each run's session has used (BRO-3118)", () => {
     expect((await economyOf(item.id)).map((e) => e.assistantMessages)).toEqual([5, 6]);
   });
 
+  test("a run that crosses a read bound is unmeasured from then on; a read that merely failed is not", async () => {
+    const { engine, fake, repo, economyOf, reading } = await boot();
+    const item = await filed(engine, fake, repo);
+    reading(measured(3));
+    await endTurn(engine, fake);
+    await engine.economySettled();
+    reading({ measured: false, reason: "transcript not read: EBUSY" });
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "a" }] as never,
+      "t2",
+    );
+    await engine.economySettled();
+    expect((await economyOf(item.id)).map((e) => e.measured)).toEqual([true]);
+    reading({ measured: false, reason: "not read: the session's transcripts total over 1000 MB", bound: true });
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "b" }] as never,
+      "t3",
+    );
+    await engine.economySettled();
+    const all = await economyOf(item.id);
+    expect(all.map((e) => e.measured)).toEqual([true, false]);
+    expect(all[1]).toMatchObject({
+      reason: "not read: the session's transcripts total over 1000 MB",
+      tokens: { input: 0 },
+    });
+    // So the summary no longer counts the earlier numbers as its cost: unmeasured, no tokens.
+    expect((await engine.economySummary()).tiers.standard).toMatchObject({ unmeasured: 1, tokens: 0 });
+  });
+
+  test("a reading with as many messages and fewer tokens than the last is out of order too", async () => {
+    const { engine, fake, repo, economyOf, reading } = await boot();
+    const item = await filed(engine, fake, repo);
+    const message = (input: number): UsageRead => ({
+      measured: true,
+      usage: parseTranscriptUsage(
+        JSON.stringify({
+          type: "assistant",
+          message: { id: "m0", model: "claude-sonnet-5-5", usage: { input_tokens: input, output_tokens: 10 } },
+        }),
+      ),
+    });
+    reading(message(500));
+    await endTurn(engine, fake);
+    await engine.economySettled();
+    reading(message(300));
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "a" }] as never,
+      "t2",
+    );
+    await engine.economySettled();
+    expect((await economyOf(item.id)).map((e) => e.tokens.input)).toEqual([500]);
+    reading(message(700));
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "b" }] as never,
+      "t3",
+    );
+    await engine.economySettled();
+    expect((await economyOf(item.id)).map((e) => e.tokens.input)).toEqual([500, 700]);
+  });
+
   test("economy.json is not rewritten by every reading: a reading inside the interval trails, and the last one lands", async () => {
     const { engine, fake, repo, reading, file, fireTrailing, trailingCount } = await boot();
     await filed(engine, fake, repo, "standard");

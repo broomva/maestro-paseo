@@ -124,6 +124,9 @@ export function lastEconomy(events: readonly WorkEvent[], agentId: string): RunE
   return found?.type === "run.economy" ? found : null;
 }
 
+/** What a reading says the run has spent: input, output and cache creation, subagents included. */
+export const billedOf = (e: RunEconomy): number => billed(e.tokens) + (e.subagentTokens ? billed(e.subagentTokens) : 0);
+
 /** Whether a reading says what an earlier one did: the same numbers, tier and model. Its time and `backfilled` are not numbers. */
 export function sameReading(a: RunEconomy, b: RunEconomy): boolean {
   const pick = (e: RunEconomy) =>
@@ -327,14 +330,15 @@ export function summarizeEconomy(
       // An approve verdict, or, for work no gate verdict closed (an auto gate's checks, a merged branch), its landing as done.
       const approves =
         (event.type === "gate" && event.verdict === "approve") ||
-        (event.type === "state" && event.to === "done" && !gated && !revised);
+        (event.type === "state" && event.to === "done" && !gated);
       if (approves && inWindow && latest) approval = { run: latest, clean: binds === 1 && !revised };
     }
     if (approval) {
       const { run, clean } = approval;
       credit(run.bucket, (acc) => {
         acc.approved += 1;
-        if (!run.unmeasured) acc.approvedMeasured += 1;
+        // Only an approval whose run's tokens are in the numerator (a run in the window, and read) is in the divisor.
+        if (!run.unmeasured && run.inWindow) acc.approvedMeasured += 1;
         if (clean) acc.firstPass += 1;
       });
     }

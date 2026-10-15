@@ -45,9 +45,13 @@ export function partsOf(bucket: EconomyBucket): string[] {
   return parts;
 }
 
-/** One row per tier that ran in the window, lowest tier first and the unknown last. */
+/**
+ * One row per tier with something in the window, lowest tier first and the unknown last: a tier that ran, or one whose
+ * runs began before the window and were approved or sent back inside it.
+ */
 export function economyRows(summary: EconomySummary): EconomyRow[] {
-  return ECONOMY_BUCKETS.filter((name) => summary.tiers[name].runs > 0).map((name) => {
+  const active = (bucket: EconomyBucket) => bucket.runs > 0 || bucket.approved > 0 || bucket.sentBack > 0;
+  return ECONOMY_BUCKETS.filter((name) => active(summary.tiers[name])).map((name) => {
     const parts = partsOf(summary.tiers[name]);
     return { name, title: TITLE[name], parts, words: `${TITLE[name]}: ${parts.join(", ")}` };
   });
@@ -57,7 +61,7 @@ export function economyRows(summary: EconomySummary): EconomyRow[] {
 export function totalWords(summary: EconomySummary): string {
   const total = summary.totals;
   const days = summary.windowDays === 1 ? "the last day" : `the last ${summary.windowDays} days`;
-  if (total.runs === 0) return `No runs in ${days}.`;
+  if (total.runs === 0 && total.approved === 0 && total.sentBack === 0) return `No runs in ${days}.`;
   const first = total.firstPass === null ? null : `${Math.round(total.firstPass * 100)}% first pass`;
   return [
     `In ${days}: ${plural(total.runs, "run")} on ${plural(total.works, "work item")}`,

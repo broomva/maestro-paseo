@@ -19,7 +19,9 @@ export const NO_TOKENS: Tokens = { input: 0, output: 0, cacheRead: 0, cacheCreat
 /**
  * How much of one session Maestro reads. Past any of these the session is unmeasured (`measured: false`, and why),
  * never partial numbers presented as measured: a transcript that size is a runaway, and a daemon must not stall on it.
- * The largest transcript on a busy Mac is about 300 MB.
+ * A live run that crosses a bound is unmeasured from then on: the reading that says so (`bound`) supersedes the
+ * measured ones before it, so its earlier numbers no longer stand as its cost (Engine.measure). The largest
+ * transcript on a busy Mac is about 300 MB.
  */
 export interface UsageLimits {
   /** One transcript file. */
@@ -311,7 +313,10 @@ export async function findTranscript(
 }
 
 /** What the engine asks to know about an agent's usage: its numbers, or why there are none. */
-export type UsageRead = { measured: true; usage: TranscriptUsage } | { measured: false; reason: string };
+export type UsageRead =
+  | { measured: true; usage: TranscriptUsage }
+  /** `bound`: the session is past a read limit (USAGE_LIMITS), as opposed to a read that merely failed. */
+  | { measured: false; reason: string; bound?: true };
 
 export type UsageReader = (agentId: string, provider: string) => Promise<UsageRead>;
 
@@ -332,13 +337,8 @@ export function transcriptUsageReader(
       if (!transcript) return { measured: false, reason: "transcript not found" };
       return { measured: true, usage: await readTranscriptUsage(transcript, options.limits) };
     } catch (error) {
-      return {
-        measured: false,
-        reason:
-          error instanceof UsageBound
-            ? `not read: ${error.message}`
-            : `transcript not read: ${(error as Error).message}`,
-      };
+      if (error instanceof UsageBound) return { measured: false, reason: `not read: ${error.message}`, bound: true };
+      return { measured: false, reason: `transcript not read: ${(error as Error).message}` };
     }
   };
 }

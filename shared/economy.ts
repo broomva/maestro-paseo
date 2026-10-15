@@ -32,8 +32,9 @@ export const EconomyBucketSchema = z.object({
   works: z.number(),
   /**
    * Work approved in the window: by an approve verdict, or, for work no verdict closed (an auto gate's checks, a merged
-   * branch), by landing as done with no send-back. Each work counts once, in the bucket of the latest run before its
-   * last approval.
+   * branch), by landing as done (a send-back before it only costs it its first pass). Each work counts once, in the
+   * bucket of the latest run before its last approval, whether or not that run is itself inside the window: a bucket
+   * can show approvals with `runs: 0`.
    */
   approved: z.number(),
   /** Send-back (revise) verdicts made in the window, in the bucket of the latest run before each. */
@@ -41,7 +42,10 @@ export const EconomyBucketSchema = z.object({
   /** Each measured run's latest cumulative input + output + cache creation, subagents included. A run never read adds none. */
   tokens: z.number(),
   cacheRead: z.number(),
-  /** tokens over the approvals credited to a run whose usage was read; null when there are none. */
+  /**
+   * tokens over the approvals credited to a run in the window whose usage was read (the runs whose tokens are in the
+   * numerator); null when there are none.
+   */
   tokensPerApproved: z.number().nullable(),
   cacheReadPerApproved: z.number().nullable(),
   /**

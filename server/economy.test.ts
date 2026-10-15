@@ -128,6 +128,50 @@ describe("EconomyFile", () => {
     expect(await f.file.write(f.works(), false)).not.toBeNull();
   });
 
+  test("stopping while a scan is in flight with another request waiting arms nothing when it ends", async () => {
+    const f = await fixture({ scanMs: 0 });
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = f.file.write(async () => {
+      await gate;
+      return [];
+    }, true);
+    // A newer reading asked while it ran: on its own, the end of this scan would write again.
+    expect(await f.file.write(f.works(), true)).toBeNull();
+    f.file.stop();
+    release();
+    await first;
+    await f.file.settled();
+    expect(f.live()).toHaveLength(0);
+    expect(f.scans()).toBe(0);
+    // And a stopped file takes no more requests.
+    expect(await f.file.write(f.works(), true)).toBeNull();
+    expect(f.scans()).toBe(0);
+    expect(f.live()).toHaveLength(0);
+  });
+
+  test("the scan that follows a request made during another is logged when it fails", async () => {
+    const f = await fixture({ scanMs: 0 });
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = f.file.write(async () => {
+      await gate;
+      return [];
+    }, true);
+    await f.file.write(async () => {
+      throw new Error("the work root is gone");
+    }, true);
+    release();
+    await first;
+    await f.file.settled();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(f.logged).toEqual(["economy.json: the work root is gone"]);
+  });
+
   test("stopping cancels the trailing scan", async () => {
     const f = await fixture();
     await f.file.write(f.works(), true);

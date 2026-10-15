@@ -763,6 +763,14 @@ loops:
     calls: [I-verb-apply, I-notice-resolve, I-drift-record, I-economy-sweep]
     code: [server/sweep.ts, server/engine.ts, server/loops.ts, index.server.ts]
     note: "BRO-2995: the one place outside a hook or a verb where the plugin writes on its own. Reads (work.list, work.attention, loops.get and the views they reach) write nothing; what they did on the side (reconcile, due decisions, drift, the asks' and ledger's fetch, leftover locks) runs here. Its period is not the loop's: with the loop off (the default) the cards still stay true."
+  L-economy-trailing:
+    name: The economy file's trailing write — the last reading lands in economy.json without a scan per turn (BRO-3118)
+    status: new
+    scheduler: plugin timer, at the end of the 30 s scan interval after a run.economy receipt asked for a write inside it; also one scan after a scan in flight that a newer reading asked for. Cancelled when the plugin stops
+    owner: plugin
+    calls: [I-economy-sweep]
+    code: [server/economy.ts, server/engine.ts]
+    note: "BRO-2995: a write outside a hook, a verb and the sweep. Receipts are appended at once (the hook), the summary scan is coalesced: one at a time, at most one every 30 s (ECONOMY_SCAN_MS), so a burst of turn ends costs one scan, and the trailing one carries the last reading. The sweep's own economy step (30 s) writes it at most once a minute otherwise."
   L-undo-window:
     name: The 8 s undo timers that apply a pending owner verb (B4)
     status: keep

@@ -1065,7 +1065,9 @@ describe("the socket", () => {
     });
     if (!response.ok) throw new Error(response.error);
     const output = response.output as { item: WorkItem; notice: string | null };
-    expect(output.notice).toContain("Set aside: provider, thinkingOptionId");
+    // Named as the CLI names them, not by the wire's keys.
+    expect(output.notice).toContain("Set aside: --provider, --thinking.");
+    expect(output.notice).not.toContain("thinkingOptionId");
     expect(output.notice).not.toContain("Set aside: tier");
     expect(output.notice).toContain("tier ladder in your Settings");
     expect(output.item.nextRun?.tier).toBe("standard");
@@ -1105,7 +1107,8 @@ describe("the socket", () => {
         await main([...args, "--provider", "claude/claude-haiku-5", "--thinking", "low"], (text) => printed.push(text)),
       ).toBe(0);
       expect(printed[0]).toMatch(/^Created \S+ {2}Cheap work/);
-      expect(printed[0]).toContain("Set aside: provider, thinkingOptionId");
+      expect(printed[0]).toContain("Set aside: --provider, --thinking.");
+      expect(printed[0]).not.toContain("thinkingOptionId");
       const json: string[] = [];
       await main(["ls", "--json"], (text) => json.push(text));
       const [item] = (JSON.parse(json[0] ?? "{}") as { items: WorkItem[] }).items;

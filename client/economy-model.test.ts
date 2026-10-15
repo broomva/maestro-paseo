@@ -46,6 +46,13 @@ describe("economy words", () => {
     expect(rows.map((row) => row.name)).toEqual(["standard", "frontier"]);
   });
 
+  test("a tier whose runs began before the window but were approved inside it still has its row, and the line does not say there were no runs", () => {
+    const carried = summary({ standard: bucket({ approved: 2, tokensPerApproved: null }) }, { approved: 2 });
+    expect(economyRows(carried).map((row) => row.name)).toEqual(["standard"]);
+    expect(totalWords(carried)).toBe("In the last 7 days: 0 runs on 0 work items · 2 approved · 0 tokens");
+    expect(totalWords(summary({}))).toBe("No runs in the last 7 days.");
+  });
+
   test("a row says runs, approved, tokens per approved, first pass, escalations, raises and unmeasured", () => {
     const parts = partsOf(
       bucket({

@@ -312,6 +312,9 @@ describe("read bounds: past one the session is unmeasured, never partly counted"
       limits: limits({ subagentFiles: 2 }),
     });
     const result = await read(agentId, "claude/claude-sonnet-5-5");
-    expect(result).toEqual({ measured: false, reason: "not read: more than 2 subagent transcripts" });
+    // `bound`: past a read limit, which supersedes earlier readings, unlike a read that merely failed.
+    expect(result).toEqual({ measured: false, reason: "not read: more than 2 subagent transcripts", bound: true });
+    const lost = transcriptUsageReader({ agentsDir: registry.dir, projectsDir: join(root, "nowhere") });
+    expect(await lost(agentId, "claude")).toEqual({ measured: false, reason: "transcript not found" });
   });
 });
