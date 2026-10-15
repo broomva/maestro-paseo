@@ -1,0 +1,75 @@
+BRO-2996 dogfood: the agent socket of a throwaway sandbox daemon (scripts/dogfood/up.ts --plugin <this worktree>),
+driven through the real bin/maestro.ts. A = a live stand-in session (agent id 66d3472b..., cwd .../repos/infra, its
+provider session id is the different string stand-in-7899...); B = another live session in .../repos/platform. Both
+ids are from the sandbox daemon's own registry (paseo-home/agents/*/<id>.json), written by Paseo 0.11.1, not by a fixture.
+The sandbox was removed afterwards (down.ts).
+
+
+### 1. real session A, from its own folder: accepted
+$ cd repos/infra && PASEO_AGENT_ID=66d3472b… maestro mine
+Running 77084249-ceed-48c0-b34a-00c26e8bcd94  Rotate the staging deploy key
+  Needs you
+  → exit 0
+$ cd repos/infra && PASEO_AGENT_ID=66d3472b… maestro approval request gh pr merge 933 --squash --ref ce73104 --title Merge #933
+Asked: gh pr merge 933 --squash @ ce73104
+  4efd3fc3ceeba14a  waiting in Needs you; the answer comes to this session.
+  → exit 0
+
+### 2. spoofs of A: refused, nothing written
+$ cd repos/infra && PASEO_AGENT_ID=0f0f0f0f… maestro approval request gh pr merge 1 --squash
+maestro: No Paseo session has the id 0f0f0f0f-1111-4222-8333-444444444444.
+  → exit 1
+$ cd repos/platform && PASEO_AGENT_ID=66d3472b… maestro approval request gh pr merge 2 --squash
+maestro: This shell is in /private/tmp/maestro-dogfood-oSJOwU/repos/platform, but session 66d3472b runs in /private/tmp/maestro-dogfood-oSJOwU/repos/infra. Run maestro from inside that folder.
+  → exit 1
+$ cd repos/infra && PASEO_AGENT_ID=stand-in… maestro approval request gh pr merge 3 --squash
+maestro: No Paseo session has the id stand-in-7899abd1-d877-4737-8c5d-610774c10776.
+  → exit 1
+$ cd repos/infra && PASEO_AGENT_ID=… maestro approval request gh pr merge 4 --squash
+maestro: Maestro cannot tell which session is asking: PASEO_AGENT_ID is not set in this shell. Run maestro from a Paseo session.
+  → exit 1
+
+### 3. session B (live, its own folder) acting on A
+$ cd repos/platform && PASEO_AGENT_ID=94c533da… maestro mine
+Running fe3247a2-8815-4276-b612-94c7567b024a  Add request tracing to the API gateway
+  Running
+  → exit 0
+$ cd repos/platform && PASEO_AGENT_ID=94c533da… maestro track --agent 66d3472b-fcfd-4656-b6fb-55e46e1659ce
+maestro: A session acts only for itself or for one it started: 66d3472b-fcfd-4656-b6fb-55e46e1659ce is neither this session (94c533da-59cd-41da-bf1e-f5c48189edac) nor one it started.
+  → exit 1
+$ cd repos/platform && PASEO_AGENT_ID=94c533da… maestro mine --agent 66d3472b-fcfd-4656-b6fb-55e46e1659ce
+maestro: A session acts only for itself or for one it started: 66d3472b-fcfd-4656-b6fb-55e46e1659ce is neither this session (94c533da-59cd-41da-bf1e-f5c48189edac) nor one it started.
+  → exit 1
+
+### 4. withdraw: B cannot take back A's request; A can
+request id: 4efd3fc3ceeba14a (A's)
+$ cd repos/platform && PASEO_AGENT_ID=94c533da… maestro approval withdraw 4efd3fc3ceeba14a
+maestro: Only the session that asked can withdraw its request.
+  → exit 1
+$ cd repos/infra && PASEO_AGENT_ID=66d3472b… maestro approval withdraw 4efd3fc3ceeba14a
+Withdrawn.
+  → exit 0
+
+### 5. launching is not offered: dispatch, and new --dispatch
+$ cd repos/infra && PASEO_AGENT_ID=66d3472b… maestro dispatch some-id
+maestro: A session does not start work (A8): you start it with Dispatch in Maestro, or a lane or the conductor does. Work you create is queued.
+  → exit 1
+$ cd repos/infra && PASEO_AGENT_ID=66d3472b… maestro new Started by a session --repo /private/tmp/maestro-dogfood-oSJOwU/repos/infra --dispatch
+maestro: A session does not start work (A8): you start it with Dispatch in Maestro, or a lane or the conductor does. Work you create is queued.
+  → exit 1
+
+### 6. the same new without --dispatch queues, recorded as A's
+$ cd repos/infra && PASEO_AGENT_ID=66d3472b… maestro new Filed by a session, queued --repo /private/tmp/maestro-dogfood-oSJOwU/repos/infra
+Created e0d4a0c2-bdf9-4066-a70b-9bfa5105325b  Filed by a session, queued
+  Queued
+  → exit 0
+
+### 7. reads need no caller
+  work     /private/tmp/maestro-dogfood-oSJOwU/work
+  provider dogfood/stand-in
+  mode     provider default
+  → exit 0
+### 8. raw wire, no client in between
+work.dispatch  -> {'id': 1, 'ok': False, 'error': 'work.dispatch is not offered. A session does not start work (A8): you start it with Dispatch in Maestro, or a lane or the conductor does. Work you create is queued.'}
+work.create dispatch:true -> {'id': 2, 'ok': False, 'error': 'A session does not start work (A8): you start it with Dispatch in Maestro, or a lane or the conductor does. Work you create is queued.'}
+work.create, caller claimed with no cwd -> {'id': 3, 'ok': False, 'error': "Maestro cannot tell where this shell is: the request carried no folder. Update the maestro command (bin/maestro.ts) to this plugin's version."}

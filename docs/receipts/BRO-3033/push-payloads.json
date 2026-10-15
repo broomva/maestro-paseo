@@ -1,0 +1,20 @@
+{
+  "short": {
+    "assistantMessage": "**Needs you** · Pin the Node version in CI",
+    "title": "Agent finished",
+    "body": "Needs you · Pin the Node version in CI",
+    "bodyLength": 38
+  },
+  "typical": {
+    "assistantMessage": "**Needs you** · Retry failed card charges with backoff\n\nApprove the retry policy: 3 attempts, 2/8/30 s backoff, then park the charge for review?",
+    "title": "Agent finished",
+    "body": "Needs you · Retry failed card charges with backoff Approve the retry policy: 3 attempts, 2/8/30 s backoff, then park the charge for review?",
+    "bodyLength": 139
+  },
+  "long": {
+    "assistantMessage": "**Needs you** · Migrate webhooks to the v3 signing scheme\n\nThe v3 signer is ready behind a flag. Two partners (Acme, Globex) still verify v2 signatures, so turning it on breaks their deliveries until they upgrade. Ship with dual signing for 14 days, or wait for both partners to confirm before the switch?",
+    "title": "Agent finished",
+    "body": "Needs you · Migrate webhooks to the v3 signing scheme The v3 signer is ready behind a flag. Two partners (Acme, Globex) still verify v2 signatures, so turning it on breaks their deliveries until they upgrade. Ship wit...",
+    "bodyLength": 220
+  }
+}

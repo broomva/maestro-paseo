@@ -1,0 +1,63 @@
+## workers: two 'second daemons' on the sandbox work root + ledgers
+22:47:39
+## through the UI's RPCs while they run: Cancel (undo it inside 8 s) and Cancel (let it apply)
+{
+  "item": {
+    "id": "452f6132-268c-4592-8877-8c04af78ffd8",
+    "path": "checkout-v2/cart/persist-the-cart-across-devices",
+    "title": "Persist the cart across devices",
+    "kind": "task",
+    "state": "proposed",
+    "group": "queued",
+    "gate": "human",
+    "owner": null,
+    "initiative": "checkout-v2",
+    "project": "cart",
+    "repo": "/private/tmp/maestro-dogfood-m2RrWq/repos/checkout",
+    "createdAt": "2026-10-13T03:11:51.427Z",
+    "updatedAt": "2026-10-13T03:11:51.427Z",
+    "lastEventAt": "2026-10-13T03:11:51.427Z",
+    "phase": null,
+    "worker": null,
+    "reason": null,
+    "verdict": null,
+    "look": null,
+    "permission": null,
+    "checks": [],
+    "nextRun": {
+      "provider": "dogfood/stand-in",
+      "isolation": "directory",
+      "modeId": null,
+      "thinkingOptionId": null,
+      "featureValues": null,
+      "fromSettings": [
+        "provider",
+        "isolation"
+      ],
+      "held": null
+    },
+    "landedAt": null,
+    "pending": null,
+    "flag": null,
+    "closed": null,
+    "adoptedBy": null,
+    "parentWork": null,
+    "ticket": null,
+    "display": {
+      "title": "Persist the cart across devices",
+      "fleet": null
+    }
+  },
+  "receipt": "ce85bcc1-130e-45b5-9580-e8672bf736b7",
+  "appliesAt": "2026-10-13T03:47:48.355Z"
+}
+[('Canceled Persist the cart across devices', 6817)]
+{
+  "undone": true
+}
+  },
+  "receipt": "71b67146-0994-45ff-9409-4635c967a445",
+  "appliesAt": "2026-10-13T03:47:49.924Z"
+}
+workers-done
+22:47:41
