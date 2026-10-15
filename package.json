@@ -2,6 +2,23 @@
   "name": "maestro-paseo",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
+  "author": "Carlos D. Escobar-Valbuena <carlosdavidescobar@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/broomva/maestro-paseo.git"
+  },
+  "bugs": {
+    "url": "https://github.com/broomva/maestro-paseo/issues"
+  },
+  "homepage": "https://github.com/broomva/maestro-paseo#readme",
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "agent-orchestration",
+    "ai-agents",
+    "maestro"
+  ],
   "bin": {
     "maestro": "bin/maestro.ts"
   },

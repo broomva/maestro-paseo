@@ -1,3 +1,41 @@
+# Dependencies
 node_modules/
+.pnp
+.pnp.js
+
+# Build and caches
+dist/
+build/
+.cache/
 *.tmp
+*.tsbuildinfo
+
+# OS files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun.log
+
+# Editor and agent local files
+.vscode/
+.idea/
+.claude/worktrees/
+.claude/settings.local.json
