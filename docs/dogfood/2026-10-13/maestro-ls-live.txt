@@ -1,9 +1,0 @@
-$ bun bin/maestro.ts ls   (live plugin, read only; item titles removed)
-Work in /Users/broomva/maestro
-Stuck (7)
-Running (1)
-Done (97)
-listed item lines: 105
-
-$ bun bin/maestro.ts ls --json   (count by group)
-111 items {'review': 6, 'blocked': 7, 'running': 1, 'done': 97}

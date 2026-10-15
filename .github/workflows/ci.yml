@@ -9,15 +9,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# The job runs on the owner's Mac (BRO-3056): GitHub will not start hosted jobs
-# while the account's Actions billing is blocked, and the owner chose local
-# runners over adding budget (2026-10-10). The pool is registered with
-# `CI_RUNNER_REPO=broomva/maestro-paseo … scripts/ci-runner.sh start` in
-# broomva/workspace (label `maestro-local`; docs/references/local-ci-runner.md).
-# Going back to hosted runners is only `runs-on: ubuntu-latest`.
+permissions:
+  contents: read
+
 jobs:
   check:
-    runs-on: [self-hosted, maestro-local]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +25,5 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx biome ci .
-      # 30 s, not bun's 5 s: this host is shared with the owner's work, and git-heavy suites overran 5 s
-      # under load with nothing wrong (BRO-3060). Only the flag holds suite-wide: a preloaded
-      # setDefaultTimeout passed alone and still timed out at 5 s inside the full suite.
+      # 30 s timeout: git-heavy suites need headroom under load
       - run: bun test --timeout 30000

@@ -93,7 +93,7 @@ export function KitGallery({
   compact,
   section: initialSection,
   scheme: initialScheme,
-  directions,
+  directions: _directions,
 }: {
   theme: PluginTheme;
   compact: boolean;
