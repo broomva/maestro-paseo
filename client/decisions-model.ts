@@ -220,12 +220,48 @@ export function railName(ledger: string, max = RAIL_CHARS): string {
  * ledger at a time in the rail's order, each as groupDecisions orders it. Asks
  * you skipped go last, in the same order, so a skip never loses one.
  */
+/** What narrows the decisions beside the ledger: your words, and whether only the ones that wait on you show. */
+export interface DecisionFilter {
+  /** Words every one of which must appear in the ask (its headline, question, stakes, why you, options, ledger, id). */
+  query?: string;
+  /** Only the asks that wait on you (blocking, or recommending what cannot be undone). */
+  waitingOnly?: boolean;
+}
+
+/** The text an ask is found by: what you read on its card, its ledger and its id, lowercased. */
+function searchable(ask: DecisionAsk): string {
+  return [
+    ask.headline,
+    ask.question,
+    ask.stakes,
+    ask.whyYou,
+    ask.id,
+    ask.arc,
+    ledgerName(ledgerOf(ask)),
+    ...ask.options.flatMap((option) => [option.label, option.consequence]),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+/** Whether an ask passes the filter: every word of the query appears in it (in any order), and it waits if asked. */
+export function matchesFilter(ask: DecisionAsk, filter: DecisionFilter = {}): boolean {
+  if (filter.waitingOnly && !ask.waiting) return false;
+  const words = (filter.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return true;
+  const text = searchable(ask);
+  return words.every((word) => text.includes(word));
+}
+
 export function triageQueue(
   asks: readonly DecisionAsk[],
-  options: { ordering: Ordering; ledger?: string | null; skipped?: ReadonlySet<string> },
+  options: { ordering: Ordering; ledger?: string | null; skipped?: ReadonlySet<string> } & DecisionFilter,
 ): DecisionAsk[] {
   const { ordering, ledger = null, skipped = new Set<string>() } = options;
-  const open = asks.filter((ask) => isTriaged(ask) && (ledger === null || ledgerOf(ask) === ledger));
+  const open = asks.filter(
+    (ask) => isTriaged(ask) && (ledger === null || ledgerOf(ask) === ledger) && matchesFilter(ask, options),
+  );
   let ordered: DecisionAsk[];
   if (ordering === "ledger") {
     ordered = groupDecisions(open).flatMap((group) => group.open);

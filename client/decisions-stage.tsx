@@ -11,8 +11,8 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { type MutableRefObject, useMemo, useState } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { type MutableRefObject, useMemo, useRef, useState } from "react";
+import { Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import type { DecisionAsk } from "../shared/fleet";
 import { type CardKeys, DecisionDetails, type Draft, useDecisionCard } from "./decision-card";
 import { answeredLine, fateLine, ledgerRail, ORDERINGS, type Ordering, railName } from "./decisions-model";
@@ -22,8 +22,8 @@ import { InspectorBody } from "./kit/inspector";
 import { answerLabel, OTHER_CHOICE } from "./kit/inspector-model";
 import { Dot, MONO, Pill, TABULAR } from "./kit/parts";
 import { kitOf } from "./kit/tokens";
-import { ChipRow, Segments, TileWithVerb } from "./stage-parts";
-import { focusRing, Notice } from "./ui";
+import { type ChipOption, ChipRow, Segments, TileWithVerb } from "./stage-parts";
+import { focusRing, Notice, webAria } from "./ui";
 
 type Navigation = PluginSurfaceProps["navigation"];
 
@@ -87,10 +87,15 @@ export function StageTilesRow({
   );
 }
 
-/** How many ledgers the chips name before the rest sit behind the chosen one. */
-const LEDGER_CHIPS = 6;
+/** How far one press of a rail arrow scrolls the ledger chips, in px. */
+const RAIL_STEP = 320;
 
-/** The order, the ledger chips, and "Decision 1 of 2 · 1 blocks work" with its progress segments. */
+/**
+ * The stage's controls, in two rows. First: the order, a words filter, "Waits on you", and the stage's progress.
+ * Second: every ledger as a chip on one line that scrolls sideways (a trackpad, a shift-wheel, a drag on a phone, or
+ * the arrows at its ends), so none is cut off at the edge or folded behind "+N more". Each chip counts the asks the
+ * filter leaves in it.
+ */
 export function StageControls({
   theme,
   ordering,
@@ -98,73 +103,221 @@ export function StageControls({
   asks,
   ledger,
   onLedger,
+  query,
+  onQuery,
+  waitingOnly,
+  onWaitingOnly,
   progress,
   segments,
 }: {
   theme: PluginTheme;
   ordering: Ordering;
   onOrdering: (next: Ordering) => void;
-  /** Every decision the tab can walk (isTriaged), all ledgers: the chips count them. */
+  /** Every decision the tab can walk (isTriaged), all ledgers, already narrowed by the filter: the chips count them. */
   asks: readonly DecisionAsk[];
   ledger: string | null;
   onLedger: (next: string | null) => void;
+  query: string;
+  onQuery: (next: string) => void;
+  waitingOnly: boolean;
+  onWaitingOnly: (next: boolean) => void;
   progress: string;
   segments: readonly boolean[];
 }) {
   const kit = kitOf(theme);
-  const [showAll, setShowAll] = useState(false);
   const rail = ledgerRail(asks);
-  const shown = showAll ? rail : rail.filter((entry, at) => at < LEDGER_CHIPS || entry.ledger === ledger);
-  const hidden = rail.length - shown.length;
   const total = rail.reduce((sum, entry) => sum + entry.open, 0);
   const waiting = rail.reduce((sum, entry) => sum + entry.waiting, 0);
   const ALL = "__all__";
+  // A chosen ledger the filter emptied still shows, at 0, so it can be seen and cleared.
+  const chosenGone = ledger !== null && !rail.some((entry) => entry.ledger === ledger);
+  const options = [
+    { id: ALL, label: "All", count: total, aria: railLabel("All ledgers", total, waiting) },
+    ...rail.map((entry) => ({
+      id: entry.ledger,
+      label: railName(entry.ledger, 30),
+      count: entry.open,
+      aria: railLabel(entry.ledger, entry.open, entry.waiting),
+    })),
+    ...(chosenGone && ledger
+      ? [{ id: ledger, label: railName(ledger, 30), count: 0, aria: railLabel(ledger, 0, 0) }]
+      : []),
+  ];
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-      <ChipRow
-        theme={theme}
-        label="Order"
-        variant="segment"
-        options={ORDERINGS}
-        value={ordering}
-        onChange={onOrdering}
-      />
-      <ChipRow
-        theme={theme}
-        label="Ledger"
-        options={[
-          { id: ALL, label: "All", count: total, aria: railLabel("All ledgers", total, waiting) },
-          ...shown.map((entry) => ({
-            id: entry.ledger,
-            label: railName(entry.ledger, 26),
-            count: entry.open,
-            aria: railLabel(entry.ledger, entry.open, entry.waiting),
-          })),
-        ]}
-        value={ledger ?? ALL}
-        onChange={(next) => onLedger(next === ALL ? null : next)}
-      />
-      {hidden > 0 || showAll ? (
+    <View style={{ gap: 10 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <ChipRow
+          theme={theme}
+          label="Order"
+          variant="segment"
+          options={ORDERINGS}
+          value={ordering}
+          onChange={onOrdering}
+        />
+        <FilterField theme={theme} value={query} onChange={onQuery} />
         <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={showAll ? "Show fewer ledgers" : `Show ${hidden} more ledgers`}
-          onPress={() => setShowAll((now) => !now)}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: waitingOnly }}
+          {...webAria({ "aria-checked": waitingOnly })}
+          accessibilityLabel={`Only the decisions that wait on you${waitingOnly ? ", on" : ""}`}
+          onPress={() => onWaitingOnly(!waitingOnly)}
           style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({
             ...focusRing(theme, focused),
             height: 30,
-            justifyContent: "center",
-            paddingHorizontal: 8,
-            opacity: pressed ? 0.7 : 1,
+            paddingHorizontal: 12,
+            borderRadius: 9999,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 6,
+            backgroundColor: waitingOnly ? kit.needsSoft : kit.sunken,
+            borderWidth: 1,
+            borderColor: waitingOnly ? kit.needsLine : "transparent",
+            opacity: pressed ? 0.8 : 1,
           })}
         >
-          <Text style={{ color: kit.muted, fontSize: 12.5, ...TABULAR }}>{showAll ? "Fewer" : `+${hidden} more`}</Text>
+          <Icon name="Hand" size={13} color={waitingOnly ? kit.needs : kit.muted} />
+          <Text
+            style={{ color: waitingOnly ? kit.needs : kit.fg2, fontSize: 13, fontWeight: waitingOnly ? "600" : "400" }}
+          >
+            Waits on you
+          </Text>
+        </Pressable>
+        <View style={{ flex: 1 }} />
+        <Text accessibilityLiveRegion="polite" style={{ color: kit.muted, fontSize: 12.5, ...TABULAR }}>
+          {progress}
+        </Text>
+        <Segments theme={theme} filled={segments} />
+      </View>
+      <LedgerRail
+        theme={theme}
+        options={options}
+        value={ledger ?? ALL}
+        onChange={(next) => onLedger(next === ALL ? null : next)}
+      />
+    </View>
+  );
+}
+
+/** The words filter: narrows every count and the queue as you type; Escape or the x clears it. */
+function FilterField({
+  theme,
+  value,
+  onChange,
+}: {
+  theme: PluginTheme;
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const kit = kitOf(theme);
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        height: 30,
+        minWidth: 200,
+        flexGrow: 0,
+        flexShrink: 1,
+        paddingLeft: 10,
+        paddingRight: value ? 4 : 10,
+        borderRadius: 9999,
+        backgroundColor: kit.sunken,
+      }}
+    >
+      <Icon name="Search" size={13} color={kit.muted} />
+      <TextInput
+        value={value}
+        onChangeText={onChange}
+        placeholder="Filter decisions"
+        placeholderTextColor={kit.muted}
+        accessibilityLabel="Filter decisions by their words"
+        onKeyPress={(event: { nativeEvent: { key: string } }) => {
+          if (event.nativeEvent.key === "Escape") onChange("");
+        }}
+        style={
+          { flex: 1, minWidth: 140, color: kit.fg, fontSize: 13, paddingVertical: 0, outlineStyle: "none" } as never
+        }
+      />
+      {value ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Clear the filter"
+          onPress={() => onChange("")}
+          style={{ width: 24, height: 24, alignItems: "center", justifyContent: "center", borderRadius: 12 }}
+        >
+          <Icon name="X" size={13} color={kit.muted} />
         </Pressable>
       ) : null}
-      <View style={{ flex: 1 }} />
-      <Text accessibilityLiveRegion="polite" style={{ color: kit.muted, fontSize: 12.5, ...TABULAR }}>
-        {progress}
-      </Text>
-      <Segments theme={theme} filled={segments} />
+    </View>
+  );
+}
+
+/**
+ * Every ledger on one line that scrolls sideways. On the desktop an arrow shows at each end that has more past it,
+ * since a mouse wheel scrolls up and down: one press moves the chips RAIL_STEP px. The chosen chip is scrolled into
+ * view when it is chosen from elsewhere (a focus from the Feed).
+ */
+function LedgerRail({
+  theme,
+  options,
+  value,
+  onChange,
+}: {
+  theme: PluginTheme;
+  options: readonly ChipOption<string>[];
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const kit = kitOf(theme);
+  const scroller = useRef<ScrollView>(null);
+  const [view, setView] = useState({ x: 0, width: 0, content: 0 });
+  const canLeft = view.x > 4;
+  const canRight = view.x + view.width < view.content - 4;
+  const step = (by: number) =>
+    scroller.current?.scrollTo({ x: Math.max(0, Math.min(view.content - view.width, view.x + by)), animated: true });
+  const arrow = (side: "left" | "right") => (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={side === "left" ? "Earlier ledgers" : "More ledgers"}
+      onPress={() => step(side === "left" ? -RAIL_STEP : RAIL_STEP)}
+      style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({
+        ...focusRing(theme, focused),
+        width: 30,
+        height: 30,
+        borderRadius: 15,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: kit.sunken,
+        opacity: pressed ? 0.7 : 1,
+      })}
+    >
+      <Icon name={side === "left" ? "ChevronLeft" : "ChevronRight"} size={15} color={kit.fg2} />
+    </Pressable>
+  );
+  return (
+    <View testID="ledger-rail" style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+      {canLeft ? arrow("left") : null}
+      <ScrollView
+        ref={scroller}
+        horizontal
+        showsHorizontalScrollIndicator={Platform.OS === "web"}
+        style={{ flex: 1, minWidth: 0 }}
+        contentContainerStyle={{ paddingBottom: Platform.OS === "web" ? 6 : 0 }}
+        scrollEventThrottle={32}
+        onScroll={(event) => {
+          const x = event.nativeEvent.contentOffset.x;
+          setView((now) => (now.x === x ? now : { ...now, x }));
+        }}
+        onLayout={(event) => {
+          const width = event.nativeEvent.layout.width;
+          setView((now) => (now.width === width ? now : { ...now, width }));
+        }}
+        onContentSizeChange={(content) => setView((now) => (now.content === content ? now : { ...now, content }))}
+      >
+        <ChipRow theme={theme} label="Ledger" options={options} value={value} onChange={onChange} wrap={false} />
+      </ScrollView>
+      {canRight ? arrow("right") : null}
     </View>
   );
 }

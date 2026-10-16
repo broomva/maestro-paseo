@@ -32,6 +32,7 @@ export function ChipRow<T extends string>({
   value,
   onChange,
   variant = "pills",
+  wrap = true,
 }: {
   theme: PluginTheme;
   label: string;
@@ -39,6 +40,8 @@ export function ChipRow<T extends string>({
   value: T;
   onChange: (id: T) => void;
   variant?: "pills" | "segment";
+  /** Wrap onto more lines (the default), or stay on one line inside a sideways scroller. */
+  wrap?: boolean;
 }) {
   const kit = kitOf(theme);
   const segment = variant === "segment";
@@ -48,7 +51,7 @@ export function ChipRow<T extends string>({
       accessibilityLabel={label}
       style={{
         flexDirection: "row",
-        flexWrap: "wrap",
+        flexWrap: wrap ? "wrap" : "nowrap",
         gap: segment ? 2 : 8,
         padding: segment ? 3 : 0,
         borderRadius: 9999,

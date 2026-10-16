@@ -41,6 +41,7 @@ import {
   ledgerName,
   ledgerOf,
   ledgerRail,
+  matchesFilter,
   nextAfter,
   ORDERINGS,
   type Ordering,
@@ -300,6 +301,10 @@ export function DecisionsView({
   const now = useTick(15_000);
   const [ordering, setOrdering] = useState<Ordering>("blocking");
   const [ledger, setLedger] = useState<string | null>(focus?.ledger ?? null);
+  // The words filter and "Waits on you" (J5's controls): they narrow the queue, the chips' counts and Up next.
+  const [query, setQuery] = useState("");
+  const [waitingOnly, setWaitingOnly] = useState(false);
+  const filter = { query, waitingOnly };
   const [pinned, setPinned] = useState<{ key: string; ask: DecisionAsk } | null>(null);
   const [lastIndex, setLastIndex] = useState(0);
   const [skipped, setSkipped] = useState<ReadonlySet<string>>(() => new Set());
@@ -346,7 +351,7 @@ export function DecisionsView({
   // A ledger you chose stays chosen when its last ask is answered ("Nothing open in it"); one no read knows is no filter.
   const ledgerShown = ledger !== null && all.some((ask) => ledgerOf(ask) === ledger) ? ledger : null;
   const openAll = all.filter(isTriaged);
-  const queue = triageQueue(all, { ordering, ledger: ledgerShown, skipped });
+  const queue = triageQueue(all, { ordering, ledger: ledgerShown, skipped, ...filter });
   const queueRef = useRef(queue);
   queueRef.current = queue;
 
@@ -517,14 +522,22 @@ export function DecisionsView({
   const reorder = (next: Ordering) => {
     if (answerInFlight(client)) return;
     setOrdering(next);
-    pin(triageQueue(all, { ordering: next, ledger: ledgerShown, skipped })[0] ?? null);
+    pin(triageQueue(all, { ordering: next, ledger: ledgerShown, skipped, ...filter })[0] ?? null);
   };
   const choose = (entry: string | null) => {
     if (answerInFlight(client)) return;
     setLedger(entry);
     setSeen(new Set());
     setPickerOpen(false);
-    pin(triageQueue(all, { ordering, ledger: entry, skipped })[0] ?? null);
+    pin(triageQueue(all, { ordering, ledger: entry, skipped, ...filter })[0] ?? null);
+  };
+  const refilter = (next: { query?: string; waitingOnly?: boolean }) => {
+    if (answerInFlight(client)) return;
+    const merged = { ...filter, ...next };
+    if (next.query !== undefined) setQuery(next.query);
+    if (next.waitingOnly !== undefined) setWaitingOnly(next.waitingOnly);
+    setSeen(new Set());
+    pin(triageQueue(all, { ordering, ledger: ledgerShown, skipped, ...merged })[0] ?? null);
   };
 
   // The keys, on the web, only from inside the tab: read through refs, so the listener is added once.
@@ -925,9 +938,13 @@ export function DecisionsView({
           theme={theme}
           ordering={ordering}
           onOrdering={reorder}
-          asks={openAll}
+          asks={openAll.filter((ask) => matchesFilter(ask, filter))}
           ledger={ledgerShown}
           onLedger={choose}
+          query={query}
+          onQuery={(next) => refilter({ query: next })}
+          waitingOnly={waitingOnly}
+          onWaitingOnly={(next) => refilter({ waitingOnly: next })}
           progress={stageProgress(progress, queue, skipped.size)}
           segments={progressSegments(answeredCount, visit.size)}
         />

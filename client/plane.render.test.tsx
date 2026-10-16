@@ -4453,6 +4453,36 @@ describe("the Decisions tab", () => {
     expect(view.text()).toContain("Decision 1 of 2");
   });
 
+  test("the filters: every ledger on one sideways rail (no fold), words narrow the queue and the counts, Waits on you", async () => {
+    // Twelve ledgers: before, six showed and the rest sat behind "+N more", and the row was cut at the edge.
+    workspaceNow = [
+      merge(),
+      ...Array.from({ length: 11 }, (_, at) =>
+        canvas(`seed-${at}`, { ledger: `universe-seed-${String(at).padStart(2, "0")}.yaml` }),
+      ),
+    ];
+    const view = await open();
+    expect(view.byLabel("Ledger")).not.toBeNull();
+    expect(view.text()).not.toContain("more");
+    for (let at = 0; at < 11; at += 1) {
+      expect(view.byLabel(`universe-seed-${String(at).padStart(2, "0")}.yaml: 1 open`)).not.toBeNull();
+    }
+    expect(view.text()).toContain("Decision 1 of 12");
+    // Words: every word must appear; the queue and the chips' counts follow.
+    await view.type(view.byLabel("Filter decisions by their words"), "seed-7");
+    expect(view.text()).toContain("Decision 1 of 1");
+    expect(view.text()).toContain("Canvas ask seed-7");
+    expect(view.byLabel("All ledgers: 1 open")?.getAttribute("aria-checked")).toBe("true");
+    expect(view.byLabel("universe-seed-03.yaml: 1 open")).toBeNull();
+    await view.press(view.byLabel("Clear the filter"));
+    expect(view.text()).toContain("Decision 1 of 12");
+    // Waits on you: only the blocking merge.
+    await view.press(view.byLabel("Only the decisions that wait on you"));
+    expect(view.text()).toContain("Decision 1 of 1");
+    expect(view.text()).toContain("Approve merge of PR #863");
+    expect(view.byLabel("All ledgers: 1 open, 1 waits on you")).not.toBeNull();
+  });
+
   test("answered with the mouse: sent to the ask's home as read; it says what it answered, and the next comes up", async () => {
     workspaceNow = [merge(), canvas("product-name")];
     const view = await open();
