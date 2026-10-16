@@ -710,6 +710,20 @@ describe("an ask card", () => {
     expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: "all", note: "Only after the demo." })]);
   });
 
+  it("Other on the session card sends your words with no option, and waits for them (BRO-3146)", async () => {
+    const ask = { ...askFixture(), allowOther: true };
+    sim.asks = [ask];
+    const view = await mount(card(askCardOf(ask)));
+    await view.press(view.byLabel("Other…"));
+    expect(view.byLabel("Answer")?.getAttribute("aria-disabled")).toBe("true");
+    await view.type(
+      view.byLabel("Your words for Install the three headless Claude Code mods fleet-wide?"),
+      "Ask Legal first.",
+    );
+    await view.press(view.byLabel("Answer"));
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: null, note: "Ask Legal first." })]);
+  });
+
   it("an ask answered elsewhere collapses and says so; its receipt appears once it took effect", async () => {
     const ask = askFixture();
     sim.asks = [ask];

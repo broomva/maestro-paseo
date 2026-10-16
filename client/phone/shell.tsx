@@ -856,8 +856,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
           directions={directions}
           // It starts on the option chosen on the deck (Codex P20 round 2): the deck's note rides with that option.
           item={
-            openEntry && (cardItem.kind === "ask" || cardItem.kind === "review") && choices[openEntry.row.key]
-              ? { ...cardItem, chosen: choices[openEntry.row.key] }
+            openEntry && (cardItem.kind === "ask" || cardItem.kind === "review")
+              ? { ...cardItem, chosen: choices[openEntry.row.key] ?? openingChoice(cardItem) }
               : cardItem
           }
           index={cardIndex}

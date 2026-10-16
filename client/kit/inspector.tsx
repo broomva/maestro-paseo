@@ -1258,11 +1258,10 @@ export function InspectorCard({
             item={item}
             compact
             onOpenSession={onOpenSession}
-            choice={picked.choice}
-            onChoose={(id) => {
-              picked.choose(id);
-              onChoose?.(id);
-            }}
+            // With the screen keeping the pick (onChoose), the card shows the screen's: a pick made on the deck after the
+            // card closed is the one it reopens on, never a stale one of its own (Codex P20 round 3).
+            choice={onChoose && (item.kind === "ask" || item.kind === "review") ? item.chosen : picked.choice}
+            onChoose={onChoose ?? picked.choose}
             words={words}
             onWords={item.kind === "ask" ? onWords : undefined}
           />
@@ -1283,7 +1282,9 @@ export function InspectorCard({
           <Verbs
             theme={theme}
             verbs={withoutRefused(item, verbsFor(item.kind, item.primaryLabel))}
-            onVerb={(id) => onVerb(id, picked.choice)}
+            onVerb={(id) =>
+              onVerb(id, onChoose && (item.kind === "ask" || item.kind === "review") ? item.chosen : picked.choice)
+            }
             height={DECK.verb}
             grow
             keys={false}

@@ -489,6 +489,24 @@ describe("writing an answer", () => {
     expect([noted?.answerOption, noted?.answerNote]).toEqual(["drop", "Fine."]);
   });
 
+  test("allow_other in any spelling but true refuses Other: an unquoted no is false to the YAML 1.1 validator", () => {
+    for (const spelling of ["false", "no", "No", "off", "n", '"false"']) {
+      const closed = LEDGER.replace(
+        "    class:         decision\n",
+        `    class:         decision\n    allow_other:   ${spelling}\n`,
+      );
+      expect(decisionsOf(closed, "test-arc.yaml")[0]?.allowOther).toBe(false);
+      expect(() => answered(closed, { note: "Something else." })).toThrow("takes one of its options");
+    }
+    const open = LEDGER.replace(
+      "    class:         decision\n",
+      "    class:         decision\n    allow_other:   true\n",
+    );
+    expect(decisionsOf(answered(open, { note: "Something else." }), "test-arc.yaml")[0]?.answerOther).toBe(
+      "Something else.",
+    );
+  });
+
   test("an answer clears a note or Other a writer left on the open entry, so it never says words you did not", () => {
     const stale = LEDGER.replace(
       "    class:         decision\n",

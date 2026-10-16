@@ -308,13 +308,15 @@ export function useDecisionCard({
   const answer = useMutation({
     mutationKey: answerKeyOf(ask),
     mutationFn: (input: AnswerInput) => withinTimeout(verbs.answer(input)),
-    onSuccess: ({ ask: answered, warning }) => {
-      // The draft is spent, whether or not this card is still on screen.
-      client.setQueryData<Drafts>(DRAFTS_KEY, (now) => {
-        if (!now) return now;
-        const { [askKey(ask)]: _spent, ...rest } = now;
-        return rest;
-      });
+    onSuccess: ({ ask: answered, warning, receipt }) => {
+      // The draft is spent once the answer is written; one queued in its undo window (B4) keeps it, so an Undo
+      // brings back your choice and words, an Other answer's included (BRO-3146).
+      if (receipt === undefined)
+        client.setQueryData<Drafts>(DRAFTS_KEY, (now) => {
+          if (!now) return now;
+          const { [askKey(ask)]: _spent, ...rest } = now;
+          return rest;
+        });
       // The list learns it in whichever part holds it, each copy keeping its own list's scope.
       const swap = (one: DecisionAsk) => (sameAsk(one, answered) ? withScope(answered, one) : one);
       client.setQueriesData<WorkspaceAsksView>({ queryKey: ["maestro", "workspace-asks"] }, (view) =>
@@ -395,7 +397,7 @@ export function useDecisionCard({
       { where, ledger: ask.ledger, uid: ask.uid, id: ask.id, hash: ask.hash, option: option?.id ?? null, note },
       {
         onSuccess: ({ ask: reply, warning, receipt }) => {
-          setDraft(EMPTY_DRAFT);
+          if (receipt === undefined) setDraft(EMPTY_DRAFT);
           // With a receipt the answer is queued: the ask is still open, written when its undo window closes (B4).
           onAnswered(withScope(reply, ask), warning, receipt !== undefined);
         },

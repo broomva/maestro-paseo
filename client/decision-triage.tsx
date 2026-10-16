@@ -502,7 +502,8 @@ export function DecisionsView({
       warning,
       queued: queued ? (choice ? `“${choice}”` : "in your words") : null,
     });
-    setDrafts(({ [currentKey]: _gone, ...rest }) => rest);
+    // A queued answer keeps its draft: an Undo in its window brings the ask back with your choice and words.
+    if (!queued) setDrafts(({ [currentKey]: _gone, ...rest }) => rest);
     // The card that leaves is the one you answered, as it read: a refetch landing mid-exit does not change it.
     setLeaving({ key: currentKey, ask: current, at });
   };

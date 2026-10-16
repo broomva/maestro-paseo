@@ -850,6 +850,20 @@ describe("M5, Decisions", () => {
     expect(view.label("Answer with Other…") !== null).toBe(true);
   });
 
+  test("a deck pick made after the card closed is the one the card reopens on (BRO-3146, Codex round 3)", async () => {
+    asks = [ask("A1")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(view.all('[role="link"]')[0]);
+    await view.press(view.id("inspector-card")?.querySelector('[aria-label="Other…"]') as El);
+    await view.press(view.id("inspector-card")?.querySelector('[aria-label="Close"]') as El);
+    await settle(400);
+    await view.press(view.labelled("Install fleet-wide")[0]);
+    await view.press(view.all('[role="link"]')[0]);
+    const card = view.id("inspector-card");
+    expect(card?.querySelector('[aria-label^="Install fleet-wide"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(card?.querySelector('[aria-label="Other…"]')?.getAttribute("aria-checked")).toBe("false");
+  });
+
   test("an ask that says allow_other: false offers no Other row (BRO-3146)", async () => {
     asks = [ask("A1", { allowOther: false })];
     const view = await mount({ tab: "decisions" });

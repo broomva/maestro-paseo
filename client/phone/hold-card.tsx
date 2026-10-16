@@ -6,6 +6,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
 import { Pressable, Text, View } from "react-native";
+import { ANSWER_NOTE_CHARS } from "../../shared/fleet";
 import { tint } from "../fleet-color";
 import { DeckHold } from "../kit/deck";
 import type { Choice, InspectorItem } from "../kit/inspector";
@@ -290,6 +291,7 @@ export function HoldCard({
             onChangeText={onWords}
             editable={!fixed}
             multiline
+            maxLength={ANSWER_NOTE_CHARS}
             placeholder={wordsPlaceholder(options, choice)}
             placeholderTextColor={kit.muted}
             style={{

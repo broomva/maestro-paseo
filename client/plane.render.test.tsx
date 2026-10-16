@@ -4502,6 +4502,22 @@ describe("the Decisions tab", () => {
     expect(sent("ask.answer")).toHaveLength(1);
   });
 
+  test("a queued Other keeps its words: back on the ask after Undo, they are still there (BRO-3146)", async () => {
+    answerQueued = true;
+    workspaceNow = [{ ...merge(), allowOther: true }, canvas("product-name")];
+    const view = await open();
+    await view.press(view.byLabel("Other…"));
+    await view.type(view.byLabel("Your words for A1"), "Ask Legal first.");
+    await view.press(view.byLabel("Answer A1"));
+    await until(view, "written in 8 s unless you undo it");
+    expect(view.text()).toContain("Canvas ask product-name");
+    await view.press(view.all('[role="button"][aria-label^="Undo: "]')[0]);
+    await settle(60);
+    await key(view, "k");
+    await until(view, "Approve merge of PR #863 touching");
+    expect((view.byLabel("Your words for A1") as unknown as { value: string }).value).toBe("Ask Legal first.");
+  });
+
   test("with motion on, the answered card leaves before the next one comes up", async () => {
     setReduced(false);
     workspaceNow = [merge(), canvas("product-name")];

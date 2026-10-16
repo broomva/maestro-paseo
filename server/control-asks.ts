@@ -248,7 +248,7 @@ export function decisionOf(
     answerOption: text(row.answer_option),
     answerNote: text(row.answer_note),
     answerOther: text(row.answer_other),
-    allowOther: row.allow_other !== false,
+    allowOther: takesOther(row),
     state,
     origin: originAgent ? { agentId: originAgent, cwd: text(origin.cwd) } : null,
     refusal,
@@ -430,6 +430,15 @@ export function answerText(option: DecisionOption | null, note: string): string 
 }
 
 const WRITTEN_KEYS = ["answer_option", "answered_at", "answered_by", "status"] as const;
+
+/**
+ * Whether an ask takes an Other answer (BRO-3146): absent or a real `true` only. Any other value refuses it, fail
+ * closed: an unquoted `allow_other: no` (or off, n) is a string to this YAML 1.2 reader but `false` to
+ * ask_ledger.py's YAML 1.1 one, so reading only `false` as no would write an Other the validator then refuses.
+ */
+export function takesOther(row: Row): boolean {
+  return row.allow_other === undefined || row.allow_other === null || row.allow_other === true;
+}
 /** Your words, apart from the option (BRO-3146): beside it (`answer_note`), or in place of every option (`answer_other`). */
 const WORD_KEYS = ["answer_note", "answer_other"] as const;
 
@@ -537,7 +546,7 @@ export function withAnswer(
   // ask may refuse with `allow_other: false`. Read from the ask's structure, never from what the words say.
   const words = input.note.trim();
   const other = !option && options.length > 0 && words.length > 0 ? words : null;
-  if (other !== null && row.allow_other === false) {
+  if (other !== null && !takesOther(row)) {
     throw new UserError(
       `The ask ${input.id} takes one of its options, not an answer in your words. It was not answered.`,
     );
