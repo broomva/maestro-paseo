@@ -17,7 +17,7 @@
 // inside the home's real path, so a link cannot lead out.
 
 import { constants } from "node:fs";
-import { open, realpath, stat } from "node:fs/promises";
+import { lstat, open, realpath, stat } from "node:fs/promises";
 import { dirname, join, sep } from "node:path";
 import type { AskHome, DecisionAsk } from "../shared/fleet";
 import {
@@ -209,11 +209,17 @@ export async function readInside(base: string, path: string, cap: number): Promi
   const real = await realpath(join(root, path)).catch(() => null);
   if (!real) throw new UserError(`${path} is not in ${base}.`);
   if (!inside(real)) throw new UserError(`${path} leads outside ${base}; not shown.`);
-  const handle = await open(real, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
+  // A FIFO or a device would block `open` itself before the descriptor could be checked: refuse anything but a
+  // regular file first, and open non-blocking so one swapped in between cannot hold a worker either.
+  const before = await lstat(real).catch(() => null);
+  if (!before?.isFile()) throw new UserError(`${path} is not a file.`);
+  const handle = await open(real, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(() => null);
   if (!handle) throw new UserError(`${path} could not be opened (a link, or gone).`);
   try {
     const info = await handle.stat();
     if (!info.isFile()) throw new UserError(`${path} is not a file.`);
+    // A hard link reaches a file outside the home with no link to resolve; git never makes one in a working tree.
+    if (info.nlink > 1) throw new UserError(`${path} is a hard link; not shown.`);
     if (info.size > cap) throw tooBig(path, info.size, cap);
     const buffer = Buffer.alloc(cap + 1);
     let filled = 0;
@@ -281,7 +287,13 @@ export function lockedHtml(html: string): string {
  * (`refr&#101;sh`) that only the parser decodes, so the attribute, not its value, is what is matched.
  */
 const META = /<meta\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
-const stripHttpEquiv = (html: string) => html.replace(META, (tag) => (/[\s/]http-equiv\b/i.test(tag) ? "" : tag));
+/** And from `<meta` to the next `>`, for a tag a stray quote keeps the first pattern from matching: too much out is harmless. */
+const META_LOOSE = /<meta\b[^>]*>/gi;
+const HTTP_EQUIV = /[\s/]http-equiv\b/i;
+const stripHttpEquiv = (html: string) =>
+  html
+    .replace(META, (tag) => (HTTP_EQUIV.test(tag) ? "" : tag))
+    .replace(META_LOOSE, (tag) => (HTTP_EQUIV.test(tag) ? "" : tag));
 
 /** The file an ask names at `ref`, read from its home. */
 export async function readAttachment(

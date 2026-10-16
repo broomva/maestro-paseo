@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AskHome } from "../shared/fleet";
@@ -276,6 +276,34 @@ test("only ASCII whitespace is trimmed, as ask_ledger.py trims it (P20 round 2)"
   expect(mediaOf([{ kind: "image", path: "  docs/a.png\t" }], 4)).toEqual([
     { kind: "image", path: "docs/a.png", url: null, caption: null },
   ]);
+});
+
+describe("files that are not plain files (P20 round 3)", () => {
+  test("a FIFO named as media is refused at once, never opened to wait for a writer", async () => {
+    const repo = await scratch();
+    await mkdir(join(repo, "docs"));
+    const fifo = join(repo, "docs", "stall.png");
+    expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
+    const started = Date.now();
+    await expect(readInside(repo, "docs/stall.png", 100)).rejects.toThrow(/not a file/);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+  test("a hard link to a file outside the home is refused", async () => {
+    const outside = await scratch();
+    await writeFile(join(outside, "secret.png"), PNG);
+    const repo = await scratch();
+    await mkdir(join(repo, "docs"));
+    await link(join(outside, "secret.png"), join(repo, "docs", "hard.png"));
+    await expect(readInside(repo, "docs/hard.png", 100)).rejects.toThrow(/hard link/);
+  });
+  test("a meta with a stray quote is taken out too", () => {
+    const locked = lockedHtml("<meta http-equiv=refresh content=0;url=https://e/ x=a'b><p>x</p>");
+    expect(locked).not.toContain("https://e/");
+  });
+  test("a URL with a character outside printable ASCII is not shown (as ask_ledger.py refuses it)", () => {
+    expect(mediaOf([{ kind: "image", url: "https://e/x\uFEFF" }], 4)).toEqual([]);
+    expect(mediaOf([{ kind: "image", url: "https://e/x%EF%BB%BF.png" }], 4)).toHaveLength(1);
+  });
 });
 
 describe("which ask an attachment request names (P20 round 1)", () => {

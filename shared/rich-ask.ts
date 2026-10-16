@@ -129,7 +129,12 @@ export type AskAttachment = z.infer<typeof getAskAttachment.output>;
 
 const TICKET = /^[A-Z][A-Z0-9]{1,9}-\d+$/;
 const PR = /^([\w.-]+)\/([\w.-]+)#(\d+)$/;
-const HTTPS = /^https:\/\/[^\s/]+\S*$/;
+/**
+ * https, printable ASCII only (a host, then an optional path): the same pattern as ask_ledger.py's `_HTTPS_RE`.
+ * Whitespace classes differ between the two languages (\ufeff is whitespace to JS and not to Python), so neither
+ * uses one; a URL with other characters is written percent-encoded.
+ */
+const HTTPS = /^https:\/\/[!-.0-~]+(?:\/[!-~]*)?$/;
 const SESSION = /^[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/;
 
 /** Characters no path here may hold: control characters (a newline would split a `git cat-file --batch` spec). */
