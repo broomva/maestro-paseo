@@ -90,7 +90,8 @@ const invoke = async (method: string, input: unknown) => {
   const ref = (input as { ref: { list: string; option: string | null; index: number } }).ref;
   if (ref.list === "sources")
     return { mime: "text/html", dataUrl: null, text: "<html><body><p>The spec</p></body></html>", webUrl: null };
-  if (ref.option === null) return { mime: "video/mp4", dataUrl: "data:video/mp4;base64,AAAA", text: null, webUrl: null };
+  if (ref.option === null)
+    return { mime: "video/mp4", dataUrl: "data:video/mp4;base64,AAAA", text: null, webUrl: null };
   return { mime: "image/png", dataUrl: PNG, text: null, webUrl: null };
 };
 
@@ -166,7 +167,14 @@ const RICH: RichView = {
   rich: {
     summary: "Two phone card designs. Dense fits the options above the fold; airy shows a bigger picture.",
     tradeoffs: [
-      { option: "dense", label: null, cost: "none", risk: "cramped on small phones", time: null, reversibility: "a revert" },
+      {
+        option: "dense",
+        label: null,
+        cost: "none",
+        risk: "cramped on small phones",
+        time: null,
+        reversibility: "a revert",
+      },
       { option: "airy", label: null, cost: "one more PR", risk: null, time: "a day", reversibility: "a revert" },
     ],
     sources: [
@@ -178,7 +186,11 @@ const RICH: RichView = {
     details: "## Why two\n\nThe owner asked for **both**.",
   },
   optionMedia: [
-    { option: "dense", label: "Dense", media: [{ kind: "image", path: "docs/a.png", url: null, caption: "Variant A" }] },
+    {
+      option: "dense",
+      label: "Dense",
+      media: [{ kind: "image", path: "docs/a.png", url: null, caption: "Variant A" }],
+    },
     { option: "airy", label: "Airy", media: [{ kind: "image", path: "docs/b.png", url: null, caption: "Variant B" }] },
   ],
 };
