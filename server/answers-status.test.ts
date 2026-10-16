@@ -127,7 +127,7 @@ describe("answers.status: where your answers went", () => {
     expect(status.acted).toBe(8);
   });
 
-  test("words with no option are shown as your words, cut at a word; a fleet scope's and an idea's answers are not counted", () => {
+  test("words with no option are shown as your words, cut at a word; a fleet scope's answers are not counted", () => {
     const words = "Same vendor for now ".repeat(20);
     const status = answersStatus(
       [
@@ -176,8 +176,24 @@ describe("the batch waiting to land is one function for needs.list's hold and J5
     });
   });
 
-  test("an idea's or a fleet scope's batched answer is not Maestro's to land here", () => {
+  test("a fleet scope's batched answer is not Maestro's to land here", () => {
     expect(batchedCount([batchedAsk("1", { scope: "sri" })])).toBe(0);
+  });
+
+  test("an idea answered from the phone's deck waits to land, then shows where it went under Your answers (BRO-3140)", () => {
+    // Live, 2026-10-16: ideas-fleet-autonomy I1 parked from the phone landed in workspace#1015 and was routed
+    // ("Acted on: nothing to do"), yet the phone's Your answers never listed it.
+    const idea = {
+      initiative: "fleet-autonomy",
+      idea: "a Workflow cell",
+      source: null,
+      evidence: null,
+      wake: "2026-11-02",
+    };
+    expect(batchedCount([batchedAsk("I1", { idea })])).toBe(1);
+    const status = answersStatus([answered("I1", "2026-10-16T04:02:42Z", "acted", { idea })], null);
+    expect(status.acted).toBe(1);
+    expect(status.recent.map((one) => [one.id, one.stage])).toEqual([["I1", "acted"]]);
   });
 
   test("what the tile counts against is what can still be acted on: answers from before routing, or closed another way, are not", () => {

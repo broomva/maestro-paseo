@@ -27,9 +27,13 @@ function answerOf(ask: DecisionAsk): string {
 
 const keyOf = (ask: Pick<DecisionAsk, "ledger" | "uid" | "id">) => `${ask.ledger}#${ask.uid ?? ask.id}`;
 
-/** Answers on maestro/answers that origin/main lacks, as the asks list them: batched, answered here, not an idea's or a scope's. */
+/**
+ * Answers on maestro/answers that origin/main lacks, as the asks list them: batched, answered here, not a scope's
+ * (a fleet scope's answer is written at its root, never batched). An idea's counts: the phone's Decisions deck
+ * answers ideas, and their answers land in the same batch (BRO-3140).
+ */
 export function batchedCount(asks: readonly DecisionAsk[]): number {
-  return asks.filter((ask) => ask.state === "answered" && ask.batched && !ask.idea && !ask.scope).length;
+  return asks.filter((ask) => ask.state === "answered" && ask.batched && !ask.scope).length;
 }
 
 /**
@@ -75,7 +79,8 @@ export function answersStatus(
   now = Date.now(),
 ): AnswersStatus {
   const tracked = asks
-    .filter((ask) => ask.state === "answered" && !ask.idea && !ask.scope)
+    // Every answer of yours that lands here, an idea's among them (BRO-3140); a fleet scope's is its root's.
+    .filter((ask) => ask.state === "answered" && !ask.scope)
     .flatMap((ask) => {
       const stage = ask.fate?.stage ?? (ask.batched ? ("unlanded" as const) : null);
       return stage ? [{ ask, stage }] : [];
