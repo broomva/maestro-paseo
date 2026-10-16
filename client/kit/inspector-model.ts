@@ -117,13 +117,17 @@ export const OTHER_ROW = {
 
 /**
  * An ask's options with the Other row after them: only when it has options (one with none is answered in words
- * already), says nothing against it (`allow_other: false`), and is not an idea (develop, park or kill). Pure.
+ * already), its daemon says it takes Other (`allowOther: true`; an older daemon never sends the field, and would
+ * write a words-only answer the ledger cannot tell from Other), and it is not an idea (develop, park or kill). Pure.
  */
 export function withOther<C extends { id: string }>(
   options: readonly C[],
   ask: { allowOther?: boolean; idea?: unknown } | null,
 ): (C | typeof OTHER_ROW)[] {
-  if (!ask || options.length === 0 || ask.allowOther === false || ask.idea) return [...options];
+  if (!ask || options.length === 0 || ask.allowOther !== true || ask.idea) return [...options];
+  // A ledger option already named like the row (the validator refuses ':' in ids; a ledger it never ran on may
+  // not): picking Other would claim that option, so no Other row is drawn (Codex P20 round 1).
+  if (options.some((option) => option.id === OTHER_CHOICE)) return [...options];
   return [...options, OTHER_ROW];
 }
 

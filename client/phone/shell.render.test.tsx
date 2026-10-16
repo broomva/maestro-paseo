@@ -124,6 +124,7 @@ const ask = (id: string, extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
   answeredAt: null,
   answer: null,
   answerOption: null,
+  allowOther: true,
   state: "open",
   origin: null,
   refusal: null,
@@ -803,6 +804,28 @@ describe("M5, Decisions", () => {
     await type(view, `Your words for ${title}`, "Only on my machine first.");
     await view.press(view.label("Answer with Other…"));
     expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: null, note: "Only on my machine first." })]);
+  });
+
+  test("the rising card offers Other with a field to write it in, the deck card's words shown there (BRO-3146)", async () => {
+    asks = [ask("A1")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(view.all('[role="link"]')[0]);
+    const card = view.id("inspector-card");
+    expect(card !== null).toBe(true);
+    await view.press(card?.querySelector('[aria-label="Other…"]') as El);
+    const field = card?.querySelector("textarea") as unknown as {
+      value: string;
+      dispatchEvent(event: unknown): boolean;
+    };
+    expect(field).toBeTruthy();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(field, "Ask Legal first.");
+      field.dispatchEvent(new win.Event("input", { bubbles: true }));
+    });
+    await settle(60);
+    await view.press(view.id("inspector-card-bar")?.querySelector('[aria-label^="Answer"]') as El);
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: null, note: "Ask Legal first." })]);
   });
 
   test("an ask that says allow_other: false offers no Other row (BRO-3146)", async () => {

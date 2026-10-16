@@ -867,6 +867,9 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
             else toast.show("Nothing else to do here.");
           }}
           onVerb={onCardVerb}
+          // The deck card's words, shown and edited on the card too (BRO-3146): one set of words per hold.
+          words={openEntry ? (said[openEntry.row.key] ?? "") : ""}
+          onWords={openEntry ? (text) => setSaid((now) => ({ ...now, [openEntry.row.key]: text })) : undefined}
           // The card swiped to another hold: the deck is on it when the card closes.
           onIndexChange={(at) => {
             const next = keys[at];

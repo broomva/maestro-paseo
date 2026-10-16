@@ -204,6 +204,7 @@ describe("an answer carries your words (J3), a prompt goes with Unblock (J4)", (
     answeredAt: null,
     answer: null,
     answerOption: null,
+    allowOther: true,
     state: "open",
     origin: null,
     refusal: null,
@@ -228,12 +229,18 @@ describe("an answer carries your words (J3), a prompt goes with Unblock (J4)", (
     });
   });
 
-  test("your words alone are an answer too: no option is claimed for them", () => {
-    expect(planVerb("answer", { row, ask: decision }, undefined, "same vendor for now")).toMatchObject({
+  test("your words alone answer an ask with no options; beside no pick on one with options they wait (BRO-3146)", () => {
+    const bare = { ...decision, options: [] };
+    expect(planVerb("answer", { row, ask: bare }, undefined, "same vendor for now")).toMatchObject({
       call: "answer",
       option: null,
       note: "same vendor for now",
       done: "Answered in your words",
+    });
+    // Filed as Other they would tell the asking session no option was taken: they go to Decisions as a draft.
+    expect(planVerb("answer", { row, ask: decision }, undefined, "same vendor for now")).toMatchObject({
+      call: "go",
+      draft: { chosen: null, note: "same vendor for now" },
     });
   });
 
@@ -249,10 +256,15 @@ describe("an answer carries your words (J3), a prompt goes with Unblock (J4)", (
   test("the Other row follows an ask's options, unless it has none, says allow_other: false, or is an idea", () => {
     const own = [{ id: "off" }, { id: "all" }];
     expect(withOther(own, decision)).toEqual([...own, OTHER_ROW]);
+    // An older daemon sends no allowOther: no Other row, since it would write words the ledger cannot tell apart.
+    expect(withOther(own, { ...decision, allowOther: undefined })).toEqual(own);
     expect(withOther(own, { ...decision, allowOther: true })).toEqual([...own, OTHER_ROW]);
     expect(withOther(own, { ...decision, allowOther: false })).toEqual(own);
     expect(withOther(own, { ...decision, idea: { wake: null } })).toEqual(own);
     expect(withOther([], decision)).toEqual([]);
+    // A ledger option named like the row is never shadowed by it: Other would claim that option.
+    const named = [{ id: "off" }, { id: OTHER_CHOICE }];
+    expect(withOther(named, decision)).toEqual(named);
     expect(withOther(own, null)).toEqual(own);
   });
 

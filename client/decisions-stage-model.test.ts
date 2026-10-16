@@ -43,6 +43,7 @@ const ask = (id: string, extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
   answeredAt: null,
   answer: null,
   answerOption: null,
+  allowOther: true,
   state: "open",
   origin: null,
   refusal: null,

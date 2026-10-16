@@ -367,7 +367,8 @@ describe("the card's words", () => {
 
   test("the verb names what it sends, and waits for a choice", () => {
     expect(answerVerb(null, true, "")).toBe("Choose an option");
-    expect(answerVerb(null, true, "my words")).toBe("Answer in your words");
+    // BRO-3146: words alone never answer an ask with options; the Other row takes them.
+    expect(answerVerb(null, true, "my words")).toBe("Choose an option or Other");
     expect(answerVerb(null, false, "")).toBe("Answer");
     expect(answerVerb({ label: "File all four" }, true, "")).toBe("Answer with File all four");
     expect(answerVerb({ label: "File the two warning and test gaps, drop the accepted residual" }, true, "")).toBe(

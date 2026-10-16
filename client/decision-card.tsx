@@ -373,7 +373,8 @@ export function useDecisionCard({
     !ask.refusal &&
     !anyInFlight &&
     !waiting &&
-    (option !== null || (note.trim().length > 0 && (!hasOptions || otherOffered)));
+    // Other is picked on purpose: words with no pick on an ask with options are a note waiting for its option.
+    (option !== null || (note.trim().length > 0 && (!hasOptions || (otherOffered && chosen === OTHER_CHOICE))));
   const silence = silenceOf(ask);
   const origin = ask.origin;
   const submit = () => {

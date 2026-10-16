@@ -460,7 +460,8 @@ export const VERB_CHARS = 36;
 export function answerVerb(option: Pick<DecisionOption, "label"> | null, hasOptions: boolean, note: string): string {
   if (option) return `Answer with ${cutAtWord(option.label, VERB_CHARS)}`;
   if (!hasOptions) return "Answer";
-  return note.trim().length > 0 ? "Answer in your words" : "Choose an option";
+  // Words alone never answer an ask with options (BRO-3146): Other is the row that takes them.
+  return note.trim().length > 0 ? "Choose an option or Other" : "Choose an option";
 }
 
 /** An answered ask in words: the option chosen and when. */

@@ -19,7 +19,7 @@ import { answeredLine, fateLine, ledgerRail, ORDERINGS, type Ordering, railName 
 import { railLabel, type StageTiles, stageItem, type UpNextRow, type WentRow } from "./decisions-stage-model";
 import { SectionHeading } from "./home-cards";
 import { InspectorBody } from "./kit/inspector";
-import { answerLabel } from "./kit/inspector-model";
+import { answerLabel, OTHER_CHOICE } from "./kit/inspector-model";
 import { Dot, MONO, Pill, TABULAR } from "./kit/parts";
 import { kitOf } from "./kit/tokens";
 import { ChipRow, Segments, TileWithVerb } from "./stage-parts";
@@ -200,7 +200,8 @@ export function StageCard({
   const kit = kitOf(theme);
   const card = useDecisionCard({ ask, where, onAnswered, keys, draft, onDraft, frozen });
   const item = useMemo(
-    () => stageItem(ask, card.open ? card.chosen : ask.answerOption, now),
+    // An Other answer marks the Other row (BRO-3146): it took no option, so answerOption alone would mark none.
+    () => stageItem(ask, card.open ? card.chosen : (ask.answerOption ?? (ask.answerOther ? OTHER_CHOICE : null)), now),
     [ask, card.open, card.chosen, now],
   );
   const hints = Platform.OS === "web";

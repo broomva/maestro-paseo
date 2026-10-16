@@ -564,7 +564,8 @@ export function InspectorBody({
             <Text style={{ color: kit.muted, fontSize: 12.5 }}>{item.fallback.line}</Text>
           </View>,
         );
-      if (!compact && onWords && !item.refusal)
+      // The phone's card (compact) shows it too (BRO-3146): Other offered with nowhere to write it is a dead end.
+      if (onWords && !item.refusal && (!compact || item.options.length > 0))
         sections.push(
           <WordsField
             key="words"
@@ -1002,12 +1003,16 @@ export function InspectorPanel({
   const hold = KIND_LOOK[showing.kind].hold;
   // Words typed beside an option you did not pick yourself are an answer in your words: the recommendation an ask
   // starts on is never sent with them, and the primary says which it is sending.
+  // On an ask with options they are a note until you pick (BRO-3146): an answer that takes none of them is Other,
+  // picked on purpose, so the primary asks for a pick and planVerb hands the words to Decisions, never sends them.
   const inWords = showing.kind === "ask" && !picked.explicit && said.words.trim().length > 0;
   const sent = inWords ? undefined : picked.choice;
   const primary =
     showing.kind === "ask" || showing.kind === "review"
       ? inWords
-        ? "Answer in your words"
+        ? showing.options.length > 0
+          ? "Choose an option or Other"
+          : "Answer in your words"
         : answerLabel(showing.options, sent)
       : showing.primaryLabel;
   const verbs = withoutRefused(
@@ -1134,9 +1139,14 @@ export function InspectorCard({
   onIndexChange,
   onOpenSession,
   directions,
+  words,
+  onWords,
 }: {
   theme: PluginTheme;
   item: InspectorItem;
+  /** Your words on an ask (BRO-3146), held by the screen so the deck card and this one show the same words. */
+  words?: string;
+  onWords?: (value: string) => void;
   index: number;
   total: number;
   open: boolean;
@@ -1247,6 +1257,8 @@ export function InspectorCard({
             onOpenSession={onOpenSession}
             choice={picked.choice}
             onChoose={picked.choose}
+            words={words}
+            onWords={item.kind === "ask" ? onWords : undefined}
           />
         </ScrollView>
         <View
