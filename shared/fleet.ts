@@ -7,6 +7,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { AnswerFateSchema } from "./answers";
+import { AskMediaSchema, RichAskSchema } from "./rich-ask";
 import { GROUP_ORDER, ORCH_STATES } from "./states";
 
 /**
@@ -199,6 +200,8 @@ export const DecisionOptionSchema = z.object({
    * never read from the option's words. Absent from an older daemon.
    */
   statusQuo: z.boolean().optional(),
+  /** What this option looks like (`media`, decision layer v2, BRO-3167): shown beside the others. Absent when none. */
+  media: z.array(AskMediaSchema).optional(),
 });
 export type DecisionOption = z.infer<typeof DecisionOptionSchema>;
 
@@ -321,6 +324,11 @@ export const DecisionAskSchema = z.object({
    * (shared/answers.ts). Null for an open ask, and for one answered elsewhere.
    */
   fate: AnswerFateSchema.nullable().optional(),
+  /**
+   * Decision layer v2 (BRO-3167): a summary, tradeoffs, sources, media and details, as much as the asking agent
+   * judged the decision needs. Null when the ask carries none; absent from an older daemon.
+   */
+  rich: RichAskSchema.nullable().optional(),
 });
 export type DecisionAsk = z.infer<typeof DecisionAskSchema>;
 

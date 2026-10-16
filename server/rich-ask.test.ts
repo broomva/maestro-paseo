@@ -1,0 +1,242 @@
+import { afterAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AskHome } from "../shared/fleet";
+import { MEDIA_MAX_BYTES, sourceText, sourceUrl } from "../shared/rich-ask";
+import { decisionsOf } from "./control-asks";
+import { attachmentOf, lockedHtml, mediaOf, readAttachment, readInside, richOf } from "./rich-ask";
+
+const roots: string[] = [];
+afterAll(async () => {
+  await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
+});
+async function scratch(): Promise<string> {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "maestro-rich-")));
+  roots.push(root);
+  return root;
+}
+
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+
+/** A ledger with v2 on the ask and on an option, plus entries Maestro must drop. */
+const RICH = `arc: rich
+opened: 2026-10-17T00:00Z
+tz: America/Bogota
+lanes: [a]
+asks:
+  - id: R1
+    headline: "Which card design ships?"
+    stakes: "The card waits."
+    why_you: "Taste is yours."
+    summary: "Two designs for the phone card. A is denser; B shows a bigger picture."
+    tradeoffs:
+      - { option: dense, cost: "none", risk: "cramped" }
+      - { option: airy, time: "a day" }
+      - { option: ghost, cost: "x" }
+      - { label: "Either", reversibility: "a revert" }
+      - { option: dense, label: "both", cost: "x" }
+      - { option: airy }
+    sources:
+      - { kind: spec, ref: "docs/specs/card.html#variants", label: "Card spec" }
+      - { kind: ticket, ref: BRO-3167 }
+      - { kind: pr, ref: "broomva/maestro-paseo#80" }
+      - { kind: url, ref: "http://insecure.example.com" }
+      - { kind: file, ref: "../../etc/passwd" }
+      - { kind: wiki, ref: "x" }
+    media:
+      - { kind: video, url: "https://example.com/cut.mp4", caption: "The cut" }
+      - { kind: image, path: "/etc/hosts" }
+    details: "## Why\\n\\nLonger."
+    options:
+      - id: dense
+        label: "Dense"
+        consequence: "Ships A."
+        reversible: true
+        recommended: true
+        media:
+          - { kind: image, path: "docs/a.png", caption: "Variant A" }
+          - { kind: image, path: "docs/a.mp4" }
+      - id: airy
+        label: "Airy"
+        consequence: "Ships B."
+        reversible: true
+        media:
+          - { kind: image, path: "docs/b.png", caption: "Variant B" }
+    class: decision
+    gates: [a]
+    blocking: false
+    default: "dense"
+  - id: R2
+    headline: "Plain yes or no?"
+    stakes: "Nothing."
+    why_you: "Yours."
+    options:
+      - { id: yes, label: "Yes", consequence: "Yes.", reversible: true, recommended: true }
+      - { id: no, label: "No", consequence: "No.", reversible: true }
+`;
+
+describe("reading decision layer v2 from a ledger", () => {
+  const [rich, plain] = decisionsOf(RICH, "rich.yaml");
+
+  test("an ask with v2 carries what it says, minus what Maestro could not show", () => {
+    expect(rich?.rich?.summary).toBe("Two designs for the phone card. A is denser; B shows a bigger picture.");
+    expect(rich?.rich?.tradeoffs).toEqual([
+      { option: "dense", label: null, cost: "none", risk: "cramped", time: null, reversibility: null },
+      { option: "airy", label: null, cost: null, risk: null, time: "a day", reversibility: null },
+      { option: null, label: "Either", cost: null, risk: null, time: null, reversibility: "a revert" },
+    ]);
+    expect(rich?.rich?.sources.map((s) => `${s.kind}:${s.ref}`)).toEqual([
+      "spec:docs/specs/card.html#variants",
+      "ticket:BRO-3167",
+      "pr:broomva/maestro-paseo#80",
+    ]);
+    expect(rich?.rich?.media).toEqual([
+      { kind: "video", path: null, url: "https://example.com/cut.mp4", caption: "The cut" },
+    ]);
+    expect(rich?.rich?.details).toBe("## Why\n\nLonger.");
+  });
+
+  test("an option's media rides on the option, a wrong extension dropped", () => {
+    expect(rich?.options[0]?.media).toEqual([{ kind: "image", path: "docs/a.png", url: null, caption: "Variant A" }]);
+    expect(rich?.options[1]?.media?.[0]?.caption).toBe("Variant B");
+  });
+
+  test("an ask without v2 reads exactly as before: rich null, options with no media key", () => {
+    expect(plain?.rich).toBeNull();
+    expect(plain?.options.every((option) => !("media" in option))).toBe(true);
+  });
+
+  test("a hash still pins the entry: v2 fields are part of what you read", () => {
+    const changed = decisionsOf(RICH.replace("A is denser", "A is tighter"), "rich.yaml")[0];
+    expect(changed?.hash).not.toBe(rich?.hash);
+  });
+});
+
+describe("mediaOf and richOf, alone", () => {
+  test("a media entry needs exactly one of path and url", () => {
+    expect(mediaOf([{ kind: "image" }, { kind: "image", path: "a.png", url: "https://x/a.png" }], 4)).toEqual([]);
+  });
+  test("media are capped", () => {
+    const many = Array.from({ length: 9 }, (_, i) => ({ kind: "image", url: `https://x/${i}.png` }));
+    expect(mediaOf(many, 4)).toHaveLength(4);
+  });
+  test("an ask whose v2 entries are all unusable is null, not an empty shell", () => {
+    expect(richOf({ sources: [{ kind: "url", ref: "javascript:alert(1)" }] }, new Set())).toBeNull();
+  });
+});
+
+describe("the links a source opens", () => {
+  test("ticket, PR and https URL have web addresses; files and sessions do not", () => {
+    expect(sourceUrl({ kind: "ticket", ref: "BRO-3167" })).toBe("https://linear.app/broomva/issue/BRO-3167");
+    expect(sourceUrl({ kind: "pr", ref: "broomva/workspace#1018" })).toBe(
+      "https://github.com/broomva/workspace/pull/1018",
+    );
+    expect(sourceUrl({ kind: "url", ref: "https://example.com/a" })).toBe("https://example.com/a");
+    expect(sourceUrl({ kind: "spec", ref: "docs/specs/a.html" })).toBeNull();
+    expect(sourceUrl({ kind: "session", ref: "64c5a6b0" })).toBeNull();
+  });
+  test("a chip names a file by its name and keeps the anchor", () => {
+    expect(sourceText({ kind: "spec", ref: "docs/specs/a.html#kinds", label: null })).toBe("a.html#kinds");
+    expect(sourceText({ kind: "spec", ref: "docs/specs/a.html", label: "The spec" })).toBe("The spec");
+  });
+});
+
+describe("reading a file an ask names", () => {
+  const home = (path: string): AskHome => ({ kind: "checkout", path, branch: "b" });
+
+  test("a checkout's image comes back as a data URL", async () => {
+    const repo = await scratch();
+    await mkdir(join(repo, "docs"));
+    await writeFile(join(repo, "docs", "a.png"), PNG);
+    const [ask] = decisionsOf(RICH, "rich.yaml", home(repo));
+    if (!ask) throw new Error("no ask");
+    const got = await readAttachment(ask, { list: "media", option: "dense", index: 0 });
+    expect(got.mime).toBe("image/png");
+    expect(got.dataUrl).toBe(`data:image/png;base64,${PNG.toString("base64")}`);
+    expect(got.webUrl).toBeNull();
+  });
+
+  test("a fleet root's paths start at the folder that holds .control/asks", async () => {
+    const base = await scratch();
+    const root = join(base, ".control", "asks");
+    await mkdir(root, { recursive: true });
+    await mkdir(join(base, "docs"));
+    await writeFile(join(base, "docs", "b.png"), PNG);
+    const [ask] = decisionsOf(RICH, "rich.yaml", { kind: "root", path: root, branch: null });
+    if (!ask) throw new Error("no ask");
+    const got = await readAttachment(ask, { list: "media", option: "airy", index: 0 });
+    expect(got.dataUrl?.startsWith("data:image/png;base64,")).toBe(true);
+  });
+
+  test("a link that leads out of the home is refused", async () => {
+    const outside = await scratch();
+    await writeFile(join(outside, "secret.png"), PNG);
+    const repo = await scratch();
+    await mkdir(join(repo, "docs"));
+    await symlink(join(outside, "secret.png"), join(repo, "docs", "a.png"));
+    const [ask] = decisionsOf(RICH, "rich.yaml", home(repo));
+    if (!ask) throw new Error("no ask");
+    await expect(readAttachment(ask, { list: "media", option: "dense", index: 0 })).rejects.toThrow(/leads outside/);
+  });
+
+  test("a path that climbs out is refused before any read", async () => {
+    const repo = await scratch();
+    await expect(readInside(repo, "../x.png", 10)).rejects.toThrow(/not a path inside/);
+  });
+
+  test("a file over its kind's cap is refused", async () => {
+    const repo = await scratch();
+    await mkdir(join(repo, "docs"));
+    await writeFile(join(repo, "docs", "a.png"), Buffer.alloc(MEDIA_MAX_BYTES.image + 1));
+    const [ask] = decisionsOf(RICH, "rich.yaml", home(repo));
+    if (!ask) throw new Error("no ask");
+    await expect(readAttachment(ask, { list: "media", option: "dense", index: 0 })).rejects.toThrow(/over the/);
+  });
+
+  test("only what the ask names is read: a URL, a link source, a missing index", () => {
+    const [ask] = decisionsOf(RICH, "rich.yaml");
+    if (!ask) throw new Error("no ask");
+    expect(() => attachmentOf(ask, { list: "media", option: null, index: 0 })).toThrow(/web address/);
+    expect(() => attachmentOf(ask, { list: "sources", option: null, index: 1 })).toThrow(/a link, not a file/);
+    expect(() => attachmentOf(ask, { list: "media", option: "dense", index: 5 })).toThrow(/no such picture/);
+    expect(() => attachmentOf(ask, { list: "sources", option: "dense", index: 0 })).toThrow(/not to an option/);
+    expect(attachmentOf(ask, { list: "sources", option: null, index: 0 })).toEqual({
+      path: "docs/specs/card.html",
+      kind: "doc",
+    });
+  });
+
+  test("on origin/main the file is the blob at that ref, never the working tree", async () => {
+    const repo = await scratch();
+    const run = (...args: string[]) => {
+      const done = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+      if (done.status !== 0) throw new Error(done.stderr);
+    };
+    run("init", "-q", "-b", "main");
+    run("config", "user.email", "t@example.com");
+    run("config", "user.name", "t");
+    await mkdir(join(repo, "docs", "specs"), { recursive: true });
+    await writeFile(join(repo, "docs", "specs", "card.html"), "<html><head></head><body><img src=x></body></html>");
+    run("add", ".");
+    run("commit", "-qm", "spec");
+    run("update-ref", "refs/remotes/origin/main", "HEAD");
+    // The working tree now says something else: main's blob is what is read.
+    await writeFile(join(repo, "docs", "specs", "card.html"), "<html>changed</html>");
+    const [ask] = decisionsOf(RICH, "rich.yaml", { kind: "main", path: repo, branch: null });
+    if (!ask) throw new Error("no ask");
+    const got = await readAttachment(ask, { list: "sources", option: null, index: 0 });
+    expect(got.mime).toBe("text/html");
+    expect(got.text).toContain("<img src=x>");
+    expect(got.text).toContain("Content-Security-Policy");
+    expect(got.text).not.toContain("changed");
+  });
+});
+
+test("an HTML file is locked before it is drawn: a policy that loads nothing", () => {
+  expect(lockedHtml("<html><head><title>x</title></head></html>")).toContain(
+    '<head><meta http-equiv="Content-Security-Policy" content="default-src \'none\';',
+  );
+  expect(lockedHtml("<p>no head</p>").startsWith("<meta http-equiv")).toBe(true);
+});

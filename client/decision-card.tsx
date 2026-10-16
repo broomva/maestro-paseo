@@ -34,6 +34,8 @@ import { useRefresh, useVerbLedger } from "./hooks";
 import { OTHER_CHOICE, withOther, wordsPlaceholder } from "./kit/inspector-model";
 import { pendingFor } from "./pending-model";
 import { PendingVerbs } from "./pending-verbs";
+import { OptionThumbs, RichDetails, RichGlance } from "./rich-ask";
+import { mediaOfOption, richViewOf } from "./rich-ask-model";
 import { Card, focusRing, Kbd, Notice, radius, size, space, usePressScale, useText } from "./ui";
 import { useVerbs } from "./verbs";
 
@@ -588,6 +590,7 @@ export function DecisionCard({
   } = useDecisionCard({ ask, where, onAnswered, keys, draft, onDraft, frozen });
   const showHints = hints && !compact;
   const label = `${ask.id}`;
+  const rich = richViewOf(ask);
   return (
     <Card theme={theme} style={{ gap: space[4], padding: compact ? space[4] : space[5] }}>
       <PendingVerbs theme={theme} compact={compact} keys={[holdKey]} />
@@ -650,6 +653,8 @@ export function DecisionCard({
         </View>
       ) : null}
 
+      <RichGlance theme={theme} view={rich} options={ask.options} compact={compact} />
+
       {hasOptions ? (
         <View accessibilityRole="radiogroup" accessibilityLabel={`Options for ${ask.id}`} style={{ gap: space[2] }}>
           {rows.map((entry, at) => {
@@ -660,7 +665,7 @@ export function DecisionCard({
                 : ask.answerOption === entry.id;
             const irreversible = entry.reversible === false;
             const inactive = !open || anyInFlight || Boolean(ask.refusal);
-            return (
+            const row = (
               <Pressable
                 key={entry.id}
                 accessibilityRole="radio"
@@ -730,6 +735,16 @@ export function DecisionCard({
                 </View>
                 {showHints && open && at < 4 ? <Kbd theme={theme}>{String(at + 1)}</Kbd> : null}
               </Pressable>
+            );
+            // An option's pictures go under its row (BRO-3167); one without keeps the row alone, as before.
+            if (mediaOfOption(rich, entry.id).length === 0) return row;
+            return (
+              <View key={entry.id} style={{ gap: space[1] }}>
+                {row}
+                <View style={{ paddingLeft: space[3] * 2 + 18 }}>
+                  <OptionThumbs theme={theme} view={rich} option={entry.id} label={entry.label} compact={compact} />
+                </View>
+              </View>
             );
           })}
         </View>
@@ -883,6 +898,8 @@ export function DecisionCard({
           </View>
         </View>
       )}
+
+      <RichDetails theme={theme} view={rich} compact={compact} />
 
       <DecisionDetails theme={theme} ask={ask} lead={lead} open={open} compact={compact} navigation={navigation} />
     </Card>

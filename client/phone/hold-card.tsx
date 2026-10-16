@@ -13,6 +13,8 @@ import type { Choice, InspectorItem } from "../kit/inspector";
 import { KIND_LOOK, OTHER_CHOICE, withoutRefused, wordsPlaceholder } from "../kit/inspector-model";
 import { Dot, MONO, TABULAR } from "../kit/parts";
 import { kitOf } from "../kit/tokens";
+import { OptionThumbs, RichDetails, RichGlance } from "../rich-ask";
+import { mediaOfOption, type RichView } from "../rich-ask-model";
 import type { DeckVerbSpec } from "./model";
 
 /** An option's row is at least this tall: 1–3 have no phone equivalent, so the rows are the thumb's (M5). */
@@ -26,6 +28,7 @@ function OptionRows({
   armed,
   disabled,
   onChoose,
+  rich = null,
 }: {
   theme: PluginTheme;
   title: string;
@@ -35,13 +38,15 @@ function OptionRows({
   armed: boolean;
   disabled: boolean;
   onChoose: (id: string) => void;
+  /** The ask's v2 view: each option's pictures under its row (BRO-3167). */
+  rich?: RichView | null;
 }) {
   const kit = kitOf(theme);
   return (
     <View accessibilityRole="radiogroup" accessibilityLabel={`Options for ${title}`} style={{ gap: 8 }}>
       {options.map((option) => {
         const on = option.id === chosen;
-        return (
+        const row = (
           <Pressable
             key={option.id}
             accessibilityRole="radio"
@@ -88,6 +93,13 @@ function OptionRows({
               ) : null}
             </View>
           </Pressable>
+        );
+        if (mediaOfOption(rich, option.id).length === 0) return row;
+        return (
+          <View key={option.id} style={{ gap: 6 }}>
+            {row}
+            <OptionThumbs theme={theme} view={rich} option={option.id} label={option.label} compact />
+          </View>
         );
       })}
     </View>
@@ -269,9 +281,13 @@ export function HoldCard({
           No options were written for this ask: answer it in your own words.
         </Text>
       ) : null}
+      {item.kind === "ask" && item.rich ? (
+        <RichGlance theme={theme} view={item.rich} options={options} compact />
+      ) : null}
       {options.length > 0 ? (
         <OptionRows
           theme={theme}
+          rich={item.kind === "ask" ? item.rich : null}
           title={item.title}
           options={options}
           chosen={choice}
@@ -326,6 +342,7 @@ export function HoldCard({
           {waiting}
         </Text>
       ) : null}
+      {item.kind === "ask" && item.rich ? <RichDetails theme={theme} view={item.rich} compact /> : null}
     </DeckHold>
   );
 }

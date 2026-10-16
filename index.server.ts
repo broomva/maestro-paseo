@@ -43,6 +43,7 @@ import {
 } from "./server/paths";
 import { Records } from "./server/records";
 import { ReviewReceipts, reviewId } from "./server/reviews";
+import { readAttachment } from "./server/rich-ask";
 import type { Paseo } from "./server/runs";
 import { SessionCards } from "./server/session-cards";
 import { fetchEvery, Sweep, sweepEvery } from "./server/sweep";
@@ -103,6 +104,7 @@ import { getLoops } from "./shared/loops";
 import { askHoldKey, listHandled, listNeeds, type NeedKind, type Needs, workKey } from "./shared/needs";
 import { listNotices, snoozeNotice } from "./shared/notices";
 import { historyWork, readWorkFile, workFiles } from "./shared/records";
+import { getAskAttachment } from "./shared/rich-ask";
 import { getTimeline, getTimelineLog } from "./shared/timeline";
 import { decideApproval, listVerbs, promptSession, undoVerb } from "./shared/verbs";
 
@@ -781,6 +783,20 @@ export default function contribute(host: PluginServerContext) {
       args: input,
     });
     return { ask: found, warning: null, work: null, ...made };
+  });
+  // A file an ask names (decision layer v2, BRO-3167), read when you look: by the ask's handle and the file's
+  // position in it, never by a path, so nothing an ask does not name is read (server/rich-ask.ts).
+  server.handle(getAskAttachment, async ({ where, ledger, uid, id, ref }) => {
+    const all =
+      where.kind === "fleet"
+        ? (await fleet.scopeDecisions()).asks.filter((ask) => ask.scope === where.scope)
+        : workspace
+          ? (await workspace.read()).all.filter((ask) => homeKey(ask.home) === where.home)
+          : [];
+    const found = all.find((ask) => ask.ledger === ledger && (uid ? ask.uid === uid : !ask.uid && ask.id === id));
+    if (!found)
+      throw new UserError(`The workspace no longer holds the ask ${id} in ${ledger}. Look at Decisions again.`);
+    return readAttachment(found, ref);
   });
   // The workspace's initiatives, each with its ideas (server/initiatives.ts): read-only but for the answers above.
   server.handle(getInitiatives, async (_input, { paseo }) => {

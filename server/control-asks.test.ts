@@ -182,6 +182,8 @@ describe("reading decision asks", () => {
       state: "open",
       origin: null,
       refusal: null,
+      // No v2 fields (BRO-3167): an ask written before them reads with rich null, nothing else changes.
+      rich: null,
       home: { kind: "root", path: "", branch: null },
       batched: false,
       waiting: false,

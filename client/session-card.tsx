@@ -41,6 +41,8 @@ import { OTHER_CHOICE, withOther, wordsPlaceholder } from "./kit/inspector-model
 import { Kicker, Pill, TABULAR } from "./kit/parts";
 import { kitOf } from "./kit/tokens";
 import { titleText } from "./records-text";
+import { OptionThumbs, RichGlance } from "./rich-ask";
+import { mediaOfOption, type RichView, richViewFor } from "./rich-ask-model";
 import { DigestCard } from "./session-digest";
 import { CHOICE_ROLE, focusRing } from "./ui";
 import { useTick } from "./use-tick";
@@ -344,6 +346,8 @@ function OpenCard({
   const target = { ...targetOf(state, ask), notice: data.kind === "health" ? { key: data.key } : null };
   const verbs = cardVerbs(data.kind, row);
   const chosen = choice ?? (row?.kind === "ask" ? row.body.recommended : undefined);
+  // Decision layer v2 (BRO-3167): the summary, tradeoffs, sources and pictures, from the ask or its row.
+  const rich = row?.kind === "ask" ? richViewFor(ask, row.body) : null;
   const run = (id: string) =>
     void runner.act(planVerb(id as never, target, chosen, id === "answer" ? note : (course ?? "")));
   const kicker = row
@@ -373,7 +377,8 @@ function OpenCard({
       ) : null}
       {row?.kind === "ask" ? (
         <>
-          <AskOptions row={row} ask={ask} chosen={chosen} onChoose={setChoice} theme={theme} />
+          <RichGlance theme={theme} view={rich} options={row.body.options} compact />
+          <AskOptions row={row} ask={ask} chosen={chosen} onChoose={setChoice} theme={theme} rich={rich} />
           <TextInput
             value={note}
             onChangeText={setNote}
@@ -480,6 +485,7 @@ function AskOptions({
   chosen,
   onChoose,
   theme,
+  rich,
 }: {
   row: Extract<NeedRow, { kind: "ask" }>;
   ask: {
@@ -490,6 +496,7 @@ function AskOptions({
   chosen: string | undefined;
   onChoose: (id: string) => void;
   theme: PluginTheme;
+  rich: RichView | null;
 }) {
   const kit = kitOf(theme);
   // The Other row after the ask's own options (BRO-3146), where its daemon says it takes one.
@@ -505,7 +512,7 @@ function AskOptions({
       {options.map((option) => {
         const selected = option.id === chosen;
         const oneWay = "reversible" in option && option.reversible === false;
-        return (
+        const choice = (
           <Pressable
             key={option.id}
             role={CHOICE_ROLE}
@@ -533,6 +540,13 @@ function AskOptions({
             ) : null}
             {oneWay ? <Text style={{ color: kit.warn, fontSize: 12 }}>cannot be undone</Text> : null}
           </Pressable>
+        );
+        if (mediaOfOption(rich, option.id).length === 0) return choice;
+        return (
+          <View key={option.id} style={{ gap: 6 }}>
+            {choice}
+            <OptionThumbs theme={theme} view={rich} option={option.id} label={option.label} compact />
+          </View>
         );
       })}
       {row.body.default ? (
