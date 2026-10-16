@@ -490,7 +490,7 @@ describe("writing an answer", () => {
   });
 
   test("allow_other in any spelling but true refuses Other: an unquoted no is false to the YAML 1.1 validator", () => {
-    for (const spelling of ["false", "no", "No", "off", "n", '"false"']) {
+    for (const spelling of ["false", "no", "No", "off", "n", '"false"', "null", "~", ""]) {
       const closed = LEDGER.replace(
         "    class:         decision\n",
         `    class:         decision\n    allow_other:   ${spelling}\n`,

@@ -233,6 +233,11 @@ function CardBody({
   actions: CardActions;
 }) {
   const link = <OpenLink theme={theme} onPress={open} />;
+  // Settled (written, resolved elsewhere, replaced or held): the pick and words kept for an Undo are spent.
+  const settled = state.phase === "receipt" || state.phase === "resolved" || state.phase === "superseded";
+  useEffect(() => {
+    if (settled || state.phase === "held") askDrafts.delete(data.key);
+  }, [settled, state.phase, data.key]);
   switch (state.phase) {
     case "loading":
       return <Reading theme={theme} data={data} words={null} onRetry={retry} open={open} />;
@@ -319,10 +324,20 @@ function OpenCard({
   const look = CARD_LOOK[data.kind];
   const now = useTick(30_000);
   const { row, item } = state;
-  const [choice, setChoice] = useState<string | undefined>(undefined);
+  // Your pick and words on an ask (BRO-3146) outlive this card: a queued answer unmounts it for its undo window,
+  // and an Undo brings it back with them (P20 round 4).
+  const kept = askDrafts.get(data.key);
+  const [choice, setChoiceNow] = useState<string | undefined>(kept?.choice);
   const [course, setCourse] = useState<string | null>(null);
-  // Your note beside the option this card answers with (BRO-3146): it offers no Other row, so words are a note.
-  const [note, setNote] = useState("");
+  const [note, setNoteNow] = useState(kept?.note ?? "");
+  const setChoice = (id: string) => {
+    askDrafts.set(data.key, { choice: id, note });
+    setChoiceNow(id);
+  };
+  const setNote = (words: string) => {
+    askDrafts.set(data.key, { choice, note: words });
+    setNoteNow(words);
+  };
   const asks = useWorkspaceAsks();
   const ask =
     row?.kind === "ask" && asks.data ? (needsSection([row], [], decisionAsks(asks.data))[0]?.ask ?? null) : null;
@@ -448,6 +463,14 @@ function OpenCard({
       ) : null}
     </CardFrame>
   );
+}
+
+/** The pick and words on each ask card, by its key: they outlive the card while a queued answer's undo window runs. */
+const askDrafts = new Map<string, { choice: string | undefined; note: string }>();
+
+/** For a test: forget every kept pick and words, as a fresh plugin load would. */
+export function forgetAskDrafts(): void {
+  askDrafts.clear();
 }
 
 /** An ask's options, the recommended one chosen to begin with: the answer is the one the pill says. */

@@ -432,12 +432,13 @@ export function answerText(option: DecisionOption | null, note: string): string 
 const WRITTEN_KEYS = ["answer_option", "answered_at", "answered_by", "status"] as const;
 
 /**
- * Whether an ask takes an Other answer (BRO-3146): absent or a real `true` only. Any other value refuses it, fail
- * closed: an unquoted `allow_other: no` (or off, n) is a string to this YAML 1.2 reader but `false` to
- * ask_ledger.py's YAML 1.1 one, so reading only `false` as no would write an Other the validator then refuses.
+ * Whether an ask takes an Other answer (BRO-3146): the key absent, or a real `true`. Any other value refuses it,
+ * fail closed, null and a blank key included: an unquoted `allow_other: no` (or off) is a string to this YAML 1.2
+ * reader but `false` to ask_ledger.py's YAML 1.1 one, and the validator refuses a null; reading only `false` as no
+ * would write an Other the validator then refuses.
  */
 export function takesOther(row: Row): boolean {
-  return row.allow_other === undefined || row.allow_other === null || row.allow_other === true;
+  return !Object.hasOwn(row, "allow_other") || row.allow_other === true;
 }
 /** Your words, apart from the option (BRO-3146): beside it (`answer_note`), or in place of every option (`answer_other`). */
 const WORD_KEYS = ["answer_note", "answer_other"] as const;
