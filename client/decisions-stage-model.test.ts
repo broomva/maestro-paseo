@@ -43,6 +43,7 @@ const ask = (id: string, extra: Partial<DecisionAsk> = {}): DecisionAsk => ({
   answeredAt: null,
   answer: null,
   answerOption: null,
+  allowOther: true,
   state: "open",
   origin: null,
   refusal: null,
@@ -245,6 +246,22 @@ describe("J5's header and rail", () => {
     ]);
   });
 
+  test("your note rides on the line, after what you chose (BRO-3146)", () => {
+    const status = answersStatus(
+      [
+        ask("1", {
+          state: "answered",
+          answeredAt: "2026-10-12T01:00:00Z",
+          answerOption: "off",
+          answerNote: "Until the launch.",
+          fate: fate("unlanded"),
+        }),
+      ],
+      null,
+    );
+    expect(wentRows(status.recent)[0]?.line).toBe("You: Keep them off · Note: Until the launch.");
+  });
+
   test("a ledger chip's words for a screen reader", () => {
     expect(railLabel("a.yaml", 2, 0)).toBe("a.yaml: 2 open");
     expect(railLabel("a.yaml", 2, 1)).toBe("a.yaml: 2 open, 1 waits on you");
@@ -264,6 +281,8 @@ describe("the decision as J3's inspector, at full width", () => {
       ["off", true, false],
       ["one", false, false],
       ["all", false, true],
+      // The Other row (BRO-3146): none of these fit, in your words.
+      ["maestro:other", undefined, undefined],
     ]);
     expect(item.options[2]?.note).toBe("every session · cannot be undone");
     expect(item.goes).toContain("Goes to the session that asked (claude-c)");

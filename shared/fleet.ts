@@ -276,6 +276,15 @@ export const DecisionAskSchema = z.object({
   answeredAt: z.string().nullable(),
   answer: z.string().nullable(),
   answerOption: z.string().nullable(),
+  /**
+   * Your words beside the option you took (`answer_note`, BRO-3146): a condition or an instruction. Null when
+   * none; absent from an older daemon.
+   */
+  answerNote: z.string().nullable().optional(),
+  /** Your answer when none of the options fit (`answer_other`, BRO-3146); null when none. Absent from an older daemon. */
+  answerOther: z.string().nullable().optional(),
+  /** Whether the ask takes an Other answer: false only when its ledger says `allow_other: false`. Absent from an older daemon. */
+  allowOther: z.boolean().optional(),
   state: z.enum(["open", "answered", "archived"]),
   /** The session that asked, when the ask is stamped with one. */
   origin: z.object({ agentId: z.string(), cwd: z.string().nullable() }).nullable(),

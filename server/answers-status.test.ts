@@ -211,4 +211,22 @@ describe("the batch waiting to land is one function for needs.list's hold and J5
     // They still say where they went.
     expect(status.recent.map((one) => one.stage)).toEqual(["superseded", "before", "before", "unrouted", "acted"]);
   });
+
+  test("your note shows beside the option, and an Other answer says it took none (BRO-3146)", () => {
+    const status = answersStatus(
+      [
+        answered("1", "2026-10-01T01:00:00Z", "acted", { answerNote: "Only after the demo." }),
+        answered("2", "2026-10-01T02:00:00Z", "acted", {
+          answerOption: null,
+          answer: "Ask Legal first.",
+          answerOther: "Ask Legal first.",
+        }),
+      ],
+      null,
+    );
+    expect(status.recent.map((one) => [one.answer, one.note])).toEqual([
+      ["Other: Ask Legal first.", null],
+      ["Keep them off", "Only after the demo."],
+    ]);
+  });
 });

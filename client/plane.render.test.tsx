@@ -2869,7 +2869,7 @@ describe("J2–J4 in the Feed's inspector (BRO-3036)", () => {
     ]);
   });
 
-  test("words typed without picking an option are sent alone: the recommendation the inspector starts on is not sent with them", async () => {
+  test("words typed without picking an option are never sent: not with the recommendation, not as Other (BRO-3146)", async () => {
     workspaceNow = [
       { ...decisionFixture(), headline: "File or drop the follow-ups?", blocking: true, waiting: true, fallback: null },
     ];
@@ -2879,9 +2879,10 @@ describe("J2–J4 in the Feed's inspector (BRO-3036)", () => {
     await until(() => panel(view) !== undefined);
     await view.type(view.byLabel("Your words for File or drop the follow-ups?"), "Hold off until CI is green.");
     calls.length = 0;
-    await view.press(bar(view, "Answer in your words"));
-    await until(() => sent("ask.answer").length > 0);
-    expect(sent("ask.answer")).toMatchObject([{ option: null, note: "Hold off until CI is green." }]);
+    await view.press(bar(view, "Choose an option or Other"));
+    await settle(80);
+    // They wait for a pick in Decisions: filed as Other they would tell the asking session no option was taken.
+    expect(sent("ask.answer")).toHaveLength(0);
   });
 
   test("your words alone answer an ask in your own words; an option that cannot be undone opens Decisions to confirm", async () => {
@@ -4366,6 +4367,24 @@ describe("the Decisions tab", () => {
     await until(view, "Dismissing it: nothing follows from it");
   });
 
+  test("J5 takes your words: a note beside an option, Other on purpose, never words with no pick (BRO-3146)", async () => {
+    workspaceNow = [{ ...merge(), allowOther: true }];
+    const view = await open();
+    const sentAnswers = () => calls.filter((call) => call.method === "ask.answer").map((call) => call.input);
+    expect(view.byLabel("Other…")).not.toBeNull();
+    // Words with no pick are a note waiting for its option: the verb stays off and says why.
+    await view.type(view.byLabel("Your words for A1"), "Ask Legal first.");
+    expect(view.byLabel("Answer A1")?.getAttribute("aria-disabled")).toBe("true");
+    // Other, picked on purpose, takes them as the answer: no option is sent.
+    await view.press(view.byLabel("Other…"));
+    expect(view.byLabel("Other…")?.getAttribute("aria-checked")).toBe("true");
+    expect(view.byLabel("Answer A1")?.getAttribute("aria-disabled")).not.toBe("true");
+    calls.length = 0;
+    await view.press(view.byLabel("Answer A1"));
+    for (let tries = 0; tries < 50 && sentAnswers().length === 0; tries += 1) await settle(20);
+    expect(sentAnswers()).toEqual([expect.objectContaining({ id: "A1", option: null, note: "Ask Legal first." })]);
+  });
+
   test("one decision at a time, blocking first: its count and progress, the tiles, the card's layers, the chips, up next (J5)", async () => {
     workspaceNow = [
       canvas("product-name", { askedAt: days(5) }),
@@ -4481,6 +4500,22 @@ describe("the Decisions tab", () => {
     expect(view.text()).toContain("Canvas ask product-name");
     expect(view.all('[role="button"][aria-label^="Undo: "]')).toHaveLength(1);
     expect(sent("ask.answer")).toHaveLength(1);
+  });
+
+  test("a queued Other keeps its words: back on the ask after Undo, they are still there (BRO-3146)", async () => {
+    answerQueued = true;
+    workspaceNow = [{ ...merge(), allowOther: true }, canvas("product-name")];
+    const view = await open();
+    await view.press(view.byLabel("Other…"));
+    await view.type(view.byLabel("Your words for A1"), "Ask Legal first.");
+    await view.press(view.byLabel("Answer A1"));
+    await until(view, "written in 8 s unless you undo it");
+    expect(view.text()).toContain("Canvas ask product-name");
+    await view.press(view.all('[role="button"][aria-label^="Undo: "]')[0]);
+    await settle(60);
+    await key(view, "k");
+    await until(view, "Approve merge of PR #863 touching");
+    expect((view.byLabel("Your words for A1") as unknown as { value: string }).value).toBe("Ask Legal first.");
   });
 
   test("with motion on, the answered card leaves before the next one comes up", async () => {

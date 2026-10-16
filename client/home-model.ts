@@ -40,6 +40,7 @@ import { ago, basename, duration, plural } from "./format";
 import { type TabBadge, tabBadges } from "./header-count";
 import type { MaestroIntent } from "./intent";
 import type { Choice, InspectorItem, SessionRef } from "./kit/inspector";
+import { withOther } from "./kit/inspector-model";
 import { waitWords } from "./loop-model";
 import type { PlaneView } from "./plane-model";
 import { stuckText, workerText } from "./plane-model";
@@ -423,14 +424,15 @@ function choicesOf(entry: NeedEntry): { options: Choice[]; chosen?: string } {
   const { row, ask } = entry;
   if (row.kind !== "ask") return { options: [] };
   if (ask) {
-    const options = ask.options.map((option) => ({
+    const own = ask.options.map((option) => ({
       id: option.id,
       label: option.label,
       note: [option.consequence, option.reversible === false ? "cannot be undone" : null].filter(Boolean).join(" · "),
       recommended: option.recommended,
       irreversible: option.reversible === false,
     }));
-    return { options, chosen: ask.options.find((option) => option.recommended)?.id };
+    // The Other row after them (BRO-3146): none of these fit, in your words.
+    return { options: withOther(own, ask), chosen: ask.options.find((option) => option.recommended)?.id };
   }
   const options = row.body.options.map((option) => ({
     id: option.id,

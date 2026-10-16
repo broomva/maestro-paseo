@@ -14,6 +14,7 @@ import { holdOf, type Needs } from "../shared/needs";
 import { headlineOf, ledgerName, ledgerOf, ledgerRail, reversibility, silenceOf, writtenTo } from "./decisions-model";
 import { ago, plural } from "./format";
 import type { InspectorItem } from "./kit/inspector";
+import { withOther } from "./kit/inspector-model";
 
 /** How many ledgers the Open tile names before it stops. */
 const TILE_LEDGERS = 3;
@@ -198,7 +199,8 @@ export function wentRows(recent: readonly RecentAnswer[]): WentRow[] {
   return recent.map((answer) => ({
     key: answer.key,
     title: answer.title,
-    line: `You: ${answer.answer}`,
+    // Your note beside the option (BRO-3146), so what you said is in view, not only what you chose.
+    line: `You: ${answer.answer}${answer.note ? ` · Note: ${answer.note}` : ""}`,
     words: answer.words,
     chip: stageChip(answer.stage),
   }));
@@ -233,13 +235,16 @@ export function stageItem(ask: DecisionAsk, chosen: string | null, now: number):
     title: lead.headline,
     cost: ask.stakes ?? undefined,
     whyYou: ask.whyYou ?? undefined,
-    options: ask.options.map((option) => ({
-      id: option.id,
-      label: option.label,
-      note: [option.consequence, option.reversible === false ? "cannot be undone" : null].filter(Boolean).join(" · "),
-      recommended: option.recommended,
-      irreversible: option.reversible === false,
-    })),
+    options: withOther(
+      ask.options.map((option) => ({
+        id: option.id,
+        label: option.label,
+        note: [option.consequence, option.reversible === false ? "cannot be undone" : null].filter(Boolean).join(" · "),
+        recommended: option.recommended,
+        irreversible: option.reversible === false,
+      })),
+      ask,
+    ),
     chosen: chosen ?? undefined,
     fallback: silence ? { line: `${silence.text}.` } : undefined,
     goes: routeLine(ask),

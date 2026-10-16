@@ -31,6 +31,7 @@ import {
 } from "./decisions-model";
 import { errorText } from "./format";
 import { useRefresh, useVerbLedger } from "./hooks";
+import { OTHER_CHOICE, withOther, wordsPlaceholder } from "./kit/inspector-model";
 import { pendingFor } from "./pending-model";
 import { PendingVerbs } from "./pending-verbs";
 import { Card, focusRing, Kbd, Notice, radius, size, space, usePressScale, useText } from "./ui";
@@ -307,13 +308,15 @@ export function useDecisionCard({
   const answer = useMutation({
     mutationKey: answerKeyOf(ask),
     mutationFn: (input: AnswerInput) => withinTimeout(verbs.answer(input)),
-    onSuccess: ({ ask: answered, warning }) => {
-      // The draft is spent, whether or not this card is still on screen.
-      client.setQueryData<Drafts>(DRAFTS_KEY, (now) => {
-        if (!now) return now;
-        const { [askKey(ask)]: _spent, ...rest } = now;
-        return rest;
-      });
+    onSuccess: ({ ask: answered, warning, receipt }) => {
+      // The draft is spent once the answer is written; one queued in its undo window (B4) keeps it, so an Undo
+      // brings back your choice and words, an Other answer's included (BRO-3146).
+      if (receipt === undefined)
+        client.setQueryData<Drafts>(DRAFTS_KEY, (now) => {
+          if (!now) return now;
+          const { [askKey(ask)]: _spent, ...rest } = now;
+          return rest;
+        });
       // The list learns it in whichever part holds it, each copy keeping its own list's scope.
       const swap = (one: DecisionAsk) => (sameAsk(one, answered) ? withScope(answered, one) : one);
       client.setQueriesData<WorkspaceAsksView>({ queryKey: ["maestro", "workspace-asks"] }, (view) =>
@@ -355,11 +358,25 @@ export function useDecisionCard({
   const fate = fateLine(ask);
   const option = ask.options.find((entry) => entry.id === chosen) ?? null;
   const hasOptions = ask.options.length > 0;
+  // The rows: the ask's options, then Other (BRO-3146) unless the ask says allow_other: false or is an idea.
+  const rows = withOther(ask.options, ask).map((entry) =>
+    "reversible" in entry
+      ? entry
+      : { id: entry.id, label: entry.label, consequence: entry.note, reversible: true, recommended: false },
+  );
+  const otherOffered = rows.length > ask.options.length;
   const lead = headlineOf(ask);
   // Your answer, written 8 s after you give it unless undone (B4): until then the ask stays open, and says so.
   const holdKey = askHoldKey(ask);
   const waiting = pendingFor(useVerbLedger().data?.pending ?? [], [holdKey]).length > 0;
-  const canAnswer = open && !ask.refusal && !anyInFlight && !waiting && (option !== null || note.trim().length > 0);
+  // Words alone answer an ask with no options, or one that takes Other; never one that says allow_other: false.
+  const canAnswer =
+    open &&
+    !ask.refusal &&
+    !anyInFlight &&
+    !waiting &&
+    // Other is picked on purpose: words with no pick on an ask with options are a note waiting for its option.
+    (option !== null || (note.trim().length > 0 && (!hasOptions || (otherOffered && chosen === OTHER_CHOICE))));
   const silence = silenceOf(ask);
   const origin = ask.origin;
   const submit = () => {
@@ -376,10 +393,11 @@ export function useDecisionCard({
     disarm();
     // What follows is this card's own, while it is on screen; what must outlive it is in the hook's callbacks.
     answer.mutate(
-      { where, ledger: ask.ledger, uid: ask.uid, id: ask.id, hash: ask.hash, option: chosen, note },
+      // Other is no option of the ask's: it sends none, and the server writes your words as answer_other.
+      { where, ledger: ask.ledger, uid: ask.uid, id: ask.id, hash: ask.hash, option: option?.id ?? null, note },
       {
         onSuccess: ({ ask: reply, warning, receipt }) => {
-          setDraft(EMPTY_DRAFT);
+          if (receipt === undefined) setDraft(EMPTY_DRAFT);
           // With a receipt the answer is queued: the ask is still open, written when its undo window closes (B4).
           onAnswered(withScope(reply, ask), warning, receipt !== undefined);
         },
@@ -389,9 +407,9 @@ export function useDecisionCard({
   // The keyboard reaches this card only while it is on screen and open.
   const drive: CardKeys | null = open
     ? {
-        options: ask.options.length,
+        options: rows.length,
         choose: (index) => {
-          const entry = ask.options[index];
+          const entry = rows[index];
           if (entry && !answerInFlight(client)) setChosen(entry.id);
         },
         answer: submit,
@@ -411,6 +429,7 @@ export function useDecisionCard({
     fate,
     option,
     hasOptions,
+    rows,
     lead,
     canAnswer,
     holdKey,
@@ -552,6 +571,7 @@ export function DecisionCard({
     fate,
     option,
     hasOptions,
+    rows,
     lead,
     canAnswer,
     holdKey,
@@ -632,8 +652,12 @@ export function DecisionCard({
 
       {hasOptions ? (
         <View accessibilityRole="radiogroup" accessibilityLabel={`Options for ${ask.id}`} style={{ gap: space[2] }}>
-          {ask.options.map((entry, at) => {
-            const picked = open ? chosen === entry.id : ask.answerOption === entry.id;
+          {rows.map((entry, at) => {
+            const picked = open
+              ? chosen === entry.id
+              : entry.id === OTHER_CHOICE
+                ? Boolean(ask.answerOther)
+                : ask.answerOption === entry.id;
             const irreversible = entry.reversible === false;
             const inactive = !open || anyInFlight || Boolean(ask.refusal);
             return (
@@ -793,7 +817,7 @@ export function DecisionCard({
               onChangeText={setNote}
               multiline
               maxLength={ANSWER_NOTE_CHARS}
-              placeholder={hasOptions ? "Add words (optional)" : "Your answer"}
+              placeholder={wordsPlaceholder(ask.options, chosen)}
               placeholderTextColor={theme.colors.foregroundMuted}
               accessibilityLabel={`Your words for ${ask.id}`}
               style={{
@@ -825,7 +849,11 @@ export function DecisionCard({
               theme={theme}
               variant={confirming ? "warn" : "primary"}
               icon={confirming ? "TriangleAlert" : "Check"}
-              label={confirming ? "Confirm — cannot be undone" : answerVerb(option, hasOptions, note)}
+              label={
+                confirming
+                  ? "Confirm — cannot be undone"
+                  : answerVerb(option ?? (chosen === OTHER_CHOICE ? { label: "Other" } : null), hasOptions, note)
+              }
               compact={compact}
               grow={compact}
               busy={pendingHere}

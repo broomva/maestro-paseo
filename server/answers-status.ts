@@ -18,10 +18,11 @@ const ANSWER_CHARS = 90;
 /** The longest an ask's headline runs in `recent`. */
 const TITLE_CHARS = 120;
 
-/** What you answered: the option's label, else your words. */
+/** What you answered: the option's label, else an Other answer in your words (BRO-3146), else your words. */
 function answerOf(ask: DecisionAsk): string {
   const option = ask.options.find((entry) => entry.id === ask.answerOption);
   if (option) return option.label;
+  if (ask.answerOther) return `Other: ${clipWords(ask.answerOther, ANSWER_CHARS)}`;
   return ask.answer ? clipWords(ask.answer, ANSWER_CHARS) : "an answer";
 }
 
@@ -93,6 +94,7 @@ export function answersStatus(
     id: ask.id,
     title: ask.headline ?? (ask.question ? clipWords(ask.question, TITLE_CHARS) : ask.id),
     answer: answerOf(ask),
+    note: ask.answerNote ? clipWords(ask.answerNote, ANSWER_CHARS) : null,
     stage,
     words: ask.fate?.words ?? "In the answers batch on maestro/answers: not on origin/main until it lands.",
     answeredAt: ask.answeredAt,

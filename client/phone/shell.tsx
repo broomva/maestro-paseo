@@ -29,6 +29,7 @@ import { requestIntent } from "../intent";
 import { type Directions, swipeDirections } from "../kit/assumptions";
 import { Deck } from "../kit/deck";
 import { InspectorCard, type InspectorItem } from "../kit/inspector";
+import { OTHER_CHOICE } from "../kit/inspector-model";
 import { Chip, SafeBottom } from "../kit/parts";
 import { PEEK, PullSheet, TAB_BAND } from "../kit/pull-sheet";
 import { TabBar } from "../kit/tab-bar";
@@ -342,11 +343,16 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       if (item.kind === "ask" && item.options.length === 0 && words) {
         const sent = await inspector.act("answer", inspector.targetOf(entry), undefined, words);
         if (sent) {
-          setSaid((now) => ({ ...now, [key]: "" }));
           inspector.setOpen(false);
           advance(key);
         }
       } else inspector.selectHold(key);
+      return;
+    }
+    // Your words go with it (BRO-3146): a note beside the option, or the answer itself when Other is chosen.
+    const words = item.kind === "ask" ? (said[key] ?? "").trim() : "";
+    if (picked === OTHER_CHOICE && !words) {
+      toast.show("Write your answer: Other takes your own words.");
       return;
     }
     const irreversible = irreversibleChoice(item, picked);
@@ -358,8 +364,9 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       return;
     }
     setArmed(null);
-    const sent = await inspector.act("answer", inspector.targetOf(entry), picked, "", irreversible);
+    const sent = await inspector.act("answer", inspector.targetOf(entry), picked, words, irreversible);
     if (sent) {
+      // The words stay with the hold: an answer undone in its window comes back with them.
       inspector.setOpen(false);
       advance(key);
     }
@@ -847,7 +854,12 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
         <InspectorCard
           theme={theme}
           directions={directions}
-          item={cardItem}
+          // It starts on the option chosen on the deck (Codex P20 round 2): the deck's note rides with that option.
+          item={
+            openEntry && (cardItem.kind === "ask" || cardItem.kind === "review")
+              ? { ...cardItem, chosen: choices[openEntry.row.key] ?? openingChoice(cardItem) }
+              : cardItem
+          }
           index={cardIndex}
           total={cardTotal}
           open={inspector.showing}
@@ -859,6 +871,18 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
             else toast.show("Nothing else to do here.");
           }}
           onVerb={onCardVerb}
+          // The deck card's words, shown and edited on the card too (BRO-3146): one set of words per hold.
+          words={openEntry ? (said[openEntry.row.key] ?? "") : ""}
+          onWords={openEntry ? (text) => setSaid((now) => ({ ...now, [openEntry.row.key]: text })) : undefined}
+          // A pick on the card is the deck's pick too: closed, the deck answers with what the card showed.
+          onChoose={
+            openEntry
+              ? (id) => {
+                  setArmed(null);
+                  setChoices((now) => ({ ...now, [openEntry.row.key]: id }));
+                }
+              : undefined
+          }
           // The card swiped to another hold: the deck is on it when the card closes.
           onIndexChange={(at) => {
             const next = keys[at];

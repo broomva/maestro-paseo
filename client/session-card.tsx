@@ -14,6 +14,7 @@ import { type ComponentType, type ReactNode, useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { type CardData, type GateCardData, legacyCard } from "../shared/card";
 import type { WorkItem } from "../shared/contracts";
+import { ANSWER_NOTE_CHARS } from "../shared/fleet";
 import type { NeedRow } from "../shared/needs";
 import { ArcReport } from "./arc-report";
 import { CARD_POLL_MS, type CardActions, readOf, useCardLedger, useCardRunner, useCardWork } from "./card-hooks";
@@ -36,6 +37,7 @@ import { ago } from "./format";
 import { LookView, VERBS_MEAN, verbsNeedSaying } from "./gate-look";
 import { heldByWords, holdKicker } from "./home-model";
 import { useNeeds } from "./hooks";
+import { OTHER_CHOICE, withOther, wordsPlaceholder } from "./kit/inspector-model";
 import { Kicker, Pill, TABULAR } from "./kit/parts";
 import { kitOf } from "./kit/tokens";
 import { titleText } from "./records-text";
@@ -231,6 +233,11 @@ function CardBody({
   actions: CardActions;
 }) {
   const link = <OpenLink theme={theme} onPress={open} />;
+  // Settled (written, resolved elsewhere, replaced or held): the pick and words kept for an Undo are spent.
+  const settled = state.phase === "receipt" || state.phase === "resolved" || state.phase === "superseded";
+  useEffect(() => {
+    if (settled || state.phase === "held") askDrafts.delete(data.key);
+  }, [settled, state.phase, data.key]);
   switch (state.phase) {
     case "loading":
       return <Reading theme={theme} data={data} words={null} onRetry={retry} open={open} />;
@@ -317,15 +324,28 @@ function OpenCard({
   const look = CARD_LOOK[data.kind];
   const now = useTick(30_000);
   const { row, item } = state;
-  const [choice, setChoice] = useState<string | undefined>(undefined);
+  // Your pick and words on an ask (BRO-3146) outlive this card: a queued answer unmounts it for its undo window,
+  // and an Undo brings it back with them (P20 round 4).
+  const kept = askDrafts.get(data.key);
+  const [choice, setChoiceNow] = useState<string | undefined>(kept?.choice);
   const [course, setCourse] = useState<string | null>(null);
+  const [note, setNoteNow] = useState(kept?.note ?? "");
+  const setChoice = (id: string) => {
+    askDrafts.set(data.key, { choice: id, note });
+    setChoiceNow(id);
+  };
+  const setNote = (words: string) => {
+    askDrafts.set(data.key, { choice, note: words });
+    setNoteNow(words);
+  };
   const asks = useWorkspaceAsks();
   const ask =
     row?.kind === "ask" && asks.data ? (needsSection([row], [], decisionAsks(asks.data))[0]?.ask ?? null) : null;
   const target = { ...targetOf(state, ask), notice: data.kind === "health" ? { key: data.key } : null };
   const verbs = cardVerbs(data.kind, row);
   const chosen = choice ?? (row?.kind === "ask" ? row.body.recommended : undefined);
-  const run = (id: string) => void runner.act(planVerb(id as never, target, chosen, course ?? ""));
+  const run = (id: string) =>
+    void runner.act(planVerb(id as never, target, chosen, id === "answer" ? note : (course ?? "")));
   const kicker = row
     ? holdKicker({ row, item: null, ask })
     : item
@@ -352,7 +372,33 @@ function OpenCard({
         </>
       ) : null}
       {row?.kind === "ask" ? (
-        <AskOptions row={row} ask={ask} chosen={chosen} onChoose={setChoice} theme={theme} />
+        <>
+          <AskOptions row={row} ask={ask} chosen={chosen} onChoose={setChoice} theme={theme} />
+          <TextInput
+            value={note}
+            onChangeText={setNote}
+            multiline
+            maxLength={ANSWER_NOTE_CHARS}
+            placeholder={wordsPlaceholder(ask?.options ?? row.body.options, chosen)}
+            placeholderTextColor={kit.muted}
+            accessibilityLabel={
+              chosen === OTHER_CHOICE
+                ? `Your words for ${row.title}`
+                : `A note on your answer for ${row.title} (optional)`
+            }
+            style={{
+              minHeight: 44,
+              padding: 10,
+              borderRadius: 10,
+              borderWidth: 1,
+              borderColor: kit.border,
+              backgroundColor: kit.sunken,
+              color: kit.fg,
+              fontSize: 14,
+              textAlignVertical: "top",
+            }}
+          />
+        </>
       ) : null}
       {row?.kind === "owner_step" ? (
         <>
@@ -397,7 +443,11 @@ function OpenCard({
               busy={runner.busy && verb.primary}
               disabled={
                 runner.busy ||
-                (verb.id === "answer" && Boolean(row?.kind === "ask" && row.body.options.length > 0 && !chosen))
+                (verb.id === "answer" &&
+                  Boolean(
+                    row?.kind === "ask" &&
+                      ((row.body.options.length > 0 && !chosen) || (chosen === OTHER_CHOICE && !note.trim())),
+                  ))
               }
               onPress={() => (verb.id === "course" ? setCourse("") : run(verb.id))}
             />
@@ -415,6 +465,14 @@ function OpenCard({
   );
 }
 
+/** The pick and words on each ask card, by its key: they outlive the card while a queued answer's undo window runs. */
+const askDrafts = new Map<string, { choice: string | undefined; note: string }>();
+
+/** For a test: forget every kept pick and words, as a fresh plugin load would. */
+export function forgetAskDrafts(): void {
+  askDrafts.clear();
+}
+
 /** An ask's options, the recommended one chosen to begin with: the answer is the one the pill says. */
 function AskOptions({
   row,
@@ -426,13 +484,21 @@ function AskOptions({
   row: Extract<NeedRow, { kind: "ask" }>;
   ask: {
     options: readonly { id: string; label: string; consequence: string | null; reversible?: boolean | null }[];
+    allowOther?: boolean;
+    idea?: unknown;
   } | null;
   chosen: string | undefined;
   onChoose: (id: string) => void;
   theme: PluginTheme;
 }) {
   const kit = kitOf(theme);
-  const options = ask ? ask.options : row.body.options;
+  // The Other row after the ask's own options (BRO-3146), where its daemon says it takes one.
+  const options = ask
+    ? withOther(
+        ask.options.map((option) => ({ ...option })),
+        ask,
+      )
+    : row.body.options;
   return (
     <View style={{ gap: 8 }}>
       {row.body.why ? <Text style={{ color: kit.fg2, fontSize: 13, lineHeight: 18 }}>{row.body.why}</Text> : null}

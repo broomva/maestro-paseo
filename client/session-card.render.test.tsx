@@ -82,7 +82,7 @@ const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query
 const { PluginRpcProvider } = await import("@getpaseo/plugin/client/host");
 const { needsOf } = await import("../server/needs");
 const { fakeWork } = await import("./fake-work");
-const { createLegacyCard, createSessionCard } = await import("./session-card");
+const { createLegacyCard, createSessionCard, forgetAskDrafts } = await import("./session-card");
 const { SessionScreen, sessionTitle } = await import("./session-screen");
 const { askHoldKey, approvalKey } = await import("../shared/needs");
 const { GALLERY_LIGHT } = await import("./kit/gallery-data");
@@ -356,6 +356,7 @@ async function mount(node: ReactNode) {
 const consoleError = spyOn(console, "error").mockImplementation(() => {});
 
 afterEach(() => {
+  forgetAskDrafts();
   for (const unmount of mounted.splice(0)) unmount();
   sim = blank();
   toasts.length = 0;
@@ -695,6 +696,48 @@ describe("an ask card", () => {
     ]);
     await view.until(() => view.byId("card-undo") !== null);
     expect(view.byId("card-undo")?.textContent).toContain("Answered Install the three headless Claude Code mods");
+  });
+
+  it("a note beside the option goes with the answer (BRO-3146)", async () => {
+    const ask = askFixture();
+    sim.asks = [ask];
+    const view = await mount(card(askCardOf(ask)));
+    await view.press(view.byLabel("Install fleet-wide"));
+    await view.type(
+      view.byLabel("A note on your answer for Install the three headless Claude Code mods fleet-wide? (optional)"),
+      "Only after the demo.",
+    );
+    await view.press(view.byLabel("Answer"));
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: "all", note: "Only after the demo." })]);
+  });
+
+  it("Other on the session card sends your words with no option, and waits for them (BRO-3146)", async () => {
+    const ask = { ...askFixture(), allowOther: true };
+    sim.asks = [ask];
+    const view = await mount(card(askCardOf(ask)));
+    await view.press(view.byLabel("Other…"));
+    expect(view.byLabel("Answer")?.getAttribute("aria-disabled")).toBe("true");
+    await view.type(
+      view.byLabel("Your words for Install the three headless Claude Code mods fleet-wide?"),
+      "Ask Legal first.",
+    );
+    await view.press(view.byLabel("Answer"));
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: null, note: "Ask Legal first." })]);
+  });
+
+  it("a queued Other keeps its pick and words through Undo (BRO-3146, P20 round 4)", async () => {
+    const ask = { ...askFixture(), allowOther: true };
+    sim.asks = [ask];
+    const view = await mount(card(askCardOf(ask)));
+    await view.press(view.byLabel("Other…"));
+    const field = "Your words for Install the three headless Claude Code mods fleet-wide?";
+    await view.type(view.byLabel(field), "Ask Legal first.");
+    await view.press(view.byLabel("Answer"));
+    await view.until(() => view.byId("card-undo") !== null);
+    await view.press(view.all('[aria-label^="Undo"]')[0] ?? null);
+    await view.until(() => view.byLabel(field) !== null);
+    expect((view.byLabel(field) as unknown as { value: string }).value).toBe("Ask Legal first.");
+    expect(view.byLabel("Other…")?.getAttribute("aria-checked")).toBe("true");
   });
 
   it("an ask answered elsewhere collapses and says so; its receipt appears once it took effect", async () => {

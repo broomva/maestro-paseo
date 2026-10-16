@@ -89,7 +89,15 @@ export const ConductorCandidateSchema = z.object({
     stakes: z.string().nullable(),
     options: z.array(z.object({ id: z.string(), label: z.string(), consequence: z.string().nullable() })),
   }),
-  answer: z.object({ option: z.string().nullable(), words: z.string().nullable(), at: z.string().nullable() }),
+  answer: z.object({
+    option: z.string().nullable(),
+    words: z.string().nullable(),
+    at: z.string().nullable(),
+    /** Your words beside the option (BRO-3146); absent from a candidate queued before it. */
+    note: z.string().nullable().optional(),
+    /** Your answer when none of the options fit (BRO-3146); absent from a candidate queued before it. */
+    other: z.string().nullable().optional(),
+  }),
   pointers: z.object({
     key: z.string(),
     home: z.string(),
@@ -207,8 +215,10 @@ export const RecentAnswerSchema = z.object({
   id: z.string(),
   /** What the ask said, as its headline. */
   title: z.string(),
-  /** What you answered: the option's label, else your words, cut short. */
+  /** What you answered: the option's label, else your words (an Other answer says so), cut short. */
   answer: z.string(),
+  /** Your note beside it (BRO-3146), cut short; null when none. Absent from an older daemon. */
+  note: z.string().nullable().optional(),
   stage: z.enum(ANSWER_STAGES),
   /** The fate in a sentence (AnswerFate.words). */
   words: z.string(),

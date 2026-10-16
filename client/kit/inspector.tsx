@@ -29,6 +29,7 @@ import {
   type VerbSpec,
   verbsFor,
   withoutRefused,
+  wordsPlaceholder,
 } from "./inspector-model";
 import { Dot, Kicker, MONO, PASS_THROUGH, Pill, SectionLabel, TABULAR } from "./parts";
 import { type Kit, kitOf } from "./tokens";
@@ -563,14 +564,15 @@ export function InspectorBody({
             <Text style={{ color: kit.muted, fontSize: 12.5 }}>{item.fallback.line}</Text>
           </View>,
         );
-      if (!compact && onWords && !item.refusal)
+      // The phone's card (compact) shows it too (BRO-3146): Other offered with nowhere to write it is a dead end.
+      if (onWords && !item.refusal && (!compact || item.options.length > 0))
         sections.push(
           <WordsField
             key="words"
             theme={theme}
             value={words ?? ""}
             onChange={onWords}
-            placeholder="Add words (optional)"
+            placeholder={item.kind === "ask" ? wordsPlaceholder(item.options, chosen) : "Add words (optional)"}
             label={item.fieldLabel ?? `Your words for ${item.title}`}
           />,
         );
@@ -1001,12 +1003,16 @@ export function InspectorPanel({
   const hold = KIND_LOOK[showing.kind].hold;
   // Words typed beside an option you did not pick yourself are an answer in your words: the recommendation an ask
   // starts on is never sent with them, and the primary says which it is sending.
+  // On an ask with options they are a note until you pick (BRO-3146): an answer that takes none of them is Other,
+  // picked on purpose, so the primary asks for a pick and planVerb hands the words to Decisions, never sends them.
   const inWords = showing.kind === "ask" && !picked.explicit && said.words.trim().length > 0;
   const sent = inWords ? undefined : picked.choice;
   const primary =
     showing.kind === "ask" || showing.kind === "review"
       ? inWords
-        ? "Answer in your words"
+        ? showing.options.length > 0
+          ? "Choose an option or Other"
+          : "Answer in your words"
         : answerLabel(showing.options, sent)
       : showing.primaryLabel;
   const verbs = withoutRefused(
@@ -1133,9 +1139,17 @@ export function InspectorCard({
   onIndexChange,
   onOpenSession,
   directions,
+  words,
+  onWords,
+  onChoose,
 }: {
   theme: PluginTheme;
   item: InspectorItem;
+  /** Your words on an ask (BRO-3146), held by the screen so the deck card and this one show the same words. */
+  words?: string;
+  onWords?: (value: string) => void;
+  /** An option picked here, told to the screen so the deck keeps it with the words (BRO-3146, P20 round 2). */
+  onChoose?: (id: string) => void;
   index: number;
   total: number;
   open: boolean;
@@ -1244,8 +1258,12 @@ export function InspectorCard({
             item={item}
             compact
             onOpenSession={onOpenSession}
-            choice={picked.choice}
-            onChoose={picked.choose}
+            // With the screen keeping the pick (onChoose), the card shows the screen's: a pick made on the deck after the
+            // card closed is the one it reopens on, never a stale one of its own (Codex P20 round 3).
+            choice={onChoose && (item.kind === "ask" || item.kind === "review") ? item.chosen : picked.choice}
+            onChoose={onChoose ?? picked.choose}
+            words={words}
+            onWords={item.kind === "ask" ? onWords : undefined}
           />
         </ScrollView>
         <View
@@ -1264,7 +1282,9 @@ export function InspectorCard({
           <Verbs
             theme={theme}
             verbs={withoutRefused(item, verbsFor(item.kind, item.primaryLabel))}
-            onVerb={(id) => onVerb(id, picked.choice)}
+            onVerb={(id) =>
+              onVerb(id, onChoose && (item.kind === "ask" || item.kind === "review") ? item.chosen : picked.choice)
+            }
             height={DECK.verb}
             grow
             keys={false}

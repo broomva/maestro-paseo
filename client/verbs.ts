@@ -25,6 +25,7 @@ import { whereOf } from "./decisions-model";
 import { invalidateNeeds, useRefresh } from "./hooks";
 import { defaultWake } from "./initiatives-model";
 import type { MaestroIntent } from "./intent";
+import { OTHER_CHOICE } from "./kit/inspector-model";
 
 export const VERB_IDS = [
   "allow",
@@ -174,9 +175,12 @@ export function planVerb(verb: VerbId, target: VerbTarget, choice?: string, word
         : { kind: "decisions" };
       const option = ask?.options.find((entry) => entry.id === choice) ?? null;
       const note = words.trim();
+      // Words with no option are an answer only where nothing else can be: an ask with no options, or Other picked
+      // on purpose (BRO-3146). Beside no pick on an ask with options they would be filed as Other by accident.
+      const inWordsOk = !ask || ask.options.length === 0 || choice === OTHER_CHOICE;
       // An answer that cannot be undone takes Decisions' deliberate confirm; so does one this client cannot send,
-      // and an answer with nothing chosen and nothing said.
-      if (!ask || (option?.reversible === false && !confirmed) || (!option && !note))
+      // and an answer with nothing chosen and nothing said, or words that are not an answer yet.
+      if (!ask || (option?.reversible === false && !confirmed) || (!option && (!note || !inWordsOk)))
         return {
           call: "go",
           intent: decisions,
@@ -188,7 +192,11 @@ export function planVerb(verb: VerbId, target: VerbTarget, choice?: string, word
         ask,
         option: option?.id ?? null,
         note,
-        done: option ? `Answered: ${option.label}` : "Answered in your words",
+        done: option
+          ? `Answered: ${option.label}`
+          : choice === OTHER_CHOICE
+            ? "Answered: Other"
+            : "Answered in your words",
       };
     }
     case "done": {

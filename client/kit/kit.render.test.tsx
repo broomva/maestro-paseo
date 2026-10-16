@@ -761,7 +761,7 @@ describe("J2–J4: the desktop's bodies (BRO-3036)", () => {
     expect((view.label("Your words for A3") as unknown as { value: string }).value).toBe("");
   });
 
-  it("words typed beside an option you did not pick send words alone: the recommendation is never sent with them", async () => {
+  it("words typed beside an option you did not pick never send the recommendation; the primary asks for a pick", async () => {
     const pressed: [string, string | undefined, string | undefined][] = [];
     const recommended = { ...ask, chosen: "off" };
     const view = await mount(
@@ -777,9 +777,9 @@ describe("J2–J4: the desktop's bodies (BRO-3036)", () => {
     expect(view.label("Answer with 1")).toBeTruthy();
     await type(view.label("Your words for A3"), "Not before the release.");
     // With words and no pick of yours, it says what it sends, and the recommendation is not checked.
-    expect(view.label("Answer in your words")).toBeTruthy();
+    expect(view.label("Choose an option or Other")).toBeTruthy();
     expect(view.all('[aria-checked="true"]')).toHaveLength(0);
-    await view.press(view.label("Answer in your words"));
+    await view.press(view.label("Choose an option or Other"));
     expect(pressed).toEqual([["answer", undefined, "Not before the release."]]);
     // Picking an option yourself sends it with your words.
     await view.press(view.label("Install in one worktree first"));
