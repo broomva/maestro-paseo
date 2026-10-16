@@ -49,6 +49,7 @@ export function NoticeDeckCard({
   hasSession,
   onSession,
   onVerb,
+  onDetails,
 }: {
   theme: PluginTheme;
   row: HealthRow;
@@ -58,6 +59,8 @@ export function NoticeDeckCard({
   hasSession: boolean;
   onSession: () => void;
   onVerb: (act: NoticeAct) => void;
+  /** The notice's own detail (M4: evidence, what closes it, history), as a hold's card opens M2 (BRO-3103). */
+  onDetails?: () => void;
 }) {
   const kit = kitOf(theme);
   const { notice } = row;
@@ -71,6 +74,7 @@ export function NoticeDeckCard({
       age={age || undefined}
       title={notice.title}
       summary={notice.detail}
+      onDetails={onDetails}
       verbs={[
         ...(hasSession ? [{ label: "Open session", onPress: onSession }] : []),
         {

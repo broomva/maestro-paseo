@@ -10,12 +10,16 @@ import { needsSection } from "../feed-model";
 import { holdsByTab } from "../header-count";
 import { holdInspector, homeSections } from "../home-model";
 import type { InspectorItem } from "../kit/inspector";
+import { withoutRefused } from "../kit/inspector-model";
 import {
   advanceTo,
   answerStep,
   answersCounts,
+  bothRead,
   CONFIRM_MS,
   CONFIRM_WINDOW_MS,
+  decisionCards,
+  decisionCountWords,
   decisionsDeck,
   deckEmptyWords,
   deckVerbs,
@@ -23,7 +27,6 @@ import {
   feedDeck,
   feedSheet,
   irreversibleChoice,
-  openAskCounts,
   openAsks,
   openingChoice,
   PHONE_TABS,
@@ -31,7 +34,9 @@ import {
   pageTrail,
   phoneTabOf,
   phoneTabs,
+  readOf,
   resolveIndex,
+  staleWords,
   unreadWords,
   workspaceNameOf,
 } from "./model";
@@ -316,7 +321,7 @@ describe("a failed read is never 'nothing needs you'", () => {
     expect(deckEmptyWords("pending", "feed")).toBe("Reading what needs you…");
     expect(deckEmptyWords("error", "feed")).toBe("Couldn't read what needs you.");
     expect(deckEmptyWords("ok", "feed")).toBe("Nothing needs you.");
-    expect(deckEmptyWords("ok", "decisions")).toBe("No decision waits on you.");
+    expect(deckEmptyWords("ok", "decisions")).toBe("No ask is open: nothing waits on you.");
   });
 
   test("a source needs.list could not read is named, and an empty deck over it is never 'nothing needs you' (BRO-3008)", () => {
@@ -356,35 +361,85 @@ describe("pages and what each tab's empty deck says", () => {
   });
 });
 
-// BRO-3108: the open asks that do not wait on you, which needs.list never holds and the deck never shows.
-describe("the open asks beside the deck", () => {
+// BRO-3140 (deciding BRO-3113): every open ask is on the Decisions deck, holds first, then the rest, each labelled.
+describe("every open ask on the Decisions deck", () => {
   const quiet = (id: string, extra: Partial<DecisionAsk> = {}) =>
     ask(id, { blocking: false, waiting: false, ...extra });
   const hours = (n: number) => new Date(NOW - n * 3_600_000).toISOString();
+  const idea = (id: string, extra: Partial<DecisionAsk> = {}) =>
+    quiet(id, {
+      ledger: "ideas-factory-learnings.yaml",
+      options: [
+        { id: "develop", label: "Develop", consequence: null, reversible: true, recommended: false },
+        { id: "park", label: "Park until 2026-11-02", consequence: null, reversible: true, recommended: true },
+        { id: "kill", label: "Kill", consequence: null, reversible: true, recommended: false },
+      ],
+      idea: { initiative: "factory-learnings", idea: `idea ${id}`, source: null, evidence: null, wake: "2026-11-02" },
+      ...extra,
+    });
 
-  test("every open ask is on the deck or in the list: the desktop's open asks, none lost, none twice", () => {
+  test("the owner's live case: every open ask is an idea and none waits, and the deck lists all of them", () => {
+    // 2026-10-16 03:20Z, asks.workspace on the live daemon: 23 open asks, every one an idea; needs.list held none.
+    const asks = Array.from({ length: 23 }, (_, n) => idea(`I${n + 1}`, { askedAt: hours(30 - n) }));
+    const held = needsOf({ items: [], asks, reviews: [], landing: null, workspace: "broomva" }, NOW).rows;
+    expect(held).toHaveLength(0);
+    const cards = decisionCards([], openAsks(asks, "broomva", null, NOW));
+    expect(cards).toHaveLength(23);
+    expect(cards.every((card) => card.lane === "idea")).toBe(true);
+    expect(decisionCountWords(cards)).toBe("23 open · none waits on you · 23 ideas");
+    // Each card answers its ask through the same verb as a hold, with the idea's own options.
+    const item = holdInspector((cards[0] as (typeof cards)[number]).entry, NOW);
+    expect(item.kind).toBe("ask");
+    expect(item.kind === "ask" ? item.options.map((option) => option.id) : []).toEqual(["develop", "park", "kill"]);
+  });
+
+  test("every open ask is on the deck once: the holds first, then those that wait, then the rest, then ideas", () => {
     const asks = [
       ask("W1", { askedAt: hours(1) }),
       quiet("Q1", { askedAt: hours(5) }),
       quiet("Q2", { askedAt: hours(2) }),
-      // Not blocking, but it recommends what cannot be undone: a hold (isWaiting), so the deck's, never the list's.
+      // Not blocking, but it recommends what cannot be undone: a hold (isWaiting).
       quiet("W2", {
         waiting: true,
         options: [{ id: "all", label: "Install fleet-wide", consequence: null, reversible: false, recommended: true }],
         askedAt: hours(4),
       }),
-      quiet("I1", { idea: { initiative: "skene", idea: "an idea", source: null, evidence: null, wake: null } }),
+      idea("I1", { askedAt: hours(9) }),
       ask("D1", { state: "answered", waiting: false }),
     ];
-    const held = needsOf({ items: [], asks, reviews: [], landing: null, workspace: "broomva" }, NOW).rows.map(
-      (row) => row.key,
-    );
-    const listed = openAsks(asks, "broomva", null, NOW);
-    expect(listed.map((row) => row.entry.ask?.id)).toEqual(["Q1", "Q2"]);
-    expect(held).toHaveLength(2);
-    // The same key a hold of it would carry, so the card and the answer name the same ask.
-    expect(listed.every((row) => !held.includes(row.key))).toBe(true);
-    expect(held.length + listed.length).toBe(asks.filter((one) => one.state === "open" && !one.idea).length);
+    const needs = needsOf({ items: [], asks, reviews: [], landing: null, workspace: "broomva" }, NOW);
+    const holds = decisionsDeck(needsSection(needs.rows, [], asks));
+    const cards = decisionCards(holds, openAsks(asks, "broomva", null, NOW, new Set(holds.map((e) => e.row.key))));
+    expect(holds.map((entry) => entry.ask?.id).sort()).toEqual(["W1", "W2"]);
+    expect(cards.map((card) => [card.entry.ask?.id, card.lane])).toEqual([
+      ...holds.map((entry) => [entry.ask?.id, "waits"]),
+      ["Q1", "open"],
+      ["Q2", "open"],
+      ["I1", "idea"],
+    ]);
+    const keys = cards.map((card) => card.entry.row.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(cards).toHaveLength(asks.filter((one) => one.state === "open").length);
+  });
+
+  test("an ask that waits but is not held (its prompt session holds it, or asks were unread) is on the deck, labelled", () => {
+    // BRO-3112: subtracting by held key, not by `waiting`, so no open ask is on neither the deck nor the list.
+    const asks = [quiet("W2", { waiting: true }), quiet("Q1")];
+    const rows = openAsks(asks, "broomva", null, NOW, new Set());
+    expect(rows.map((row) => [row.entry.ask?.id, row.lane])).toEqual([
+      ["W2", "waits"],
+      ["Q1", "open"],
+    ]);
+  });
+
+  test("one ask read twice is one card; a waiting prompt ask needs.list did not hold is left to the Feed's approval", () => {
+    const twice = [quiet("Q1"), quiet("Q1")];
+    expect(openAsks(twice, "broomva", null, NOW)).toHaveLength(1);
+    // One prompt is one hold (server/needs.ts): its session's permission prompt is the Feed's approval.
+    const prompt = quiet("P1", { waiting: true, promptSession: "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d" });
+    expect(openAsks([prompt], "broomva", null, NOW, new Set(), true)).toHaveLength(0);
+    // When needs.list could not read the asks, nothing is known of the prompt: it stays, labelled.
+    expect(openAsks([prompt], "broomva", null, NOW, new Set(), false).map((row) => row.lane)).toEqual(["waits"]);
   });
 
   test("a row names its ledger, whether it can be undone, its age and what silence does", () => {
@@ -407,27 +462,59 @@ describe("the open asks beside the deck", () => {
       meta: "sri · leadership-20261013 · reversible",
       age: "3h",
       silent: "silent → Keep them off",
+      lane: "open",
     });
   });
 
   test("a workspace chip narrows them as it narrows the holds: the control repo's own asks carry its name", () => {
-    const asks = [quiet("Q1"), quiet("Q2", { scope: "sri" })];
-    expect(openAsks(asks, "broomva", null, NOW)).toHaveLength(2);
+    const asks = [quiet("Q1"), quiet("Q2", { scope: "sri" }), idea("I1")];
+    expect(openAsks(asks, "broomva", null, NOW)).toHaveLength(3);
     expect(openAsks(asks, "broomva", "sri", NOW).map((row) => row.entry.ask?.id)).toEqual(["Q2"]);
-    expect(openAsks(asks, "broomva", "broomva", NOW).map((row) => row.entry.ask?.id)).toEqual(["Q1"]);
+    expect(openAsks(asks, "broomva", "broomva", NOW).map((row) => row.entry.ask?.id)).toEqual(["Q1", "I1"]);
     expect(workspaceNameOf("/Users/me/broomva")).toBe("broomva");
     expect(workspaceNameOf(undefined)).toBe("workspace");
   });
 
-  test("its counts are the lengths of what the sheet lists; a failed read says so, never 0 open", () => {
-    const rows = openAsks([quiet("Q1"), quiet("Q2")], "broomva", null, NOW);
-    expect(openAskCounts(rows, [])).toEqual([{ id: "open", label: "2 open" }]);
-    expect(openAskCounts(rows, ["a", "b"])).toEqual([
-      { id: "open", label: "2 open" },
-      { id: "warnings", label: "2 read warnings", tone: "warn" },
-    ]);
-    expect(openAskCounts([], ["a"])).toEqual([{ id: "warnings", label: "1 read warning", tone: "warn" }]);
-    expect(openAskCounts([], [])).toEqual([]);
-    expect(openAskCounts(null, null)).toEqual([{ id: "open-unread", label: "open asks: not read", tone: "warn" }]);
+  test("the count line says how many wait on you", () => {
+    const waits = { entry: { row: { key: "a" } }, lane: "waits" } as never;
+    const open = { entry: { row: { key: "b" } }, lane: "open" } as never;
+    expect(decisionCountWords([waits, open])).toBe("2 open · 1 waits on you");
+    expect(decisionCountWords([waits, waits, open])).toBe("3 open · 2 wait on you");
+  });
+
+  test("an ask that cannot be answered here carries its refusal onto the card, which offers no Answer (BRO-3111)", () => {
+    const refused = quiet("R1", { refusal: "Two asks in x.yaml are named R1 and neither has a uid." });
+    const [row] = openAsks([refused], "broomva", null, NOW);
+    if (!row) throw new Error("the refused ask is not listed");
+    const item = holdInspector(row.entry, NOW);
+    expect(item.kind === "ask" ? item.refusal : null).toContain("named R1");
+    const verbs = withoutRefused(item, deckVerbs(item, false));
+    expect(verbs.map((verb) => verb.id)).not.toContain("answer");
+    const [ok] = openAsks([quiet("Q1")], "broomva", null, NOW);
+    if (!ok) throw new Error("the ask is not listed");
+    const fine = holdInspector(ok.entry, NOW);
+    expect(withoutRefused(fine, deckVerbs(fine, false)).map((verb) => verb.id)).toContain("answer");
+  });
+});
+
+// BRO-3094: a refetch that failed over data read before is stale, said, and never concluded from.
+describe("a stale read", () => {
+  test("data with a failed refetch is stale, not ok; no data and a failure is an error", () => {
+    expect(readOf({ data: { rows: [] }, isError: false })).toBe("ok");
+    expect(readOf({ data: { rows: [] }, isError: true })).toBe("stale");
+    expect(readOf({ data: undefined, isError: true })).toBe("error");
+    expect(readOf({ data: undefined, isError: false })).toBe("pending");
+    expect(bothRead("ok", "stale")).toBe("stale");
+    expect(bothRead("pending", "error")).toBe("error");
+    expect(bothRead("ok", "pending")).toBe("pending");
+  });
+
+  test("an empty deck over a stale read never says nothing waits", () => {
+    expect(deckEmptyWords("stale", "decisions")).not.toContain("nothing waits");
+    expect(deckEmptyWords("stale", "feed")).not.toBe("Nothing needs you.");
+    expect(deckEmptyWords("stale", "decisions")).toContain("may be out of date");
+    expect(staleWords(NOW - 5 * 60_000, NOW)).toBe(
+      "Couldn't read again: this is the read from 5m ago, and may be out of date.",
+    );
   });
 });

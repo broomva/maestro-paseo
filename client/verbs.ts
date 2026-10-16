@@ -23,6 +23,7 @@ import { SNOOZE_HOURS, snoozeNotice } from "../shared/notices";
 import { decideApproval as decideApprovalRpc, promptSession as promptSessionRpc, undoVerb } from "../shared/verbs";
 import { whereOf } from "./decisions-model";
 import { invalidateNeeds, useRefresh } from "./hooks";
+import { defaultWake } from "./initiatives-model";
 import type { MaestroIntent } from "./intent";
 
 export const VERB_IDS = [
@@ -339,6 +340,10 @@ export function useVerbs() {
           hash: plan.ask.hash,
           option: plan.option,
           note: plan.note,
+          // An idea parked here comes back when Initiatives' park would bring it back (its wake, else 30 days on).
+          ...(plan.ask.idea && plan.option === "park"
+            ? { wake: defaultWake(plan.ask.idea.wake ?? null, localToday(new Date())) }
+            : {}),
         });
         const done = warning ? `${plan.done} · ${warning}` : plan.done;
         return receipt ? { done, receipt: `verb:${receipt}`, appliesAt } : { done };
@@ -430,4 +435,10 @@ export function useVerbs() {
       }
     },
   };
+}
+
+/** The local calendar day, as a park's wake is written (YYYY-MM-DD). */
+export function localToday(at: Date): string {
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())}`;
 }

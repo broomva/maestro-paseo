@@ -50,7 +50,12 @@ import {
   advanceTo,
   answerStep,
   answersCounts,
+  bothRead,
   CONFIRM_WINDOW_MS,
+  type DeckLane,
+  type DeckRead,
+  decisionCards,
+  decisionCountWords,
   decisionsDeck,
   deckEmptyWords,
   deckTitle,
@@ -59,7 +64,7 @@ import {
   feedDeck,
   feedSheet,
   irreversibleChoice,
-  openAskCounts,
+  LANE_WORDS,
   openAsks,
   openingChoice,
   type PhonePage,
@@ -67,14 +72,17 @@ import {
   pageOfIntent,
   pageTrail,
   phoneTabs,
+  readOf,
   resolveIndex,
   type SheetCount,
   type SheetRow,
   sheetTitle,
+  staleWords,
   unreadWords,
   workspaceNameOf,
 } from "./model";
 import { NewWorkSheet } from "./new-work-sheet";
+import { LedgerWarnings } from "./open-asks";
 import { PageBody } from "./page-body";
 import { PagePanel } from "./page-panel";
 import { SheetRows } from "./sheet-rows";
@@ -119,8 +127,6 @@ export interface PhoneSurfaceProps {
   frame?: { width: number; height: number };
 }
 
-type Read = "pending" | "error" | "ok";
-
 export function PhoneSurface(props: PhoneSurfaceProps) {
   const { theme, layout, navigation, tab, onTab, workspace, onWorkspace, focus, onFocusHandled } = props;
   const kit = kitOf(theme);
@@ -141,30 +147,53 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const ledger = useVerbLedger();
 
   const items = list.data?.items ?? [];
-  const asks = asksRead.data ? decisionAsks(asksRead.data) : [];
-  // The open asks that are not holds (BRO-3108): null when asks.workspace could not be read, never "none".
-  const openRows = useMemo(
-    () =>
-      asksRead.data
-        ? openAsks(asks, workspaceNameOf(asksRead.data.controlRepo), workspace, now)
-        : asksRead.isError
-          ? null
-          : [],
-    [asksRead.data, asksRead.isError, asks, workspace, now],
-  );
+  const asks = useMemo(() => (asksRead.data ? decisionAsks(asksRead.data) : []), [asksRead.data]);
   const rows = needs.data?.rows ?? null;
-  const read: Read = needs.data ? "ok" : needs.isError ? "error" : "pending";
+  // A refetch that failed over an earlier read is "stale" (BRO-3094): said, and never concluded from.
+  const read: DeckRead = readOf(needs);
+  const asksReadState: DeckRead = readOf(asksRead);
   // Sources needs.list could not read (BRO-3008): their holds are missing because the read failed, never answered.
   const unread = needs.data?.unread;
 
   // Every hold, joined to its work or ask: the deck and the card read this, and every verb sends from it.
   const everyHold = useMemo(() => needsSection(rows ?? [], items, asks), [rows, items, asks]);
-  // The open asks that are not holds open the same card (an answer is the same verb), but are not on the deck.
-  const inspectable = useMemo(() => [...everyHold, ...(openRows ?? []).map((row) => row.entry)], [everyHold, openRows]);
-  const entries = useMemo(() => {
-    const scoped = everyHold.filter((entry) => workspace === null || entry.row.scope === workspace);
-    return tab === "decisions" ? decisionsDeck(scoped) : tab === "feed" ? feedDeck(scoped) : [];
-  }, [everyHold, tab, workspace]);
+  const scopedHolds = useMemo(
+    () => everyHold.filter((entry) => workspace === null || entry.row.scope === workspace),
+    [everyHold, workspace],
+  );
+  // Every other open ask, ideas among them (BRO-3140): on the Decisions deck after its holds, never twice (by the
+  // keys of every hold, BRO-3112). null while asks.workspace has never been read. `everyOpen` is every workspace's
+  // (the chip offers them all); `openRows` the chosen one's.
+  const promptHeld = needs.data !== undefined && !(needs.data.unread ?? []).includes("asks");
+  const everyOpen = useMemo(
+    () =>
+      asksRead.data
+        ? openAsks(
+            asks,
+            workspaceNameOf(asksRead.data.controlRepo),
+            null,
+            now,
+            new Set(everyHold.map((entry) => entry.row.key)),
+            promptHeld,
+          )
+        : null,
+    [asksRead.data, asks, now, everyHold, promptHeld],
+  );
+  const openRows = useMemo(
+    () => everyOpen?.filter((row) => workspace === null || row.entry.row.scope === workspace) ?? null,
+    [everyOpen, workspace],
+  );
+  const cards = useMemo(() => decisionCards(decisionsDeck(scopedHolds), openRows ?? []), [scopedHolds, openRows]);
+  const laneOf = useMemo(() => new Map(cards.map((card) => [card.entry.row.key, card.lane])), [cards]);
+  // The open asks open the same card a hold does: an answer is the same verb.
+  const inspectable = useMemo(
+    () => [...everyHold, ...(everyOpen ?? []).map((row) => row.entry)],
+    [everyHold, everyOpen],
+  );
+  const entries = useMemo(
+    () => (tab === "decisions" ? cards.map((card) => card.entry) : tab === "feed" ? feedDeck(scopedHolds) : []),
+    [cards, scopedHolds, tab],
+  );
 
   const sections = homeSections({
     needs: needs.data ?? null,
@@ -196,8 +225,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const lane = chosenLane ?? firstLane(board);
   // Health (M7): the notices, stuck first, in this workspace.
   const noticeRows = useMemo(() => healthDeck(sections.health), [sections.health]);
-  const noticesRead: Read = notices.data ? "ok" : notices.isError ? "error" : "pending";
-  const workRead: Read = needs.data && list.data ? "ok" : needs.isError || list.isError ? "error" : "pending";
+  const noticesRead: DeckRead = readOf(notices);
+  const workRead: DeckRead = bothRead(read, readOf(list));
 
   // The deck's holds, by key: the Feed's and Decisions' holds, Work's work, Health's notices.
   const keys =
@@ -237,7 +266,13 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   };
 
   // Opening on a hold (`params.hold`, M10) or work: once needs.list has been read since this screen mounted.
-  const fresh = needs.isFetchedAfterMount || needs.isError ? rows : null;
+  // A refetch that failed concludes nothing (BRO-3094): the push waits for a read that landed.
+  // An open ask on the Decisions deck is a hold to open too, once asks.workspace has answered as well.
+  const asksSettled = asksRead.isFetchedAfterMount || asksRead.isError;
+  const fresh =
+    needs.isFetchedAfterMount && !needs.isError && asksSettled
+      ? [...(rows ?? []), ...(everyOpen ?? []).map((row) => row.entry.row)]
+      : null;
   const handledFocus = useRef(-1);
   const { onOpenWork } = props;
   useEffect(() => {
@@ -258,8 +293,12 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     handledFocus.current = focus.at;
     onFocusHandled();
     if (target.kind === "open") {
+      // A hold that is now an open ask needs.list does not hold is on the Decisions deck, not this tab's.
+      const onDecisions = !(rows ?? []).some((row) => row.key === target.key);
+      const at = onDecisions ? "decisions" : tab;
+      if (at !== tab) onTab(at);
       setStand({ key: target.key, last: 0 });
-      setPushedAt(focus.from === "push" ? { key: target.key, tab } : null);
+      setPushedAt(focus.from === "push" ? { key: target.key, tab: at } : null);
       setGone(null);
     } else if (target.kind === "gone") setGone(target.key);
   });
@@ -292,6 +331,11 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   /** Answer an ask or a review: a reversible choice is sent; one that cannot be undone asks twice (answerStep). */
   const answer = async (entry: NeedEntry, item: InspectorItem, picked: string | undefined, card: boolean) => {
     const key = entry.row.key;
+    // An ask that cannot be answered here says why and sends nothing (BRO-3111).
+    if (item.kind === "ask" && item.refusal) {
+      toast.show(`This ask cannot be answered here. ${item.refusal}`);
+      return;
+    }
     if (picked === undefined) {
       // An ask with no options is answered in words alone; anything else with nothing chosen opens its card.
       const words = (said[key] ?? "").trim();
@@ -399,7 +443,10 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const header = (
     <DeckHeader
       theme={theme}
-      workspaces={workspaceOptions(rows ?? [], items)}
+      workspaces={workspaceOptions(
+        tab === "decisions" ? [...(rows ?? []), ...(everyOpen ?? []).map((row) => row.entry.row)] : (rows ?? []),
+        items,
+      )}
       workspace={workspace}
       onWorkspace={onWorkspace}
       presence={presence}
@@ -421,7 +468,26 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   );
 
   // Each tab's read, for what its empty deck says: never "nothing" over a read that failed.
-  const deckRead: Read = tab === "health" ? noticesRead : tab === "work" ? workRead : read;
+  const deckRead: DeckRead =
+    tab === "health"
+      ? noticesRead
+      : tab === "work"
+        ? workRead
+        : tab === "decisions"
+          ? bothRead(read, asksReadState)
+          : read;
+  const deckQueries =
+    tab === "health" ? [notices] : tab === "work" ? [needs, list] : tab === "decisions" ? [needs, asksRead] : [needs];
+  // When the deck's read went stale: the oldest of the reads that failed again.
+  const staleAt = Math.min(
+    ...deckQueries
+      .filter((query) => query.isError && query.data && query.dataUpdatedAt > 0)
+      .map((query) => query.dataUpdatedAt),
+  );
+  // The read that failed with nothing to show first, then one that failed again: its own error, not a neighbour's.
+  const deckError = (
+    deckQueries.find((query) => query.isError && !query.data) ?? deckQueries.find((query) => query.isError)
+  )?.error;
   const deckUnread = tab === "health" ? notices.data?.summary.unread : unread;
   const empty = (
     <View style={{ paddingVertical: 28, gap: 10, alignItems: "flex-start" }}>
@@ -432,11 +498,9 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       >
         {deckEmptyWords(deckRead, tab, deckUnread)}
       </Text>
-      {deckRead === "error" ? (
+      {deckRead === "error" || deckRead === "stale" ? (
         <>
-          <Text style={{ color: kit.muted, fontSize: 13 }}>
-            {errorText(tab === "health" ? notices.error : tab === "work" && !needs.isError ? list.error : needs.error)}
-          </Text>
+          <Text style={{ color: kit.muted, fontSize: 13 }}>{errorText(deckError)}</Text>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Try again"
@@ -445,6 +509,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
               else {
                 void needs.refetch();
                 void list.refetch();
+                if (tab === "decisions") void asksRead.refetch();
               }
             }}
             style={{
@@ -546,12 +611,33 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
           <Text style={{ color: kit.needs, fontSize: 12.5, fontWeight: "600" }}>From the push · same hold</Text>
         </View>
       ) : null}
+      {deckRead === "stale" && Number.isFinite(staleAt) && keys.length > 0 ? (
+        <Text testID="stale-read" accessibilityRole="alert" style={{ color: kit.warn, fontSize: 13.5 }}>
+          {staleWords(staleAt, now)}
+        </Text>
+      ) : null}
+      {tab === "decisions" && cards.length > 0 && (deckRead === "ok" || deckRead === "stale") ? (
+        <Text testID="decision-count" style={{ color: kit.muted, fontSize: 13.5, fontVariant: ["tabular-nums"] }}>
+          {decisionCountWords(cards)}
+        </Text>
+      ) : null}
+      {tab === "decisions" && asksRead.data ? <LedgerWarnings theme={theme} warnings={asksRead.data.warnings} /> : null}
+      {tab === "decisions" && read === "error" && entries.length > 0 ? (
+        <Text accessibilityRole="alert" style={{ color: kit.danger, fontSize: 13.5 }}>
+          {`Couldn't read what needs you (${errorText(needs.error)}): what waits on you may be missing.`}
+        </Text>
+      ) : null}
+      {tab === "decisions" && asksReadState === "error" && entries.length > 0 ? (
+        <Text accessibilityRole="alert" style={{ color: kit.danger, fontSize: 13.5 }}>
+          {`Couldn't read the open asks (${errorText(asksRead.error)}): only the holds are listed.`}
+        </Text>
+      ) : null}
       {deckUnread?.length ? (
         <Text testID="unread-sources" accessibilityRole="alert" style={{ color: kit.danger, fontSize: 13.5 }}>
           {unreadWords(deckUnread, tab)}
         </Text>
       ) : null}
-      {gone && !unread?.length ? (
+      {gone && !unread?.length && deckRead === "ok" ? (
         <Text accessibilityRole="alert" style={{ color: kit.warn, fontSize: 13.5 }}>
           That hold is no longer waiting on you: it was answered, or it closed.
         </Text>
@@ -633,6 +719,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
                 hasSession={planVerb("open", { item: row.item }).call === "session"}
                 onSession={() => void inspector.act("open", { item: row.item })}
                 onVerb={(act) => void onNoticeVerb(row, act)}
+                onDetails={() => openNotice(row)}
               />
             )}
           />
@@ -661,6 +748,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
                   }}
                   onDetails={() => inspector.selectHold(key)}
                   onVerb={(id) => void onDeckVerb(entry, item, id)}
+                  lane={tab === "decisions" ? laneLook(laneOf.get(key)) : undefined}
                 />
               );
             }}
@@ -691,15 +779,12 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
         : null}
       {measured && tab === "decisions"
         ? sheet(
-            [...answersCounts(answersRead.data ?? null), ...openAskCounts(openRows, asksRead.data?.warnings ?? null)],
+            answersCounts(answersRead.data ?? null),
             <AnswersSheet
               theme={theme}
               tiles={stageTiles(queue, needs.data ?? null, answersRead.data ?? null, now)}
               held={answersRead.data?.held ?? null}
               went={answersRead.data ? wentRows(answersRead.data.recent) : null}
-              open={openRows}
-              warnings={asksRead.data?.warnings ?? null}
-              onOpenAsk={(key) => inspector.selectHold(key)}
               onOpenPr={openUrl}
             />,
           )
@@ -812,4 +897,10 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       ) : null}
     </View>
   );
+}
+
+/** The words and tone a Decisions card wears for where it stands (BRO-3140). */
+function laneLook(lane: DeckLane | undefined): { words: string; tone: "needs" | "muted" | "info" } | undefined {
+  if (!lane) return undefined;
+  return { words: LANE_WORDS[lane], tone: lane === "waits" ? "needs" : lane === "idea" ? "info" : "muted" };
 }

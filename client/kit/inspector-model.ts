@@ -100,3 +100,11 @@ export function answerLabel(options: readonly { id: string }[], chosen: string |
   const at = chosen === undefined ? -1 : options.findIndex((option) => option.id === chosen);
   return at < 0 ? "Answer" : `Answer with ${at + 1}`;
 }
+
+/** An ask that cannot be answered here offers no Answer (BRO-3111): its body says why. */
+export function withoutRefused<V extends { id: string }>(
+  item: { kind: string; refusal?: string },
+  verbs: readonly V[],
+): V[] {
+  return item.kind === "ask" && item.refusal ? verbs.filter((verb) => verb.id !== "answer") : [...verbs];
+}

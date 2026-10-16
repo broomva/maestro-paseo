@@ -560,6 +560,7 @@ export function holdInspector(entry: NeedEntry, now: number): InspectorItem {
         fallback: fallbackOf(entry, now),
         options,
         chosen,
+        ...(ask?.refusal ? { refusal: ask.refusal } : {}),
       };
     }
   }
