@@ -54,7 +54,8 @@ export function useAttachment(handle: AttachmentHandle, ref: AttachmentRef, enab
   const get = useRpc(getAskAttachment);
   return useQuery({
     queryKey: attachmentQueryKey(handle, ref),
-    queryFn: () => get({ where: handle.where, ledger: handle.ledger, uid: handle.uid, id: handle.id, ref }),
+    queryFn: () =>
+      get({ where: handle.where, ledger: handle.ledger, uid: handle.uid, id: handle.id, hash: handle.hash, ref }),
     enabled,
     staleTime: Number.POSITIVE_INFINITY,
     gcTime: 10 * 60_000,

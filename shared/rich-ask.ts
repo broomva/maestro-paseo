@@ -108,6 +108,8 @@ export const getAskAttachment = defineRpc({
     ledger: z.string().min(1),
     uid: z.string().min(1).nullable(),
     id: z.string().min(1),
+    /** DecisionAsk.hash as you read it: an attachment of an ask changed since is refused, never a different file served. */
+    hash: z.string().min(1),
     ref: AttachmentRefSchema,
   }),
   output: z.object({
@@ -130,11 +132,26 @@ const PR = /^([\w.-]+)\/([\w.-]+)#(\d+)$/;
 const HTTPS = /^https:\/\/[^\s/]+\S*$/;
 const SESSION = /^[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/;
 
-/** A repo-relative path that stays in the repo (an anchor after `#` aside): no absolute path, no `..`, no scheme. */
-export function safeRelative(ref: string): boolean {
+/** Characters no path here may hold: control characters (a newline would split a `git cat-file --batch` spec). */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point.
+const CONTROL = /[\u0000-\u001f\u007f]/;
+
+/**
+ * A repo-relative path that stays in the repo: no absolute path, no `..`, no scheme, no backslash, no control
+ * character. A source may carry an anchor after `#`, which is checked apart; a media path may not (`anchor: false`):
+ * Maestro reads the media path as written, so an anchor there would name a different file than the one validated.
+ */
+export function safeRelative(ref: string, anchor = true): boolean {
+  if (CONTROL.test(ref)) return false;
+  if (!anchor && ref.includes("#")) return false;
   const path = ref.split("#", 1)[0] ?? "";
   if (!path || path.startsWith("/") || path.startsWith("~") || path.includes(":") || path.includes("\\")) return false;
   return path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+}
+
+/** A string's length as both readers measure a cap: runs of whitespace count as one space (ask_ledger.py `_words`). */
+export function flatLength(value: string): number {
+  return value.trim().split(/\s+/).join(" ").length;
 }
 
 export function isHttps(url: string): boolean {

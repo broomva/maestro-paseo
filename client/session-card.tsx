@@ -41,7 +41,7 @@ import { OTHER_CHOICE, withOther, wordsPlaceholder } from "./kit/inspector-model
 import { Kicker, Pill, TABULAR } from "./kit/parts";
 import { kitOf } from "./kit/tokens";
 import { titleText } from "./records-text";
-import { OptionThumbs, RichGlance } from "./rich-ask";
+import { OptionThumbs, RichDetails, RichGlance } from "./rich-ask";
 import { mediaOfOption, type RichView, richViewFor } from "./rich-ask-model";
 import { DigestCard } from "./session-digest";
 import { CHOICE_ROLE, focusRing } from "./ui";
@@ -379,6 +379,7 @@ function OpenCard({
         <>
           <RichGlance theme={theme} view={rich} options={row.body.options} compact />
           <AskOptions row={row} ask={ask} chosen={chosen} onChoose={setChoice} theme={theme} rich={rich} />
+          <RichDetails theme={theme} view={rich} compact />
           <TextInput
             value={note}
             onChangeText={setNote}

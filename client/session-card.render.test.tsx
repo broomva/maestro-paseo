@@ -698,6 +698,32 @@ describe("an ask card", () => {
     expect(view.byId("card-undo")?.textContent).toContain("Answered Install the three headless Claude Code mods");
   });
 
+  it("an ask with decision layer v2 shows its summary, sources, option pictures and details (BRO-3167)", async () => {
+    const plain = askFixture();
+    const ask = askFixture({
+      options: plain.options.map((option, at) =>
+        at === 0
+          ? { ...option, media: [{ kind: "image", path: null, url: "https://example.com/a.png", caption: "Off" }] }
+          : option,
+      ),
+      rich: {
+        summary: "Three ways to install the mods; keeping them off changes nothing until you decide.",
+        tradeoffs: [],
+        sources: [{ kind: "ticket", ref: "BRO-2953", label: null }],
+        media: [],
+        details: "## Why off\n\nA mod answering tool.call runs before the gate.",
+      },
+    });
+    sim.asks = [ask];
+    const view = await mount(card(askCardOf(ask)));
+    expect(view.text()).toContain("Three ways to install the mods");
+    expect(view.byLabel("ticket BRO-2953")).not.toBeNull();
+    expect(view.byLabel("Enlarge Off")).not.toBeNull();
+    expect(view.text()).not.toContain("runs before the gate");
+    await view.press(view.byLabel("Read the details"));
+    expect(view.text()).toContain("runs before the gate");
+  });
+
   it("a note beside the option goes with the answer (BRO-3146)", async () => {
     const ask = askFixture();
     sim.asks = [ask];

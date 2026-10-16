@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { AskHome } from "../shared/fleet";
 import { MEDIA_MAX_BYTES, sourceText, sourceUrl } from "../shared/rich-ask";
 import { decisionsOf } from "./control-asks";
-import { attachmentOf, lockedHtml, mediaOf, readAttachment, readInside, richOf } from "./rich-ask";
+import { attachmentAsk, attachmentOf, lockedHtml, mediaOf, readAttachment, readInside, richOf } from "./rich-ask";
 
 const roots: string[] = [];
 afterAll(async () => {
@@ -234,9 +234,53 @@ describe("reading a file an ask names", () => {
   });
 });
 
-test("an HTML file is locked before it is drawn: a policy that loads nothing", () => {
-  expect(lockedHtml("<html><head><title>x</title></head></html>")).toContain(
-    '<head><meta http-equiv="Content-Security-Policy" content="default-src \'none\';',
-  );
-  expect(lockedHtml("<p>no head</p>").startsWith("<meta http-equiv")).toBe(true);
+test("an HTML file is locked before it is drawn: the policy comes first, whatever the file holds", () => {
+  for (const html of [
+    "<html><head><title>x</title></head></html>",
+    "<p>no head</p>",
+    // P20 round 1: a <header> matched a /<head/ pattern, and an <img> before <head> sat outside the policy.
+    "<header>h</header><head></head>",
+    '<img src="https://evil.example/beacon"><html><head></head></html>',
+  ]) {
+    const locked = lockedHtml(html);
+    expect(locked.startsWith('<meta http-equiv="Content-Security-Policy" content="default-src \'none\';')).toBe(true);
+    expect(locked.endsWith(html)).toBe(true);
+  }
+});
+
+describe("which ask an attachment request names (P20 round 1)", () => {
+  const ask = (id: string, uid: string | null, hash = "h", refusal: string | null = null) => ({
+    ledger: "l.yaml",
+    id,
+    uid,
+    hash,
+    refusal,
+  });
+  const at = (uid: string | null, id: string, hash = "h") => ({ ledger: "l.yaml", uid, id, hash });
+  test("the uid and the id must both match", () => {
+    const all = [ask("A", "U"), ask("B", "U2")];
+    expect(() => attachmentAsk(all, at("U", "B"))).toThrow(/no longer holds/);
+    expect(attachmentAsk(all, at("U", "A")).id).toBe("A");
+  });
+  test("twins sharing a handle, a refused ask, and an ask changed since it was read serve nothing", () => {
+    expect(() => attachmentAsk([ask("A", "U"), ask("A", "U")], at("U", "A"))).toThrow(/Two asks/);
+    expect(() => attachmentAsk([ask("A", null), ask("A", null)], at(null, "A"))).toThrow(/Two asks/);
+    expect(() => attachmentAsk([ask("A", null, "h", "Two asks share A")], at(null, "A"))).toThrow(/Two asks share A/);
+    expect(() => attachmentAsk([ask("A", null, "h2")], at(null, "A"))).toThrow(/changed since/);
+  });
+});
+
+describe("paths and lengths, as the validator reads them (P20 round 1)", () => {
+  test("a media path with an anchor or a control character is not shown, and never read", async () => {
+    expect(mediaOf([{ kind: "image", path: "nothere.png#/../.env" }], 4)).toEqual([]);
+    expect(mediaOf([{ kind: "image", path: "a\norigin/main:b.png" }], 4)).toEqual([]);
+    const repo = await scratch();
+    await writeFile(join(repo, ".env"), "SECRET=1");
+    await expect(readInside(repo, "nothere.png#/../.env", 100)).rejects.toThrow(/not a path inside/);
+  });
+  test("a cap counts whitespace runs as one space, as ask_ledger.py does", () => {
+    const summary = `${"word ".repeat(120)}${"  ".repeat(60)}end.`;
+    expect(summary.length).toBeGreaterThan(700);
+    expect(richOf({ summary }, new Set())?.summary).toBe(summary.trim());
+  });
 });
