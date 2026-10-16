@@ -25,5 +25,9 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx biome ci .
+      # The suites commit on scratch repos (the answers batch); a hosted runner has no git identity of its own.
+      - run: |
+          git config --global user.name "maestro-ci"
+          git config --global user.email "maestro-ci@users.noreply.github.com"
       # 30 s timeout: git-heavy suites need headroom under load
       - run: bun test --timeout 30000

@@ -457,29 +457,36 @@ describe("flags in Needs you", () => {
     tickMinutes(33);
     const entry = await loop.wake("manual");
     expect(entry.dispatched).toEqual([]);
-    expect(entry.flagged).toEqual([
-      { id: running.id, title: running.title, kind: "quiet", reason: "Quiet for 34 minutes, worth a look." },
-      {
-        id: bypass.id,
-        title: bypass.title,
-        kind: "yours",
-        reason: "Start it yourself: it runs without permission prompts.",
-      },
-      {
-        id: planned.id,
-        title: planned.title,
-        kind: "yours",
-        reason: "Start it yourself: it runs in a mode you chose.",
-      },
-      { id: held.id, title: held.title, kind: "yours", reason: "Start it yourself: it was filed to wait for you." },
-    ]);
-    expect(entry.narrative.slice(-5)).toEqual([
-      "Flagged for you:",
-      "  Long one.",
-      "  Bypass.",
-      "  Planned.",
-      "  Held.",
-    ]);
+    // Quiet first, then yours. The three queued in the same instant share a time, so their order is the scan's
+    // (readdir: APFS sorts, ext4 does not); it is compared as a set (CI moved to Linux in #70).
+    const byTitle = <T extends { title: string }>(list: readonly T[]) =>
+      [...list].sort((a, b) => a.title.localeCompare(b.title));
+    expect(entry.flagged[0]).toEqual({
+      id: running.id,
+      title: running.title,
+      kind: "quiet",
+      reason: "Quiet for 34 minutes, worth a look.",
+    });
+    expect(byTitle(entry.flagged.slice(1))).toEqual(
+      byTitle([
+        {
+          id: bypass.id,
+          title: bypass.title,
+          kind: "yours",
+          reason: "Start it yourself: it runs without permission prompts.",
+        },
+        {
+          id: planned.id,
+          title: planned.title,
+          kind: "yours",
+          reason: "Start it yourself: it runs in a mode you chose.",
+        },
+        { id: held.id, title: held.title, kind: "yours", reason: "Start it yourself: it was filed to wait for you." },
+      ]),
+    );
+    const told = entry.narrative.slice(-5);
+    expect(told.slice(0, 2)).toEqual(["Flagged for you:", "  Long one."]);
+    expect([...told.slice(2)].sort()).toEqual(["  Bypass.", "  Held.", "  Planned."]);
     const { item: wire, events } = await engine.get(running.id);
     expect(wire.flag).toEqual({ kind: "quiet", reason: "Quiet for 34 minutes, worth a look.", at: entry.wokeAt });
     expect(events.at(-1)).toEqual({
