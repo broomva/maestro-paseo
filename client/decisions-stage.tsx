@@ -11,7 +11,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { type MutableRefObject, useMemo, useRef, useState } from "react";
+import { type MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import type { DecisionAsk } from "../shared/fleet";
 import { type CardKeys, DecisionDetails, type Draft, useDecisionCard } from "./decision-card";
@@ -198,6 +198,9 @@ export function StageControls({
   );
 }
 
+/** What the words filter is called, to a screen reader and to the tab's keys (Escape there is the field's). */
+export const FILTER_LABEL = "Filter decisions by their words";
+
 /** The words filter: narrows every count and the queue as you type; Escape or the x clears it. */
 function FilterField({
   theme,
@@ -231,7 +234,7 @@ function FilterField({
         onChangeText={onChange}
         placeholder="Filter decisions"
         placeholderTextColor={kit.muted}
-        accessibilityLabel="Filter decisions by their words"
+        accessibilityLabel={FILTER_LABEL}
         onKeyPress={(event: { nativeEvent: { key: string } }) => {
           if (event.nativeEvent.key === "Escape") onChange("");
         }}
@@ -254,9 +257,9 @@ function FilterField({
 }
 
 /**
- * Every ledger on one line that scrolls sideways. On the desktop an arrow shows at each end that has more past it,
- * since a mouse wheel scrolls up and down: one press moves the chips RAIL_STEP px. The chosen chip is scrolled into
- * view when it is chosen from elsewhere (a focus from the Feed).
+ * Every ledger on one line that scrolls sideways. An arrow shows at each end that has more past it, since a mouse
+ * wheel scrolls up and down: one press moves the chips RAIL_STEP px. The chosen chip is scrolled into view whenever
+ * it is off screen (chosen from elsewhere, a focus from the Feed, or the first draw).
  */
 function LedgerRail({
   theme,
@@ -272,6 +275,20 @@ function LedgerRail({
   const kit = kitOf(theme);
   const scroller = useRef<ScrollView>(null);
   const [view, setView] = useState({ x: 0, width: 0, content: 0 });
+  // Where each chip sits in the rail, from its layout: the chosen one is scrolled into view.
+  const [spans, setSpans] = useState<Readonly<Record<string, { x: number; width: number }>>>({});
+  const chipX = spans[value]?.x;
+  const chipWidth = spans[value]?.width;
+  const scrolledX = useRef(0);
+  scrolledX.current = view.x;
+  const viewWidth = view.width;
+  // Only when the chosen chip, its place or the rail's width changes: scrolling it away by hand is yours.
+  useEffect(() => {
+    if (chipX === undefined || chipWidth === undefined || viewWidth === 0) return;
+    const left = scrolledX.current;
+    if (chipX >= left && chipX + chipWidth <= left + viewWidth) return;
+    scroller.current?.scrollTo({ x: Math.max(0, chipX - 24), animated: true });
+  }, [chipX, chipWidth, viewWidth]);
   const canLeft = view.x > 4;
   const canRight = view.x + view.width < view.content - 4;
   const step = (by: number) =>
@@ -315,7 +332,17 @@ function LedgerRail({
         }}
         onContentSizeChange={(content) => setView((now) => (now.content === content ? now : { ...now, content }))}
       >
-        <ChipRow theme={theme} label="Ledger" options={options} value={value} onChange={onChange} wrap={false} />
+        <ChipRow
+          theme={theme}
+          label="Ledger"
+          options={options}
+          value={value}
+          onChange={onChange}
+          wrap={false}
+          onChipLayout={(id, span) =>
+            setSpans((now) => (now[id]?.x === span.x && now[id]?.width === span.width ? now : { ...now, [id]: span }))
+          }
+        />
       </ScrollView>
       {canRight ? arrow("right") : null}
     </View>

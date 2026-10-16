@@ -4474,13 +4474,47 @@ describe("the Decisions tab", () => {
     expect(view.text()).toContain("Canvas ask seed-7");
     expect(view.byLabel("All ledgers: 1 open")?.getAttribute("aria-checked")).toBe("true");
     expect(view.byLabel("universe-seed-03.yaml: 1 open")).toBeNull();
-    await view.press(view.byLabel("Clear the filter"));
+    // Nothing matches: it says so (never "Nothing to decide"), and one press clears it.
+    await view.type(view.byLabel("Filter decisions by their words"), "no-such-words");
+    expect(view.text()).toContain("No decision matches the filter");
+    expect(view.text()).not.toContain("Nothing to decide");
+    await view.press(view.all('[aria-label="Clear the filter"]').at(-1));
     expect(view.text()).toContain("Decision 1 of 12");
     // Waits on you: only the blocking merge.
     await view.press(view.byLabel("Only the decisions that wait on you"));
     expect(view.text()).toContain("Decision 1 of 1");
     expect(view.text()).toContain("Approve merge of PR #863");
     expect(view.byLabel("All ledgers: 1 open, 1 waits on you")).not.toBeNull();
+  });
+
+  test("the filters keep the card you are on while it still matches, and a chosen ledger the filter empties stays at 0", async () => {
+    workspaceNow = [merge(), canvas("alpha"), canvas("beta")];
+    const view = await open();
+    await view.press(view.all('[aria-label^="Go to beta"]')[0]);
+    expect(view.text()).toContain("Ask · bro-2795-local-first-agentic-canvas · beta");
+    // A word the card on screen has: it stays; Up next and the counts narrow.
+    await view.type(view.byLabel("Filter decisions by their words"), "canvas");
+    expect(view.text()).toContain("Ask · bro-2795-local-first-agentic-canvas · beta");
+    // The ledger chosen, then a filter that empties it: the chip stays, at 0, and the empty card counts that ledger.
+    await view.press(view.byLabel("bro-2795-local-first-agentic-canvas.yaml: 2 open"));
+    await view.type(view.byLabel("Filter decisions by their words"), "no-such-words");
+    expect(view.byLabel("bro-2795-local-first-agentic-canvas.yaml: 0 open")?.getAttribute("aria-checked")).toBe("true");
+    expect(view.text()).toContain("2 open decisions are hidden by");
+    expect(view.text()).toContain("None match the filter");
+  });
+
+  test("a focus from elsewhere clears the filter, so the ask it names is the card (P20 r1)", async () => {
+    workspaceNow = [merge(), canvas("product-name")];
+    const view = await open();
+    await view.press(view.byLabel("Only the decisions that wait on you"));
+    expect(view.text()).toContain("Decision 1 of 1");
+    await step(generation, () =>
+      requestIntent({ kind: "decisions", ledger: "bro-2795-local-first-agentic-canvas.yaml", id: "product-name" }),
+    );
+    await until(view, "Canvas ask product-name");
+    expect(view.text()).not.toContain("isn't in the list yet");
+    expect(view.text()).not.toContain("No decision matches the filter");
+    expect(view.byLabel("Only the decisions that wait on you")?.getAttribute("aria-checked")).toBe("false");
   });
 
   test("answered with the mouse: sent to the ask's home as read; it says what it answered, and the next comes up", async () => {

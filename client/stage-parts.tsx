@@ -33,6 +33,7 @@ export function ChipRow<T extends string>({
   onChange,
   variant = "pills",
   wrap = true,
+  onChipLayout,
 }: {
   theme: PluginTheme;
   label: string;
@@ -42,6 +43,8 @@ export function ChipRow<T extends string>({
   variant?: "pills" | "segment";
   /** Wrap onto more lines (the default), or stay on one line inside a sideways scroller. */
   wrap?: boolean;
+  /** Where each chip sits in the row, for a scroller that brings the chosen one into view. */
+  onChipLayout?: (id: T, span: { x: number; width: number }) => void;
 }) {
   const kit = kitOf(theme);
   const segment = variant === "segment";
@@ -72,6 +75,12 @@ export function ChipRow<T extends string>({
               option.aria ?? (option.count === undefined ? option.label : `${option.label}, ${option.count}`)
             }
             onPress={() => onChange(option.id)}
+            onLayout={
+              onChipLayout
+                ? (event) =>
+                    onChipLayout(option.id, { x: event.nativeEvent.layout.x, width: event.nativeEvent.layout.width })
+                : undefined
+            }
             style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({
               ...focusRing(theme, focused),
               height: segment ? 28 : 30,
