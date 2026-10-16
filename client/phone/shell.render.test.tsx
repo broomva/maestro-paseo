@@ -887,15 +887,34 @@ describe("M5, Decisions", () => {
           id: "I1",
           hash: asks[0]?.hash,
           option: "park",
+          // The wake Initiatives' park sends: the idea's own date, while it is still ahead.
+          wake: "2026-11-02",
         }),
       ]);
       expect(view.id("undo-toast") !== null).toBe(true);
     });
 
+    test("an idea whose wake has passed is parked for 30 days, as Initiatives parks it", async () => {
+      asks = [
+        idea("I1", {
+          idea: { initiative: "factory-learnings", idea: "x", source: null, evidence: null, wake: "2020-01-01" },
+        }),
+      ];
+      const view = await mount({ tab: "decisions" });
+      await view.press(view.labelled("Park until 2026-11-02")[0]);
+      await view.press(view.labelled("Answer")[0]);
+      const [sentAnswer] = sent("ask.answer") as { wake?: string }[];
+      const at = new Date(Date.now() + 30 * 86_400_000);
+      const two = (n: number) => String(n).padStart(2, "0");
+      expect(sentAnswer?.wake).toBe(`${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())}`);
+    });
+
     test("a quiet ask's details open its card, and Answer there sends that ask's ids", async () => {
       asks = [quiet("Q1")];
       const view = await mount({ tab: "decisions" });
-      await view.press(view.all("[role='link']").find((el) => el.textContent?.includes("Details, session and history")));
+      await view.press(
+        view.all("[role='link']").find((el) => el.textContent?.includes("Details, session and history")),
+      );
       expect(view.id("inspector-card") !== null).toBe(true);
       await view.press(view.id("inspector-card-bar")?.querySelector('[aria-label^="Answer"]') as El);
       expect(sent("ask.answer")).toEqual([
@@ -908,7 +927,12 @@ describe("M5, Decisions", () => {
       const view = await mount({ tab: "decisions" });
       expect(view.text()).toContain("This ask cannot be answered here. Two asks in leadership-20261013.yaml");
       expect(view.labelled("Answer")).toHaveLength(0);
-      await view.press(view.all("[role='link']").find((el) => el.textContent?.includes("Details, session and history")));
+      // Only Answer goes: the card's other verb is still there to press.
+      expect(view.labelled("Skip").length > 0).toBe(true);
+      expect(view.labelled("Skip")[0]?.getAttribute("aria-disabled") === "true").toBe(false);
+      await view.press(
+        view.all("[role='link']").find((el) => el.textContent?.includes("Details, session and history")),
+      );
       expect(view.id("inspector-card-bar")?.querySelector('[aria-label^="Answer"]') == null).toBe(true);
       expect(sent("ask.answer")).toHaveLength(0);
     });
@@ -928,6 +952,15 @@ describe("M5, Decisions", () => {
       asks = [ask("A1")];
       const view = await mount({ tab: "decisions" });
       expect(view.text()).not.toContain("could not be read");
+    });
+
+    test("needs.list failing with open ideas on the deck is said, and no count claims none waits", async () => {
+      asks = [idea("I1")];
+      needsFail = "needs are down";
+      const view = await mount({ tab: "decisions" });
+      expect(view.text()).toContain("Idea I1: develop, park or kill?");
+      expect(view.text()).toContain("Couldn't read what needs you (needs are down)");
+      expect(view.text()).not.toContain("none waits on you");
     });
 
     test("an asks read that failed says so: never 'no decision waits'", async () => {

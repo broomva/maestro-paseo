@@ -162,19 +162,26 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     [everyHold, workspace],
   );
   // Every other open ask, ideas among them (BRO-3140): on the Decisions deck after its holds, never twice (by the
-  // keys of every hold, BRO-3112). null while asks.workspace has never been read.
-  const openRows = useMemo(
+  // keys of every hold, BRO-3112). null while asks.workspace has never been read. `everyOpen` is every workspace's
+  // (the chip offers them all); `openRows` the chosen one's.
+  const promptHeld = needs.data !== undefined && !(needs.data.unread ?? []).includes("asks");
+  const everyOpen = useMemo(
     () =>
       asksRead.data
         ? openAsks(
             asks,
             workspaceNameOf(asksRead.data.controlRepo),
-            workspace,
+            null,
             now,
             new Set(everyHold.map((entry) => entry.row.key)),
+            promptHeld,
           )
         : null,
-    [asksRead.data, asks, workspace, now, everyHold],
+    [asksRead.data, asks, now, everyHold, promptHeld],
+  );
+  const openRows = useMemo(
+    () => everyOpen?.filter((row) => workspace === null || row.entry.row.scope === workspace) ?? null,
+    [everyOpen, workspace],
   );
   const cards = useMemo(() => decisionCards(decisionsDeck(scopedHolds), openRows ?? []), [scopedHolds, openRows]);
   const laneOf = useMemo(() => new Map(cards.map((card) => [card.entry.row.key, card.lane])), [cards]);
@@ -257,7 +264,12 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
 
   // Opening on a hold (`params.hold`, M10) or work: once needs.list has been read since this screen mounted.
   // A refetch that failed concludes nothing (BRO-3094): the push waits for a read that landed.
-  const fresh = needs.isFetchedAfterMount && !needs.isError ? rows : null;
+  // An open ask on the Decisions deck is a hold to open too, once asks.workspace has answered as well.
+  const asksSettled = asksRead.isFetchedAfterMount || asksRead.isError;
+  const fresh =
+    needs.isFetchedAfterMount && !needs.isError && asksSettled
+      ? [...(rows ?? []), ...(everyOpen ?? []).map((row) => row.entry.row)]
+      : null;
   const handledFocus = useRef(-1);
   const { onOpenWork } = props;
   useEffect(() => {
@@ -424,7 +436,10 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const header = (
     <DeckHeader
       theme={theme}
-      workspaces={workspaceOptions([...(rows ?? []), ...(openRows ?? []).map((row) => row.entry.row)], items)}
+      workspaces={workspaceOptions(
+        tab === "decisions" ? [...(rows ?? []), ...(everyOpen ?? []).map((row) => row.entry.row)] : (rows ?? []),
+        items,
+      )}
       workspace={workspace}
       onWorkspace={onWorkspace}
       presence={presence}
@@ -454,27 +469,18 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
         : tab === "decisions"
           ? bothRead(read, asksReadState)
           : read;
+  const deckQueries =
+    tab === "health" ? [notices] : tab === "work" ? [needs, list] : tab === "decisions" ? [needs, asksRead] : [needs];
   // When the deck's read went stale: the oldest of the reads that failed again.
   const staleAt = Math.min(
-    ...(tab === "health"
-      ? [notices]
-      : tab === "work"
-        ? [needs, list]
-        : tab === "decisions"
-          ? [needs, asksRead]
-          : [needs]
-    )
-      .filter((query) => query.isError && query.data)
+    ...deckQueries
+      .filter((query) => query.isError && query.data && query.dataUpdatedAt > 0)
       .map((query) => query.dataUpdatedAt),
   );
-  const deckError =
-    tab === "health"
-      ? notices.error
-      : tab === "work" && !needs.isError
-        ? list.error
-        : tab === "decisions" && !needs.isError
-          ? asksRead.error
-          : needs.error;
+  // The read that failed with nothing to show first, then one that failed again: its own error, not a neighbour's.
+  const deckError = (
+    deckQueries.find((query) => query.isError && !query.data) ?? deckQueries.find((query) => query.isError)
+  )?.error;
   const deckUnread = tab === "health" ? notices.data?.summary.unread : unread;
   const empty = (
     <View style={{ paddingVertical: 28, gap: 10, alignItems: "flex-start" }}>
@@ -485,7 +491,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       >
         {deckEmptyWords(deckRead, tab, deckUnread)}
       </Text>
-      {deckRead === "error" ? (
+      {deckRead === "error" || deckRead === "stale" ? (
         <>
           <Text style={{ color: kit.muted, fontSize: 13 }}>{errorText(deckError)}</Text>
           <Pressable
@@ -598,17 +604,22 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
           <Text style={{ color: kit.needs, fontSize: 12.5, fontWeight: "600" }}>From the push · same hold</Text>
         </View>
       ) : null}
-      {deckRead === "stale" && Number.isFinite(staleAt) ? (
+      {deckRead === "stale" && Number.isFinite(staleAt) && keys.length > 0 ? (
         <Text testID="stale-read" accessibilityRole="alert" style={{ color: kit.warn, fontSize: 13.5 }}>
           {staleWords(staleAt, now)}
         </Text>
       ) : null}
-      {tab === "decisions" && cards.length > 0 ? (
+      {tab === "decisions" && cards.length > 0 && (deckRead === "ok" || deckRead === "stale") ? (
         <Text testID="decision-count" style={{ color: kit.muted, fontSize: 13.5, fontVariant: ["tabular-nums"] }}>
           {decisionCountWords(cards)}
         </Text>
       ) : null}
       {tab === "decisions" && asksRead.data ? <LedgerWarnings theme={theme} warnings={asksRead.data.warnings} /> : null}
+      {tab === "decisions" && read === "error" && entries.length > 0 ? (
+        <Text accessibilityRole="alert" style={{ color: kit.danger, fontSize: 13.5 }}>
+          {`Couldn't read what needs you (${errorText(needs.error)}): what waits on you may be missing.`}
+        </Text>
+      ) : null}
       {tab === "decisions" && asksReadState === "error" && entries.length > 0 ? (
         <Text accessibilityRole="alert" style={{ color: kit.danger, fontSize: 13.5 }}>
           {`Couldn't read the open asks (${errorText(asksRead.error)}): only the holds are listed.`}

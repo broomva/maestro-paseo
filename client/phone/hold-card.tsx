@@ -9,7 +9,7 @@ import { Pressable, Text, View } from "react-native";
 import { tint } from "../fleet-color";
 import { DeckHold } from "../kit/deck";
 import type { Choice, InspectorItem } from "../kit/inspector";
-import { KIND_LOOK } from "../kit/inspector-model";
+import { KIND_LOOK, withoutRefused } from "../kit/inspector-model";
 import { Dot, MONO, TABULAR } from "../kit/parts";
 import { kitOf } from "../kit/tokens";
 import type { DeckVerbSpec } from "./model";
@@ -177,7 +177,8 @@ export function HoldCard({
   const chosen = options.find((option) => option.id === choice);
   // An ask that cannot be answered here (BRO-3111) offers no live Answer: the card says why.
   const refusal = item.kind === "ask" ? (item.refusal ?? null) : null;
-  const locked = waiting !== null || busy || refusal !== null;
+  const locked = waiting !== null || busy;
+  const fixed = locked || refusal !== null;
   const inWords = item.kind === "ask" && options.length === 0;
   const summary =
     item.kind === "ask"
@@ -194,20 +195,18 @@ export function HoldCard({
       title={item.title}
       summary={summary}
       onDetails={onDetails}
-      verbs={verbs
-        .filter((verb) => !(refusal && verb.id === "answer"))
-        .map((verb) => {
-          const answer = verb.id === "answer";
-          // An answer names the option it sends (J3), and asks for a second press when it cannot be undone.
-          const label = answer && chosen && armed ? `Confirm: ${chosen.label}` : verb.label;
-          return {
-            label,
-            primary: verb.primary,
-            accessibilityLabel: answer && chosen ? `${armed ? "Confirm" : "Answer"} with ${chosen.label}` : undefined,
-            disabled: locked || (answer && options.length > 0 && !chosen) || (answer && inWords && words.trim() === ""),
-            onPress: () => onVerb(verb.id),
-          };
-        })}
+      verbs={withoutRefused(item, verbs).map((verb) => {
+        const answer = verb.id === "answer";
+        // An answer names the option it sends (J3), and asks for a second press when it cannot be undone.
+        const label = answer && chosen && armed ? `Confirm: ${chosen.label}` : verb.label;
+        return {
+          label,
+          primary: verb.primary,
+          accessibilityLabel: answer && chosen ? `${armed ? "Confirm" : "Answer"} with ${chosen.label}` : undefined,
+          disabled: locked || (answer && options.length > 0 && !chosen) || (answer && inWords && words.trim() === ""),
+          onPress: () => onVerb(verb.id),
+        };
+      })}
     >
       {lane ? (
         <View
@@ -266,7 +265,7 @@ export function HoldCard({
             accessibilityLabel={`Your words for ${item.title}`}
             value={words}
             onChangeText={onWords}
-            editable={!locked}
+            editable={!fixed}
             multiline
             placeholder="Your words"
             placeholderTextColor={kit.muted}
@@ -291,7 +290,7 @@ export function HoldCard({
           options={options}
           chosen={choice}
           armed={armed}
-          disabled={locked}
+          disabled={fixed}
           onChoose={onChoose}
         />
       ) : null}

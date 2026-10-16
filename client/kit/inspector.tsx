@@ -563,7 +563,7 @@ export function InspectorBody({
             <Text style={{ color: kit.muted, fontSize: 12.5 }}>{item.fallback.line}</Text>
           </View>,
         );
-      if (!compact && onWords)
+      if (!compact && onWords && !item.refusal)
         sections.push(
           <WordsField
             key="words"

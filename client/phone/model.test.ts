@@ -432,6 +432,16 @@ describe("every open ask on the Decisions deck", () => {
     ]);
   });
 
+  test("one ask read twice is one card; a waiting prompt ask needs.list did not hold is left to the Feed's approval", () => {
+    const twice = [quiet("Q1"), quiet("Q1")];
+    expect(openAsks(twice, "broomva", null, NOW)).toHaveLength(1);
+    // One prompt is one hold (server/needs.ts): its session's permission prompt is the Feed's approval.
+    const prompt = quiet("P1", { waiting: true, promptSession: "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d" });
+    expect(openAsks([prompt], "broomva", null, NOW, new Set(), true)).toHaveLength(0);
+    // When needs.list could not read the asks, nothing is known of the prompt: it stays, labelled.
+    expect(openAsks([prompt], "broomva", null, NOW, new Set(), false).map((row) => row.lane)).toEqual(["waits"]);
+  });
+
   test("a row names its ledger, whether it can be undone, its age and what silence does", () => {
     const [row] = openAsks(
       [

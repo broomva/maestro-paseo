@@ -380,36 +380,44 @@ export function openAsks(
   scope: string | null,
   now: number,
   held: ReadonlySet<string> = new Set(),
+  promptHeld = false,
 ): OpenAskRow[] {
   const laneOf = (ask: DecisionAsk): DeckLane => (ask.idea ? "idea" : ask.waiting ? "waits" : "open");
-  return asks
-    .filter((ask) => ask.state === "open" && (scope === null || (ask.scope ?? workspace) === scope))
-    .map((ask) => ({ ask, row: askRowOf(ask, workspace, ask.askedAt ?? "") }))
-    .filter(({ row }) => !held.has(row.key))
-    .sort(
-      (a, b) =>
-        LANE_ORDER[laneOf(a.ask)] - LANE_ORDER[laneOf(b.ask)] ||
-        (a.ask.askedAt ?? "\uffff").localeCompare(b.ask.askedAt ?? "\uffff") ||
-        a.ask.id.localeCompare(b.ask.id),
-    )
-    .map(({ ask, row }) => {
-      const undo = reversibility(ask.options);
-      const silence = silenceOf(ask);
-      return {
-        key: row.key,
-        lane: laneOf(ask),
-        title: headlineOf(ask).headline,
-        meta: [
-          ledgerName(ledgerOf(ask)),
-          undo === true ? "reversible" : undo === false ? "an option cannot be undone" : null,
-        ]
-          .filter(Boolean)
-          .join(" · "),
-        age: ago(ask.askedAt, now),
-        silent: silence ? `silent → ${silence.text.replace(/^If you say nothing: /, "")}` : null,
-        entry: { row, item: null, ask },
-      };
-    });
+  const seen = new Set<string>();
+  return (
+    asks
+      .filter((ask) => ask.state === "open" && (scope === null || (ask.scope ?? workspace) === scope))
+      // One prompt is one hold (server/needs.ts): a waiting prompt ask needs.list did not hold is held by its
+      // session's permission prompt, which the Feed carries as the approval. `promptHeld`: needs.list read its asks.
+      .filter((ask) => !(promptHeld && ask.promptSession && ask.waiting))
+      .map((ask) => ({ ask, row: askRowOf(ask, workspace, ask.askedAt ?? "") }))
+      // One ask read twice is one card, as it is one hold.
+      .filter(({ row }) => !held.has(row.key) && !seen.has(row.key) && Boolean(seen.add(row.key)))
+      .sort(
+        (a, b) =>
+          LANE_ORDER[laneOf(a.ask)] - LANE_ORDER[laneOf(b.ask)] ||
+          (a.ask.askedAt ?? "\uffff").localeCompare(b.ask.askedAt ?? "\uffff") ||
+          a.ask.id.localeCompare(b.ask.id),
+      )
+      .map(({ ask, row }) => {
+        const undo = reversibility(ask.options);
+        const silence = silenceOf(ask);
+        return {
+          key: row.key,
+          lane: laneOf(ask),
+          title: headlineOf(ask).headline,
+          meta: [
+            ledgerName(ledgerOf(ask)),
+            undo === true ? "reversible" : undo === false ? "an option cannot be undone" : null,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+          age: ago(ask.askedAt, now),
+          silent: silence ? `silent → ${silence.text.replace(/^If you say nothing: /, "")}` : null,
+          entry: { row, item: null, ask },
+        };
+      })
+  );
 }
 
 /** A card on the Decisions deck: a hold or an open ask, and the words it wears. */
@@ -429,7 +437,7 @@ export function decisionCards(holds: readonly NeedEntry[], open: readonly OpenAs
   ];
 }
 
-/** The line over the Decisions deck: how many it lists and how many of them wait on you ("23 open · none waits on you"). */
+/** The line over the Decisions deck: how many it lists and how many of them wait on you ("23 open · none waits on you"). Only over two reads that landed: a failed one is said instead. */
 export function decisionCountWords(cards: readonly DecisionCard[]): string {
   const waits = cards.filter((card) => card.lane === "waits").length;
   const ideas = cards.filter((card) => card.lane === "idea").length;
