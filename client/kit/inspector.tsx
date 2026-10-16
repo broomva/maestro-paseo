@@ -29,6 +29,7 @@ import {
   type VerbSpec,
   verbsFor,
   withoutRefused,
+  wordsPlaceholder,
 } from "./inspector-model";
 import { Dot, Kicker, MONO, PASS_THROUGH, Pill, SectionLabel, TABULAR } from "./parts";
 import { type Kit, kitOf } from "./tokens";
@@ -570,7 +571,7 @@ export function InspectorBody({
             theme={theme}
             value={words ?? ""}
             onChange={onWords}
-            placeholder="Add words (optional)"
+            placeholder={item.kind === "ask" ? wordsPlaceholder(item.options, chosen) : "Add words (optional)"}
             label={item.fieldLabel ?? `Your words for ${item.title}`}
           />,
         );

@@ -29,6 +29,7 @@ import { requestIntent } from "../intent";
 import { type Directions, swipeDirections } from "../kit/assumptions";
 import { Deck } from "../kit/deck";
 import { InspectorCard, type InspectorItem } from "../kit/inspector";
+import { OTHER_CHOICE } from "../kit/inspector-model";
 import { Chip, SafeBottom } from "../kit/parts";
 import { PEEK, PullSheet, TAB_BAND } from "../kit/pull-sheet";
 import { TabBar } from "../kit/tab-bar";
@@ -349,6 +350,12 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       } else inspector.selectHold(key);
       return;
     }
+    // Your words go with it (BRO-3146): a note beside the option, or the answer itself when Other is chosen.
+    const words = item.kind === "ask" ? (said[key] ?? "").trim() : "";
+    if (picked === OTHER_CHOICE && !words) {
+      toast.show("Write your answer: Other takes your own words.");
+      return;
+    }
     const irreversible = irreversibleChoice(item, picked);
     const step = answerStep(armed, { key, choice: picked, irreversible }, Date.now());
     if (step === "wait") return;
@@ -358,8 +365,9 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       return;
     }
     setArmed(null);
-    const sent = await inspector.act("answer", inspector.targetOf(entry), picked, "", irreversible);
+    const sent = await inspector.act("answer", inspector.targetOf(entry), picked, words, irreversible);
     if (sent) {
+      if (words) setSaid((now) => ({ ...now, [key]: "" }));
       inspector.setOpen(false);
       advance(key);
     }

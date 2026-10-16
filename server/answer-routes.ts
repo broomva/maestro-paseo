@@ -77,6 +77,10 @@ export interface AnsweredReceipt {
   originAgentId: string | null;
   answerOption: string | null;
   answer: string | null;
+  /** Your words beside the option (`answer_note`, BRO-3146); absent from a receipt written before it. */
+  answerNote?: string | null;
+  /** Your answer when none of the options fit (`answer_other`, BRO-3146); absent from a receipt written before it. */
+  answerOther?: string | null;
 }
 
 export interface RoutedReceipt {
@@ -233,6 +237,8 @@ export function readLog(source: string): Log {
         originAgentId: text(row.originAgentId),
         answerOption: text(row.answerOption),
         answer: text(row.answer),
+        answerNote: text(row.answerNote),
+        answerOther: text(row.answerOther),
       });
     }
   }
@@ -284,6 +290,32 @@ const UNREAD_LINE =
 const OWNER_ONLY_LINE =
   "The ask is owner-only: the answer decides it, and the owner-only act itself stays the owner's. Hand over the exact command; do not run it.";
 
+/**
+ * The answer taken apart (BRO-3146): the option it took, or that it took none (an Other answer, in your words),
+ * and your note beside it, each on its own labelled line, so the session acts on the option and reads the note
+ * rather than parsing them out of the verbatim text. Empty for an answer with neither words nor an option. Pure.
+ */
+export function answerParts(
+  receipt: Pick<AnsweredReceipt, "answerOption" | "answerNote" | "answerOther">,
+  ask: { options: readonly { id: string; label: string }[] } | null,
+): string[] {
+  const option = receipt.answerOption ? ask?.options.find((entry) => entry.id === receipt.answerOption) : undefined;
+  const lines = [
+    ...(receipt.answerOption
+      ? [`- Option taken: ${receipt.answerOption}${option ? ` ("${option.label}")` : ""}`]
+      : receipt.answerOther
+        ? [
+            "- Option taken: none of them. This is an Other answer: the owner's words are the decision; do not map them onto an option.",
+            `- Other: ${receipt.answerOther.split("\n").join(" / ")}`,
+          ]
+        : []),
+    ...(receipt.answerNote
+      ? [`- Note (read before acting; it may narrow the choice): ${receipt.answerNote.split("\n").join(" / ")}`]
+      : []),
+  ];
+  return lines.length > 0 ? ["", "In parts:", ...lines] : [];
+}
+
 /** The message an asking session gets: your answer, verbatim, quoted, and where it is written. */
 export function deliveryText(receipt: AnsweredReceipt, ask: DecisionAsk | null): string {
   const what = ask?.headline ?? ask?.question ?? receipt.id;
@@ -296,6 +328,7 @@ export function deliveryText(receipt: AnsweredReceipt, ask: DecisionAsk | null):
     "The answer, verbatim:",
     "",
     ...quoted,
+    ...answerParts(receipt, ask),
     "",
     `${where} Act on it, and carry on.`,
     ...(ownerOnly(ask) ? ["", OWNER_ONLY_LINE] : []),
@@ -350,6 +383,7 @@ export function relayText(receipt: AnsweredReceipt, ask: DecisionAsk, why: strin
     "The answer, verbatim:",
     "",
     ...quoted,
+    ...answerParts(receipt, ask),
     "",
     "Decide what follows: carry it out if it is this arc's to do, append it to the arc's ticket, or file work with `maestro new`. Nothing has been filed for it.",
   ].join("\n");
@@ -384,6 +418,7 @@ export function routedWork(
     "## Your answer, verbatim",
     "",
     ...(receipt.answer ?? "(no words)").split("\n").map((line) => `> ${line}`),
+    ...answerParts(receipt, ask),
     "",
     "## How",
     "",
@@ -416,7 +451,14 @@ export function conductorCandidate(
       stakes: ask.stakes,
       options: ask.options.map((option) => ({ id: option.id, label: option.label, consequence: option.consequence })),
     },
-    answer: { option: receipt.answerOption, words: receipt.answer ?? ask.answer, at: receipt.at },
+    answer: {
+      option: receipt.answerOption,
+      words: receipt.answer ?? ask.answer,
+      at: receipt.at,
+      // Only when said (BRO-3146): a candidate with neither reads exactly as one queued before.
+      ...(receipt.answerNote ? { note: receipt.answerNote } : {}),
+      ...(receipt.answerOther ? { other: receipt.answerOther } : {}),
+    },
     pointers: {
       key: answerKey(receipt),
       home: receipt.home,
@@ -452,6 +494,10 @@ export function candidateWork(candidate: ConductorCandidate): { title: string; b
     "## Your answer, verbatim",
     "",
     ...(answer.words ?? "(no words)").split("\n").map((line) => `> ${line}`),
+    ...answerParts(
+      { answerOption: answer.option, answerNote: answer.note ?? null, answerOther: answer.other ?? null },
+      ask,
+    ),
     "",
     "## Where to look",
     "",

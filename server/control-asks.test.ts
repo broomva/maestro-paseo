@@ -176,6 +176,9 @@ describe("reading decision asks", () => {
       answeredAt: null,
       answer: null,
       answerOption: null,
+      answerNote: null,
+      answerOther: null,
+      allowOther: true,
       state: "open",
       origin: null,
       refusal: null,
@@ -284,8 +287,9 @@ describe("writing an answer", () => {
     expect(decisionsOf(both, "test-arc.yaml")[0]?.answer).toBe(
       "File all four: Each becomes a Linear issue.\nUnder BRO-2800.\nNot this week.",
     );
-    // k = 5 keys and an answer of m = 3 lines: at most k + (m - 1) = 7 lines added; one line per key is 5.
-    expect(both.split("\n").length - LEDGER.split("\n").length).toBe(5);
+    // k = 6 keys (answer_note too, BRO-3146) and an answer of m = 3 lines: at most k + (m - 1) = 8 lines added;
+    // one line per key is 6.
+    expect(both.split("\n").length - LEDGER.split("\n").length).toBe(6);
     const words = answered(LEDGER, { note: "Hold it." });
     expect(words).toContain('    answer: "Hold it."\n');
     expect(words).not.toContain("answer_option");
@@ -436,6 +440,63 @@ describe("writing an answer", () => {
     expect(await readdir(asks)).toEqual(["test-arc.yaml"]);
     // Not ours to remove: the lock stays with whoever holds its token now.
     expect(await readdir(locks)).toHaveLength(1);
+  });
+
+  // BRO-3146: "I can't add optional text or instructions besides the choice options". Words beside an option are
+  // its `answer_note`; words with no option, on an ask that offers options, are an Other answer (`answer_other`).
+  test("words beside an option are its answer_note, kept apart from the option and in the full answer too", () => {
+    const out = answered(LEDGER, { option: "ticket-all", note: "Under BRO-2800.\nNot this week." });
+    const [ask] = decisionsOf(out, "test-arc.yaml");
+    expect([ask?.answerOption, ask?.answerNote, ask?.answerOther]).toEqual([
+      "ticket-all",
+      "Under BRO-2800.\nNot this week.",
+      null,
+    ]);
+    expect(ask?.answer).toBe("File all four: Each becomes a Linear issue.\nUnder BRO-2800.\nNot this week.");
+    expect(out).toContain('    answer_note: "Under BRO-2800.\\nNot this week."\n');
+    // An option alone writes no note key at all: an answer from before BRO-3146 reads exactly as it did.
+    expect(answered(LEDGER, { option: "drop" })).not.toContain("answer_note");
+  });
+
+  test("words and no option, on an ask that offers options, are an Other answer: answer_other, no option", () => {
+    const out = answered(LEDGER, { note: "Ask Legal first." });
+    const [ask] = decisionsOf(out, "test-arc.yaml");
+    expect([ask?.answerOption, ask?.answerOther, ask?.answerNote, ask?.answer]).toEqual([
+      null,
+      "Ask Legal first.",
+      null,
+      "Ask Legal first.",
+    ]);
+    expect(out).toContain('    answer_other: "Ask Legal first."\n');
+  });
+
+  test("an ask written with no options is answered in words as before: no Other, no note key", () => {
+    const out = answered("asks:\n  - id: a\n    ask: q\n", { id: "a", note: "Yes, go." });
+    expect(out).not.toContain("answer_other");
+    expect(out).not.toContain("answer_note");
+    expect(decisionsOf(out, "l.yaml")[0]?.answer).toBe("Yes, go.");
+  });
+
+  test("an ask with allow_other: false refuses an Other answer, and still takes a note beside an option", () => {
+    const closed = LEDGER.replace(
+      "    class:         decision\n",
+      "    class:         decision\n    allow_other:   false\n",
+    );
+    expect(decisionsOf(closed, "test-arc.yaml")[0]?.allowOther).toBe(false);
+    expect(decisionsOf(LEDGER, "test-arc.yaml")[0]?.allowOther).toBe(true);
+    expect(() => answered(closed, { note: "Something else." })).toThrow("takes one of its options");
+    const noted = decisionsOf(answered(closed, { option: "drop", note: "Fine." }), "test-arc.yaml")[0];
+    expect([noted?.answerOption, noted?.answerNote]).toEqual(["drop", "Fine."]);
+  });
+
+  test("an answer clears a note or Other a writer left on the open entry, so it never says words you did not", () => {
+    const stale = LEDGER.replace(
+      "    class:         decision\n",
+      "    class:         decision\n    answer_note: stale\n",
+    );
+    const out = answered(stale, { option: "drop" });
+    expect(out).toContain("    answer_note: null\n");
+    expect(decisionsOf(out, "test-arc.yaml")[0]?.answerNote).toBeNull();
   });
 
   // The workspace's own validator, where this machine has it: an answer must leave a valid ledger valid.

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { DecisionAsk } from "../shared/fleet";
 import { askHoldKey, type NeedRow } from "../shared/needs";
 import { fakeWork } from "./fake-work";
+import { OTHER_CHOICE, OTHER_ROW, withOther, wordsPlaceholder } from "./kit/inspector-model";
 import { decideApproval, planVerb, promptSession, receiptOf, settleDelay } from "./verbs";
 
 const live = { agentId: "agent-9", workspaceId: "ws1" };
@@ -234,6 +235,32 @@ describe("an answer carries your words (J3), a prompt goes with Unblock (J4)", (
       note: "same vendor for now",
       done: "Answered in your words",
     });
+  });
+
+  test("Other chosen sends no option, your words as the answer; with no words it sends nothing (BRO-3146)", () => {
+    expect(planVerb("answer", { row, ask: decision }, OTHER_CHOICE, " ask Legal first ")).toMatchObject({
+      call: "answer",
+      option: null,
+      note: "ask Legal first",
+    });
+    expect(planVerb("answer", { row, ask: decision }, OTHER_CHOICE, "  ")).toMatchObject({ call: "go" });
+  });
+
+  test("the Other row follows an ask's options, unless it has none, says allow_other: false, or is an idea", () => {
+    const own = [{ id: "off" }, { id: "all" }];
+    expect(withOther(own, decision)).toEqual([...own, OTHER_ROW]);
+    expect(withOther(own, { ...decision, allowOther: true })).toEqual([...own, OTHER_ROW]);
+    expect(withOther(own, { ...decision, allowOther: false })).toEqual(own);
+    expect(withOther(own, { ...decision, idea: { wake: null } })).toEqual(own);
+    expect(withOther([], decision)).toEqual([]);
+    expect(withOther(own, null)).toEqual(own);
+  });
+
+  test("the words field says what it is for: a note beside an option, else your answer", () => {
+    expect(wordsPlaceholder([{ id: "off" }], "off")).toContain("Add a note");
+    expect(wordsPlaceholder([{ id: "off" }], undefined)).toContain("Add a note");
+    expect(wordsPlaceholder([{ id: "off" }], OTHER_CHOICE)).toBe("Your answer, since none of the options fit");
+    expect(wordsPlaceholder([], null)).toBe("Your answer");
   });
 
   test("nothing chosen and nothing said opens Decisions: no empty answer is ever sent", () => {

@@ -11,11 +11,15 @@ import {
   answerKey,
   arcAskers,
   askFor,
+  candidateWork,
+  conductorCandidate,
   deliveryText,
   FOR_THE_CONDUCTOR,
   ownerOnly,
   type Relay,
   readLog,
+  relayText,
+  routedWork,
 } from "./answer-routes";
 import { decisionsOf } from "./control-asks";
 import type { Paseo } from "./runs";
@@ -643,6 +647,56 @@ describe("the delivery's words", () => {
     const text = deliveryText({ ...receipt("A1", "checkout"), answer: "Line one.\n  indented two." } as never, null);
     expect(text).toContain("> Line one.\n>   indented two.");
     expect(text).toContain("It is written in /w/.control/asks/x.");
+  });
+});
+
+describe("your note and an Other answer reach the asking side, labelled (BRO-3146)", () => {
+  const [a1] = decisionsOf(SOURCE, LEDGER);
+  const noted = receipt("A1", "checkout", {
+    answerOption: "ship",
+    answer: "Ship: It ships.\nOnly after the demo.",
+    answerNote: "Only after the demo.",
+  });
+  const other = receipt("A1", "checkout", { answer: "Ask Legal first.", answerOther: "Ask Legal first." });
+
+  test("the receipt log carries the note and the Other answer; one written before them reads null", () => {
+    const log = readLog(
+      [JSON.stringify(noted), JSON.stringify(other), JSON.stringify(receipt("A2", "main"))].join("\n"),
+    );
+    expect(log.answered.map((entry) => [entry.answerNote, entry.answerOther])).toEqual([
+      ["Only after the demo.", null],
+      [null, "Ask Legal first."],
+      [null, null],
+    ]);
+  });
+
+  test("the session that asked gets the option and the note on their own lines, after the verbatim answer", () => {
+    const text = deliveryText(readLog(JSON.stringify(noted)).answered[0] as never, a1 ?? null);
+    expect(text).toContain("> Ship: It ships.\n> Only after the demo.");
+    expect(text).toContain('- Option taken: ship ("Ship")');
+    expect(text).toContain("- Note (read before acting; it may narrow the choice): Only after the demo.");
+  });
+
+  test("an Other answer says no option was taken, and gives the words as the decision", () => {
+    const text = deliveryText(readLog(JSON.stringify(other)).answered[0] as never, a1 ?? null);
+    expect(text).toContain("- Option taken: none of them. This is an Other answer");
+    expect(text).toContain("- Other: Ask Legal first.");
+    expect(text).not.toContain("- Note");
+  });
+
+  test("a relay, routed work, and a conductor candidate carry them too", () => {
+    const entry = readLog(JSON.stringify(noted)).answered[0] as never;
+    if (!a1) throw new Error("no A1");
+    expect(relayText(entry, a1, "Its asker is gone.", "a peer")).toContain("- Note (read before acting");
+    expect(routedWork(entry, a1, "Its asker is gone.").brief).toContain('- Option taken: ship ("Ship")');
+    const candidate = conductorCandidate(readLog(JSON.stringify(other)).answered[0] as never, a1, null, "/repo");
+    expect([candidate.answer.other, candidate.answer.note]).toEqual(["Ask Legal first.", undefined]);
+    expect(candidateWork(candidate).brief).toContain("- Other: Ask Legal first.");
+  });
+
+  test("an answer from before BRO-3146 reads exactly as it did: no parts block", () => {
+    const old = receipt("A1", "checkout", { answerOption: null, answer: "Hold it." });
+    expect(deliveryText(old as never, a1 ?? null)).not.toContain("In parts:");
   });
 });
 

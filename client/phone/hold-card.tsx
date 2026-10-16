@@ -9,7 +9,7 @@ import { Pressable, Text, View } from "react-native";
 import { tint } from "../fleet-color";
 import { DeckHold } from "../kit/deck";
 import type { Choice, InspectorItem } from "../kit/inspector";
-import { KIND_LOOK, withoutRefused } from "../kit/inspector-model";
+import { KIND_LOOK, OTHER_CHOICE, withoutRefused, wordsPlaceholder } from "../kit/inspector-model";
 import { Dot, MONO, TABULAR } from "../kit/parts";
 import { kitOf } from "../kit/tokens";
 import type { DeckVerbSpec } from "./model";
@@ -162,7 +162,10 @@ export function HoldCard({
   waiting: string | null;
   /** A call on this hold is in flight. */
   busy: boolean;
-  /** Your words, for an ask written with no options: the only way to answer it (M3 has no field when there are options). */
+  /**
+   * Your words on an ask (BRO-3146): the answer itself for an ask written with no options or with Other chosen,
+   * else a note beside the option you chose. M3 had no field when there were options; the owner asked for one.
+   */
   words: string;
   onChoose: (id: string) => void;
   onWords: (text: string) => void;
@@ -180,6 +183,9 @@ export function HoldCard({
   const locked = waiting !== null || busy;
   const fixed = locked || refusal !== null;
   const inWords = item.kind === "ask" && options.length === 0;
+  // Other chosen: your words are the answer, so the Answer waits for them.
+  const otherChosen = item.kind === "ask" && choice === OTHER_CHOICE;
+  const needsWords = inWords || otherChosen;
   const summary =
     item.kind === "ask"
       ? [item.cost ? `Waiting costs: ${item.cost}` : null, item.whyYou ? `Why you: ${item.whyYou}` : null]
@@ -203,7 +209,8 @@ export function HoldCard({
           label,
           primary: verb.primary,
           accessibilityLabel: answer && chosen ? `${armed ? "Confirm" : "Answer"} with ${chosen.label}` : undefined,
-          disabled: locked || (answer && options.length > 0 && !chosen) || (answer && inWords && words.trim() === ""),
+          disabled:
+            locked || (answer && options.length > 0 && !chosen) || (answer && needsWords && words.trim() === ""),
           onPress: () => onVerb(verb.id),
         };
       })}
@@ -257,31 +264,9 @@ export function HoldCard({
         </View>
       ) : null}
       {inWords ? (
-        <View style={{ gap: 6 }}>
-          <Text style={{ color: kit.muted, fontSize: 12.5 }}>
-            No options were written for this ask: answer it in your own words.
-          </Text>
-          <TextInput
-            accessibilityLabel={`Your words for ${item.title}`}
-            value={words}
-            onChangeText={onWords}
-            editable={!fixed}
-            multiline
-            placeholder="Your words"
-            placeholderTextColor={kit.muted}
-            style={{
-              minHeight: 76,
-              borderRadius: 12,
-              borderWidth: 1,
-              borderColor: kit.hairline,
-              backgroundColor: kit.bg,
-              color: kit.fg,
-              fontSize: 15,
-              paddingHorizontal: 12,
-              paddingVertical: 10,
-            }}
-          />
-        </View>
+        <Text style={{ color: kit.muted, fontSize: 12.5 }}>
+          No options were written for this ask: answer it in your own words.
+        </Text>
       ) : null}
       {options.length > 0 ? (
         <OptionRows
@@ -293,6 +278,33 @@ export function HoldCard({
           disabled={fixed}
           onChoose={onChoose}
         />
+      ) : null}
+      {item.kind === "ask" && refusal === null ? (
+        <View style={{ gap: 6 }}>
+          <TextInput
+            testID="deck-words"
+            accessibilityLabel={
+              needsWords ? `Your words for ${item.title}` : `A note on your answer for ${item.title} (optional)`
+            }
+            value={words}
+            onChangeText={onWords}
+            editable={!fixed}
+            multiline
+            placeholder={wordsPlaceholder(options, choice)}
+            placeholderTextColor={kit.muted}
+            style={{
+              minHeight: needsWords ? 76 : 44,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: kit.hairline,
+              backgroundColor: kit.bg,
+              color: kit.fg,
+              fontSize: 15,
+              paddingHorizontal: 12,
+              paddingVertical: 10,
+            }}
+          />
+        </View>
       ) : null}
       {refusal ? (
         <Text accessibilityRole="alert" style={{ color: kit.warn, fontSize: 13.5, lineHeight: 19 }}>

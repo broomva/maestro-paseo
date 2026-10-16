@@ -771,6 +771,47 @@ describe("M5, Decisions", () => {
     expect(sent("ask.answer")[0]).toMatchObject({ option: "off" });
   });
 
+  // BRO-3146: the owner could not add words beside an option on the phone. Now a note rides with the option,
+  // and an Other row answers in your words when none fit.
+  const type = async (view: Awaited<ReturnType<typeof mount>>, label: string, words: string) => {
+    await act(async () => {
+      const field = view.label(label) as unknown as { value: string; dispatchEvent(event: unknown): boolean };
+      const setter = Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(field, words);
+      field.dispatchEvent(new win.Event("input", { bubbles: true }));
+    });
+    await settle(60);
+  };
+
+  test("a note beside the option you chose goes with it (BRO-3146)", async () => {
+    asks = [ask("A1")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(view.labelled("Keep them off")[0]);
+    const title = asks[0]?.headline ?? "";
+    expect(view.label(`A note on your answer for ${title} (optional)`) !== null).toBe(true);
+    await type(view, `A note on your answer for ${title} (optional)`, "Until the launch.");
+    await view.press(view.labelled("Answer")[0]);
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: "off", note: "Until the launch." })]);
+  });
+
+  test("Other answers in your words: no option is sent, and Answer waits for the words (BRO-3146)", async () => {
+    asks = [ask("A1")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(view.labelled("Other…")[0]);
+    const title = asks[0]?.headline ?? "";
+    expect(view.label("Answer with Other…")?.getAttribute("aria-disabled")).toBe("true");
+    await type(view, `Your words for ${title}`, "Only on my machine first.");
+    await view.press(view.label("Answer with Other…"));
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: null, note: "Only on my machine first." })]);
+  });
+
+  test("an ask that says allow_other: false offers no Other row (BRO-3146)", async () => {
+    asks = [ask("A1", { allowOther: false })];
+    const view = await mount({ tab: "decisions" });
+    expect(view.labelled("Keep them off").length).toBeGreaterThan(0);
+    expect(view.labelled("Other…")).toHaveLength(0);
+  });
+
   test("an ask written with no options is answered in your own words, and Answer waits for them", async () => {
     asks = [ask("W1", { headline: "Rename this session?", options: [], fallback: "continue as is" })];
     const view = await mount({ tab: "decisions" });

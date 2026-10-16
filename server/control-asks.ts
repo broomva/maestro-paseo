@@ -246,6 +246,9 @@ export function decisionOf(
     answeredAt: text(row.answered_at) ?? text(row.defaulted_at),
     answer: answerKey ? text(row[answerKey]) : null,
     answerOption: text(row.answer_option),
+    answerNote: text(row.answer_note),
+    answerOther: text(row.answer_other),
+    allowOther: row.allow_other !== false,
     state,
     origin: originAgent ? { agentId: originAgent, cwd: text(origin.cwd) } : null,
     refusal,
@@ -427,6 +430,8 @@ export function answerText(option: DecisionOption | null, note: string): string 
 }
 
 const WRITTEN_KEYS = ["answer_option", "answered_at", "answered_by", "status"] as const;
+/** Your words, apart from the option (BRO-3146): beside it (`answer_note`), or in place of every option (`answer_other`). */
+const WORD_KEYS = ["answer_note", "answer_other"] as const;
 
 /** A YYYY-MM-DD that is a real day: 2026-02-30 is not (JS would roll it to March; the ledger's validator refuses it). */
 export function isCalendarDay(value: string): boolean {
@@ -528,6 +533,16 @@ export function withAnswer(
       );
     }
   }
+  // Words with no option, on an ask that offers options, take none of them: an Other answer (BRO-3146), which an
+  // ask may refuse with `allow_other: false`. Read from the ask's structure, never from what the words say.
+  const words = input.note.trim();
+  const other = !option && options.length > 0 && words.length > 0 ? words : null;
+  if (other !== null && row.allow_other === false) {
+    throw new UserError(
+      `The ask ${input.id} takes one of its options, not an answer in your words. It was not answered.`,
+    );
+  }
+  const note = option && words.length > 0 ? words : null;
   // The option's label may name the date the ask proposed; the answer says the one you chose.
   const answer = [answerText(option, input.note), wake !== null ? `Wake: ${wake}.` : ""].filter(Boolean).join("\n");
   if (!answer) throw new UserError("Choose an option or write an answer.");
@@ -542,9 +557,15 @@ export function withAnswer(
     : target.has("answer_option")
       ? [["answer_option", null]]
       : [];
+  // Each word key is written when it holds your words, and cleared when a writer left one on the open entry.
+  const said: Record<(typeof WORD_KEYS)[number], string | null> = { answer_note: note, answer_other: other };
+  const worded: [string, string | null][] = WORD_KEYS.flatMap((name): [string, string | null][] =>
+    said[name] !== null ? [[name, said[name]]] : target.has(name) ? [[name, null]] : [],
+  );
   const writes: [string, string | null][] = [
     [answerKey, answer],
     ...chosen,
+    ...worded,
     ["answered_at", stamp],
     ["answered_by", "owner:maestro"],
     ["status", "resolved"],
@@ -577,11 +598,13 @@ export function withAnswer(
     ask.answeredAt !== stamp ||
     ask.answer !== answer ||
     ask.answerOption !== (option?.id ?? null) ||
+    (ask.answerNote ?? null) !== note ||
+    (ask.answerOther ?? null) !== other ||
     (wake !== null && ask.idea?.wake !== wake)
   ) {
     throw new UserError(unwritable);
   }
-  const extra = wake !== null ? ["wake"] : [];
+  const extra = [...(wake !== null ? ["wake"] : []), ...worded.map(([name]) => name)];
   if (untouched(after, index, answerKey, extra) !== untouched(data, index, answerKey, extra)) {
     throw new UserError(unwritable);
   }
@@ -660,6 +683,9 @@ async function answerNow(
     entryHash: hash,
     answerOption: ask.answerOption,
     answer: ask.answer,
+    // Only when said (BRO-3146): a receipt with neither reads exactly as one written before.
+    ...(ask.answerNote ? { answerNote: ask.answerNote } : {}),
+    ...(ask.answerOther ? { answerOther: ask.answerOther } : {}),
     ...(input.wake ? { wake: input.wake } : {}),
   };
   // The answer is in the ledger already: a receipt that cannot be written is said, not thrown.

@@ -101,6 +101,42 @@ export function answerLabel(options: readonly { id: string }[], chosen: string |
   return at < 0 ? "Answer" : `Answer with ${at + 1}`;
 }
 
+/**
+ * The Other row (BRO-3146): an answer that takes none of an ask's options, in your words. Its id is no ledger's
+ * (a ledger's option ids carry no colon), so an answer with it chosen sends no option, and the server writes
+ * your words as the ask's `answer_other`.
+ */
+export const OTHER_CHOICE = "maestro:other";
+
+/** The Other row as every ask card draws it, after the ask's own options. */
+export const OTHER_ROW = {
+  id: OTHER_CHOICE,
+  label: "Other…",
+  note: "None of these fit: write your answer below.",
+} as const;
+
+/**
+ * An ask's options with the Other row after them: only when it has options (one with none is answered in words
+ * already), says nothing against it (`allow_other: false`), and is not an idea (develop, park or kill). Pure.
+ */
+export function withOther<C extends { id: string }>(
+  options: readonly C[],
+  ask: { allowOther?: boolean; idea?: unknown } | null,
+): (C | typeof OTHER_ROW)[] {
+  if (!ask || options.length === 0 || ask.allowOther === false || ask.idea) return [...options];
+  return [...options, OTHER_ROW];
+}
+
+/**
+ * What the words field under an ask's options is for, as its placeholder says it (BRO-3146): your answer when the
+ * ask has no options or Other is chosen, else a note beside the option. Pure.
+ */
+export function wordsPlaceholder(options: readonly { id: string }[], chosen: string | undefined | null): string {
+  if (options.length === 0) return "Your answer";
+  if (chosen === OTHER_CHOICE) return "Your answer, since none of the options fit";
+  return "Add a note: a condition or an instruction (optional)";
+}
+
 /** An ask that cannot be answered here offers no Answer (BRO-3111): its body says why. */
 export function withoutRefused<V extends { id: string }>(
   item: { kind: string; refusal?: string },

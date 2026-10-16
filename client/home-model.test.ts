@@ -378,7 +378,8 @@ describe("what a hold is", () => {
     expect(approval.key).toBe("work:gate");
     const one = holdInspector(entryOf(askHoldKey(asks[0])) as never, NOW);
     if (one.kind !== "ask") throw new Error("expected an ask");
-    expect(one.options.map((option) => option.id)).toEqual(["yes", "no"]);
+    // The ask's options, then the Other row (BRO-3146).
+    expect(one.options.map((option) => option.id)).toEqual(["yes", "no", "maestro:other"]);
     expect(one.chosen).toBe("yes");
     expect(one.options[1].note).toContain("cannot be undone");
     const due = holdInspector(entryOf("review:skene") as never, NOW);
