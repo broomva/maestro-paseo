@@ -248,6 +248,36 @@ test("an HTML file is locked before it is drawn: the policy comes first, whateve
   }
 });
 
+test("a page's own http-equiv metas are taken out, a refresh in any spelling among them (P20 round 2)", () => {
+  for (const meta of [
+    '<meta http-equiv="refresh" content="0;url=https://evil.example/pixel">',
+    "<META HTTP-EQUIV=Refresh CONTENT='0;url=https://evil.example/'>",
+    '<meta content="0;url=https://evil.example/?a>b" http-equiv="refr&#101;sh">',
+    "<meta/http-equiv=refresh content=0;url=https://evil.example/>",
+  ]) {
+    const locked = lockedHtml(`<html><head>${meta}</head><body>ok</body></html>`);
+    expect(locked).not.toContain("evil.example");
+    expect(locked).toContain("<body>ok</body>");
+  }
+  // A charset meta stays: only http-equiv ones go.
+  expect(lockedHtml('<meta charset="utf-8"><p>x</p>')).toContain('<meta charset="utf-8">');
+});
+
+test("details are cut by code points, as Python counts them (P20 round 2)", () => {
+  const details = "😀".repeat(9000);
+  const read = richOf({ details }, new Set())?.details ?? "";
+  expect(Array.from(read).length).toBe(8000);
+  expect(richOf({ details: "😀".repeat(6000) }, new Set())?.details).toBe("😀".repeat(6000));
+});
+
+test("only ASCII whitespace is trimmed, as ask_ledger.py trims it (P20 round 2)", () => {
+  // \x1f is whitespace to Python's strip() and not to JS's trim(): both readers now keep it, so both refuse the path.
+  expect(mediaOf([{ kind: "image", path: "docs/a.png\u001f" }], 4)).toEqual([]);
+  expect(mediaOf([{ kind: "image", path: "  docs/a.png\t" }], 4)).toEqual([
+    { kind: "image", path: "docs/a.png", url: null, caption: null },
+  ]);
+});
+
 describe("which ask an attachment request names (P20 round 1)", () => {
   const ask = (id: string, uid: string | null, hash = "h", refusal: string | null = null) => ({
     ledger: "l.yaml",

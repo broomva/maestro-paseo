@@ -17,7 +17,7 @@
 // inside the home's real path, so a link cannot lead out.
 
 import { constants } from "node:fs";
-import { open, realpath } from "node:fs/promises";
+import { open, realpath, stat } from "node:fs/promises";
 import { dirname, join, sep } from "node:path";
 import type { AskHome, DecisionAsk } from "../shared/fleet";
 import {
@@ -25,6 +25,7 @@ import {
   type AskMedia,
   type AskSource,
   type AttachmentRef,
+  cutCodePoints,
   extensionOf,
   flatLength,
   isHttps,
@@ -42,6 +43,7 @@ import {
   sourceShape,
   TRADEOFF_AXES,
   type TradeoffRow,
+  trimWs,
 } from "../shared/rich-ask";
 import { UserError } from "./engine";
 import { catFiles, git, MAIN_REF } from "./git";
@@ -62,7 +64,7 @@ const isRow = (value: unknown): value is Row => Boolean(value) && typeof value =
 /** Words within a cap, measured as the validator measures it (flatLength); the text itself is kept as written. */
 function words(value: unknown, max: number): string | null {
   if (typeof value !== "string") return null;
-  const trimmed = value.trim();
+  const trimmed = trimWs(value);
   return trimmed.length > 0 && flatLength(trimmed) <= max ? trimmed : null;
 }
 
@@ -74,8 +76,8 @@ export function mediaOf(raw: unknown, cap: number): AskMedia[] {
     .flatMap((entry): AskMedia[] => {
       const kind = entry.kind as MediaKind;
       if (!MEDIA_KINDS.includes(kind)) return [];
-      const path = typeof entry.path === "string" ? entry.path.trim() : null;
-      const url = typeof entry.url === "string" ? entry.url.trim() : null;
+      const path = typeof entry.path === "string" ? trimWs(entry.path) : null;
+      const url = typeof entry.url === "string" ? trimWs(entry.url) : null;
       if ((path === null) === (url === null)) return [];
       if (url !== null && !isHttps(url)) return [];
       if (path !== null && (!safeRelative(path, false) || !MEDIA_EXTENSIONS[kind].includes(extensionOf(path))))
@@ -91,7 +93,7 @@ function sourcesOf(raw: unknown): AskSource[] {
     .filter(isRow)
     .flatMap((entry): AskSource[] => {
       const kind = entry.kind as SourceKind;
-      const ref = typeof entry.ref === "string" ? entry.ref.trim() : "";
+      const ref = typeof entry.ref === "string" ? trimWs(entry.ref) : "";
       if (!SOURCE_KINDS.includes(kind) || !sourceShape(kind, ref)) return [];
       return [{ kind, ref, label: words(entry.label, 80) }];
     })
@@ -124,7 +126,8 @@ export function richOf(row: Row, optionIds: ReadonlySet<string>): RichAsk | null
     tradeoffs: tradeoffsOf(row.tradeoffs, optionIds),
     sources: sourcesOf(row.sources),
     media: mediaOf(row.media, MEDIA_ASK_MAX),
-    details: typeof row.details === "string" && row.details.trim() ? row.details.slice(0, DETAILS_MAX) : null,
+    // Cut by code points, as Python counts them: the validator refuses over 8000; a ledger it never saw is cut there.
+    details: typeof row.details === "string" && trimWs(row.details) ? cutCodePoints(row.details, DETAILS_MAX) : null,
   };
   const empty = !rich.summary && !rich.details && !rich.tradeoffs.length && !rich.sources.length && !rich.media.length;
   return empty ? null : rich;
@@ -188,16 +191,24 @@ const tooBig = (path: string, size: number, cap: number) =>
 
 /**
  * A file's bytes from a checkout or a fleet root: a regular file, its real path inside the base's. Opened once, with
- * O_NOFOLLOW, and every check after that is on the open descriptor (its type and size), and the read stops at
- * `cap + 1` bytes: a file swapped for a link or grown past the cap between the checks and the read is refused.
+ * O_NOFOLLOW, and every check after that is on the open descriptor (its type and size); the read stops at `cap + 1`
+ * bytes, so a file swapped for a link or grown past the cap between the checks and the read is refused.
+ *
+ * O_NOFOLLOW guards the last component only. A folder on the path swapped for a link between `realpath` and `open`
+ * would be followed, so after the read the path is resolved again and must still be inside the home and name the
+ * same file (device and inode) the descriptor read; otherwise nothing is served. What is left is a writer that
+ * swaps the folder to a link and back inside that window. Such a writer runs as you, inside your own checkout, and
+ * can read any file this server can, so the race gains it nothing it does not already hold. What this guards is
+ * the ledger's words: a path an ask names never reaches past its home.
  */
 export async function readInside(base: string, path: string, cap: number): Promise<Buffer> {
   if (!safeRelative(path, false)) throw new UserError(`${path} is not a path inside the repo.`);
   const root = await realpath(base).catch(() => null);
   if (!root) throw new UserError(`The ask's home ${base} is gone.`);
+  const inside = (real: string) => real === root || real.startsWith(root + sep);
   const real = await realpath(join(root, path)).catch(() => null);
   if (!real) throw new UserError(`${path} is not in ${base}.`);
-  if (real !== root && !real.startsWith(root + sep)) throw new UserError(`${path} leads outside ${base}; not shown.`);
+  if (!inside(real)) throw new UserError(`${path} leads outside ${base}; not shown.`);
   const handle = await open(real, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
   if (!handle) throw new UserError(`${path} could not be opened (a link, or gone).`);
   try {
@@ -212,6 +223,10 @@ export async function readInside(base: string, path: string, cap: number): Promi
       filled += bytesRead;
     }
     if (filled > cap) throw tooBig(path, filled, cap);
+    const again = await realpath(join(root, path)).catch(() => null);
+    const now = again ? await stat(again).catch(() => null) : null;
+    if (!again || !inside(again) || !now || now.dev !== info.dev || now.ino !== info.ino)
+      throw new UserError(`${path} changed while it was read; not shown.`);
     return buffer.subarray(0, filled);
   } finally {
     await handle.close();
@@ -245,17 +260,28 @@ export async function webUrlOf(repo: string, path: string): Promise<string | nul
 }
 
 /**
- * An HTML file made safe to draw in a sandboxed frame: a policy that loads nothing from anywhere (no script, no
- * network) except inline styles and inline images. The frame's own sandbox also refuses scripts; this is the
- * second lock, and it stops a remote image from telling anyone you looked.
+ * An HTML file made safe to draw in a sandboxed frame. The frame's `sandbox=""` refuses scripts, forms, top-level
+ * navigation and (its automatic-features flag) a meta refresh; this is the second lock, in the file itself:
+ * - a policy, first of all, that loads nothing from anywhere but inline styles and inline images, and lets no form
+ *   post and no `<base>` move the links (it stops a remote image from telling anyone you looked);
+ * - every `<meta http-equiv>` of the file's own taken out (a refresh among them), so the page cannot navigate itself
+ *   away, nor set a policy of its own, even where the sandbox flag is not honoured.
+ * A link you click still opens: that is you going there, not the page.
  */
 export function lockedHtml(html: string): string {
   const policy =
-    "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:\">";
+    "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'\">";
   // First, always: before any content the parser puts a meta in the head it opens. Placed after a `<head>` found by
   // a pattern, it could land inside a `<header>`, or after an `<img>` written before the head, and not hold.
-  return `${policy}${html}`;
+  return `${policy}${stripHttpEquiv(html)}`;
 }
+
+/**
+ * Every `<meta http-equiv>` of the file's own, whatever its value: a refresh can be spelled with entities
+ * (`refr&#101;sh`) that only the parser decodes, so the attribute, not its value, is what is matched.
+ */
+const META = /<meta\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+const stripHttpEquiv = (html: string) => html.replace(META, (tag) => (/[\s/]http-equiv\b/i.test(tag) ? "" : tag));
 
 /** The file an ask names at `ref`, read from its home. */
 export async function readAttachment(

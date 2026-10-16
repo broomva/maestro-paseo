@@ -149,9 +149,33 @@ export function safeRelative(ref: string, anchor = true): boolean {
   return path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 }
 
-/** A string's length as both readers measure a cap: runs of whitespace count as one space (ask_ledger.py `_words`). */
+/**
+ * The whitespace both readers agree on: ASCII space, tab, newline, carriage return, form feed, vertical tab. Python's
+ * `str.strip()` and JS's `trim()` each take more (Python \x1c-\x1f, JS \u00a0 and \ufeff), so neither is used here,
+ * nor in ask_ledger.py's v2 checks (`_WS`): a value one reader trims and the other keeps would pass one and fail the
+ * other.
+ */
+const WS = "[ \\t\\n\\r\\f\\v]";
+const EDGES = new RegExp(`^${WS}+|${WS}+$`, "g");
+const RUNS = new RegExp(`${WS}+`, "g");
+
+/** A value with that whitespace trimmed from both ends. */
+export function trimWs(value: string): string {
+  return value.replace(EDGES, "");
+}
+
+/**
+ * A string's length as both readers measure a cap: trimmed, runs of whitespace counted as one space, and counted in
+ * code points (Python's `len`), not UTF-16 units: an emoji is one character on both sides.
+ */
 export function flatLength(value: string): number {
-  return value.trim().split(/\s+/).join(" ").length;
+  return Array.from(trimWs(value).replace(RUNS, " ")).length;
+}
+
+/** The first `max` code points of a string: a cut that never splits an emoji, and the count Python's `len` makes. */
+export function cutCodePoints(value: string, max: number): string {
+  const points = Array.from(value);
+  return points.length <= max ? value : points.slice(0, max).join("");
 }
 
 export function isHttps(url: string): boolean {
