@@ -697,6 +697,19 @@ describe("an ask card", () => {
     expect(view.byId("card-undo")?.textContent).toContain("Answered Install the three headless Claude Code mods");
   });
 
+  it("a note beside the option goes with the answer (BRO-3146)", async () => {
+    const ask = askFixture();
+    sim.asks = [ask];
+    const view = await mount(card(askCardOf(ask)));
+    await view.press(view.byLabel("Install fleet-wide"));
+    await view.type(
+      view.byLabel("A note on your answer for Install the three headless Claude Code mods fleet-wide? (optional)"),
+      "Only after the demo.",
+    );
+    await view.press(view.byLabel("Answer"));
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: "all", note: "Only after the demo." })]);
+  });
+
   it("an ask answered elsewhere collapses and says so; its receipt appears once it took effect", async () => {
     const ask = askFixture();
     sim.asks = [ask];

@@ -36,6 +36,7 @@ import { ago } from "./format";
 import { LookView, VERBS_MEAN, verbsNeedSaying } from "./gate-look";
 import { heldByWords, holdKicker } from "./home-model";
 import { useNeeds } from "./hooks";
+import { wordsPlaceholder } from "./kit/inspector-model";
 import { Kicker, Pill, TABULAR } from "./kit/parts";
 import { kitOf } from "./kit/tokens";
 import { titleText } from "./records-text";
@@ -319,13 +320,16 @@ function OpenCard({
   const { row, item } = state;
   const [choice, setChoice] = useState<string | undefined>(undefined);
   const [course, setCourse] = useState<string | null>(null);
+  // Your note beside the option this card answers with (BRO-3146): it offers no Other row, so words are a note.
+  const [note, setNote] = useState("");
   const asks = useWorkspaceAsks();
   const ask =
     row?.kind === "ask" && asks.data ? (needsSection([row], [], decisionAsks(asks.data))[0]?.ask ?? null) : null;
   const target = { ...targetOf(state, ask), notice: data.kind === "health" ? { key: data.key } : null };
   const verbs = cardVerbs(data.kind, row);
   const chosen = choice ?? (row?.kind === "ask" ? row.body.recommended : undefined);
-  const run = (id: string) => void runner.act(planVerb(id as never, target, chosen, course ?? ""));
+  const run = (id: string) =>
+    void runner.act(planVerb(id as never, target, chosen, id === "answer" ? note : (course ?? "")));
   const kicker = row
     ? holdKicker({ row, item: null, ask })
     : item
@@ -352,7 +356,28 @@ function OpenCard({
         </>
       ) : null}
       {row?.kind === "ask" ? (
-        <AskOptions row={row} ask={ask} chosen={chosen} onChoose={setChoice} theme={theme} />
+        <>
+          <AskOptions row={row} ask={ask} chosen={chosen} onChoose={setChoice} theme={theme} />
+          <TextInput
+            value={note}
+            onChangeText={setNote}
+            multiline
+            placeholder={wordsPlaceholder(row.body.options, chosen)}
+            placeholderTextColor={kit.muted}
+            accessibilityLabel={`A note on your answer for ${row.title} (optional)`}
+            style={{
+              minHeight: 44,
+              padding: 10,
+              borderRadius: 10,
+              borderWidth: 1,
+              borderColor: kit.border,
+              backgroundColor: kit.sunken,
+              color: kit.fg,
+              fontSize: 14,
+              textAlignVertical: "top",
+            }}
+          />
+        </>
       ) : null}
       {row?.kind === "owner_step" ? (
         <>

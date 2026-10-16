@@ -855,7 +855,12 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
         <InspectorCard
           theme={theme}
           directions={directions}
-          item={cardItem}
+          // It starts on the option chosen on the deck (Codex P20 round 2): the deck's note rides with that option.
+          item={
+            openEntry && (cardItem.kind === "ask" || cardItem.kind === "review") && choices[openEntry.row.key]
+              ? { ...cardItem, chosen: choices[openEntry.row.key] }
+              : cardItem
+          }
           index={cardIndex}
           total={cardTotal}
           open={inspector.showing}

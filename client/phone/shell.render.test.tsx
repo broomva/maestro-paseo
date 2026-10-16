@@ -828,6 +828,17 @@ describe("M5, Decisions", () => {
     expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: null, note: "Ask Legal first." })]);
   });
 
+  test("the rising card starts on the option chosen on the deck, so the deck's note rides with it (BRO-3146)", async () => {
+    asks = [ask("A1")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(view.labelled("Install fleet-wide")[0]);
+    await view.press(view.all('[role="link"]')[0]);
+    const card = view.id("inspector-card");
+    const row = card?.querySelector('[aria-label^="Install fleet-wide"]');
+    expect(row?.getAttribute("aria-checked")).toBe("true");
+    expect(card?.querySelector('[aria-label^="Keep them off"]')?.getAttribute("aria-checked")).toBe("false");
+  });
+
   test("an ask that says allow_other: false offers no Other row (BRO-3146)", async () => {
     asks = [ask("A1", { allowOther: false })];
     const view = await mount({ tab: "decisions" });
