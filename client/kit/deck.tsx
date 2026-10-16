@@ -15,7 +15,7 @@ import { Animated, type LayoutChangeEvent, PanResponder, Pressable, Text, View }
 import { tint } from "../fleet-color";
 import { useReducedMotion } from "../ui";
 import { BOTH_WAYS as BOTH, type Directions, DRAG_NATIVE_DRIVER } from "./assumptions";
-import { clampIndex, DECK, deckCaptures, deckOffset, deckRelease, indexOfKey, place } from "./deck-model";
+import { clampIndex, DECK, deckCaptures, deckOffset, deckRelease, deckYields, indexOfKey, place } from "./deck-model";
 import { CLIP, Kicker, Pill, TABULAR } from "./parts";
 import { kitOf } from "./tokens";
 
@@ -94,8 +94,6 @@ export function Deck<T>({
     Animated.spring(x, { toValue: to, velocity, ...DECK_SPRING, useNativeDriver: DRAG_NATIVE_DRIVER }).start();
   }, [index, items.length, cardWidth, reduced, x]);
 
-  // Where the strip stood when the finger landed: a grab mid-spring moves on from there, never from the target.
-  const origin = useRef(0);
   const responder = useMemo(() => {
     // Home: the current hold's place. The host terminates rightward drags on compact native, so this runs often.
     const home = (velocity: number) => {
@@ -104,34 +102,16 @@ export function Deck<T>({
       if (still) x.setValue(to);
       else Animated.spring(x, { toValue: to, velocity, ...DECK_SPRING, useNativeDriver: DRAG_NATIVE_DRIVER }).start();
     };
-    // The drag measured from the hold's place, so a strip caught mid-spring carries its offset into the drag.
-    const travelled = (dx: number) => {
-      const { index: at, count, cardWidth: w } = live.current;
-      return dx + origin.current - deckOffset(at, count, 0, w, BOTH);
-    };
-    const barred = (dx: number) => (dx > 0 ? !live.current.ways.right : !live.current.ways.left);
-    return PanResponder.create({
-      onMoveShouldSetPanResponder: (_, g) => deckCaptures(g.dx, g.dy, live.current.ways),
-      onPanResponderGrant: () => {
-        x.stopAnimation((at) => {
-          origin.current = at;
-        });
-      },
-      onPanResponderMove: (_, g) => {
-        const { index: at, count, cardWidth: w } = live.current;
-        // A barred way holds the strip where it is: no jump, no movement.
-        x.setValue(barred(g.dx) ? origin.current : deckOffset(at, count, travelled(g.dx), w, BOTH));
-      },
-      onPanResponderRelease: (_, g) => {
-        const { index: at, count, cardWidth: w, onIndexChange: change, ways: allowed } = live.current;
-        const next = barred(g.dx) ? at : deckRelease(at, count, travelled(g.dx), g.vx, w, allowed);
-        if (next !== at) {
-          fling.current = g.vx * 1000;
-          change(next);
-        } else home(g.vx * 1000);
-      },
-      onPanResponderTerminate: () => home(0),
-    });
+    return PanResponder.create(
+      deckGestureConfig(() => live.current, {
+        stop: (done) => x.stopAnimation(done),
+        set: (to) => x.setValue(to),
+        home,
+        fling: (velocity) => {
+          fling.current = velocity;
+        },
+      }),
+    );
   }, [x]);
 
   return (
@@ -166,7 +146,21 @@ export function Deck<T>({
               </Pressable>
             ))}
           </View>
+          <StepButton
+            theme={theme}
+            icon="ChevronLeft"
+            label="Previous hold"
+            disabled={index <= 0}
+            onPress={() => onIndexChange(index - 1)}
+          />
           <Text style={{ color: kit.muted, fontSize: 12, ...TABULAR }}>{place(index, items.length)}</Text>
+          <StepButton
+            theme={theme}
+            icon="ChevronRight"
+            label="Next hold"
+            disabled={index >= items.length - 1}
+            onPress={() => onIndexChange(index + 1)}
+          />
         </View>
       ) : null}
       <View onLayout={(event: LayoutChangeEvent) => setWidth(event.nativeEvent.layout.width)} style={CLIP}>
@@ -193,6 +187,108 @@ export function Deck<T>({
       </View>
     </View>
   );
+}
+
+/**
+ * One step back or on (BRO-3153): a 44 x 48 pt target beside "n of N". On compact native a rightward swipe is Paseo's
+ * sidebar (BRO-3033 fact 3), and the segments are 4 pt tall, so going back was the hardest move on the deck.
+ */
+function StepButton({
+  theme,
+  icon,
+  label,
+  disabled,
+  onPress,
+}: {
+  theme: PluginTheme;
+  icon: "ChevronLeft" | "ChevronRight";
+  label: string;
+  disabled: boolean;
+  onPress: () => void;
+}) {
+  const kit = kitOf(theme);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+      style={({ pressed }: { pressed: boolean }) => ({
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: pressed ? kit.hairline : kit.sunken,
+        opacity: disabled ? 0.35 : 1,
+      })}
+    >
+      <Icon name={icon} size={18} color={kit.fg} />
+    </Pressable>
+  );
+}
+
+/** What the deck's gesture reads when it runs: the hold it is on, how many, how wide, which ways, and who to tell. */
+export interface DeckGestureState {
+  index: number;
+  count: number;
+  cardWidth: number;
+  ways: Directions;
+  onIndexChange: (index: number) => void;
+}
+
+/** What the gesture moves: the strip's value, and its springs home or on. */
+export interface DeckStrip {
+  stop: (done: (at: number) => void) => void;
+  set: (to: number) => void;
+  home: (velocity: number) => void;
+  fling: (velocity: number) => void;
+}
+
+/** A gesture's sample, as PanResponder hands it over: travel and release speed. */
+type Gesture = { dx: number; dy: number; vx: number };
+
+/**
+ * The deck's swipe, as PanResponder handlers (exported so a test drives the real ones, BRO-3153). A sideways move
+ * past 45 degrees starts it. Once started it is not handed to the page's vertical scroll (that sprang the strip
+ * home mid-swipe) unless it has turned down; the host can still end it (its rightward sidebar gesture on compact
+ * native, BRO-3033 fact 3), and the strip springs home then. A release that went more down than sideways never
+ * pages: that was a scroll.
+ */
+export function deckGestureConfig(read: () => DeckGestureState, strip: DeckStrip) {
+  let origin = 0;
+  // The drag measured from the hold's place, so a strip caught mid-spring carries its offset into the drag.
+  const travelled = (dx: number) => {
+    const { index: at, count, cardWidth: w } = read();
+    return dx + origin - deckOffset(at, count, 0, w, BOTH);
+  };
+  const barred = (dx: number) => (dx > 0 ? !read().ways.right : !read().ways.left);
+  return {
+    onMoveShouldSetPanResponder: (_: unknown, g: Gesture) => deckCaptures(g.dx, g.dy, read().ways),
+    onPanResponderTerminationRequest: (_: unknown, g: Gesture) => deckYields(g.dx, g.dy),
+    onPanResponderGrant: () => {
+      strip.stop((at) => {
+        origin = at;
+      });
+    },
+    onPanResponderMove: (_: unknown, g: Gesture) => {
+      const { index: at, count, cardWidth: w } = read();
+      // A barred way holds the strip where it is: no jump, no movement.
+      strip.set(barred(g.dx) ? origin : deckOffset(at, count, travelled(g.dx), w, BOTH));
+    },
+    onPanResponderRelease: (_: unknown, g: Gesture) => {
+      const { index: at, count, cardWidth: w, onIndexChange: change, ways: allowed } = read();
+      const scrolled = Math.abs(g.dy) >= Math.abs(g.dx);
+      const next = barred(g.dx) || scrolled ? at : deckRelease(at, count, travelled(g.dx), g.vx, w, allowed);
+      if (next !== at) {
+        strip.fling(g.vx * 1000);
+        change(next);
+      } else strip.home(g.vx * 1000);
+    },
+    onPanResponderTerminate: () => strip.home(0),
+  };
 }
 
 export interface DeckVerb {

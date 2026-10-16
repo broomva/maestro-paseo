@@ -90,7 +90,7 @@ const { Undertow, TidepoolDot, StandingPulse } = await import("./undertow");
 const { InspectorPanel, InspectorCard } = await import("./inspector");
 const { DetailHeader } = await import("./detail-header");
 const { GlanceTile } = await import("./glance-tile");
-const { Deck, DeckHold } = await import("./deck");
+const { Deck, DeckHold, deckGestureConfig } = await import("./deck");
 const { KitGalleryScreen } = await import("./gallery");
 type UndoClock = import("./undo-model").UndoClock;
 type InspectorItem = import("./inspector").InspectorItem;
@@ -498,6 +498,59 @@ describe("on compact native (BRO-3033 fact 3)", () => {
     expect(view.text()).toContain("3 of 3");
     await view.press(view.label("Hold 1 of 3"));
     expect(view.text()).toContain("1 of 3");
+  });
+
+  it("the deck's swipe: kept from the page's scroll until it turns down; a release that went down never pages (BRO-3153)", async () => {
+    const moved: number[] = [];
+    let homed = 0;
+    let state = { index: 1, count: 3, cardWidth: 300, ways: BOTH_WAYS, onIndexChange: (at: number) => moved.push(at) };
+    const config = deckGestureConfig(() => state, {
+      stop: (done) => done(-312),
+      set: () => {},
+      home: () => {
+        homed += 1;
+      },
+      fling: () => {},
+    });
+    // Mid-swipe, the page's vertical scroll asks for it: refused while sideways, granted once it has turned down.
+    expect(config.onPanResponderTerminationRequest(null, { dx: -60, dy: 20, vx: 0 })).toBe(false);
+    expect(config.onPanResponderTerminationRequest(null, { dx: -20, dy: 60, vx: 0 })).toBe(true);
+    // A sideways release past a quarter pages; one that went more down than sideways springs home.
+    config.onPanResponderGrant();
+    config.onPanResponderRelease(null, { dx: -120, dy: 30, vx: -0.4 });
+    expect(moved).toEqual([2]);
+    state = { ...state, index: 1 };
+    config.onPanResponderRelease(null, { dx: -80, dy: 240, vx: -0.6 });
+    expect([moved, homed]).toEqual([[2], 1]);
+    // The host ending it (its rightward sidebar gesture) springs it home.
+    config.onPanResponderTerminate();
+    expect(homed).toBe(2);
+  });
+
+  it("Previous and Next page the deck both ways, even where a rightward swipe is the host's (BRO-3153)", async () => {
+    function Host() {
+      const [index, setIndex] = useState(0);
+      return (
+        <Deck
+          theme={theme}
+          title="Needs you"
+          items={[APPROVAL, ASK, NOTICE]}
+          index={index}
+          onIndexChange={setIndex}
+          keyOf={(item) => item.key}
+          directions={LEFTWARD}
+          renderItem={(item) => <web.Text>{item.title}</web.Text>}
+        />
+      );
+    }
+    const view = await mount(<Host />);
+    expect(view.label("Previous hold")?.getAttribute("aria-disabled")).toBe("true");
+    await view.press(view.label("Next hold"));
+    await view.press(view.label("Next hold"));
+    expect(view.text()).toContain("3 of 3");
+    expect(view.label("Next hold")?.getAttribute("aria-disabled")).toBe("true");
+    await view.press(view.label("Previous hold"));
+    expect(view.text()).toContain("2 of 3");
   });
 });
 

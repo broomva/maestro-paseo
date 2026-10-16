@@ -26,10 +26,19 @@ export const DECK = {
   gap: 12,
 } as const;
 
-/** Whether a move starts the deck's swipe: sideways, past the slop, in a direction it may go. */
+/**
+ * Whether a move starts the deck's swipe: sideways past the slop, more sideways than down (45 degrees: a thumb drifts
+ * down as it swipes, and the 1.5x sideways dominance asked before dropped those drags, BRO-3153), in a direction it
+ * may go.
+ */
 export function deckCaptures(dx: number, dy: number, directions: Directions): boolean {
-  if (Math.abs(dx) <= DECK.slop || Math.abs(dx) <= Math.abs(dy) * 1.5) return false;
+  if (Math.abs(dx) <= DECK.slop || Math.abs(dx) <= Math.abs(dy)) return false;
   return dx > 0 ? directions.right : directions.left;
+}
+
+/** Whether a swipe the deck holds may go to whoever asks (the page's vertical scroll): only once it has turned down. */
+export function deckYields(dx: number, dy: number): boolean {
+  return Math.abs(dy) > Math.abs(dx) * 1.5;
 }
 
 /** The hold a sideways release lands on: one step at most, never past either end, never a way it may not go. */
