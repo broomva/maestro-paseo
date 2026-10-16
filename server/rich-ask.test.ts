@@ -256,7 +256,8 @@ test("a page's own http-equiv metas are taken out, a refresh in any spelling amo
     "<meta/http-equiv=refresh content=0;url=https://evil.example/>",
   ]) {
     const locked = lockedHtml(`<html><head>${meta}</head><body>ok</body></html>`);
-    expect(locked).not.toContain("evil.example");
+    // Only our own policy carries http-equiv: the page's are renamed and do nothing.
+    expect(locked.slice(locked.indexOf(">") + 1)).not.toMatch(/[\s/"']http-equiv\b/i);
     expect(locked).toContain("<body>ok</body>");
   }
   // A charset meta stays: only http-equiv ones go.
@@ -296,9 +297,14 @@ describe("files that are not plain files (P20 round 3)", () => {
     await link(join(outside, "secret.png"), join(repo, "docs", "hard.png"));
     await expect(readInside(repo, "docs/hard.png", 100)).rejects.toThrow(/hard link/);
   });
-  test("a meta with a stray quote is taken out too", () => {
-    const locked = lockedHtml("<meta http-equiv=refresh content=0;url=https://e/ x=a'b><p>x</p>");
-    expect(locked).not.toContain("https://e/");
+  test("a meta with a stray quote, or a quoted >, is disarmed too (P20 rounds 3-4)", () => {
+    for (const meta of [
+      "<meta http-equiv=refresh content=0;url=https://e/ x=a'b>",
+      `<meta x=a'b y=">" http-equiv=refresh content=0;url=https://e/>`,
+    ]) {
+      const locked = lockedHtml(`${meta}<p>x</p>`);
+      expect(locked.slice(locked.indexOf(">") + 1)).not.toMatch(/http-equiv/i);
+    }
   });
   test("a URL with a character outside printable ASCII is not shown (as ask_ledger.py refuses it)", () => {
     expect(mediaOf([{ kind: "image", url: "https://e/x\uFEFF" }], 4)).toEqual([]);

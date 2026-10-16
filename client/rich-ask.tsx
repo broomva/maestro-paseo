@@ -501,8 +501,9 @@ function Tradeoffs({
     // A phone holds no five-column table: each row is its name, then its cells labelled.
     return (
       <View accessibilityLabel="Tradeoffs" style={{ gap: space[2] }}>
-        {lines.map((line) => (
-          <View key={line.name} style={{ gap: 2 }}>
+        {lines.map((line, at) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: rows are positional; two free rows may share a label.
+          <View key={at} style={{ gap: 2 }}>
             <Text style={[text.small, { color: theme.colors.foreground, fontWeight: "600" }]}>{line.name}</Text>
             <Text style={text.small}>
               {line.cells
@@ -529,8 +530,9 @@ function Tradeoffs({
           </Text>
         ))}
       </View>
-      {lines.map((line) => (
-        <View key={line.name} style={{ flexDirection: "row", borderTopWidth: 1, borderTopColor: theme.colors.border }}>
+      {lines.map((line, at) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: rows are positional; two free rows may share a label.
+        <View key={at} style={{ flexDirection: "row", borderTopWidth: 1, borderTopColor: theme.colors.border }}>
           <Text style={[text.small, cell, { color: theme.colors.foreground, fontWeight: "600" }]}>{line.name}</Text>
           {line.cells.map((one) => (
             <Text key={one.axis} style={[text.small, cell, { color: theme.colors.foreground }]}>

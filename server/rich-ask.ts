@@ -221,6 +221,7 @@ export async function readInside(base: string, path: string, cap: number): Promi
     // A hard link reaches a file outside the home with no link to resolve; git never makes one in a working tree.
     if (info.nlink > 1) throw new UserError(`${path} is a hard link; not shown.`);
     if (info.size > cap) throw tooBig(path, info.size, cap);
+    if (info.size === 0) throw new UserError(`${path} is empty.`);
     const buffer = Buffer.alloc(cap + 1);
     let filled = 0;
     while (filled < buffer.length) {
@@ -283,17 +284,12 @@ export function lockedHtml(html: string): string {
 }
 
 /**
- * Every `<meta http-equiv>` of the file's own, whatever its value: a refresh can be spelled with entities
- * (`refr&#101;sh`) that only the parser decodes, so the attribute, not its value, is what is matched.
+ * The page's own `http-equiv` metas, disarmed: every `http-equiv` attribute name is renamed, wherever it stands. A
+ * pattern for whole tags misses one a stray quote or a quoted `>` hides (P20 rounds 3-4); an attribute name is never
+ * entity-decoded and must follow whitespace, `/` or a quote, so renaming it cannot be dodged. A renamed `http-equiv`
+ * in plain text is harmless.
  */
-const META = /<meta\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
-/** And from `<meta` to the next `>`, for a tag a stray quote keeps the first pattern from matching: too much out is harmless. */
-const META_LOOSE = /<meta\b[^>]*>/gi;
-const HTTP_EQUIV = /[\s/]http-equiv\b/i;
-const stripHttpEquiv = (html: string) =>
-  html
-    .replace(META, (tag) => (HTTP_EQUIV.test(tag) ? "" : tag))
-    .replace(META_LOOSE, (tag) => (HTTP_EQUIV.test(tag) ? "" : tag));
+const stripHttpEquiv = (html: string) => html.replace(/([\s/"'])http-equiv\b/gi, "$1data-equiv");
 
 /** The file an ask names at `ref`, read from its home. */
 export async function readAttachment(
