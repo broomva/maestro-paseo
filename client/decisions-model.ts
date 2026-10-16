@@ -469,7 +469,7 @@ export function answeredLine(ask: DecisionAsk, now: number = Date.now()): string
   const option = ask.options.find((entry) => entry.id === ask.answerOption);
   const age = ask.answeredAt ? ago(ask.answeredAt, now) : "";
   const when = age ? (age === "now" ? " just now" : ` ${age} ago`) : "";
-  return `Answered${when}: ${option ? `“${option.label}”` : "an answer"}`;
+  return `Answered${when}: ${option ? `“${option.label}”` : ask.answerOther ? "Other, in your words" : "an answer"}`;
 }
 
 /** A folder's last part, for a short home. */

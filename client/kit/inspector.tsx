@@ -1141,12 +1141,15 @@ export function InspectorCard({
   directions,
   words,
   onWords,
+  onChoose,
 }: {
   theme: PluginTheme;
   item: InspectorItem;
   /** Your words on an ask (BRO-3146), held by the screen so the deck card and this one show the same words. */
   words?: string;
   onWords?: (value: string) => void;
+  /** An option picked here, told to the screen so the deck keeps it with the words (BRO-3146, P20 round 2). */
+  onChoose?: (id: string) => void;
   index: number;
   total: number;
   open: boolean;
@@ -1256,7 +1259,10 @@ export function InspectorCard({
             compact
             onOpenSession={onOpenSession}
             choice={picked.choice}
-            onChoose={picked.choose}
+            onChoose={(id) => {
+              picked.choose(id);
+              onChoose?.(id);
+            }}
             words={words}
             onWords={item.kind === "ask" ? onWords : undefined}
           />

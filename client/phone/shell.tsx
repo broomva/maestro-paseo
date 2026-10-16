@@ -343,7 +343,6 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       if (item.kind === "ask" && item.options.length === 0 && words) {
         const sent = await inspector.act("answer", inspector.targetOf(entry), undefined, words);
         if (sent) {
-          setSaid((now) => ({ ...now, [key]: "" }));
           inspector.setOpen(false);
           advance(key);
         }
@@ -367,7 +366,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     setArmed(null);
     const sent = await inspector.act("answer", inspector.targetOf(entry), picked, words, irreversible);
     if (sent) {
-      if (words) setSaid((now) => ({ ...now, [key]: "" }));
+      // The words stay with the hold: an answer undone in its window comes back with them.
       inspector.setOpen(false);
       advance(key);
     }
@@ -875,6 +874,15 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
           // The deck card's words, shown and edited on the card too (BRO-3146): one set of words per hold.
           words={openEntry ? (said[openEntry.row.key] ?? "") : ""}
           onWords={openEntry ? (text) => setSaid((now) => ({ ...now, [openEntry.row.key]: text })) : undefined}
+          // A pick on the card is the deck's pick too: closed, the deck answers with what the card showed.
+          onChoose={
+            openEntry
+              ? (id) => {
+                  setArmed(null);
+                  setChoices((now) => ({ ...now, [openEntry.row.key]: id }));
+                }
+              : undefined
+          }
           // The card swiped to another hold: the deck is on it when the card closes.
           onIndexChange={(at) => {
             const next = keys[at];

@@ -4367,6 +4367,24 @@ describe("the Decisions tab", () => {
     await until(view, "Dismissing it: nothing follows from it");
   });
 
+  test("J5 takes your words: a note beside an option, Other on purpose, never words with no pick (BRO-3146)", async () => {
+    workspaceNow = [{ ...merge(), allowOther: true }];
+    const view = await open();
+    const sentAnswers = () => calls.filter((call) => call.method === "ask.answer").map((call) => call.input);
+    expect(view.byLabel("Other…")).not.toBeNull();
+    // Words with no pick are a note waiting for its option: the verb stays off and says why.
+    await view.type(view.byLabel("Your words for A1"), "Ask Legal first.");
+    expect(view.byLabel("Answer A1")?.getAttribute("aria-disabled")).toBe("true");
+    // Other, picked on purpose, takes them as the answer: no option is sent.
+    await view.press(view.byLabel("Other…"));
+    expect(view.byLabel("Other…")?.getAttribute("aria-checked")).toBe("true");
+    expect(view.byLabel("Answer A1")?.getAttribute("aria-disabled")).not.toBe("true");
+    calls.length = 0;
+    await view.press(view.byLabel("Answer A1"));
+    for (let tries = 0; tries < 50 && sentAnswers().length === 0; tries += 1) await settle(20);
+    expect(sentAnswers()).toEqual([expect.objectContaining({ id: "A1", option: null, note: "Ask Legal first." })]);
+  });
+
   test("one decision at a time, blocking first: its count and progress, the tiles, the card's layers, the chips, up next (J5)", async () => {
     workspaceNow = [
       canvas("product-name", { askedAt: days(5) }),

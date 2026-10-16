@@ -839,6 +839,17 @@ describe("M5, Decisions", () => {
     expect(card?.querySelector('[aria-label^="Keep them off"]')?.getAttribute("aria-checked")).toBe("false");
   });
 
+  test("a pick on the rising card is the deck's pick when the card closes (BRO-3146)", async () => {
+    asks = [ask("A1")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(view.all('[role="link"]')[0]);
+    await view.press(view.id("inspector-card")?.querySelector('[aria-label="Other…"]') as El);
+    await view.press(view.id("inspector-card")?.querySelector('[aria-label="Close"]') as El);
+    await settle(400);
+    // The deck's Answer names the option it sends: the one picked on the card.
+    expect(view.label("Answer with Other…") !== null).toBe(true);
+  });
+
   test("an ask that says allow_other: false offers no Other row (BRO-3146)", async () => {
     asks = [ask("A1", { allowOther: false })];
     const view = await mount({ tab: "decisions" });
