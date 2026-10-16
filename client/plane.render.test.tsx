@@ -5338,7 +5338,7 @@ describe("Initiatives", () => {
     expect(view.text()).toContain("Fleet autonomy");
   });
 
-  test("a due review is a hold in the Feed's deck; an open idea stays out of Decisions", async () => {
+  test("a due review is a hold in the Feed's deck; an open idea is on the Decisions deck, labelled (BRO-3140)", async () => {
     // Due for review (B2): needs.list raises it as an ask, which the deck holds and the header counts.
     reviewsNow = [
       {
@@ -5350,10 +5350,11 @@ describe("Initiatives", () => {
     const feed = await mount(surface(true));
     await until(feed, "Review mod-anything skill: keep, park or close?");
     expect(feed.text()).toContain("Review mod-anything skill: keep, park or close?");
-    // The idea is answered where it lives, never twice: the Decisions deck does not hold it.
+    // Every open ask is on the Decisions deck (BRO-3113's decision): the idea once, labelled, answerable there.
+    expect(feed.text()).not.toContain("Build idea I9");
     const decisions = await mount(surface(true, { tab: "decisions" }));
-    await until(decisions, "No decision waits on you.");
-    expect(decisions.text()).not.toContain("Build idea I9");
+    await until(decisions, "1 open · none waits on you · 1 idea");
+    expect(decisions.text()).not.toContain("nothing waits on you.");
   });
 
   test("what folds, folds back; a read that fails says why and tries again", async () => {

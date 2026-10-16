@@ -821,8 +821,9 @@ describe("M5, Decisions", () => {
       expect(view.text()).toContain(word);
   });
 
-  // BRO-3108: an ask that is answerable but never a hold (a reversible default forbids `blocking`) was unreachable here.
-  describe("the open asks that do not block you", () => {
+  // BRO-3140 (deciding BRO-3113): every open ask is on the deck, the holds first, each card labelled. On the owner's
+  // phone every open ask was an idea or blocked nothing, and the deck said "No decision waits on you" over 23 of them.
+  describe("every open ask on the deck", () => {
     const quiet = (id: string, extra: Partial<DecisionAsk> = {}) =>
       ask(id, {
         blocking: false,
@@ -831,78 +832,110 @@ describe("M5, Decisions", () => {
         headline: `Quiet question ${id}?`,
         ...extra,
       });
-    const open = (view: Awaited<ReturnType<typeof mount>>) => view.press(view.label("Raise the sheet"));
+    const idea = (id: string, extra: Partial<DecisionAsk> = {}) =>
+      quiet(id, {
+        ledger: "ideas-factory-learnings.yaml",
+        headline: `Idea ${id}: develop, park or kill?`,
+        options: [
+          { id: "develop", label: "Develop", consequence: null, reversible: true, recommended: false },
+          { id: "park", label: "Park until 2026-11-02", consequence: null, reversible: true, recommended: true },
+          { id: "kill", label: "Kill", consequence: null, reversible: true, recommended: false },
+        ],
+        idea: { initiative: "factory-learnings", idea: `idea ${id}`, source: null, evidence: null, wake: "2026-11-02" },
+        ...extra,
+      });
+    const hoursAgo = (n: number) => new Date(Date.now() - n * 3_600_000).toISOString();
 
-    test("the sheet lists every open ask the deck does not hold, oldest first; the deck is unchanged", async () => {
+    test("the deck lists the holds, then every other open ask oldest first, each labelled, none twice", async () => {
       asks = [
         ask("A1"),
-        quiet("Q2", { askedAt: new Date(Date.now() - 3 * 3_600_000).toISOString() }),
-        quiet("Q1", { askedAt: new Date(Date.now() - 9 * 3_600_000).toISOString() }),
-        quiet("Q3", { askedAt: new Date(Date.now() - 1 * 3_600_000).toISOString() }),
+        quiet("Q2", { askedAt: hoursAgo(3) }),
+        quiet("Q1", { askedAt: hoursAgo(9) }),
+        idea("I1", { askedAt: hoursAgo(20) }),
         ask("D1", { state: "answered", answerOption: "off", answer: "Keep them off", headline: "Merge #933?" }),
       ];
       const view = await mount({ tab: "decisions" });
-      // The deck is still the holds needs.list lists: the one blocking ask, whose badge is its length.
+      // The tab's badge is still the holds needs.list lists (the desktop header's number); the deck carries all four.
       expect(needsNow().rows.filter((row) => row.key.startsWith("ask:"))).toHaveLength(1);
-      expect(view.text()).toContain("1 of 1");
-      expect(view.text()).toContain("3 open");
-      await open(view);
-      expect(view.text()).toContain("Open, not blocking");
-      const text = view.text();
-      const at = ["Quiet question Q1?", "Quiet question Q2?", "Quiet question Q3?"].map((title) => text.indexOf(title));
-      expect(at.every((index) => index >= 0)).toBe(true);
-      expect(at).toEqual([...at].sort((a, b) => a - b));
-      // The waiting ask is on the deck, not listed twice; the answered one is not open.
-      expect(text.split("headless mods A1?")).toHaveLength(2);
+      expect(view.label("Decisions, 1") !== null).toBe(true);
+      expect(view.text()).toContain("1 of 4");
+      expect(view.text()).toContain("4 open · 1 waits on you · 1 idea");
+      expect(view.text()).toContain("Waits on you");
       expect(view.labelled("Merge #933?")).toHaveLength(0);
     });
 
-    test("a row opens the ask's card, and Answer sends that ask's ids, as the deck's does", async () => {
-      asks = [quiet("Q1")];
+    test("only ideas open (the owner's live case): the deck lists them, never 'No decision waits on you'", async () => {
+      asks = [idea("I1", { askedAt: hoursAgo(30) }), idea("I2", { askedAt: hoursAgo(10) })];
       const view = await mount({ tab: "decisions" });
-      expect(view.text()).toContain("No decision waits on you.");
-      await open(view);
-      await view.press(view.labelled("Quiet question Q1?")[0]);
-      await view.press(view.labelled("Keep them off")[0]);
+      expect(view.text()).not.toContain("No decision waits on you");
+      expect(view.text()).not.toContain("nothing waits on you.");
+      expect(view.text()).toContain("2 open · none waits on you · 2 ideas");
+      expect(view.text()).toContain("1 of 2");
+      expect(view.text()).toContain("Idea I1: develop, park or kill?");
+      expect(view.text()).toContain("Idea");
+    });
+
+    test("an idea is answered park from its card on the deck: that ask's ids, the option, and the undo", async () => {
+      asks = [idea("I1")];
+      const view = await mount({ tab: "decisions" });
+      await view.press(view.labelled("Park until 2026-11-02")[0]);
       await view.press(view.labelled("Answer")[0]);
       expect(sent("ask.answer")).toEqual([
         expect.objectContaining({
-          ledger: "leadership-20261013.yaml",
+          ledger: "ideas-factory-learnings.yaml",
           uid: asks[0]?.uid,
-          id: "Q1",
+          id: "I1",
           hash: asks[0]?.hash,
-          option: "off",
+          option: "park",
         }),
+      ]);
+      expect(view.id("undo-toast") !== null).toBe(true);
+    });
+
+    test("a quiet ask's details open its card, and Answer there sends that ask's ids", async () => {
+      asks = [quiet("Q1")];
+      const view = await mount({ tab: "decisions" });
+      await view.press(view.all("[role='link']").find((el) => el.textContent?.includes("Details, session and history")));
+      expect(view.id("inspector-card") !== null).toBe(true);
+      await view.press(view.id("inspector-card-bar")?.querySelector('[aria-label^="Answer"]') as El);
+      expect(sent("ask.answer")).toEqual([
+        expect.objectContaining({ ledger: "leadership-20261013.yaml", id: "Q1", hash: asks[0]?.hash, option: "off" }),
       ]);
     });
 
-    test("a ledger that could not be read is said on the sheet and in its counts, with its words", async () => {
+    test("an ask that cannot be answered here says why and offers no Answer, on the deck and its card (BRO-3111)", async () => {
+      asks = [quiet("R1", { refusal: "Two asks in leadership-20261013.yaml are named R1 and neither has a uid." })];
+      const view = await mount({ tab: "decisions" });
+      expect(view.text()).toContain("This ask cannot be answered here. Two asks in leadership-20261013.yaml");
+      expect(view.labelled("Answer")).toHaveLength(0);
+      await view.press(view.all("[role='link']").find((el) => el.textContent?.includes("Details, session and history")));
+      expect(view.id("inspector-card-bar")?.querySelector('[aria-label^="Answer"]') == null).toBe(true);
+      expect(sent("ask.answer")).toHaveLength(0);
+    });
+
+    test("a ledger that could not be read is said over the deck, with its words", async () => {
       asks = [quiet("Q1")];
       askWarnings = [
         "The ask ledger sri-coordinator-20261013.yaml could not be read: Map keys must be unique",
         "The ask ledger dogfood-20261013-2245-launch.yaml could not be read: Map keys must be unique",
       ];
       const view = await mount({ tab: "decisions" });
-      expect(view.text()).toContain("2 read warnings");
-      await open(view);
       expect(view.text()).toContain("2 read warnings: some asks may be missing.");
       expect(view.text()).toContain("sri-coordinator-20261013.yaml could not be read: Map keys must be unique");
     });
 
-    test("with every ledger read there is no warning, and no open ask is no section", async () => {
+    test("with every ledger read there is no warning", async () => {
       asks = [ask("A1")];
       const view = await mount({ tab: "decisions" });
-      await open(view);
       expect(view.text()).not.toContain("could not be read");
-      expect(view.text()).not.toContain("Open, not blocking");
     });
 
-    test("an asks read that failed says so: never 'no open asks'", async () => {
+    test("an asks read that failed says so: never 'no decision waits'", async () => {
       asksFail = "asks are down";
+      asks = [];
       const view = await mount({ tab: "decisions" });
-      expect(view.text()).toContain("open asks: not read");
-      await open(view);
-      expect(view.text()).toContain("Couldn't read the open asks");
+      expect(view.text()).not.toContain("nothing waits on you");
+      expect(view.text()).toContain("Couldn't read the open asks.");
     });
   });
 });
@@ -1054,6 +1087,14 @@ describe("M7, Health at 375 x 812", () => {
     expect(view.text()).toContain("Credits ledger: ended mid-turn");
     expect(view.text()).toContain("Closes when");
     expect(view.text()).toContain("Unblock…");
+  });
+
+  test("a notice card opens its own detail (M4), as a hold's card opens M2 (BRO-3103)", async () => {
+    const view = await mount({ tab: "health" });
+    expect(view.text()).toContain("Credits ledger: ended mid-turn");
+    await view.press(view.all("[role='link']").find((el) => el.textContent?.includes("Details, session and history")));
+    expect(view.id("inspector-card") !== null).toBe(true);
+    expect(view.id("inspector-card")?.textContent ?? "").toContain("Credits ledger: ended mid-turn");
   });
 
   test("Unblock asks for words in a sheet of ours and sends them; the sheet closes only when they were sent", async () => {

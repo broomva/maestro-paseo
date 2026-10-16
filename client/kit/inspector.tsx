@@ -28,6 +28,7 @@ import {
   panelVerbsFor,
   type VerbSpec,
   verbsFor,
+  withoutRefused,
 } from "./inspector-model";
 import { Dot, Kicker, MONO, PASS_THROUGH, Pill, SectionLabel, TABULAR } from "./parts";
 import { type Kit, kitOf } from "./tokens";
@@ -112,6 +113,8 @@ export type InspectorItem =
       chosen?: string;
       /** The silent default: what happens if you say nothing, and how far its countdown has run (0 to 1). */
       fallback?: { line: string; elapsed?: number };
+      /** Why it cannot be answered here (an id collision, split copies): no Answer is offered, and this says why. */
+      refusal?: string;
     })
   | (Common & {
       kind: "owner_step";
@@ -532,10 +535,16 @@ export function InspectorBody({
           onChoose={choose}
           compact={compact}
           label={item.optionsLabel ?? "Options"}
-          locked={locked}
+          locked={locked || Boolean(item.refusal)}
           keys={keys}
         />,
       );
+      if (item.refusal)
+        sections.push(
+          <Text key="refusal" accessibilityRole="alert" style={{ color: kit.warn, fontSize: 13.5, lineHeight: 19 }}>
+            {`This ask cannot be answered here. ${item.refusal}`}
+          </Text>,
+        );
       if (item.fallback)
         sections.push(
           <View key="fallback" style={{ gap: 8 }}>
@@ -1000,7 +1009,10 @@ export function InspectorPanel({
         ? "Answer in your words"
         : answerLabel(showing.options, sent)
       : showing.primaryLabel;
-  const verbs = panelVerbsFor(showing.kind, primary, showing.kind === "review" && showing.session !== undefined);
+  const verbs = withoutRefused(
+    showing,
+    panelVerbsFor(showing.kind, primary, showing.kind === "review" && showing.session !== undefined),
+  );
   const links = verbs.filter((verb) => verb.link);
   const pills = verbs.filter((verb) => !verb.link);
   return (
@@ -1251,7 +1263,7 @@ export function InspectorCard({
         >
           <Verbs
             theme={theme}
-            verbs={verbsFor(item.kind, item.primaryLabel)}
+            verbs={withoutRefused(item, verbsFor(item.kind, item.primaryLabel))}
             onVerb={(id) => onVerb(id, picked.choice)}
             height={DECK.verb}
             grow

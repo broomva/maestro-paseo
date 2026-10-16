@@ -149,6 +149,7 @@ export function HoldCard({
   onWords,
   onDetails,
   onVerb,
+  lane,
 }: {
   theme: PluginTheme;
   item: InspectorItem;
@@ -167,12 +168,16 @@ export function HoldCard({
   onWords: (text: string) => void;
   onDetails: () => void;
   onVerb: (id: string) => void;
+  /** Where it stands on the Decisions deck (BRO-3140): "Waits on you", "Not blocking", "Idea". */
+  lane?: { words: string; tone: "needs" | "muted" | "info" };
 }) {
   const kit = kitOf(theme);
   const look = KIND_LOOK[item.kind];
   const options = item.kind === "ask" || item.kind === "review" ? item.options : [];
   const chosen = options.find((option) => option.id === choice);
-  const locked = waiting !== null || busy;
+  // An ask that cannot be answered here (BRO-3111) offers no live Answer: the card says why.
+  const refusal = item.kind === "ask" ? (item.refusal ?? null) : null;
+  const locked = waiting !== null || busy || refusal !== null;
   const inWords = item.kind === "ask" && options.length === 0;
   const summary =
     item.kind === "ask"
@@ -189,19 +194,44 @@ export function HoldCard({
       title={item.title}
       summary={summary}
       onDetails={onDetails}
-      verbs={verbs.map((verb) => {
-        const answer = verb.id === "answer";
-        // An answer names the option it sends (J3), and asks for a second press when it cannot be undone.
-        const label = answer && chosen && armed ? `Confirm: ${chosen.label}` : verb.label;
-        return {
-          label,
-          primary: verb.primary,
-          accessibilityLabel: answer && chosen ? `${armed ? "Confirm" : "Answer"} with ${chosen.label}` : undefined,
-          disabled: locked || (answer && options.length > 0 && !chosen) || (answer && inWords && words.trim() === ""),
-          onPress: () => onVerb(verb.id),
-        };
-      })}
+      verbs={verbs
+        .filter((verb) => !(refusal && verb.id === "answer"))
+        .map((verb) => {
+          const answer = verb.id === "answer";
+          // An answer names the option it sends (J3), and asks for a second press when it cannot be undone.
+          const label = answer && chosen && armed ? `Confirm: ${chosen.label}` : verb.label;
+          return {
+            label,
+            primary: verb.primary,
+            accessibilityLabel: answer && chosen ? `${armed ? "Confirm" : "Answer"} with ${chosen.label}` : undefined,
+            disabled: locked || (answer && options.length > 0 && !chosen) || (answer && inWords && words.trim() === ""),
+            onPress: () => onVerb(verb.id),
+          };
+        })}
     >
+      {lane ? (
+        <View
+          testID="deck-lane"
+          style={{
+            alignSelf: "flex-start",
+            height: 26,
+            paddingHorizontal: 10,
+            borderRadius: 9999,
+            backgroundColor: lane.tone === "needs" ? kit.needsSoft : kit.sunken,
+            justifyContent: "center",
+          }}
+        >
+          <Text
+            style={{
+              color: lane.tone === "needs" ? kit.needs : lane.tone === "info" ? kit.info : kit.fg2,
+              fontSize: 12.5,
+              fontWeight: "600",
+            }}
+          >
+            {lane.words}
+          </Text>
+        </View>
+      ) : null}
       {item.kind === "approval" ? <Facts theme={theme} item={item} /> : null}
       {item.kind === "owner_step" ? (
         <View style={{ backgroundColor: kit.sunken, borderRadius: 10, padding: 10, gap: 3 }}>
@@ -264,6 +294,11 @@ export function HoldCard({
           disabled={locked}
           onChoose={onChoose}
         />
+      ) : null}
+      {refusal ? (
+        <Text accessibilityRole="alert" style={{ color: kit.warn, fontSize: 13.5, lineHeight: 19 }}>
+          {`This ask cannot be answered here. ${refusal}`}
+        </Text>
       ) : null}
       {armed ? (
         <Text accessibilityLiveRegion="polite" style={{ color: kit.warn, fontSize: 13, fontWeight: "600" }}>

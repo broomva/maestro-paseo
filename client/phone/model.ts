@@ -13,7 +13,7 @@ import { askRowOf, type Handled } from "../../shared/needs";
 import { isStanding } from "../../shared/needs-you";
 import type { NoticeRow } from "../../shared/notices";
 import { ticketOf } from "../../shared/text";
-import { headlineOf, isTriaged, ledgerName, ledgerOf, reversibility, silenceOf } from "../decisions-model";
+import { headlineOf, ledgerName, ledgerOf, reversibility, silenceOf } from "../decisions-model";
 import type { NeedEntry } from "../feed-model";
 import { ago } from "../format";
 import { tabOf } from "../header-count";
@@ -273,18 +273,27 @@ export function unreadWords(unread: readonly string[] | undefined, tab: PhoneTab
  * What the deck says when it is empty: never "nothing needs you" over a read that failed or left a source unread.
  */
 export function deckEmptyWords(
-  read: "pending" | "error" | "ok",
+  read: DeckRead,
   tab: PhoneTab,
   unread: readonly string[] | undefined = undefined,
 ): string {
   // Health's deck is the notices, Work's the work that needs you: what each could not read is that, not "what needs you".
-  const what = tab === "health" ? "the notices" : tab === "work" ? "the work that needs you" : "what needs you";
+  const what =
+    tab === "health"
+      ? "the notices"
+      : tab === "work"
+        ? "the work that needs you"
+        : tab === "decisions"
+          ? "the open asks"
+          : "what needs you";
   if (read === "pending") return `Reading ${what}…`;
   if (read === "error") return `Couldn't read ${what}.`;
+  // A refetch that failed over an empty read concludes nothing (BRO-3094).
+  if (read === "stale") return `Couldn't read ${what} again: the last read held none, and may be out of date.`;
   if (unread?.length) return `Couldn't read ${what} (${unread.join(", ")}).`;
   if (tab === "health") return "Nothing is asking for a look.";
   if (tab === "work") return "No work needs you.";
-  return tab === "decisions" ? "No decision waits on you." : "Nothing needs you.";
+  return tab === "decisions" ? "No ask is open: nothing waits on you." : "Nothing needs you.";
 }
 
 /** A deck's title and its trailing words. */
@@ -324,37 +333,26 @@ export function answersCounts(status: AnswersStatus | null): SheetCount[] {
   ];
 }
 
+// ── Every open ask on the Decisions deck ─────────────────────────────────────
+
 /**
- * The line of counts the Decisions sheet adds to answersCounts (BRO-3108): the open asks that do not wait on you, and
- * the ledgers that could not be read. Each is the length of what the sheet lists (`rows`, `warnings`); an ask read
- * that failed says so, never "0 open".
+ * Where an open ask stands on the Decisions deck (BRO-3140, deciding BRO-3113: "see all decisions and asks
+ * regardless"). `waits`: it waits on you (a hold, or isWaiting); `open`: answerable, blocks nothing; `idea`: an
+ * initiative's develop, park or kill. The deck lists them in that order, each card wearing its words.
  */
-export function openAskCounts(rows: readonly OpenAskRow[] | null, warnings: readonly string[] | null): SheetCount[] {
-  if (rows === null) return [{ id: "open-unread", label: "open asks: not read", tone: "warn" }];
-  return [
-    ...(rows.length > 0 ? [{ id: "open", label: `${rows.length} open` }] : []),
-    ...(warnings?.length
-      ? [
-          {
-            id: "warnings",
-            label: `${warnings.length} read ${warnings.length === 1 ? "warning" : "warnings"}`,
-            tone: "warn" as const,
-          },
-        ]
-      : []),
-  ];
-}
+export type DeckLane = "waits" | "open" | "idea";
 
-// ── The open asks the deck does not hold ─────────────────────────────────────
+export const LANE_WORDS: Record<DeckLane, string> = { waits: "Waits on you", open: "Not blocking", idea: "Idea" };
+
+const LANE_ORDER: Record<DeckLane, number> = { waits: 0, open: 1, idea: 2 };
 
 /**
- * An open ask that does not wait on you: answerable, never a hold (isWaiting: the ledger forbids `blocking` beside a
- * reversible default), so needs.list leaves it out and the deck never shows it. The Decisions sheet lists it under
- * "Open, not blocking" (BRO-3108), as the desktop's Decisions does; `entry` is the hold the inspector card opens, so
- * its answer is the same verb as a deck hold's.
+ * An open ask that needs.list does not hold: answerable from its card on the deck, after the holds. `entry` is the
+ * hold the card and the inspector open, so its answer is the same verb as a hold's.
  */
 export interface OpenAskRow {
   key: string;
+  lane: DeckLane;
   title: string;
   /** Its ledger, and whether it can be undone: "sri · leadership-20261013 · reversible". */
   meta: string;
@@ -370,25 +368,36 @@ export function workspaceNameOf(controlRepo: string | null | undefined): string 
 }
 
 /**
- * The open asks beside the deck: those the desktop lists (open, ideas aside: answered in Initiatives) that are not
- * holds, oldest first, in the workspace chosen (`scope`, null: all). `workspace` is the name needs.list gives the
- * control repo's own asks (server/needs.ts), so the chip narrows both the same. Pure.
+ * Every open ask the deck's holds do not already carry, ideas among them, in the workspace chosen (`scope`, null:
+ * all): those that wait on you first (an ask needs.list could not hold: its prompt session holds it, or its source
+ * was not read), then the ones that block nothing, then ideas, each oldest first. `held` is the keys of the holds
+ * the deck lists, so no ask is on it twice (BRO-3112). `workspace` is the name needs.list gives the control repo's
+ * own asks (server/needs.ts), so the chip narrows both the same. Pure.
  */
 export function openAsks(
   asks: readonly DecisionAsk[],
   workspace: string,
   scope: string | null,
   now: number,
+  held: ReadonlySet<string> = new Set(),
 ): OpenAskRow[] {
+  const laneOf = (ask: DecisionAsk): DeckLane => (ask.idea ? "idea" : ask.waiting ? "waits" : "open");
   return asks
-    .filter((ask) => isTriaged(ask) && !ask.waiting && (scope === null || (ask.scope ?? workspace) === scope))
-    .sort((a, b) => (a.askedAt ?? "\uffff").localeCompare(b.askedAt ?? "\uffff") || a.id.localeCompare(b.id))
-    .map((ask) => {
-      const row = askRowOf(ask, workspace, ask.askedAt ?? "");
+    .filter((ask) => ask.state === "open" && (scope === null || (ask.scope ?? workspace) === scope))
+    .map((ask) => ({ ask, row: askRowOf(ask, workspace, ask.askedAt ?? "") }))
+    .filter(({ row }) => !held.has(row.key))
+    .sort(
+      (a, b) =>
+        LANE_ORDER[laneOf(a.ask)] - LANE_ORDER[laneOf(b.ask)] ||
+        (a.ask.askedAt ?? "\uffff").localeCompare(b.ask.askedAt ?? "\uffff") ||
+        a.ask.id.localeCompare(b.ask.id),
+    )
+    .map(({ ask, row }) => {
       const undo = reversibility(ask.options);
       const silence = silenceOf(ask);
       return {
         key: row.key,
+        lane: laneOf(ask),
         title: headlineOf(ask).headline,
         meta: [
           ledgerName(ledgerOf(ask)),
@@ -401,6 +410,60 @@ export function openAsks(
         entry: { row, item: null, ask },
       };
     });
+}
+
+/** A card on the Decisions deck: a hold or an open ask, and the words it wears. */
+export interface DecisionCard {
+  entry: NeedEntry;
+  lane: DeckLane;
+}
+
+/**
+ * The Decisions deck: its holds (decisionsDeck, which wait on you), then every other open ask (openAsks). The
+ * empty state is only for a deck whose reads both succeeded and held nothing (deckEmptyWords).
+ */
+export function decisionCards(holds: readonly NeedEntry[], open: readonly OpenAskRow[]): DecisionCard[] {
+  return [
+    ...holds.map((entry) => ({ entry, lane: "waits" as const })),
+    ...open.map((row) => ({ entry: row.entry, lane: row.lane })),
+  ];
+}
+
+/** The line over the Decisions deck: how many it lists and how many of them wait on you ("23 open · none waits on you"). */
+export function decisionCountWords(cards: readonly DecisionCard[]): string {
+  const waits = cards.filter((card) => card.lane === "waits").length;
+  const ideas = cards.filter((card) => card.lane === "idea").length;
+  return [
+    `${cards.length} open`,
+    waits === 0 ? "none waits on you" : `${waits} ${waits === 1 ? "waits" : "wait"} on you`,
+    ideas > 0 ? `${ideas} ${ideas === 1 ? "idea" : "ideas"}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/**
+ * How a read stands for what a deck says (BRO-3094): `stale` is a refetch that failed over data read before, so
+ * nothing it lists is concluded answered or gone, and an empty deck is never "nothing".
+ */
+export type DeckRead = "pending" | "error" | "stale" | "ok";
+
+export function readOf(query: { data?: unknown; isError: boolean }): DeckRead {
+  if (query.data === undefined || query.data === null) return query.isError ? "error" : "pending";
+  return query.isError ? "stale" : "ok";
+}
+
+/** Two reads as one: the worst of them (an error, then a stale read, then one still reading). */
+export function bothRead(a: DeckRead, b: DeckRead): DeckRead {
+  const rank: Record<DeckRead, number> = { error: 0, stale: 1, pending: 2, ok: 3 };
+  return rank[a] <= rank[b] ? a : b;
+}
+
+/** The line over a deck whose last refetch failed (BRO-3094): what it shows is the read from `at`, said. */
+export function staleWords(at: number, now: number): string {
+  const age = ago(new Date(at).toISOString(), now);
+  const when = age === "now" ? "just now" : `${age} ago`;
+  return `Couldn't read again: this is the read from ${when}, and may be out of date.`;
 }
 
 // ── Pages ────────────────────────────────────────────────────────────────────
