@@ -186,7 +186,10 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const cards = useMemo(() => decisionCards(decisionsDeck(scopedHolds), openRows ?? []), [scopedHolds, openRows]);
   const laneOf = useMemo(() => new Map(cards.map((card) => [card.entry.row.key, card.lane])), [cards]);
   // The open asks open the same card a hold does: an answer is the same verb.
-  const inspectable = useMemo(() => [...everyHold, ...(openRows ?? []).map((row) => row.entry)], [everyHold, openRows]);
+  const inspectable = useMemo(
+    () => [...everyHold, ...(everyOpen ?? []).map((row) => row.entry)],
+    [everyHold, everyOpen],
+  );
   const entries = useMemo(
     () => (tab === "decisions" ? cards.map((card) => card.entry) : tab === "feed" ? feedDeck(scopedHolds) : []),
     [cards, scopedHolds, tab],
@@ -290,8 +293,12 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     handledFocus.current = focus.at;
     onFocusHandled();
     if (target.kind === "open") {
+      // A hold that is now an open ask needs.list does not hold is on the Decisions deck, not this tab's.
+      const onDecisions = !(rows ?? []).some((row) => row.key === target.key);
+      const at = onDecisions ? "decisions" : tab;
+      if (at !== tab) onTab(at);
       setStand({ key: target.key, last: 0 });
-      setPushedAt(focus.from === "push" ? { key: target.key, tab } : null);
+      setPushedAt(focus.from === "push" ? { key: target.key, tab: at } : null);
       setGone(null);
     } else if (target.kind === "gone") setGone(target.key);
   });

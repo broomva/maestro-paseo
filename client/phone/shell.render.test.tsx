@@ -81,6 +81,7 @@ const { createRoot } = require("react-dom/client") as {
 const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
 const { PluginRpcProvider } = await import("@getpaseo/plugin/client/host");
 const { needsOf } = await import("../../server/needs");
+const { askHoldKey } = await import("../../shared/needs");
 const { noticesOf } = await import("../../server/notices");
 const { answersStatus } = await import("../../server/answers-status");
 const { fakeWork } = await import("../fake-work");
@@ -904,7 +905,9 @@ describe("M5, Decisions", () => {
       await view.press(view.labelled("Park until 2026-11-02")[0]);
       await view.press(view.labelled("Answer")[0]);
       const [sentAnswer] = sent("ask.answer") as { wake?: string }[];
-      const at = new Date(Date.now() + 30 * 86_400_000);
+      // 30 calendar days on, as defaultWake counts them (never 30 × 24 h, which a DST change would skew).
+      const today = new Date();
+      const at = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30);
       const two = (n: number) => String(n).padStart(2, "0");
       expect(sentAnswer?.wake).toBe(`${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())}`);
     });
@@ -984,6 +987,19 @@ describe("M10, opening on the same hold from a push", () => {
     for (let at = 0; at < 3; at += 1) await settle();
     expect(view.id("from-the-push")?.textContent).toBe("From the push · same hold");
     expect(view.text()).toContain(`${rows.findIndex((row) => row.key === second?.key) + 1} of ${rows.length}`);
+    expect(view.handled).toHaveLength(1);
+  });
+
+  test("a push whose hold is now an open ask that does not wait opens it on the Decisions deck, not 'gone'", async () => {
+    // Pushed while it waited; it has stopped waiting since, so needs.list no longer holds it (BRO-3140).
+    asks = [ask("A1", { blocking: false, waiting: false, headline: "Quiet now A1?" })];
+    const key = askHoldKey(asks[0] as DecisionAsk);
+    expect(needsNow().rows.some((row) => row.key === key)).toBe(false);
+    const view = await mount({ focus: { hold: key, at: 1, from: "push" } });
+    for (let at = 0; at < 3; at += 1) await settle();
+    expect(view.text()).not.toContain("That hold is no longer waiting on you");
+    expect(view.text()).toContain("Quiet now A1?");
+    expect(view.id("from-the-push")?.textContent).toBe("From the push · same hold");
     expect(view.handled).toHaveLength(1);
   });
 
