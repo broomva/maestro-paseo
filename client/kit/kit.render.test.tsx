@@ -499,6 +499,32 @@ describe("on compact native (BRO-3033 fact 3)", () => {
     await view.press(view.label("Hold 1 of 3"));
     expect(view.text()).toContain("1 of 3");
   });
+
+  it("Previous and Next page the deck both ways, even where a rightward swipe is the host's (BRO-3153)", async () => {
+    function Host() {
+      const [index, setIndex] = useState(0);
+      return (
+        <Deck
+          theme={theme}
+          title="Needs you"
+          items={[APPROVAL, ASK, NOTICE]}
+          index={index}
+          onIndexChange={setIndex}
+          keyOf={(item) => item.key}
+          directions={LEFTWARD}
+          renderItem={(item) => <web.Text>{item.title}</web.Text>}
+        />
+      );
+    }
+    const view = await mount(<Host />);
+    expect(view.label("Previous hold")?.getAttribute("aria-disabled")).toBe("true");
+    await view.press(view.label("Next hold"));
+    await view.press(view.label("Next hold"));
+    expect(view.text()).toContain("3 of 3");
+    expect(view.label("Next hold")?.getAttribute("aria-disabled")).toBe("true");
+    await view.press(view.label("Previous hold"));
+    expect(view.text()).toContain("2 of 3");
+  });
 });
 
 describe("the Undertow marks Running only", () => {

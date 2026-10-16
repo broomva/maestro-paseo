@@ -26,9 +26,13 @@ export const DECK = {
   gap: 12,
 } as const;
 
-/** Whether a move starts the deck's swipe: sideways, past the slop, in a direction it may go. */
+/**
+ * Whether a move starts the deck's swipe: sideways past the slop, more sideways than down (45 degrees: a thumb drifts
+ * down as it swipes, and the 1.5x sideways dominance asked before dropped those drags, BRO-3153), in a direction it
+ * may go.
+ */
 export function deckCaptures(dx: number, dy: number, directions: Directions): boolean {
-  if (Math.abs(dx) <= DECK.slop || Math.abs(dx) <= Math.abs(dy) * 1.5) return false;
+  if (Math.abs(dx) <= DECK.slop || Math.abs(dx) <= Math.abs(dy)) return false;
   return dx > 0 ? directions.right : directions.left;
 }
 

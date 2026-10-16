@@ -112,6 +112,11 @@ export function Deck<T>({
     const barred = (dx: number) => (dx > 0 ? !live.current.ways.right : !live.current.ways.left);
     return PanResponder.create({
       onMoveShouldSetPanResponder: (_, g) => deckCaptures(g.dx, g.dy, live.current.ways),
+      // A sideways drag is the deck's before a row, a field or a pill inside the card can keep it (BRO-3153).
+      onMoveShouldSetPanResponderCapture: (_, g) => deckCaptures(g.dx, g.dy, live.current.ways),
+      // Once it is the deck's, the page's vertical scroll may not take it mid-drag: that sprang it home. The host
+      // can still end it (its rightward sidebar gesture on compact native, BRO-3033 fact 3), and home(0) runs then.
+      onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: () => {
         x.stopAnimation((at) => {
           origin.current = at;
@@ -166,7 +171,21 @@ export function Deck<T>({
               </Pressable>
             ))}
           </View>
+          <StepButton
+            theme={theme}
+            icon="ChevronLeft"
+            label="Previous hold"
+            disabled={index <= 0}
+            onPress={() => onIndexChange(index - 1)}
+          />
           <Text style={{ color: kit.muted, fontSize: 12, ...TABULAR }}>{place(index, items.length)}</Text>
+          <StepButton
+            theme={theme}
+            icon="ChevronRight"
+            label="Next hold"
+            disabled={index >= items.length - 1}
+            onPress={() => onIndexChange(index + 1)}
+          />
         </View>
       ) : null}
       <View onLayout={(event: LayoutChangeEvent) => setWidth(event.nativeEvent.layout.width)} style={CLIP}>
@@ -192,6 +211,47 @@ export function Deck<T>({
         )}
       </View>
     </View>
+  );
+}
+
+/**
+ * One step back or on (BRO-3153): a 48 pt tall target beside "n of N". On compact native a rightward swipe is Paseo's
+ * sidebar (BRO-3033 fact 3), and the segments are 4 pt tall, so going back was the hardest move on the deck.
+ */
+function StepButton({
+  theme,
+  icon,
+  label,
+  disabled,
+  onPress,
+}: {
+  theme: PluginTheme;
+  icon: "ChevronLeft" | "ChevronRight";
+  label: string;
+  disabled: boolean;
+  onPress: () => void;
+}) {
+  const kit = kitOf(theme);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+      style={({ pressed }: { pressed: boolean }) => ({
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: pressed ? kit.hairline : kit.sunken,
+        opacity: disabled ? 0.35 : 1,
+      })}
+    >
+      <Icon name={icon} size={18} color={kit.fg} />
+    </Pressable>
   );
 }
 

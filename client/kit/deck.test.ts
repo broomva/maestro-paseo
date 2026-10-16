@@ -44,6 +44,11 @@ describe("the deck: one hold at a time, swipe sideways for the next", () => {
     expect(deckCaptures(DECK.slop, 0, BOTH_WAYS)).toBe(false);
     expect(deckCaptures(20, 30, BOTH_WAYS)).toBe(false);
   });
+  test("a thumb's diagonal still swipes: sideways past 45 degrees is enough (BRO-3153)", () => {
+    // Real thumbs drift down as they swipe; 1.5x sideways dominance dropped those drags.
+    expect(deckCaptures(-24, 20, BOTH_WAYS)).toBe(true);
+    expect(deckCaptures(-24, 24, BOTH_WAYS)).toBe(false);
+  });
   test("its verbs are 52 pt", () => {
     expect(DECK.verb).toBe(52);
   });
