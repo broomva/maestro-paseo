@@ -36,7 +36,7 @@ Chromium's `Emulation.setFocusEmulationEnabled` through the window's debugger be
 | **Editing mid-text keeps the caret** | pass | Typed "hello world", put the caret after "hello", typed "," and " there": the value is `hello, there world` and the caret is at 12. The next lines typed went in at the caret ("hello, there⏎line two⏎line three⏎line four world"), and the field stayed in view. `5-live-a2-typing-grown.png` |
 | Skip and Answer reachable above the keyboard | pass | The bar is at 461–538, on the keyboard's top. `5-live-a2-typing-grown.png` |
 
-The scripts are kept beside the shots: `cdp-eval.ts` evaluates an expression in Paseo.app's main process over its
+The scripts are kept beside the shots: `cdp-eval.mjs` evaluates an expression in Paseo.app's main process over its
 inspector, and `live-a2-check.js` is the #85 check.
 
 **Left behind:** Paseo.app's Node inspector stays open on 127.0.0.1:9229 until the app restarts (`SIGUSR1` cannot
