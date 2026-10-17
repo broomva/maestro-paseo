@@ -47,9 +47,14 @@ export function seriesOfCard(card: DecisionCard): { id: string; title: string } 
   };
 }
 
+/** Whether an ask is in a ledger as a caller names it: `scope/ledger.yaml`, or the file alone (Initiatives' refs). */
+export function inLedger(ask: NonNullable<DecisionCard["entry"]["ask"]>, ledger: string): boolean {
+  return ledgerOf(ask) === ledger || ask.ledger === ledger;
+}
+
 /** An open ask's hold key by its ledger and id (Initiatives opens one so): only when exactly one matches. */
 export function keyOfDecision(cards: readonly DecisionCard[], ledger: string, id: string): string | null {
-  const found = cards.filter(({ entry }) => entry.ask && ledgerOf(entry.ask) === ledger && entry.ask.id === id);
+  const found = cards.filter(({ entry }) => entry.ask && inLedger(entry.ask, ledger) && entry.ask.id === id);
   return found.length === 1 ? (found[0]?.entry.row.key ?? null) : null;
 }
 
@@ -117,11 +122,11 @@ export function visitKeys(visit: Visit, live: readonly string[]): string[] {
 }
 
 /**
- * Whether the card may show a key: live, not waiting out an undo window, and not answered in this visit (a read can
- * still list an answered ask after its window closed). An undone answer leaves `answered` (unanswer).
+ * Whether the card may show a key: live, not waiting out an undo window, and neither answered (a read can still list
+ * an answered ask after its window closed) nor skipped in this visit. An undone answer leaves `answered`.
  */
 export function navigable(key: string, live: readonly string[], waiting: ReadonlySet<string>, visit: Visit): boolean {
-  return live.includes(key) && !waiting.has(key) && !visit.answered.includes(key);
+  return live.includes(key) && !waiting.has(key) && !visit.answered.includes(key) && !visit.skipped.includes(key);
 }
 
 /** The visit after an answer, a skip, or an answer undone. */

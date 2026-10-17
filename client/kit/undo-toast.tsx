@@ -35,9 +35,11 @@ export function useUndoToast(onUndo: (receipt: string) => void, clock: UndoClock
     entry,
     show: undoWindow.show,
     dismiss: undoWindow.dismiss,
-    undo: () => {
+    /** Whether there was a window to take back: false once it has closed and the verb applied. */
+    undo: (): boolean => {
       const receipt = undoWindow.undo();
       if (receipt) undoRef.current(receipt);
+      return receipt !== null;
     },
   };
 }

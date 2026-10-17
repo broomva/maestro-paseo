@@ -99,6 +99,10 @@ it ends the visit, as below.
 - **Undo during a visit** removes the key from `answered` (`marked(visit, key, "undone")`) and moves the card back to
   that ask, so you can answer it again.
 - Swiping sideways pages only between navigable keys, toward the swipe. With none that way, it stays put.
+- **A double tap** answers one ask: after the card moves on, Answer and Skip wait `MOVE_SETTLE_MS` (600 ms), so a
+  second tap meant for the ask just answered never answers one not read.
+- An answer that resolves after the card closed or moved acts on the card as it is then (a ref to the latest render),
+  never reopening a closed card.
 
 ### End of series
 

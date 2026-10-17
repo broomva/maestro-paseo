@@ -6,6 +6,7 @@ import {
   askSeries,
   endWords,
   firstOfVisit,
+  keyOfDecision,
   marked,
   navigable,
   nextInVisit,
@@ -68,6 +69,19 @@ describe("askSeries", () => {
   });
 });
 
+describe("an ask named by its ledger and id", () => {
+  test("Initiatives' scope-less ledger finds a fleet scope's ask; two matches find none", () => {
+    const fleet = {
+      ...card(askKeyOf("foo.yaml", "A1")),
+      entry: { ...card("x").entry, ask: { scope: "sri", ledger: "foo.yaml", id: "A1" } },
+    } as unknown as DecisionCard;
+    const key = fleet.entry.row.key;
+    expect(keyOfDecision([fleet], "foo.yaml", "A1")).toBe(key);
+    expect(keyOfDecision([fleet], "sri/foo.yaml", "A1")).toBe(key);
+    expect(keyOfDecision([fleet, fleet], "foo.yaml", "A1")).toBeNull();
+  });
+});
+
 describe("a visit", () => {
   const keys = ["a", "b", "c", "d"];
   const visit = startVisit({
@@ -102,6 +116,13 @@ describe("a visit", () => {
     const answered = marked(visit, "a", "answered");
     expect(navigable("a", keys, new Set(), answered)).toBe(false);
     expect(navigable("a", keys, new Set(), marked(answered, "a", "undone"))).toBe(true);
+  });
+
+  test("a skipped ask is not shown again in the visit, either way", () => {
+    const skipped = marked(visit, "a", "skipped");
+    const ok = (key: string) => navigable(key, keys, new Set(), skipped);
+    expect(ok("a")).toBe(false);
+    expect(nextInVisit(keys, "b", ok, -1)).toBeNull();
   });
 
   test("the end says the series and what was skipped", () => {

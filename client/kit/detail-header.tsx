@@ -72,7 +72,7 @@ export function DetailHeader({
             >
               <View
                 style={{
-                  width: `${((index + 1) / total) * 100}%`,
+                  width: `${(Math.min(Math.max(index + 1, 1), total) / total) * 100}%`,
                   height: 4,
                   borderRadius: 2,
                   backgroundColor: color("current"),

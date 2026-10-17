@@ -19,7 +19,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, type LayoutChangeEvent, Pressable, ScrollView, Text, View } from "react-native";
 import { ANSWERS_KEY } from "../../shared/needs";
 import { useWorkspaceAsks } from "../decisions";
-import { decisionAsks, isTriaged, ledgerOf, triageQueue } from "../decisions-model";
+import { decisionAsks, isTriaged, triageQueue } from "../decisions-model";
 import { stageTiles, wentRows } from "../decisions-stage-model";
 import { type NeedEntry, needsSection } from "../feed-model";
 import { ago, errorText } from "../format";
@@ -65,6 +65,7 @@ import {
   feedDeck,
   feedSheet,
   irreversibleChoice,
+  MOVE_SETTLE_MS,
   openAsks,
   openingChoice,
   type PhonePage,
@@ -91,6 +92,7 @@ import {
   askSeries,
   endWords,
   firstOfVisit,
+  inLedger,
   keyOfDecision,
   marked,
   navigable,
@@ -294,6 +296,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const mayShow = (now: Visit) => (key: string) => navigable(key, visitLive, waitingKeys, now);
   // The ask the visit answered last: Undo takes the card back to it.
   const lastAnswered = useRef<string | null>(null);
+  // When the card last moved on: Answer and Skip wait MOVE_SETTLE_MS after it, so a double tap answers one ask.
+  const movedAt = useRef(0);
   const openSeries = (one: AskSeries, at?: string) => {
     const started = startVisit(one);
     const key = at ?? firstOfVisit(one.keys, (candidate) => navigable(candidate, one.keys, waitingKeys, started));
@@ -309,10 +313,16 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     setVisit(null);
     inspector.selectHold(key);
   };
+  // What the latest render holds: an answer resolves after its press, maybe after the card closed or moved, and must
+  // act on the card as it is then, never on the visit its press closed over (Codex P20 round 1).
+  const onCard = selection?.kind === "hold" ? selection.key : null;
+  const latest = useRef({ visit, showing: false, onCard, list: visitList, walk, mayShow });
+  latest.current = { visit, showing: inspector.showing, onCard, list: visitList, walk, mayShow };
   /** The visit moves past `from`: to the next ask it may show, else it ends and says so. */
   const visitOn = (from: string, now: Visit) => {
-    const to = nextInVisit(walk(now), from, mayShow(now));
+    const to = nextInVisit(latest.current.walk(now), from, latest.current.mayShow(now));
     if (to) {
+      movedAt.current = Date.now();
       setVisit(now);
       inspector.selectHold(to);
       return;
@@ -322,27 +332,26 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     toast.show(endWords(now));
   };
   const visitMove = (from: string, how: "answered" | "skipped") => {
-    if (visit) visitOn(from, marked(visit, from, how));
+    const now = latest.current.visit;
+    if (now) visitOn(from, marked(now, from, how));
   };
-  // A closed card ends its visit.
+  // The ask on the card left the read without an answer here (answered elsewhere, or closed): the card is still open
+  // but has nothing to show, and the visit moves on. A card you closed ends its visit (Claude P20 round 1).
   useEffect(() => {
-    if (!inspector.showing && visit) {
+    if (!visit) return;
+    const left = onCard !== null && !visitLive.includes(onCard) && !visit.answered.includes(onCard);
+    if (inspector.open && left && onCard) return visitOn(onCard, visit);
+    if (!inspector.showing) {
       setVisit(null);
       lastAnswered.current = null;
     }
-  }, [inspector.showing, visit]);
-  // The ask on the card left the read without an answer here (answered elsewhere, or closed): the visit moves on.
-  const onCard = selection?.kind === "hold" ? selection.key : null;
-  useEffect(() => {
-    if (!visit || !onCard || !inspector.showing) return;
-    if (visitLive.includes(onCard) || visit.answered.includes(onCard)) return;
-    visitOn(onCard, visit);
   });
   const undo = () => {
     const key = lastAnswered.current;
     lastAnswered.current = null;
-    inspector.undo.undo();
-    if (key && visit) {
+    // Only an answer actually taken back returns the card to it: past its window it applied (Claude P20 round 1).
+    const undone = inspector.undo.undo();
+    if (undone && key && visit) {
       setVisit(marked(visit, key, "undone"));
       inspector.selectHold(key);
     }
@@ -367,9 +376,11 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       onFocusHandled();
       const { ledger, id } = focus.decision;
       const key = keyOfDecision(everyCard, ledger, id);
-      const inLedger = everyCard.find(({ entry }) => entry.ask && ledgerOf(entry.ask) === ledger)?.entry.row.key;
+      const anyInLedger = everyCard.find(({ entry }) => entry.ask && inLedger(entry.ask, ledger))?.entry.row.key;
       if (key) setOpenAsk({ key, whole: false });
-      else if (inLedger) setOpenAsk({ key: inLedger, whole: true });
+      else if (anyInLedger) setOpenAsk({ key: anyInLedger, whole: true });
+      else if (asksRead.isError)
+        toast.show("Couldn't read the open asks, so that ask did not open. It reads again in a moment.");
       return;
     }
     if (focus.work) {
@@ -446,6 +457,10 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     if (picked === undefined) {
       // An ask with no options is answered in words alone; anything else with nothing chosen opens its card.
       const words = (said[key] ?? "").trim();
+      if (card && item.kind === "ask" && item.options.length === 0 && !words) {
+        toast.show("Write your answer: this ask has no options.");
+        return;
+      }
       if (item.kind === "ask" && item.options.length === 0 && words) {
         const sent = await inspector.act("answer", inspector.targetOf(entry), undefined, words);
         if (sent) afterAnswer(key, card);
@@ -474,10 +489,17 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
 
   /** After an answer was sent: the card on a visit moves on in its series; otherwise it closes and the deck moves. */
   const afterAnswer = (key: string, card: boolean) => {
-    if (card && visit && visitList.includes(key)) {
+    const now = latest.current;
+    if (card && now.visit && now.list.includes(key)) {
       lastAnswered.current = key;
+      // The card left this ask while the answer was in flight (moved on, or closed): it is marked, nothing reopens.
+      if (!now.showing || now.onCard !== key) return setVisit(marked(now.visit, key, "answered"));
+      // The deck the visit was opened over (the Feed's) moves past it too.
+      advance(key);
       return visitMove(key, "answered");
     }
+    // A card closed while its answer was in flight stays closed: only the deck moves.
+    if (card && !now.showing) return advance(key);
     inspector.setOpen(false);
     advance(key);
   };
@@ -503,6 +525,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const onCardVerb = async (id: string, choice?: string) => {
     if (!selection) return;
     if (openEntry && cardItem && (id === "answer" || id === "skip")) {
+      // Just moved on: the tap was meant for the ask before (a double tap), never for this one.
+      if (inVisit && Date.now() - movedAt.current < MOVE_SETTLE_MS) return;
       if (id === "answer") return answer(openEntry, cardItem, choice, true);
       if (inVisit) return visitMove(openEntry.row.key, "skipped");
       inspector.setOpen(false);

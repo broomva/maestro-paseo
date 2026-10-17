@@ -87,7 +87,7 @@ const { answersStatus } = await import("../../server/answers-status");
 const { fakeWork } = await import("../fake-work");
 const { GALLERY_LIGHT } = await import("../kit/gallery-data");
 const { PhoneSurface } = await import("./shell");
-const { CONFIRM_MS } = await import("./model");
+const { CONFIRM_MS, MOVE_SETTLE_MS } = await import("./model");
 const { NEEDS_KEY } = await import("../hooks");
 type PhoneTab = import("./model").PhoneTab;
 type PhonePage = import("./model").PhonePage;
@@ -475,6 +475,13 @@ async function mount(
   return {
     handled,
     pages,
+    /** Read every query again, as a poll would: what the fakes now hold is what the screen gets. */
+    reread: async () => {
+      await act(async () => {
+        await client.invalidateQueries();
+      });
+      for (let at = 0; at < 3; at += 1) await settle();
+    },
     text: () => box.textContent ?? "",
     all,
     id: (testID: string) => box.querySelector(`[data-testid="${testID}"]`),
@@ -724,6 +731,8 @@ describe("M5, Decisions", () => {
   const inCard = (view: Awaited<ReturnType<typeof mount>>, label: string) =>
     card(view)?.querySelector(`[aria-label^="${label}"]`) as El | null;
   const header = (view: Awaited<ReturnType<typeof mount>>) => view.id("detail-header")?.textContent ?? "";
+  // The card just moved on: its verbs wait out MOVE_SETTLE_MS before a deliberate next press.
+  const settled = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, MOVE_SETTLE_MS + 50)));
   const write = async (field: El | null | undefined, words: string) => {
     await act(async () => {
       const box = field as unknown as { value: string; dispatchEvent(event: unknown): boolean };
@@ -767,6 +776,7 @@ describe("M5, Decisions", () => {
     expect(card(view)?.textContent).toContain("Install the three headless mods A2?");
     expect(view.id("undo-toast") !== null).toBe(true);
     // The last one ends the series: the card closes onto the dashboard and says so.
+    await settled();
     await view.press(bar(view, "Answer"));
     expect(sent("ask.answer")).toHaveLength(2);
     await settle(400);
@@ -780,6 +790,7 @@ describe("M5, Decisions", () => {
     await view.press(rows(view)[0]);
     await view.press(bar(view, "Skip"));
     expect(header(view)).toContain("Ask · 2 of 2");
+    await settled();
     await view.press(bar(view, "Skip"));
     expect(sent("ask.answer")).toHaveLength(0);
     expect(toasts.join(" ")).toContain("nothing left to answer · 2 skipped");
@@ -792,8 +803,35 @@ describe("M5, Decisions", () => {
     await view.press(bar(view, "Answer"));
     expect(header(view)).toContain("Ask · 2 of 2");
     await view.press(view.labelled("Undo: ")[0]);
+    expect(sent("verb.undo")).toHaveLength(1);
     expect(card(view)?.textContent).toContain("Install the three headless mods A1?");
     expect(header(view)).toContain("Ask · 1 of 2");
+  });
+
+  test("a double tap on Answer answers one ask: the next one waits to be read (P20 round 1)", async () => {
+    asks = [ask("A1"), ask("A2"), ask("A3")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    await view.press(bar(view, "Answer"));
+    await view.press(bar(view, "Answer"));
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ id: "A1" })]);
+    expect(header(view)).toContain("Ask · 2 of 3");
+    await settled();
+    await view.press(bar(view, "Answer"));
+    expect(sent("ask.answer")).toHaveLength(2);
+  });
+
+  test("the ask on the card answered elsewhere: the card moves to the next, not closed (P20 round 1)", async () => {
+    asks = [ask("A1"), ask("A2"), ask("A3")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    await view.press(bar(view, "Skip"));
+    expect(header(view)).toContain("Ask · 2 of 3");
+    // A2 is answered on another device: the next read no longer lists it.
+    asks = [ask("A1"), ask("A3")];
+    await view.reread();
+    expect(card(view)?.textContent).toContain("Install the three headless mods A3?");
+    expect(sent("ask.answer")).toHaveLength(0);
   });
 
   test("a push for an ask opens the card on it, in its series", async () => {
@@ -877,7 +915,13 @@ describe("M5, Decisions", () => {
     await write(card(view)?.querySelector("textarea"), "Keep the name.");
     await view.press(bar(view, "Answer"));
     expect(sent("ask.answer")).toEqual([
-      expect.objectContaining({ ledger: "claude-code-mods.yaml", uid: "u-w1-7f3e91", id: "W1", option: null }),
+      expect.objectContaining({
+        ledger: "claude-code-mods.yaml",
+        uid: "u-w1-7f3e91",
+        id: "W1",
+        option: null,
+        note: "Keep the name.",
+      }),
     ]);
   });
 
