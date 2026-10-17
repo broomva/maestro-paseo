@@ -35,6 +35,8 @@ import { LoopsNotices, LoopsView } from "./loops";
 import { NewWork } from "./new-work";
 import { PendingVerbs } from "./pending-verbs";
 import { PHONE_TABS, type PhonePage, type PhoneTab, pageOfIntent } from "./phone/model";
+import { holdIsNew, openingTab } from "./phone/resume";
+import { loadResume, saveResume } from "./phone/resume-store";
 import { PhoneSurface } from "./phone/shell";
 import { FilterRow, ScopeRow } from "./plane-controls";
 import {
@@ -77,9 +79,15 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [chosenView, setChosenView] = useState<PlaneView>("feed");
-  // The phone's tab (M1, M6, M7) and the page over it (M8, M11, and the views Health's sheet reaches).
-  const [phoneTab, setPhoneTab] = useState<PhoneTab>(() => phoneTabParam(params?.tab));
-  const [phonePage, setPhonePage] = useState<PhonePage | null>(null);
+  // The phone's tab (M1, M6, M7) and the page over it (M8, M11, and the views Health's sheet reaches). The phone opens
+  // where you left it (BRO-3180 B), unless the route names a tab you have not already acted on (a push).
+  const [opening] = useState(() =>
+    layout.compact ? openingTab(params?.tab ? phoneTabParam(params.tab) : null, loadResume()) : null,
+  );
+  const [phoneTab, setPhoneTab] = useState<PhoneTab>(() => opening?.tab ?? phoneTabParam(params?.tab));
+  const [phonePage, setPhonePage] = useState<PhonePage | null>(() =>
+    opening && !params?.tab && opening.tab === loadResume().tab ? loadResume().page : null,
+  );
   const [filter, setFilter] = useState<Filter>("all");
   const [chosenScope, setScope] = useState<string | null>(null);
   const [loopOpen, setLoopOpen] = useState(false);
@@ -87,7 +95,13 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
   const [fleetTick, setFleetTick] = useState<number | null>(null);
   const [decisionsFocus, setDecisionsFocus] = useState<DecisionsFocus | null>(null);
   const [query, setQuery] = useState("");
-  const [workspace, setWorkspace] = useState<string | null>(null);
+  const [workspace, setWorkspace] = useState<string | null>(() => (layout.compact ? loadResume().workspace : null));
+  // Where you are, kept as you move (BRO-3180 B): the tab, the page over it, the workspace, and the route tab acted on.
+  useEffect(() => {
+    if (!layout.compact) return;
+    const consumed = { ...loadResume().consumed, tab: opening?.consumed ?? null };
+    saveResume({ tab: phoneTab, page: phonePage, workspace, consumed });
+  }, [layout.compact, phoneTab, phonePage, workspace, opening]);
   const [homeFocus, setHomeFocus] = useState<HomeFocus | null>(null);
   const lastView = useRef<Partial<Record<HomeTab, PlaneView>>>({});
   const asksRead = useWorkspaceAsks();
@@ -115,13 +129,24 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
   // Opening on `params.hold` (a push, the header count): that hold's inspector on the Feed (BRO-3033 fact 2).
   const holdParam = params?.hold;
   useEffect(() => {
-    if (!holdParam) return;
+    if (!holdParam) {
+      // Opened with no hold: a later push to the same hold is a new one (P20 B round 1).
+      if (layout.compact && loadResume().consumed.hold !== null)
+        saveResume({ consumed: { ...loadResume().consumed, hold: null } });
+      return;
+    }
+    // A route keeps its params: on the phone a push opens once, and a remount after it returns where you left it.
+    if (layout.compact) {
+      const resume = loadResume();
+      if (!holdIsNew(holdParam, resume)) return;
+      saveResume({ consumed: { ...resume.consumed, hold: holdParam } });
+    }
     setView("feed");
     // The phone opens its Feed deck on the hold and says so (M10); every hold is in it.
     setPhoneTab("feed");
     setPhonePage(null);
     setHomeFocus({ hold: holdParam, at: Date.now(), from: "push" });
-  }, [holdParam]);
+  }, [holdParam, layout.compact]);
   useIntent((intent) => {
     if (intent.kind === "select") {
       // On the desktop the Feed home opens it: a hold in its inspector, other work in its own detail.

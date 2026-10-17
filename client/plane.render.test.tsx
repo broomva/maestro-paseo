@@ -26,7 +26,7 @@
 // clears the intent listeners, and restores the spies, the kit mock and the
 // globals. A surface left mounted would take the next file's intents.
 
-import { afterAll, afterEach, describe, expect, mock, setDefaultTimeout, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, setDefaultTimeout, spyOn, test } from "bun:test";
 import type { PluginClientStateSource } from "@getpaseo/plugin/client/host";
 import { Window } from "happy-dom";
 import type { ComponentProps, ReactNode } from "react";
@@ -183,6 +183,11 @@ notifyManager.setNotifyFunction((notify) => {
 });
 const { PaseoApiProvider, PluginClientStateProvider, PluginRpcProvider } = await import("@getpaseo/plugin/client/host");
 const { MaestroSurface } = await import("./plane");
+const { durableStore, pickBackend } = await import("./kit/durable-store");
+const { setStoreForTests } = await import("./phone/resume-store");
+// Each test starts on a device that remembers nothing (BRO-3180 B): the phone opens where the last test left it
+// otherwise.
+beforeEach(() => setStoreForTests(durableStore(pickBackend("test", undefined, undefined))));
 const { createSessionCard } = await import("./session-card");
 const { WorkDetail } = await import("./detail");
 const { createWorkPanel } = await import("./agent-panel");
@@ -2542,6 +2547,49 @@ describe("M1 on the phone, through the surface (BRO-3037)", () => {
     await until(() => view.all('[data-testid="from-the-push"]').length > 0);
     expect(view.all('[data-testid="from-the-push"]')[0]?.textContent).toBe("From the push · same hold");
     expect(view.text()).toContain("2 of 2");
+  });
+
+  // Leaving Maestro: every screen this test mounted unmounts, as the host does; only the device's storage remains.
+  const leave = () => {
+    for (const close of mounted.splice(0)) close();
+  };
+  // The phone's tab, read from what it shows: the Feed's deck, Work's board, the Decisions dashboard.
+  const showsFeed = (view: Awaited<ReturnType<typeof mount>>) => view.text().includes("Approval · held");
+  const showsWork = (view: Awaited<ReturnType<typeof mount>>) => view.text().includes("LIFECYCLE");
+  const showsDecisions = (view: Awaited<ReturnType<typeof mount>>) =>
+    view.text().includes("Decisions") && !showsFeed(view) && !showsWork(view);
+
+  test("the phone opens where you left it: the tab you were on, not the Feed (BRO-3180 B)", async () => {
+    const first = await mount(surface(true));
+    await until(() => showsFeed(first));
+    await step(generation, () => requestIntent({ kind: "decisions" }));
+    await until(() => showsDecisions(first));
+    expect(showsDecisions(first)).toBe(true);
+    leave();
+    // Coming back: a fresh mount of the screen on the same device.
+    const again = await mount(surface(true));
+    await until(() => showsDecisions(again));
+    expect(showsDecisions(again)).toBe(true);
+  });
+
+  test("a route's tab acts once; a plain open forgets it, so the next push acts again (BRO-3180 B)", async () => {
+    const pushed = await mount(surface(true, { tab: "work" }));
+    await until(() => showsWork(pushed));
+    await step(generation, () => requestIntent({ kind: "decisions" }));
+    await until(() => showsDecisions(pushed));
+    leave();
+    // The same route mounted again (its params stay): where you left it, not the push again.
+    const remount = await mount(surface(true, { tab: "work" }));
+    await until(() => showsDecisions(remount));
+    expect(showsDecisions(remount)).toBe(true);
+    leave();
+    // Opened with no route tab, then a new push to Work: it acts.
+    const plain = await mount(surface(true));
+    await until(() => showsDecisions(plain));
+    leave();
+    const next = await mount(surface(true, { tab: "work" }));
+    await until(() => showsWork(next));
+    expect(showsWork(next)).toBe(true);
   });
 
   test("params.tab opens the Decisions deck and the Work deck", async () => {
