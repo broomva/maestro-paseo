@@ -846,6 +846,45 @@ describe("M5, Decisions", () => {
     expect(header(view)).toContain("Ask · 1 of 1");
   });
 
+  test("an ask that joined mid-visit, answered elsewhere while on the card, moves the card on (P20 round 3)", async () => {
+    asks = [ask("A1"), ask("A2")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    asks = [ask("A1"), ask("A2"), ask("A3"), ask("A4")];
+    await view.reread();
+    expect(header(view)).toContain("Ask · 1 of 4");
+    await view.press(bar(view, "Skip"));
+    await settled();
+    await view.press(bar(view, "Skip"));
+    expect(card(view)?.textContent).toContain("Install the three headless mods A3?");
+    asks = [ask("A1"), ask("A2"), ask("A4")];
+    await view.reread();
+    expect(card(view)?.textContent).toContain("Install the three headless mods A4?");
+  });
+
+  test("a fresh series' first press is not held by the last series' settle (P20 round 3)", async () => {
+    asks = [ask("A1"), ask("A2"), ask("Q1", { ledger: "leadership-20261013.yaml", headline: "Quiet question Q1?" })];
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    await view.press(bar(view, "Skip"));
+    expect(header(view)).toContain("Ask · 2 of 2");
+    await view.press(card(view)?.querySelector('[aria-label="Close"]') as El);
+    await view.press(rows(view).find((row) => row.textContent?.includes("leadership")));
+    await view.press(bar(view, "Answer"));
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ id: "Q1" })]);
+  });
+
+  test("Initiatives naming a bare ledger in two workspaces opens neither, and says why (P20 round 3)", async () => {
+    asks = [ask("A1"), ask("B1", { scope: "sri" })];
+    const view = await mount({
+      tab: "decisions",
+      focus: { decision: { ledger: "claude-code-mods.yaml", id: "gone" }, at: 1 },
+    });
+    for (let at = 0; at < 3; at += 1) await settle();
+    expect(card(view) == null).toBe(true);
+    expect(toasts.join(" ")).toContain("claude-code-mods.yaml is in more than one workspace");
+  });
+
   test("the ask on the card answered elsewhere: the card moves to the next, not closed (P20 round 1)", async () => {
     asks = [ask("A1"), ask("A2"), ask("A3")];
     const view = await mount({ tab: "decisions" });

@@ -27,7 +27,9 @@ export function AnswersSummary({
   const warn = counts.some((count) => count.tone === "warn");
   // It opens by itself while an answer waits to land, so its verb shows; a press is yours from then on.
   const [chosen, setChosen] = useState<boolean | null>(null);
-  const open = chosen ?? warn;
+  // Open by itself only while an answer waits to land: an unread status warns too, and stays folded.
+  const waiting = counts.some((count) => count.id === "waiting" && count.tone === "warn");
+  const open = chosen ?? waiting;
   return (
     <View style={{ gap: 12 }}>
       <Pressable

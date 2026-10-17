@@ -341,8 +341,9 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   // but has nothing to show, and the visit moves on. A card you closed ends its visit (Claude P20 round 1).
   useEffect(() => {
     if (!visit) return;
-    // The card went to a hold outside the series (a page, a key step): the visit ends, it never snaps back.
-    if (onCard !== null && !visit.snapshot.includes(onCard) && !visitLive.includes(onCard)) {
+    // The card went to a hold outside the series (a page, a key step), one the read still holds: the visit ends, it
+    // never snaps back. A key the read no longer holds is one that left it (below), even one that joined mid-visit.
+    if (inspector.showing && onCard !== null && !visit.snapshot.includes(onCard) && !visitLive.includes(onCard)) {
       setVisit(null);
       lastAnswered.current = null;
       return;
@@ -392,6 +393,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       else if (anyInLedger) setOpenAsk({ key: anyInLedger, whole: true });
       else if (asksRead.isError)
         toast.show("Couldn't read the open asks, so that ask did not open. It reads again in a moment.");
+      else if (one.size > 1) toast.show(`${ledger} is in more than one workspace: open it from Decisions.`);
       return;
     }
     if (focus.work) {
