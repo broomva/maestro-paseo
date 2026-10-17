@@ -1,0 +1,268 @@
+# Cross-reader parity corpus (BRO-3167). ONE copy, here; two readers:
+#   - Maestro, this repo's server/control-asks.ts (server/ask-reader-parity.test.ts reads this file), and
+#   - the validator, broomva/workspace scripts/ask_ledger.py (scripts/test_ask_reader_parity.py FETCHES this
+#     file from GitHub: the head of the open maestro-paseo PR whose branch has the same name as the workspace
+#     branch under test, else main). A failed fetch fails that suite; it never skips.
+# Each side parses it with its own YAML parser (`yaml` 2.x here, PyYAML there), because the parsers are part of
+# the seam (`answer: no` is false to one and "no" to the other).
+#
+# A change to these cases or to either reader lands as a PAIR before either merges: a maestro-paseo PR and a
+# workspace PR on the same branch name. The workspace suite then runs the validator against this PR's copy,
+# and this suite runs Maestro against it. Merge the maestro-paseo PR first, then the workspace one.
+#
+# Per ask case:
+#   expect.state    what Maestro's stateOf says: open | answered | archived. The validator's is_closed must be
+#                   true exactly when it is not `open`.
+#   expect.trigger  whether the validator requires a summary (rich_required is non-empty).
+#   expect.shown    whether MARKER appears anywhere in what Maestro builds from the ask (decisionOf).
+# Invariant, checked by the validator's suite: shown implies trigger. Whatever Maestro shows, the validator read.
+# Per ledger case (`ledgers`): a whole file. expect.refused says Maestro refuses to read it; the validator must
+# refuse it too, and may refuse more (expect.validator_refuses), which only fails safe.
+marker: docs/specs/parity.html
+ledger:
+  arc: parity
+  opened: "2026-10-17T00:00Z"
+base:
+  asked_at: "2026-10-17T00:00Z"
+  ask: Merge the release PR?
+  options:
+    - {id: merge, label: Merge, consequence: It ships.}
+    - {id: hold, label: Hold, consequence: It waits.}
+cases:
+  # ── The scan: the marker in one place each. ─────────────────────────────────
+  - name: no marker
+    ask: {}
+    expect: {state: open, trigger: false, shown: false}
+  - name: headline
+    ask: {headline: "Approve docs/specs/parity.html?"}
+    expect: {state: open, trigger: true, shown: true}
+  - name: ask
+    ask: {ask: "Approve docs/specs/parity.html?"}
+    expect: {state: open, trigger: true, shown: true}
+  - name: question
+    ask: {question: "Approve docs/specs/parity.html?"}
+    expect: {state: open, trigger: true, shown: true}
+  - name: summary
+    ask: {summary: "Approve docs/specs/parity.html: it adds the decision flow and changes the owner's review."}
+    expect: {state: open, trigger: true, shown: true}
+  - name: stakes
+    ask: {stakes: "docs/specs/parity.html waits on it."}
+    expect: {state: open, trigger: true, shown: true}
+  - name: why_you
+    ask: {why_you: "You wrote docs/specs/parity.html."}
+    expect: {state: open, trigger: true, shown: true}
+  - name: details
+    ask: {details: "## Read\n\nSee docs/specs/parity.html first."}
+    expect: {state: open, trigger: true, shown: true}
+  - name: default
+    ask: {default: "Ship docs/specs/parity.html as written."}
+    expect: {state: open, trigger: true, shown: true}
+  - name: option label
+    ask:
+      options:
+        - {id: merge, label: "Ship docs/specs/parity.html", consequence: It ships.}
+        - {id: hold, label: Hold, consequence: It waits.}
+    expect: {state: open, trigger: true, shown: true}
+  - name: option consequence
+    ask:
+      options:
+        - {id: merge, label: Merge, consequence: "docs/specs/parity.html ships."}
+        - {id: hold, label: Hold, consequence: It waits.}
+    expect: {state: open, trigger: true, shown: true}
+  - name: tradeoff free row label
+    ask: {tradeoffs: [{label: "Rewrite docs/specs/parity.html", cost: one review}]}
+    expect: {state: open, trigger: true, shown: true}
+  - name: tradeoff option row cell
+    ask: {tradeoffs: [{option: merge, risk: "docs/specs/parity.html goes stale"}]}
+    expect: {state: open, trigger: true, shown: true}
+  - name: source label
+    ask: {sources: [{kind: url, ref: "https://example.com/x", label: "From docs/specs/parity.html"}]}
+    expect: {state: open, trigger: true, shown: true}
+  - name: source ref
+    ask: {sources: [{kind: doc, ref: docs/specs/parity.html}]}
+    expect: {state: open, trigger: true, shown: true}
+  - name: media caption
+    ask: {media: [{kind: image, url: "https://example.com/a.png", caption: "From docs/specs/parity.html"}]}
+    expect: {state: open, trigger: true, shown: true}
+  - name: option media caption
+    ask:
+      options:
+        - id: merge
+          label: Merge
+          consequence: It ships.
+          media: [{kind: image, url: "https://example.com/a.png", caption: "From docs/specs/parity.html"}]
+        - {id: hold, label: Hold, consequence: It waits.}
+    expect: {state: open, trigger: true, shown: true}
+  - name: audit exhausted line
+    ask: {exhausted: ["read: docs/specs/parity.html has no answer"]}
+    expect: {state: open, trigger: true, shown: false}
+  - name: origin cwd
+    ask: {origin: {agent_id: abc12345, cwd: "/w/docs/specs/parity.html"}}
+    expect: {state: open, trigger: true, shown: true}
+  - name: a key nobody reads, nested
+    ask: {extra: {deep: [{deeper: "docs/specs/parity.html"}]}}
+    expect: {state: open, trigger: true, shown: false}
+
+  # ── Open or closed: three options, so an open ask needs a summary and a closed one does not. ──
+  - {name: "answer: null", three: true, ask: {answer: null}, expect: {state: open, trigger: true}}
+  - {name: "answer: empty string", three: true, ask: {answer: ""}, expect: {state: open, trigger: true}}
+  - {name: "answer: blank", three: true, ask: {answer: "   "}, expect: {state: open, trigger: true}}
+  - {name: "answer: []", three: true, ask: {answer: []}, expect: {state: open, trigger: true}}
+  - {name: "answer: {}", three: true, ask: {answer: {}}, expect: {state: open, trigger: true}}
+  - {name: "answer: [merge]", three: true, ask: {answer: [merge]}, expect: {state: open, trigger: true}}
+  - {name: "answer: false", three: true, ask: {answer: false}, expect: {state: answered, trigger: false}}
+  - {name: "answer: 0", three: true, ask: {answer: 0}, expect: {state: answered, trigger: false}}
+  - {name: "answer: no (1.1 false, 1.2 string)", three: true, ask: {answer: no}, expect: {state: answered, trigger: false}}
+  - {name: "answer: NBSP", three: true, ask: {answer: " "}, expect: {state: open, trigger: true}}
+  - {name: "answer: BOM (JS trims it, str.strip does not)", three: true, ask: {answer: "﻿"}, expect: {state: open, trigger: true}}
+  - {name: "answer: NEL (str.strip trims it, JS does not)", three: true, ask: {answer: "\u0085"}, expect: {state: answered, trigger: false}}
+  - {name: "answer: unit separator", three: true, ask: {answer: "\x1f"}, expect: {state: answered, trigger: false}}
+  - {name: "answered: true", three: true, ask: {answered: true}, expect: {state: answered, trigger: false}}
+  - {name: "resolution", three: true, ask: {resolution: merged}, expect: {state: answered, trigger: false}}
+  - {name: "outcome", three: true, ask: {outcome: shipped}, expect: {state: answered, trigger: false}}
+  - {name: "answered_at, a YAML date", three: true, ask: {answered_at: 2026-10-17}, expect: {state: answered, trigger: false}}
+  - {name: "answered_at: blank", three: true, ask: {answered_at: " "}, expect: {state: open, trigger: true}}
+  - {name: "defaulted_at", three: true, ask: {defaulted_at: "2026-10-17T03:00Z"}, expect: {state: answered, trigger: false}}
+  - {name: "status: defaulted", three: true, ask: {status: defaulted}, expect: {state: answered, trigger: false}}
+  - {name: "status: padded, upper", three: true, ask: {status: " Defaulted "}, expect: {state: answered, trigger: false}}
+  - {name: "status: prefix", three: true, ask: {status: rerouted-to-BRO-1}, expect: {state: answered, trigger: false}}
+  - {name: "status: resolved", three: true, ask: {status: resolved}, expect: {state: answered, trigger: false}}
+  - {name: "status: closed", three: true, ask: {status: closed}, expect: {state: answered, trigger: false}}
+  - {name: "status: answered", three: true, ask: {status: answered}, expect: {state: answered, trigger: false}}
+  - {name: "status: withdrawn", three: true, ask: {status: withdrawn}, expect: {state: answered, trigger: false}}
+  - {name: "status: pending", three: true, ask: {status: pending}, expect: {state: open, trigger: true}}
+  - {name: "status: a number", three: true, ask: {status: 5}, expect: {state: open, trigger: true}}
+  - {name: "status: archived", three: true, ask: {status: archived}, expect: {state: archived, trigger: false}}
+  - {name: "archived_at", three: true, ask: {archived_at: "2026-10-18T00:00Z"}, expect: {state: archived, trigger: false}}
+  - {name: "archived_at: blank", three: true, ask: {archived_at: "  "}, expect: {state: open, trigger: true}}
+
+ledgers:
+  - name: asks is null, open_asks holds the ask
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      asks:
+      open_asks:
+        - id: O1
+          asked_at: "2026-10-17T00:00Z"
+          ask: "Approve docs/specs/parity.html?"
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: false, asks: [{id: O1, state: open, trigger: true, shown: true}]}
+  - name: asks is an empty list, open_asks ignored
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      asks: []
+      open_asks:
+        - id: O1
+          asked_at: "2026-10-17T00:00Z"
+          ask: "Approve docs/specs/parity.html?"
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: false, asks: []}
+  - name: asks wins over open_asks
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+      open_asks:
+        - id: O1
+          asked_at: "2026-10-17T00:00Z"
+          ask: "Approve docs/specs/parity.html?"
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: false, asks: [{id: A1, state: open, trigger: false, shown: false}]}
+  - name: the ledger's arc names the spec
+    doc: |
+      arc: "docs/specs/parity.html"
+      opened: "2026-10-17T00:00Z"
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: false, asks: [{id: A1, state: open, trigger: true, shown: true}]}
+  - name: the ledger's initiative names the spec
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      initiative: "docs/specs/parity.html"
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: false, asks: [{id: A1, state: open, trigger: true, shown: true}]}
+  - name: the ask's own initiative hides the ledger's
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      initiative: "docs/specs/parity.html"
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+          initiative: plain
+    expect: {refused: false, asks: [{id: A1, state: open, trigger: true, shown: false}]}
+  - name: 99 aliases of one anchor
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      p: &p plain
+      pad: [*p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p]
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: false, asks: [{id: A1, state: open, trigger: false, shown: false}]}
+  - name: 100 aliases of one anchor
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      p: &p plain
+      pad: [*p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p]
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: true}
+  - name: an alias nested in an anchor
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      x: &x [1]
+      y: &y [*x]
+      z: *y
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: false, validator_refuses: true, asks: [{id: A1, state: open, trigger: false, shown: false}]}
+  - name: an explicit null tag on a word
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+          answer: !!null merge
+    expect: {refused: false, validator_refuses: true, asks: [{id: A1, state: answered, trigger: false, shown: false}]}
+  - name: a date that does not exist
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+          answered_at: 2026-02-30
+    expect: {refused: false, validator_refuses: true, asks: [{id: A1, state: answered, trigger: false, shown: false}]}

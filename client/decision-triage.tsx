@@ -41,6 +41,7 @@ import {
   ledgerName,
   ledgerOf,
   ledgerRail,
+  matchesFilter,
   nextAfter,
   ORDERINGS,
   type Ordering,
@@ -56,7 +57,7 @@ import {
   whereOf,
   writtenTo,
 } from "./decisions-model";
-import { StageCard, StageControls, StageSide, StageTilesRow } from "./decisions-stage";
+import { FILTER_LABEL, StageCard, StageControls, StageSide, StageTilesRow } from "./decisions-stage";
 import { progressSegments, stageProgress, stageTiles, upNextRow, wentRows } from "./decisions-stage-model";
 import { basename, errorText } from "./format";
 import { useAnswersStatus, useNeeds } from "./hooks";
@@ -274,6 +275,12 @@ type Status =
  * and the next comes up; the line above the card says what you answered.
  * There is no undo: an answer is in the ledger once it is written.
  */
+/** The words filter's own field (decisions-stage.tsx FilterField): Escape there clears the filter and nothing else. */
+function inFilterField(target: unknown): boolean {
+  const el = target as { getAttribute?: (name: string) => string | null } | null | undefined;
+  return el?.getAttribute?.("aria-label") === FILTER_LABEL;
+}
+
 export function DecisionsView({
   theme,
   compact,
@@ -300,6 +307,12 @@ export function DecisionsView({
   const now = useTick(15_000);
   const [ordering, setOrdering] = useState<Ordering>("blocking");
   const [ledger, setLedger] = useState<string | null>(focus?.ledger ?? null);
+  // The words filter and "Waits on you" (J5's controls): they narrow the queue, the chips' counts and Up next.
+  const [query, setQuery] = useState("");
+  const [waitingOnly, setWaitingOnly] = useState(false);
+  // Applied only where its controls show (J5, the desktop): a window narrowed to the phone layout never keeps a
+  // filter it has no way to change.
+  const filter = compact ? {} : { query, waitingOnly };
   const [pinned, setPinned] = useState<{ key: string; ask: DecisionAsk } | null>(null);
   const [lastIndex, setLastIndex] = useState(0);
   const [skipped, setSkipped] = useState<ReadonlySet<string>>(() => new Set());
@@ -346,7 +359,7 @@ export function DecisionsView({
   // A ledger you chose stays chosen when its last ask is answered ("Nothing open in it"); one no read knows is no filter.
   const ledgerShown = ledger !== null && all.some((ask) => ledgerOf(ask) === ledger) ? ledger : null;
   const openAll = all.filter(isTriaged);
-  const queue = triageQueue(all, { ordering, ledger: ledgerShown, skipped });
+  const queue = triageQueue(all, { ordering, ledger: ledgerShown, skipped, ...filter });
   const queueRef = useRef(queue);
   queueRef.current = queue;
 
@@ -443,6 +456,9 @@ export function DecisionsView({
     const next = focusRef.current;
     if (focusAt === null || !next || busy || focusTaken.current === focusAt) return;
     focusTaken.current = focusAt;
+    // A focus names one ask: the filter must never hide it, so it is cleared (BRO-3170).
+    setQuery("");
+    setWaitingOnly(false);
     setLedger(next.ledger);
     setPending({ focus: next, retriedAt: null });
     setFocusNote(null);
@@ -517,14 +533,25 @@ export function DecisionsView({
   const reorder = (next: Ordering) => {
     if (answerInFlight(client)) return;
     setOrdering(next);
-    pin(triageQueue(all, { ordering: next, ledger: ledgerShown, skipped })[0] ?? null);
+    pin(triageQueue(all, { ordering: next, ledger: ledgerShown, skipped, ...filter })[0] ?? null);
   };
   const choose = (entry: string | null) => {
     if (answerInFlight(client)) return;
     setLedger(entry);
     setSeen(new Set());
     setPickerOpen(false);
-    pin(triageQueue(all, { ordering, ledger: entry, skipped })[0] ?? null);
+    pin(triageQueue(all, { ordering, ledger: entry, skipped, ...filter })[0] ?? null);
+  };
+  const refilter = (next: { query?: string; waitingOnly?: boolean }) => {
+    // Your words are always taken (a controlled field that ignored a keystroke would eat it); the card on screen
+    // moves only when it no longer matches, and never while an answer is in flight.
+    const merged = { query, waitingOnly, ...next };
+    if (next.query !== undefined) setQuery(next.query);
+    if (next.waitingOnly !== undefined) setWaitingOnly(next.waitingOnly);
+    setSeen(new Set());
+    if (answerInFlight(client)) return;
+    if (current && matchesFilter(current, merged)) return;
+    pin(triageQueue(all, { ordering, ledger: ledgerShown, skipped, ...merged })[0] ?? null);
   };
 
   // The keys, on the web, only from inside the tab: read through refs, so the listener is added once.
@@ -556,8 +583,9 @@ export function DecisionsView({
         onOption: optionAt(event.target),
       });
       if (!key) return;
-      // Escape is the card's only while a confirm is armed; a held Enter (key repeat) never answers.
-      if (key.kind === "cancel" && !keys.current?.armed()) return;
+      // Escape is the card's only while a confirm is armed; a held Enter (key repeat) never answers. In the filter
+      // field Escape clears the filter and nothing else.
+      if (key.kind === "cancel" && (!keys.current?.armed() || inFilterField(event.target))) return;
       event.preventDefault();
       // A held key acts once: an answer or a skip is a verb, so only the first press counts.
       if ((key.kind === "answer" || key.kind === "skip") && event.repeat) return;
@@ -883,7 +911,30 @@ export function DecisionsView({
   // at full width and the column beside it. The phone keeps the list's own shape.
   if (!compact) {
     const nextBase = index < 0 ? lastIndex - 1 : index;
-    const emptyStage = (
+    const filtering = query.trim() !== "" || waitingOnly;
+    const hiddenCount = ledgerShown ? (rail.find((entry) => entry.ledger === ledgerShown)?.open ?? 0) : totalOpen;
+    const emptyStage = filtering ? (
+      <Card theme={theme}>
+        <Text style={text.title}>No decision matches the filter</Text>
+        <Text style={text.muted}>
+          {`${hiddenCount} open ${hiddenCount === 1 ? "decision is" : "decisions are"} hidden by ${[
+            query.trim() ? `"${query.trim()}"` : null,
+            waitingOnly ? "Waits on you" : null,
+          ]
+            .filter(Boolean)
+            .join(" and ")}${ledgerShown ? ` in ${ledgerName(ledgerShown)}` : ""}.`}
+        </Text>
+        <View style={{ flexDirection: "row" }}>
+          <Verb
+            theme={theme}
+            icon="X"
+            label="Clear the filter"
+            compact={false}
+            onPress={() => refilter({ query: "", waitingOnly: false })}
+          />
+        </View>
+      </Card>
+    ) : (
       <Card theme={theme}>
         <Text style={text.title}>
           {ledgerShown ? `Nothing open in ${ledgerName(ledgerShown)}` : "Nothing to decide"}
@@ -925,10 +976,18 @@ export function DecisionsView({
           theme={theme}
           ordering={ordering}
           onOrdering={reorder}
-          asks={openAll}
+          asks={openAll.filter((ask) => matchesFilter(ask, filter))}
           ledger={ledgerShown}
           onLedger={choose}
-          progress={stageProgress(progress, queue, skipped.size)}
+          query={query}
+          onQuery={(next) => refilter({ query: next })}
+          waitingOnly={waitingOnly}
+          onWaitingOnly={(next) => refilter({ waitingOnly: next })}
+          progress={
+            queue.length === 0 && (query.trim() || waitingOnly)
+              ? "None match the filter"
+              : stageProgress(progress, queue, skipped.size)
+          }
           segments={progressSegments(answeredCount, visit.size)}
         />
         <StageTilesRow

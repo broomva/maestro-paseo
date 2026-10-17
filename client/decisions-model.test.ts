@@ -19,6 +19,7 @@ import {
   ledgerName,
   ledgerOf,
   ledgerRail,
+  matchesFilter,
   metaLine,
   nextAfter,
   noticeAsk,
@@ -591,5 +592,29 @@ describe("what became of your answer (BRO-2827)", () => {
   test("an older daemon sends no fate: an answer in the batch still never reads as done", () => {
     expect(fateLine(ask("l", "A", { state: "answered", batched: true }))?.tone).toBe("waiting");
     expect(fateLine(ask("l", "A", { state: "answered" }))).toBeNull();
+  });
+});
+
+describe("the filters (words, Waits on you)", () => {
+  const a = ask("universe-seed.yaml", "s1", {
+    headline: "World seed 1, Hadal: build on it?",
+    options: [{ id: "build", label: "Build", consequence: "A deep-sea crew", reversible: true, recommended: true }],
+  });
+  const b = ask("skene-closeout.yaml", "p8", { headline: "Finish the consent gate?", waiting: true, blocking: true });
+  test("every word must appear, in any order, across headline, options, ledger and id", () => {
+    expect(matchesFilter(a, { query: "hadal seed" })).toBe(true);
+    expect(matchesFilter(a, { query: "deep-sea" })).toBe(true);
+    expect(matchesFilter(a, { query: "UNIVERSE s1" })).toBe(true);
+    expect(matchesFilter(a, { query: "hadal consent" })).toBe(false);
+    expect(matchesFilter(a, { query: "   " })).toBe(true);
+  });
+  test("Waits on you keeps only the asks that wait", () => {
+    expect(matchesFilter(a, { waitingOnly: true })).toBe(false);
+    expect(matchesFilter(b, { waitingOnly: true })).toBe(true);
+  });
+  test("the queue applies both", () => {
+    expect(triageQueue([a, b], { ordering: "oldest", query: "seed" }).map((x) => x.id)).toEqual(["s1"]);
+    expect(triageQueue([a, b], { ordering: "oldest", waitingOnly: true }).map((x) => x.id)).toEqual(["p8"]);
+    expect(triageQueue([a, b], { ordering: "oldest" })).toHaveLength(2);
   });
 });
