@@ -10,6 +10,7 @@
 import { z } from "zod";
 import type { DecisionAsk } from "../../shared/fleet";
 import { PHONE_TABS, type PhonePage, type PhoneTab } from "./model";
+import { UnsentSchema } from "./unsent";
 
 /** Drafts not touched for this long are dropped. */
 export const DRAFT_TTL_MS = 14 * 24 * 3600 * 1000;
@@ -41,6 +42,8 @@ export const DraftSchema = z.object({
   chosen: z.string().nullable(),
   words: z.string().max(2000),
   at: z.number(),
+  /** An answer from this draft that got no reply (BRO-3180 C, client/phone/unsent.ts). */
+  unsent: UnsentSchema.optional(),
 });
 export type Draft = z.infer<typeof DraftSchema>;
 export type Drafts = Record<string, Draft>;
@@ -140,7 +143,9 @@ export function sweepDrafts(
   for (const [key, draft] of Object.entries(drafts)) {
     if (now - draft.at > DRAFT_TTL_MS) continue;
     const found = read.asks.find((ask) => sameAsk(askRefOf(ask), draft.ask));
-    if (trusted && found && found.state !== "open") continue;
+    // A draft carrying an answer that got no reply is resolved first (client/phone/unsent.ts), with verbs.list read
+    // too: only then may a closed ask take it (BRO-3180 C).
+    if (trusted && found && found.state !== "open" && !draft.unsent) continue;
     out[key] = draft;
   }
   return out;
