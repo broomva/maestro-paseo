@@ -56,7 +56,7 @@ export const DraftInput = forwardRef<Input, DraftInputProps>(function DraftInput
     // burst once the owner is quiet.
     if (Date.now() - remountedAt.current >= TWIN_SETTLE_MS) return remount(false);
     if (settle.current) clearTimeout(settle.current);
-    settle.current = setTimeout(() => remount(false), TWIN_SETTLE_MS);
+    settle.current = setTimeout(() => remount(focused.current), TWIN_SETTLE_MS);
   }, [value, remount]);
   useEffect(
     () => () => {
