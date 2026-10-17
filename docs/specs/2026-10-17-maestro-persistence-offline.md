@@ -1,257 +1,214 @@
-# Maestro on the phone: where you left it, and answers that wait for the link (BRO-3180 B + C)
+# Maestro on the phone: where you left it, and answers that survive the link (BRO-3180 B + C)
 
-Date: 2026-10-17. Ticket: BRO-3180, parts 3 and 4. Part A (keyboard and caret) shipped separately in PR #84.
-Status: proposed. It is reviewed once by a fresh devil's advocate before any code.
+Date: 2026-10-17. Ticket: BRO-3180, parts 3 and 4. Part A (keyboard and caret) is PR #84.
+Status: revision 2, after one devil's-advocate review (3/10, which found a host fact that reshapes part C; every
+finding is answered below).
 
 ## Objective
 
-Leaving Maestro and coming back lands on the same tab, the same ask and the same typed words, through a screen change,
-a plugin reload and an app restart (part B). An answer given while the daemon is unreachable is kept, shown as
-queued, and sent once the link returns, unless the ask changed, closed or vanished meanwhile, in which case it waits
-for the owner to confirm it again (part C).
+- **Part B.** Leaving Maestro and coming back lands on the same tab, the same ask and the same typed words. That
+  holds across a screen change, a plugin reload, the link dropping and coming back, and an app restart.
+- **Part C.** An answer is never lost to the link. It is kept with the exact revision it was given against.
+  Once the link is back, its fate is read from the server and shown: sent, applied, undone, or not sent. When
+  it was not sent, one tap sends it again through today's path, against the current revision.
 
-**Reversal cost:** two-way door. Everything is client-side, behind versioned storage keys (`maestro-paseo.v1.*`);
-reverting the PRs leaves inert keys and no server state. The one durable effect, an answer sent from the outbox, goes
-through the unchanged server path and its undo window.
+**Reversal cost: a two-way door.**
+- Everything is client-side, under versioned keys (`maestro-paseo.v1.*`).
+- Reverting leaves inert keys and no server state.
+- No answer is ever sent without a tap, so nothing here can apply an answer the owner did not just confirm.
 
-## The safety basis, first
+## The host fact that reshapes part C
 
-An offline answer is safe because **the server already refuses every unsafe replay, today, unchanged**:
-`ask.answer` carries the `hash` of the ask as it was read. `openAsk` (`index.server.ts`) refuses a hash that is no
-longer the entry's (*changed*) and an ask that is no longer open (*answered, archived, gone*). The verb ledger
-refuses a second answer while one waits out its undo window (`ALREADY_PENDING`, `server/owner-verbs.ts:209`). The
-outbox stores the exact request, original hash included, and never re-stamps it. So the worst a client bug can do
-is fail to send; it cannot apply a stale or a double answer. Everything the client adds (the pre-check, the reasons,
-the re-confirmation row) exists to say *why* in words and to resolve "maybe sent" by reading the ask back.
+**A plugin cannot run while its host is offline.** `PluginCatalogSync` (`packages/app/src/plugins/catalog-sync.tsx`,
+the same code in the installed Paseo.app 0.11.4 bundle) calls `pluginRegistry.removeHost(serverId)` whenever the
+host is disconnected. That disposes every plugin of the host and clears its query cache (`registry.ts`).
 
-## The problem, in the owner's words
+On reconnect the catalog is installed again and the bundle is **re-evaluated**. So:
+- With no link there is no Maestro screen to answer on. "Answer in airplane mode, see Queued" cannot be built
+  inside a plugin.
+- Module memory dies on every link blip, not only on a reload. Durable storage is the only thing that carries
+  state across a reconnect, so part B needs it for blips too, not just restarts.
+- What part C *can* own is an answer that is in flight, or tapped in the instant before the unmount, when the
+  link drops. Today that answer is simply lost.
 
-> when i change screen or open a session, i want to be able to [go back] to maestro to the place and state where
-> [I] left it, im always getting back to the default view of maestro home … if I had typed something, that's gone.
-> Also, the plugin does not work offline, while we could store asks answers sans push them once mobile gets back
-> online.
+The owner's literal wish, answering while offline, needs Paseo to keep a plugin mounted while disconnected. That is
+an upstream change (see "Non-goals").
 
-Two failures, one root: all of Maestro's phone state is React state (`client/plane.tsx:81` holds the tab;
-`client/phone/shell.tsx:291,446,448` hold the visit, the choices and the words). React state dies whenever the
-screen unmounts: another screen, opening a session, or a plugin reload. An answer is also only one RPC
-(`ask.answer`, `client/verbs.ts:342`): with the daemon unreachable it throws, the toast shows the error, and
-the answer is gone.
+## The safety basis
 
-## What the host gives a plugin (facts that bound the design)
+Sending again is safe because **the server already refuses every unsafe replay, today, unchanged.**
+- `ask.answer` carries the `hash` of the ask as it was read.
+- `openAsk` (`index.server.ts`) refuses a hash that is no longer the entry's, and an ask that is no longer open.
+- The verb ledger refuses a second answer while one waits out its undo window (`ALREADY_PENDING`,
+  `server/owner-verbs.ts:209`).
 
-Read from `getpaseo/paseo` source (`packages/app/src/plugins/evaluate.ts`, `surface-screen.tsx`,
-`packages/client/src/daemon-client.ts`) and the SDK 0.11.1 typings:
-
-| Fact | Consequence |
-|---|---|
-| A plugin bundle gets exactly `react`, `react-native`, `@tanstack/react-query`, `zod` and the plugin SDK. The SDK has **no storage API**. | Storage must come from `react-native` itself, or the web platform. |
-| `react-native`'s `Settings` (iOS NSUserDefaults, `Settings.ios.js`) is in every RN iOS build (`React-RCTSettings` is a default pod). `get` is synchronous from a JS cache; `set` writes through. On Android it is a no-op. | On iOS, a durable, synchronous key-value store with no host change. |
-| On the web and desktop builds (react-native-web in Electron or a browser), `localStorage` is available. | Same store, different backend. |
-| A plugin module is evaluated once per app run and stays loaded across screen changes. A `paseo plugin reload` or an app restart re-evaluates it. | A module-level memory cache survives navigating away. Only durable storage survives a reload or restart. |
-| The host renders the plugin only while it has a client for the host (`surface-screen.tsx:225`). The client object outlives a dropped link. A cold start with no catalog shows "Plugin host is offline" instead. | Offline answering covers the case the owner hit: Maestro open, then the link drops. A cold start offline is the host's to fix (non-goal). |
-| `invokePluginRpc` rejects at once with `Transport not connected (status: …)` when disconnected. While `connecting` it queues the request and rejects with `Timed out waiting for connection` if the link never comes. A request in flight when the link drops ends in a timeout, and may or may not have reached the daemon. | Three outcomes: definitely not sent, maybe sent, and refused by the server. The outbox must handle all three. |
-| The server already refuses an answer whose `hash` is not the entry's current hash, and an answer to an ask that is not open (`index.server.ts` `openAsk`). It also refuses a second answer while one is waiting out its undo window (`ALREADY_PENDING`, `server/owner-verbs.ts:209`). An answered ask carries `answerOption`, `answerNote` and `answerOther`. | Stale answers and double answers are refused **server-side today**. The outbox needs no server change: it sends the hash it was answered against and reads the outcome back. |
+The client adds no new path to the server. "Send again" is the ordinary `act("answer")` with today's confirm rules,
+toast and undo, so the worst a client bug can do is fail to send.
 
 ## Part B: where you left it
 
-### The state model
+### State
 
-A pure module, `client/phone/resume.ts`, owns one versioned record:
+`client/phone/resume.ts` is pure and validated with zod on read; a value that fails to parse is treated as empty.
 
 ```ts
 type Resume = {
   v: 1;
-  tab: PhoneTab;                       // feed | decisions | work | health
-  page: PhonePage | null;              // initiatives, fleet{scope,tick}, timeline, loops, settings{page}
-  workspace: string | null;            // the scope chip
-  card: { series: string; key: string } | null; // the open sheet: its series, and the ask it was on
+  tab: PhoneTab;
+  page: PhonePage | null;
+  workspace: string | null;
+  card: { series: string; ask: AskRef } | null;   // the open sheet and the ask it was on
+  consumed: { hold: string | null; tab: string | null }; // route params already acted on (see below)
 };
-type Draft = {
-  hash: string;                        // the ask's revision when you last typed
-  chosen: string | null;               // the option you picked (OTHER_CHOICE included)
-  words: string;                       // the note, or your Other answer: one field, as the card has one
-  at: number;                          // last edit, ms
-};
-type Drafts = Record<string /* the hold key, "ask:<ledger>/<uid|id>" */, Draft>;
+type AskRef = { ledger: string; uid: string | null; id: string; fleet: string | null }; // identity, not the hold key
+type Draft = { ask: AskRef; hash: string; chosen: string | null; words: string; at: number; unsent?: Unsent };
 ```
 
-- **Position is the key, not the index.** A series' order moves as asks are answered elsewhere. `card.key` is
-  restored through the visit model that exists already (`series-model.ts`). If the key is gone, the card opens
-  on the series' next unanswered ask. If the series is gone, you land on the Decisions dashboard with the toast
-  "That ask was answered while you were away". You never land on Feed for lack of state.
-- **Drafts are keyed by ask, and the revision is recorded rather than used as the key.** A draft whose `hash`
-  differs from the ask's current hash is still restored: losing typed text is the failure the owner reported.
-  It is restored under one line, "This ask changed since you wrote this." Keying by `(key, hash)` would silently
-  drop the text on any edit to the ask, and that is the worse error.
-- **A draft is cleared once the answer lands.** That means the ask's state is no longer `open` in a fresh read
-  and no verb of ours is pending on its key. "Sent" is not landing: within the undo window an undo brings the
-  ask back with its words, as `shell.tsx:500` does today. A sweep on every fresh read drops drafts whose ask is
-  answered or archived. Drafts older than 14 days are dropped too.
-- **What is not restored:** the toast, an in-flight verb, the scroll offset inside a card, the New-work
-  composer. Each is transient or has its own owner.
+- **Identity, not the hold key.** The hold key embeds the ask's home (a checkout path or `origin/main`,
+  `shared/needs.ts:150`), so it changes when an ask moves home. Drafts and the card are matched by
+  `(ledger, uid ?? id)`, plus the fleet scope for a fleet root ask, as `openAsk` matches.
+- **Position by identity.**
+  - The card reopens on the same ask through the existing visit model (`series-model.ts`).
+  - If the ask is no longer in its series, the card opens on the series' next unanswered ask.
+  - If the series is gone, it lands on the Decisions dashboard with "That ask was answered while you were away".
+- **A draft is restored even if the ask changed** (`hash` differs), under "This ask changed since you wrote this."
+  Silently dropping the text is the failure the owner reported.
+- **Route params are consumed once.** `params.hold` and `params.tab` (a push) stay in the route, so a remount would
+  otherwise jump back to the push every time. The value acted on is recorded in `consumed`, and an equal value is
+  not acted on again. A new push and an explicit intent still win over the restored place.
+
+### Clearing drafts: positive evidence only
+
+A draft is deleted only when a **fresh, warning-free** read shows its ask answered or archived. Absence never
+counts:
+- `asks.workspace` lists open asks plus only the ten latest answered (`control-asks.ts` `shown()`) and never
+  archived ones.
+- A fleet read failure returns `asks: []` with a warning (`index.server.ts`).
+
+So a draft whose ask is simply not in the read is kept. Drafts untouched for 14 days are dropped. Sent is not
+landing: a draft stays through the undo window, so an undo brings the words back, as `shell.tsx:500` does today.
 
 ### Storage
 
-`client/kit/durable.ts` is one adapter with three backends, chosen once:
+`client/kit/durable.ts` is one adapter. A module-level cache sits in front of it, and reads come from the cache.
 
 | Platform | Backend | Limits |
 |---|---|---|
-| iOS app | `Settings.get/set` under keys `maestro-paseo.v1.resume` and `maestro-paseo.v1.drafts` | NSUserDefaults: plist-serialised, shared with the host app (hence the namespace), meant for small values. Capped by us at 50 drafts × 2000 chars (the field's `maxLength`), about 100 KB worst case. |
-| Web, desktop | `localStorage`, same keys | Per origin (`paseo://app` on desktop), about 5 MB, synchronous. A quota error falls back to memory and is logged once. |
-| Android, or anything unreadable | memory only | Survives navigation, not a reload. Stated, not hidden. |
+| iOS app | `Settings.get/set` (NSUserDefaults), keys `maestro-paseo.v1.*` | Shared with the host app, hence the namespace. Capped at 50 drafts × 2000 chars, about 100 KB. Wrapped in try/catch: if the native module is absent, `Settings` throws, and we fall back to memory. |
+| Web, desktop | `localStorage`, same keys | Per origin, about 5 MB. A quota error falls back to memory. |
+| Android, or a failure | memory | Survives navigation but not a reconnect (the module is re-evaluated). Stated, not hidden. |
 
-In front of every backend sits a **module-level memory cache**. Reads come from memory, and writes go to memory
-first, then through, debounced 300 ms for drafts and immediately for the tab and card. Navigating away and back
-never touches the backend. Every value read back is validated with zod; one that fails parses as empty, so a
-schema change can never crash the screen. The version lives in the key, so `v2` starts clean.
+Drafts are written through with a 300 ms debounce. The tab, the card and an unsent answer are written immediately.
 
-**The tab is restored over the default, not over an explicit target.** `params.tab`, `params.hold` (a push) and
-an intent (`openDecisions`) still win, as they do today, because they express where you asked to go. With none
-of them, the screen opens where you left it.
+## Part C: answers that survive the link
 
-## Part C: answers that wait for the link
+### Keeping an unsent answer
 
-### The outbox model
-
-A pure module, `client/phone/outbox.ts`, plus a hook. One entry per ask:
+`act("answer")` (`client/use-inspector.ts:122`) runs as today. When the call throws anything other than a server
+refusal (`UserError` text), the draft gets:
 
 ```ts
-type Queued = {
-  id: string;            // client uuid, made once at enqueue
-  key: string;           // the hold key; one entry per key: a new answer to the same ask replaces a queued one
-  input: AnswerInput;    // exactly what ask.answer would have sent: where, ledger, uid, id, hash, option, note, wake
-  label: string;         // "Answered: Keep them off"
-  queuedAt: number;
-  state: "queued" | "maybe-sent" | "confirm";
-  reason?: "gone" | "changed" | "answered-elsewhere" | "archived" | "refused";
-  refusal?: string;      // the server's words, when it refused
-};
+type Unsent = { input: AnswerInput; at: number; error: string }; // exactly what was sent, original hash included
 ```
 
-It is stored with the same adapter, key `maestro-paseo.v1.outbox`, written through immediately (never
-debounced: an answer is not a draft).
+Examples: `Transport not connected`, `Timed out waiting for connection…`, `Connection lost`, and the client's own
+`No reply in …` (`client/answer-timeout.ts`).
 
-### When an answer is queued
+No classification is needed, because nothing auto-sends. The card shows "Not sent yet: the link to your Mac
+dropped". The answer stays in the draft, so it survives the unmount and the reconnect.
 
-`act("answer")` (`client/use-inspector.ts:122`) runs as today. On its error path the error is classified:
+### Resolving it after reconnect
 
-| Error | Meaning | Outbox |
-|---|---|---|
-| `Transport not connected` | Never left the phone | enqueue `queued` |
-| `Timed out waiting for connection` | Queued by the client, never sent | enqueue `queued` |
-| Any other timeout, or a dropped socket mid-call | Maybe reached the daemon | enqueue `maybe-sent` |
-| Anything else (a `UserError` from the server) | The server read it and said no | not queued: shown as today |
+On mount, once a fresh read of both `verbs.list` and `asks.workspace` exists, each unsent answer is resolved in this
+order:
 
-A queued answer behaves like a sent one on the card: the card moves on, the draft is kept, and the toast says
-"Queued: sends when Maestro reconnects". The dashboard row shows a **Queued · N** chip, and the queued ask's
-card shows "Queued" with **Discard**. Undo on a queued answer removes the entry, because nothing reached the
-server.
+1. **`verbs.list` has an `ask.answer` verb for this ask, at or after `unsent.at`** (pending, or recent applied,
+   undone or dropped). The ledger keeps these by key for 24 h.
+   - Pending: "Sent, applies in N s". The undo toast is offered.
+   - Applied: "Answered". The draft is cleared.
+   - Undone or dropped: "Not sent (undone)". Never re-sent on its own; offered as Send again.
+2. **No verb, the ask is in the read, open, same hash**: "Not sent", with **Send again**.
+3. **No verb, the ask is in the read, open, hash changed**: "This ask changed since you answered". The card opens
+   with your choice and words as the draft, and you answer the current revision deliberately.
+4. **No verb, the ask is answered, `answeredAt` after `unsent.at`**: "Answered meanwhile". The answer is shown and
+   the draft is kept for you to discard.
+5. **The ask is not in the read**: no conclusion (see the absence rule). It stays "Not sent".
 
-### Flushing
+**Send again** is `act("answer")` against the ask *as read now*: its current hash, today's irreversible-option
+confirm, toast and undo window. The stored `input` is only what pre-fills the card.
 
-The outbox flushes when a read succeeds after a failure (the needs or asks query turns from error to
-success), when the screen mounts, and every 15 s while entries exist. A module-level single-flight promise
-makes two mounted surfaces flush once. Entries go one at a time, oldest first. Each entry is checked against a
-fresh `asks.workspace` read made after the link came back:
+### Invariants
 
-1. **Ask not found** → `confirm`, reason `gone`.
-2. **`state: archived`** → `confirm`, reason `archived`.
-3. **`state: answered`**, and its `answerOption` / `answerOther` / `answerNote` equal ours → **landed**. This is
-   the idempotent case: a `maybe-sent` answer that did reach the daemon. Drop the entry and the draft.
-   Otherwise → `confirm`, reason `answered-elsewhere`.
-4. **Open, but `hash` differs from `input.hash`** → `confirm`, reason `changed`. It is never sent with a new hash.
-5. **Open, same hash** → send `input` unchanged, with the original hash, through the same `verbs.run` path.
-   Success → landed. `ALREADY_PENDING` → stays `maybe-sent`; after the undo window the next flush finds the ask
-   answered, and step 3 decides whether it was ours. Any other server refusal → `confirm`, reason `refused`,
-   with the server's words. A transport error → stays queued, with backoff (15 s, 30 s, 60 s, capped at 60 s).
-
-The server stays the authority, unchanged. It refuses a changed hash and an ask that is not open, whatever the
-client checks. The client's check exists to say *why* in words and to avoid a pointless send.
-
-### Re-confirmation
-
-A `confirm` entry is never retried. It shows at the top of the Decisions dashboard as a row: "Not sent: *the
-ask* changed since you answered" (or gone, answered elsewhere, archived, refused). Opening it opens the ask's
-card, if the ask still exists, with your queued choice and words restored as the draft. You answer again
-deliberately, against the current revision. **Discard** drops it. Nothing is applied without a fresh tap.
-
-### Idempotency, stated as invariants
-
-- One entry per ask key. Enqueueing replaces a `queued` entry and is refused for a `maybe-sent` one ("An answer
-  to this ask may already have been sent; it is being checked").
-- An entry is sent only from step 5, only with its original hash, and only by the single-flight flush.
-- A `maybe-sent` entry is resolved only by reading the ask back (step 3). It is never re-sent blind.
-- Server-side, `openAsk` (hash and open) and `ALREADY_PENDING` refuse any second application. No server code
-  changes.
+- No answer is sent without a tap made after reconnect, with the current ask on screen.
+- An unsent answer is resolved only from positive evidence in fresh reads, never from absence.
+- One unsent answer per ask: answering the ask again replaces it.
+- Server semantics are unchanged; the server still refuses a stale hash, a closed ask and a pending duplicate.
 
 ## Alternatives considered
 
-- **Drafts and resume state stored on the daemon** (a new RPC). Rejected because it is unreachable in exactly the
-  offline case, adds a server surface (out of scope: server semantics stay unchanged), and still loses text typed
-  while offline.
-- **AsyncStorage through `NativeModules.RNCAsyncStorage`** (the host app links it). Rejected because it reaches into
-  the host's private native modules, undocumented and removable in any Paseo release; `Settings` is public RN API
-  with the same durability on iOS.
+- **An automatic outbox that flushes on reconnect** (revision 1). Rejected because it sends in the background,
+  where nobody sees the 8 s undo window. That includes irreversible options confirmed hours earlier. Its
+  maybe-sent state also needs answer-shape equality the server's split of `note` into `answerNote` and
+  `answerOther` makes fragile. One tap with the current ask on screen gives the same reach with none of that.
+- **Drafts on the daemon** (a new RPC). Rejected because it is unreachable exactly when the link drops, and adds
+  a server surface (out of scope).
+- **AsyncStorage through `NativeModules.RNCAsyncStorage`**. Rejected because it reaches into the host's private
+  native modules, which any Paseo release could remove. `Settings` is public RN API.
 - **Rely on the Paseo client's send queue.** Rejected because it holds a request only while `connecting`, times
-  out, lives in memory, and knows nothing about stale asks.
-- **Re-stamp a stale queued answer with the new hash and send it.** Rejected because it applies an answer the owner
-  never saw against the new revision: the exact failure the ticket forbids.
-- **Key drafts by `(key, hash)`.** Rejected because any edit to an ask silently drops the owner's text; recording
-  the hash and saying "changed" keeps both the text and the safety.
-- **Persist the whole React Query cache** for an offline view. Rejected because it is large, its shape is internal to
-  every read, and stale reads are already labelled; persisting only what the owner made (place, drafts, answers) is
-  small and ours.
+  out, and lives in memory that the unmount discards.
+- **Re-stamp a stale answer with the new hash.** Rejected because it applies an answer the owner never saw against
+  the new revision.
+- **Key drafts by the hold key, or by `(key, hash)`.** Rejected because the first changes when an ask moves home,
+  and the second drops the text on any edit to the ask.
 
 ## Non-goals
 
-- **A cold start with no link** ("Plugin host is offline"): the host does not mount the plugin, so nothing of
-  ours can run. That needs Paseo to cache the plugin catalog (an upstream ask, filed separately).
-- **Offline verbs other than answering an ask** (Approve, Skip-to-later, prompts, dispatch). The ticket asks for
-  answers; other verbs keep failing loudly.
-- **Android durability.** Memory only until the host offers storage. The owner's phone is an iPhone.
-- **Syncing drafts between devices.** Drafts are per device by design: the desktop and the phone never fight
-  over a half-typed note.
-- **Any change to `ask.answer`, the validator or landing.** Explicitly out of scope.
+- **Answering while disconnected.** The host unmounts plugins (above). Keeping Maestro mounted offline needs a
+  Paseo change, which goes upstream as an issue on getpaseo/paseo once the coordinator approves filing it.
+- Offline verbs other than answering an ask.
+- Android durability beyond memory.
+- Syncing drafts between devices: drafts are per device by design.
+- Any change to `ask.answer`, the validator or landing.
 
 ## Risks and trade-offs
 
-- **Settings is shared with the host app.** A Paseo bug that clears user defaults would clear our drafts. The
-  namespace prevents collisions, not that.
-- **A draft restored onto a changed ask can mislead.** The "changed since you wrote this" line is the
-  mitigation. The alternative, dropping the text, is the reported failure.
-- **"Queued" can sit for a long time.** The chip and the 14-day draft sweep bound it. A queued entry never
-  expires silently: past 24 h it turns `confirm` with reason `stale`, because an answer the owner gave a day
-  ago deserves a look before it is sent.
-- **Classifying errors by message text** couples us to the host's wording. The classifier lives in one function
-  with tests per message. An unknown message defaults to *not queued*, the safe side: a lost answer the owner
-  sees, never a double send.
+- Settings is shared with the host app. A host bug that clears defaults clears our drafts.
+- A draft restored onto a changed ask can mislead. The "changed" line mitigates it; dropping the text instead is
+  the reported failure.
+- The resolution reads `verbs.list` for 24 h only. An unsent answer older than that falls to steps 2–5, which are
+  still safe because nothing auto-sends.
+- `Settings` inside the Paseo iOS app is unproven: it is a default pod, but only the owner's phone can show it. If
+  it fails, iOS degrades to memory, and the receipt says so.
 
 ## Open questions
 
-- Does `Settings` round-trip inside the Paseo iOS app as it does in a stock RN app? It is a default pod, but only the
-  owner's phone can prove it. If it does not, iOS degrades to memory (navigation survives, a reload does not), and
-  the receipt says so.
-- Should a `confirm` row also notify (a Paseo push)? Not in this arc: the row is visible on the next open.
+- Should Paseo keep plugins mounted while disconnected (upstream)? That is the only route to the owner's literal
+  wish.
+- Should a "Not sent" answer also push a notification after reconnect? Not in this arc.
 
 ## Acceptance
 
-PR B:
-- `bun test client/phone/resume.test.ts client/kit/durable.test.ts` passes: round-trip, invalid stored values
-  parse as empty, key-not-index restore, gone key and gone series, the 14-day sweep, clear on landing (not on
-  sent), and an explicit `params.tab` beating the restored tab.
-- Shell render test: unmount and remount the phone surface, and the same tab, open card, ask and draft come
-  back in under 2 renders.
-- Live (402×874 hidden window, CDP): open a fixture ask, pick Other, type 20 characters, navigate to a session
-  and back. The card is on the same ask with the same 20 characters. Then `paseo plugin reload maestro`: the
-  same again.
-- Each fix is mutation-proven (drop the restore, drop the sweep, key by index).
+**PR B**
+- `bun test client/phone/resume.test.ts client/kit/durable.test.ts` passes. It covers:
+  - round-trip, and an invalid stored value parsing as empty;
+  - restoring by identity, including across a home change;
+  - a gone ask and a gone series;
+  - the absence rule (a draft is kept when the read lacks its ask or carries a warning);
+  - the 14-day sweep;
+  - a param consumed once;
+  - Settings throwing, falling back to memory.
+- A shell render test: unmount and remount, and the same tab, ask and draft come back.
+- Live (402×874 hidden window, CDP): open a fixture ask, pick Other, type 20 characters, navigate to a session and
+  back. The same ask shows the same 20 characters. The same holds after `paseo plugin reload maestro`.
+- Mutation-proven: drop the restore, key by the hold key, sweep on absence.
 
-PR C:
-- `bun test client/phone/outbox.test.ts` passes: classification per error message, one entry per key, all five
-  flush branches, `maybe-sent` resolved by read-back only, single flight under two concurrent flushes,
-  24 h → confirm.
-- Live: with the link cut (the sandbox daemon stopped, or a fault-injected `invoke`), answer a fixture ask and
-  see "Queued". Restore the link and see it land within 15 s. Change the fixture ask's text while it is queued:
-  after reconnect it shows "Not sent: changed", and the ledger has no answer written.
-- Mutation-proven: a send with a re-stamped hash, skipping the read-back for `maybe-sent`, dropping the single
-  flight.
+**PR C**
+- `bun test client/phone/unsent.test.ts` passes, covering:
+  - each resolution branch, including undone and dropped from `verbs.list`;
+  - no conclusion on absence;
+  - one unsent answer per ask;
+  - Send again using the current hash and not the stored one.
+- Live: a fault-injected `invoke` drops the answer call. The card shows "Not sent yet". Then reload, the stand-in
+  for a reconnect: still "Not sent". **Send again** lands it, with the undo toast. With the fixture ask edited in
+  between, it shows "changed" and the ledger has no answer written.
+- Mutation-proven: send with the stored hash, conclude on absence, auto-send on mount.
