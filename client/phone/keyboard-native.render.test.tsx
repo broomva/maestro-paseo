@@ -147,54 +147,166 @@ function Reveal({ itemKey, inset, out }: { itemKey: string; inset: number; out: 
   out.now = useTypingInView(itemKey, inset);
   return null;
 }
-const layout = (y: number, height: number) =>
-  ({ nativeEvent: { layout: { x: 0, y, width: 360, height } } }) as Parameters<Typing["field"]["onLayout"]>[0];
+/**
+ * A scroll a test drives: the visible area's place in the window, the content's offset as the layout has it, and the
+ * field's place in the content. The content's top (the marker) and the field move with the applied offset; `lag`
+ * applies a jump a frame later, as Fabric does, so a reveal in between measures the old layout.
+ */
+function scrollModel(shown: { top: number; height: number }, fieldInContent: { top: number; height: number }, lag = 0) {
+  const state = { applied: 0, shown, field: fieldInContent };
+  const measure = (box: () => { top: number; height: number }) => ({
+    measureInWindow: (done: (...at: number[]) => void) => {
+      const now = box();
+      done(0, now.top, 360, now.height);
+    },
+  });
+  const origin = () => ({ top: state.shown.top - state.applied, height: 0 });
+  return {
+    state,
+    viewport: measure(() => state.shown),
+    origin: measure(origin),
+    field: measure(() => ({ top: origin().top + state.field.top, height: state.field.height })),
+    apply: (y: number) => {
+      if (lag === 0) state.applied = y;
+      else setTimeout(() => (state.applied = y), lag);
+    },
+  };
+}
+const flush = (ms = 5) => act(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+function wire(typing: Typing, model: ReturnType<typeof scrollModel>, calls: number[]) {
+  (typing.scroll as { current: unknown }).current = {
+    scrollTo: ({ y, animated }: { y: number; animated?: boolean }) => {
+      // The reveal jumps; an animated scroll would leave the field mid-flight for the next measurement.
+      if (animated !== false) throw new Error("the reveal must not animate");
+      calls.push(y);
+      model.apply(y);
+    },
+  };
+  (typing.viewport as { current: unknown }).current = model.viewport;
+  (typing.origin as { current: unknown }).current = model.origin;
+  (typing.field.ref as { current: unknown }).current = model.field;
+}
 
+// The card's visible scroll is 136–461 in the window (325 tall, the keyboard up); the field is 471 down the content,
+// 60 tall: revealed at 471 + 60 + 16 margin − 325 = 222.
 describe("the field you type in stays in view", () => {
   test(
-    "focusing a field under the fold scrolls it into view, and one already in view stays put",
+    "focusing a field under the fold scrolls it into view",
     async () => {
       const out: { now?: Typing } = {};
       const calls: number[] = [];
       await mount(<Reveal itemKey="a" inset={0} out={out} />);
       const typing = out.now as Typing;
-      (typing.scroll as { current: unknown }).current = { scrollTo: ({ y }: { y: number }) => calls.push(y) };
-      typing.onViewport(layout(0, 380));
-      typing.field.onLayout(layout(600, 60));
+      wire(typing, scrollModel({ top: 136, height: 325 }, { top: 471, height: 60 }), calls);
       // Not focused: nothing moves.
+      typing.onViewport();
+      await flush();
       expect(calls).toEqual([]);
       typing.field.onFocus();
-      // 600 + 18 (the card's top padding) + 60 + 16 margin − 380 shown.
-      expect(calls).toEqual([314]);
-      // It grows a line while you type: scrolled again so its bottom stays in view.
-      typing.field.onLayout(layout(600, 84));
-      expect(calls).toEqual([314, 338]);
-      // In view already: left alone.
-      typing.field.onLayout(layout(600, 84));
-      expect(calls).toEqual([314, 338]);
+      await flush();
+      expect(calls).toEqual([222]);
     },
     SLOW,
   );
   test(
-    "the next ask starts fresh: no scroll from the last ask's field",
+    "two reveals at once scroll once, even when the jump reaches the layout a frame later (Fabric)",
+    async () => {
+      for (const lag of [0, 16]) {
+        const out: { now?: Typing } = {};
+        const calls: number[] = [];
+        await mount(<Reveal itemKey="a" inset={0} out={out} />);
+        const typing = out.now as Typing;
+        wire(typing, scrollModel({ top: 136, height: 325 }, { top: 471, height: 60 }, lag), calls);
+        typing.field.onFocus();
+        await flush(1);
+        // The scroll's layout lands after the first jump was asked for, before it reached the layout.
+        typing.onViewport();
+        await flush(40);
+        expect({ lag, calls }).toEqual({ lag, calls: [222] });
+      }
+    },
+    SLOW,
+  );
+  test(
+    "a scroll you moved yourself counts",
+    async () => {
+      const out: { now?: Typing } = {};
+      const calls: number[] = [];
+      await mount(<Reveal itemKey="a" inset={0} out={out} />);
+      const typing = out.now as Typing;
+      const model = scrollModel({ top: 136, height: 325 }, { top: 471, height: 60 });
+      wire(typing, model, calls);
+      // You scrolled to 300 yourself: the field (471–531) is in view (300–625), so it is left alone.
+      model.state.applied = 300;
+      typing.onScroll({ nativeEvent: { contentOffset: { y: 300 } } });
+      typing.field.onFocus();
+      await flush();
+      expect(calls).toEqual([]);
+    },
+    SLOW,
+  );
+  test(
+    "a field that moved without resizing (pictures loaded above it) is found where it is, not where it was",
+    async () => {
+      const out: { now?: Typing } = {};
+      const calls: number[] = [];
+      await mount(<Reveal itemKey="a" inset={0} out={out} />);
+      const typing = out.now as Typing;
+      const model = scrollModel({ top: 136, height: 627 }, { top: 425, height: 60 });
+      wire(typing, model, calls);
+      typing.field.onFocus();
+      await flush();
+      // In view in the tall scroll: left alone.
+      expect(calls).toEqual([]);
+      // The pictures load (+46 px) and the keyboard rises (the scroll shrinks to 325): no layout event from the field.
+      model.state.field.top = 471;
+      model.state.shown.height = 325;
+      typing.onViewport();
+      await flush();
+      expect(calls).toEqual([222]);
+    },
+    SLOW,
+  );
+  test(
+    "the keyboard rising reveals the focused field as the layout settles",
     async () => {
       const out: { now?: Typing } = {};
       const calls: number[] = [];
       const view = await mount(<Reveal itemKey="a" inset={0} out={out} />);
       let typing = out.now as Typing;
-      const scroll = { scrollTo: ({ y }: { y: number }) => calls.push(y) };
-      (typing.scroll as { current: unknown }).current = scroll;
-      typing.onViewport(layout(0, 380));
-      typing.field.onLayout(layout(600, 60));
+      const model = scrollModel({ top: 136, height: 627 }, { top: 471, height: 60 });
+      wire(typing, model, calls);
       typing.field.onFocus();
-      expect(calls).toEqual([314]);
-      // Swiped to the next ask: its field is not laid out yet and not focused, so the keyboard rising moves nothing.
-      await view.rerender(<Reveal itemKey="b" inset={336} out={out} />);
-      await act(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+      await flush();
+      expect(calls).toEqual([]);
+      // The keyboard rises; the scroll shrinks a moment later, after the first reveal has looked.
+      await view.rerender(<Reveal itemKey="a" inset={336} out={out} />);
       typing = out.now as Typing;
-      (typing.scroll as { current: unknown }).current = scroll;
-      typing.onViewport(layout(0, 200));
-      expect(calls).toEqual([314]);
+      wire(typing, model, calls);
+      await flush();
+      model.state.shown.height = 325;
+      await flush(400);
+      expect(calls).toEqual([222]);
+    },
+    SLOW,
+  );
+  test(
+    "the next ask starts fresh: not focused, so the keyboard rising moves nothing",
+    async () => {
+      const out: { now?: Typing } = {};
+      const calls: number[] = [];
+      const view = await mount(<Reveal itemKey="a" inset={0} out={out} />);
+      let typing = out.now as Typing;
+      wire(typing, scrollModel({ top: 136, height: 325 }, { top: 471, height: 60 }), calls);
+      typing.field.onFocus();
+      await flush();
+      expect(calls).toEqual([222]);
+      await view.rerender(<Reveal itemKey="b" inset={336} out={out} />);
+      typing = out.now as Typing;
+      // The next ask's own scroll and field, deep under the fold, not focused.
+      wire(typing, scrollModel({ top: 136, height: 325 }, { top: 900, height: 60 }), calls);
+      await flush(400);
+      expect(calls).toEqual([222]);
     },
     SLOW,
   );
