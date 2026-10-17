@@ -108,6 +108,8 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
       setPhoneTab("decisions");
       setPhonePage(null);
       if (ask?.key) setHomeFocus({ hold: `ask:${ask.key}`, at: Date.now() });
+      else if (ask && (ask.ledger ?? ledger))
+        setHomeFocus({ decision: { ledger: ask.ledger ?? ledger ?? "", id: ask.id }, at: Date.now() });
     }
   };
   // Opening on `params.hold` (a push, the header count): that hold's inspector on the Feed (BRO-3033 fact 2).

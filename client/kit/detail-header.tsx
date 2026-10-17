@@ -12,6 +12,9 @@ import { placeLabel, type Segment, segments } from "./deck-model";
 import { RoundButton } from "./parts";
 import { kitOf } from "./tokens";
 
+/** Past this many, the segments are one bar: 12 × 22 pt fits between Close and More at a phone's 375 pt. */
+const MAX_SEGMENTS = 12;
+
 export function DetailHeader({
   theme,
   kind,
@@ -60,16 +63,34 @@ export function DetailHeader({
           <Text accessibilityRole="header" style={{ color: kit.fg, fontSize: 13, fontWeight: "600" }}>
             {label}
           </Text>
-          <View style={{ flexDirection: "row", gap: 4 }} accessible={false}>
-            {segments(index, total).map((segment, at) => (
+          {total > MAX_SEGMENTS ? (
+            // A long series is one thin bar: a segment per ask would run into Close and More (BRO-3172).
+            <View
+              testID="progress-bar"
+              accessible={false}
+              style={{ width: 200, height: 4, borderRadius: 2, backgroundColor: color("todo"), overflow: "hidden" }}
+            >
               <View
-                // biome-ignore lint/suspicious/noArrayIndexKey: a segment is its position
-                key={at}
-                testID={`segment-${segment}`}
-                style={{ width: 18, height: 4, borderRadius: 2, backgroundColor: color(segment) }}
+                style={{
+                  width: `${((index + 1) / total) * 100}%`,
+                  height: 4,
+                  borderRadius: 2,
+                  backgroundColor: color("current"),
+                }}
               />
-            ))}
-          </View>
+            </View>
+          ) : (
+            <View style={{ flexDirection: "row", gap: 4 }} accessible={false}>
+              {segments(index, total).map((segment, at) => (
+                <View
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a segment is its position
+                  key={at}
+                  testID={`segment-${segment}`}
+                  style={{ width: 18, height: 4, borderRadius: 2, backgroundColor: color(segment) }}
+                />
+              ))}
+            </View>
+          )}
         </View>
         <RoundButton theme={theme} icon="Ellipsis" label="More" onPress={onMore} />
       </View>

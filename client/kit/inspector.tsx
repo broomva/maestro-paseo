@@ -586,8 +586,9 @@ export function InspectorBody({
             <Text style={{ color: kit.muted, fontSize: 12.5 }}>{item.fallback.line}</Text>
           </View>,
         );
-      // The phone's card (compact) shows it too (BRO-3146): Other offered with nowhere to write it is a dead end.
-      if (onWords && !item.refusal && (!compact || item.options.length > 0))
+      // The phone's card (compact) shows it too (BRO-3146): Other offered with nowhere to write it is a dead end. An ask
+      // with no options is answered here in words alone: the card is where asks are answered (BRO-3172).
+      if (onWords && !item.refusal)
         sections.push(
           <WordsField
             key="words"
@@ -1166,9 +1167,12 @@ export function InspectorCard({
   words,
   onWords,
   onChoose,
+  safeBottom = 0,
 }: {
   theme: PluginTheme;
   item: InspectorItem;
+  /** The home indicator's height: the pinned verbs sit above it. */
+  safeBottom?: number;
   /** Your words on an ask (BRO-3146), held by the screen so the deck card and this one show the same words. */
   words?: string;
   onWords?: (value: string) => void;
@@ -1276,7 +1280,11 @@ export function InspectorCard({
           onMore={onMore}
           dragHandlers={responder.panHandlers}
         />
-        <ScrollView contentContainerStyle={{ paddingVertical: 18, paddingHorizontal: 20, paddingBottom: 32 }}>
+        {/* Keyed by the item: the next ask in a series (BRO-3172) starts at its top, not where the last was scrolled. */}
+        <ScrollView
+          key={item.key}
+          contentContainerStyle={{ paddingVertical: 18, paddingHorizontal: 20, paddingBottom: 32 }}
+        >
           <InspectorBody
             theme={theme}
             item={item}
@@ -1296,7 +1304,7 @@ export function InspectorCard({
             flexDirection: "row",
             gap: 10,
             paddingTop: 12,
-            paddingBottom: 16,
+            paddingBottom: 16 + safeBottom,
             paddingHorizontal: 16,
             borderTopWidth: 1,
             borderTopColor: kit.hairline,

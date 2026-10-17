@@ -17,8 +17,9 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useToast } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, type LayoutChangeEvent, Pressable, ScrollView, Text, View } from "react-native";
+import { ANSWERS_KEY } from "../../shared/needs";
 import { useWorkspaceAsks } from "../decisions";
-import { decisionAsks, isTriaged, triageQueue } from "../decisions-model";
+import { decisionAsks, isTriaged, ledgerOf, triageQueue } from "../decisions-model";
 import { stageTiles, wentRows } from "../decisions-stage-model";
 import { type NeedEntry, needsSection } from "../feed-model";
 import { ago, errorText } from "../format";
@@ -53,7 +54,6 @@ import {
   answersCounts,
   bothRead,
   CONFIRM_WINDOW_MS,
-  type DeckLane,
   type DeckRead,
   decisionCards,
   decisionCountWords,
@@ -65,7 +65,6 @@ import {
   feedDeck,
   feedSheet,
   irreversibleChoice,
-  LANE_WORDS,
   openAsks,
   openingChoice,
   type PhonePage,
@@ -86,6 +85,21 @@ import { NewWorkSheet } from "./new-work-sheet";
 import { LedgerWarnings } from "./open-asks";
 import { PageBody } from "./page-body";
 import { PagePanel } from "./page-panel";
+import { AnswersSummary, SeriesList } from "./series-dashboard";
+import {
+  type AskSeries,
+  askSeries,
+  endWords,
+  firstOfVisit,
+  keyOfDecision,
+  marked,
+  navigable,
+  nextInVisit,
+  seriesWith,
+  startVisit,
+  type Visit,
+  visitKeys,
+} from "./series-model";
 import { SheetRows } from "./sheet-rows";
 import {
   firstLane,
@@ -185,7 +199,11 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     [everyOpen, workspace],
   );
   const cards = useMemo(() => decisionCards(decisionsDeck(scopedHolds), openRows ?? []), [scopedHolds, openRows]);
-  const laneOf = useMemo(() => new Map(cards.map((card) => [card.entry.row.key, card.lane])), [cards]);
+  // The Decisions dashboard's series (BRO-3172), in this workspace; an open looks its key up in every workspace's.
+  // The answers batch is the "Your answers" row, never a series of its own.
+  const series = useMemo(() => askSeries(cards.filter((card) => card.entry.row.key !== ANSWERS_KEY)), [cards]);
+  const everyCard = useMemo(() => decisionCards(decisionsDeck(everyHold), everyOpen ?? []), [everyHold, everyOpen]);
+  const everySeries = useMemo(() => askSeries(everyCard), [everyCard]);
   // The open asks open the same card a hold does: an answer is the same verb.
   const inspectable = useMemo(
     () => [...everyHold, ...(everyOpen ?? []).map((row) => row.entry)],
@@ -266,6 +284,70 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     return left > 0 ? `${verb.label} · applies in ${left} s` : `${verb.label} · applying now`;
   };
 
+  // The card's walk through one series (BRO-3172): null while the card pages the tab's deck, or is closed. Answer and
+  // Skip move it on within the series and never wrap; the last one closes it onto the dashboard with a toast.
+  const [visit, setVisit] = useState<Visit | null>(null);
+  const visitLive = visit ? (everySeries.find((one) => one.id === visit.series)?.keys ?? []) : [];
+  const visitList = visit ? visitKeys(visit, visitLive) : [];
+  // The order a visit walks in: its snapshot, then what joined since (a key that left keeps its place to walk past).
+  const walk = (now: Visit) => [...now.snapshot, ...visitLive.filter((key) => !now.snapshot.includes(key))];
+  const mayShow = (now: Visit) => (key: string) => navigable(key, visitLive, waitingKeys, now);
+  // The ask the visit answered last: Undo takes the card back to it.
+  const lastAnswered = useRef<string | null>(null);
+  const openSeries = (one: AskSeries, at?: string) => {
+    const started = startVisit(one);
+    const key = at ?? firstOfVisit(one.keys, (candidate) => navigable(candidate, one.keys, waitingKeys, started));
+    if (!key) return;
+    lastAnswered.current = null;
+    setVisit(started);
+    inspector.selectHold(key);
+  };
+  /** A hold opens in its series when it has one; any other opens its card over the tab's deck, as before. */
+  const openHold = (key: string) => {
+    const one = seriesWith(everySeries, key);
+    if (one) return openSeries(one, key);
+    setVisit(null);
+    inspector.selectHold(key);
+  };
+  /** The visit moves past `from`: to the next ask it may show, else it ends and says so. */
+  const visitOn = (from: string, now: Visit) => {
+    const to = nextInVisit(walk(now), from, mayShow(now));
+    if (to) {
+      setVisit(now);
+      inspector.selectHold(to);
+      return;
+    }
+    setVisit(null);
+    inspector.setOpen(false);
+    toast.show(endWords(now));
+  };
+  const visitMove = (from: string, how: "answered" | "skipped") => {
+    if (visit) visitOn(from, marked(visit, from, how));
+  };
+  // A closed card ends its visit.
+  useEffect(() => {
+    if (!inspector.showing && visit) {
+      setVisit(null);
+      lastAnswered.current = null;
+    }
+  }, [inspector.showing, visit]);
+  // The ask on the card left the read without an answer here (answered elsewhere, or closed): the visit moves on.
+  const onCard = selection?.kind === "hold" ? selection.key : null;
+  useEffect(() => {
+    if (!visit || !onCard || !inspector.showing) return;
+    if (visitLive.includes(onCard) || visit.answered.includes(onCard)) return;
+    visitOn(onCard, visit);
+  });
+  const undo = () => {
+    const key = lastAnswered.current;
+    lastAnswered.current = null;
+    inspector.undo.undo();
+    if (key && visit) {
+      setVisit(marked(visit, key, "undone"));
+      inspector.selectHold(key);
+    }
+  };
+
   // Opening on a hold (`params.hold`, M10) or work: once needs.list has been read since this screen mounted.
   // A refetch that failed concludes nothing (BRO-3094): the push waits for a read that landed.
   // An open ask on the Decisions deck is a hold to open too, once asks.workspace has answered as well.
@@ -278,6 +360,18 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const { onOpenWork } = props;
   useEffect(() => {
     if (!focus || handledFocus.current === focus.at) return;
+    if (focus.decision) {
+      // An ask named by its ledger and id (Initiatives): the one open ask that matches, else its ledger's series.
+      if (fresh === null) return;
+      handledFocus.current = focus.at;
+      onFocusHandled();
+      const { ledger, id } = focus.decision;
+      const key = keyOfDecision(everyCard, ledger, id);
+      const inLedger = everyCard.find(({ entry }) => entry.ask && ledgerOf(entry.ask) === ledger)?.entry.row.key;
+      if (key) setOpenAsk({ key, whole: false });
+      else if (inLedger) setOpenAsk({ key: inLedger, whole: true });
+      return;
+    }
     if (focus.work) {
       const held = (fresh ?? []).find((row) => row.key === `work:${focus.work}`);
       if (fresh === null && !held) return;
@@ -301,6 +395,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       setStand({ key: target.key, last: 0 });
       setPushedAt(focus.from === "push" ? { key: target.key, tab: at } : null);
       setGone(null);
+      // An ask opens on the card, in its series (BRO-3172), after the tab's change has closed what was open.
+      if (seriesWith(everySeries, target.key)) setOpenAsk({ key: target.key, whole: false });
     } else if (target.kind === "gone") setGone(target.key);
   });
 
@@ -310,6 +406,16 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   useEffect(() => {
     closeCard(false);
   }, [tab]);
+  // An open asked for with a change of tab: applied here, after the effect above, so the tab's close cannot undo it.
+  const [openAsk, setOpenAsk] = useState<{ key: string; whole: boolean } | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only a new request opens
+  useEffect(() => {
+    if (!openAsk) return;
+    setOpenAsk(null);
+    const one = seriesWith(everySeries, openAsk.key);
+    if (one && openAsk.whole) openSeries(one);
+    else openHold(openAsk.key);
+  }, [openAsk]);
 
   // Your choice on each ask or review, by hold: the recommendation until you pick.
   const [choices, setChoices] = useState<Record<string, string>>({});
@@ -342,10 +448,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       const words = (said[key] ?? "").trim();
       if (item.kind === "ask" && item.options.length === 0 && words) {
         const sent = await inspector.act("answer", inspector.targetOf(entry), undefined, words);
-        if (sent) {
-          inspector.setOpen(false);
-          advance(key);
-        }
+        if (sent) afterAnswer(key, card);
       } else inspector.selectHold(key);
       return;
     }
@@ -365,11 +468,18 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     }
     setArmed(null);
     const sent = await inspector.act("answer", inspector.targetOf(entry), picked, words, irreversible);
-    if (sent) {
-      // The words stay with the hold: an answer undone in its window comes back with them.
-      inspector.setOpen(false);
-      advance(key);
+    // The words stay with the hold: an answer undone in its window comes back with them.
+    if (sent) afterAnswer(key, card);
+  };
+
+  /** After an answer was sent: the card on a visit moves on in its series; otherwise it closes and the deck moves. */
+  const afterAnswer = (key: string, card: boolean) => {
+    if (card && visit && visitList.includes(key)) {
+      lastAnswered.current = key;
+      return visitMove(key, "answered");
     }
+    inspector.setOpen(false);
+    advance(key);
   };
 
   const onDeckVerb = async (entry: NeedEntry, item: InspectorItem, id: string) => {
@@ -385,14 +495,16 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const keep = useRef<InspectorItem | null>(null);
   if (inspected) keep.current = inspected;
   const cardItem = inspected ?? keep.current;
-  // The card pages through the deck's holds only when what it opened is one of them.
-  const inDeck = selection?.kind === "hold" && keys.includes(selection.key);
-  const cardIndex = inDeck ? Math.max(0, keys.indexOf(selection.key)) : 0;
-  const cardTotal = inDeck ? Math.max(1, keys.length) : 1;
+  // The card pages through its series on a visit, else through the deck's holds when what it opened is one of them.
+  const inVisit = onCard !== null && visit !== null && visitList.includes(onCard);
+  const inDeck = !inVisit && onCard !== null && keys.includes(onCard);
+  const cardIndex = inVisit ? visitList.indexOf(onCard) : inDeck ? Math.max(0, keys.indexOf(onCard)) : 0;
+  const cardTotal = inVisit ? visitList.length : inDeck ? Math.max(1, keys.length) : 1;
   const onCardVerb = async (id: string, choice?: string) => {
     if (!selection) return;
     if (openEntry && cardItem && (id === "answer" || id === "skip")) {
       if (id === "answer") return answer(openEntry, cardItem, choice, true);
+      if (inVisit) return visitMove(openEntry.row.key, "skipped");
       inspector.setOpen(false);
       return advance(openEntry.row.key);
     }
@@ -464,6 +576,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
 
   const measured = size.height > 0 && size.width > 0;
   const { page } = props;
+  // The one undo toast over the card on a visit, and on the dashboard (which has no sheet to carry it).
+  const ownToast = tab === "decisions" || (visit !== null && inspector.showing);
 
   const queue = useMemo(
     () =>
@@ -575,8 +689,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       toast={(place) => (
         <UndoToast
           theme={theme}
-          entry={page ? null : inspector.undo.entry}
-          onUndo={inspector.undo.undo}
+          entry={page || ownToast ? null : inspector.undo.entry}
+          onUndo={undo}
           bottom={place.bottom}
           lift={place.lift}
         />
@@ -599,7 +713,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       contentContainerStyle={{
         paddingHorizontal: 16,
         paddingTop: 12,
-        paddingBottom: TAB_BAND + PEEK + safe + 24,
+        paddingBottom: TAB_BAND + (tab === "decisions" ? 0 : PEEK) + safe + 24,
         gap: 10,
       }}
     >
@@ -730,6 +844,29 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
               />
             )}
           />
+        ) : tab === "decisions" ? (
+          <View testID="decisions-dashboard" style={{ gap: 12 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, zIndex: 20 }}>
+              <Text accessibilityRole="header" style={{ flex: 1, color: kit.fg, fontSize: 24, fontWeight: "700" }}>
+                {deckTitle(tab)}
+              </Text>
+              {header}
+            </View>
+            <AnswersSummary theme={theme} counts={answersCounts(answersRead.data ?? null)}>
+              <AnswersSheet
+                theme={theme}
+                tiles={stageTiles(queue, needs.data ?? null, answersRead.data ?? null, now)}
+                held={answersRead.data?.held ?? null}
+                went={answersRead.data ? wentRows(answersRead.data.recent) : null}
+                onOpenPr={openUrl}
+              />
+            </AnswersSummary>
+            {cards.length === 0 ? (
+              empty
+            ) : series.length === 0 ? null : (
+              <SeriesList theme={theme} series={series} now={now} onOpen={(one) => openSeries(one)} />
+            )}
+          </View>
         ) : (
           <Deck<NeedEntry>
             {...deckProps}
@@ -753,9 +890,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
                     setArmed(null);
                     setChoices((now) => ({ ...now, [key]: id }));
                   }}
-                  onDetails={() => inspector.selectHold(key)}
+                  onDetails={() => openHold(key)}
                   onVerb={(id) => void onDeckVerb(entry, item, id)}
-                  lane={tab === "decisions" ? laneLook(laneOf.get(key)) : undefined}
                 />
               );
             }}
@@ -784,18 +920,15 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
             ),
           )
         : null}
-      {measured && tab === "decisions"
-        ? sheet(
-            answersCounts(answersRead.data ?? null),
-            <AnswersSheet
-              theme={theme}
-              tiles={stageTiles(queue, needs.data ?? null, answersRead.data ?? null, now)}
-              held={answersRead.data?.held ?? null}
-              went={answersRead.data ? wentRows(answersRead.data.recent) : null}
-              onOpenPr={openUrl}
-            />,
-          )
-        : null}
+      {measured && tab === "decisions" ? (
+        // The dashboard has no sheet (BRO-3172): the tab bar sits on the bottom edge by itself.
+        <View
+          testID="tab-band"
+          style={{ position: "absolute", left: 0, right: 0, bottom: safe + 8, height: TAB_BAND, paddingHorizontal: 12 }}
+        >
+          {tabBar}
+        </View>
+      ) : null}
       {measured && tab === "work" ? sheet(workCounts(board), workSheet) : null}
       {measured && tab === "health" ? (
         <HealthHost
@@ -835,7 +968,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
             navigation={navigation}
             presence={presence}
             onPage={props.onPage}
-            onOpenHold={(key) => inspector.selectHold(key)}
+            onOpenHold={openHold}
             onOpenDecision={props.onOpenDecision}
             onOpenWork={(id) => (items.some((one) => one.id === id) ? inspector.selectWork(id) : props.onOpenWork(id))}
           />
@@ -865,6 +998,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
           open={inspector.showing}
           height={size.height}
           onClose={() => inspector.setOpen(false)}
+          safeBottom={safe}
           onMore={() => {
             if (openEntry?.row.session || inspector.item?.worker)
               void inspector.act("open", inspector.targetOf(openEntry));
@@ -885,12 +1019,30 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
           }
           // The card swiped to another hold: the deck is on it when the card closes.
           onIndexChange={(at) => {
+            if (inVisit && visit && onCard) {
+              // Toward the swipe, to the nearest ask the visit may show; none that way, it stays.
+              const target = visitList[at];
+              const ok = mayShow(visit);
+              const to = target && ok(target) ? target : nextInVisit(walk(visit), onCard, ok, at > cardIndex ? 1 : -1);
+              if (to) inspector.selectHold(to);
+              return;
+            }
             const next = keys[at];
             if (!next) return;
             move(at);
             inspector.selectHold(next);
           }}
           onOpenSession={() => void inspector.act("open", inspector.targetOf(openEntry))}
+        />
+      ) : null}
+      {!page && ownToast ? (
+        <UndoToast
+          theme={theme}
+          entry={inspector.undo.entry}
+          onUndo={undo}
+          // Over the card, above its pinned verbs; on the dashboard, above the tab bar.
+          bottom={inspector.showing ? safe + 96 : TAB_BAND + safe + 16}
+          lift={0}
         />
       ) : null}
       {unblocking ? (
@@ -910,21 +1062,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
           }}
         />
       ) : null}
-      {page ? (
-        <UndoToast
-          theme={theme}
-          entry={inspector.undo.entry}
-          onUndo={inspector.undo.undo}
-          bottom={safe + 16}
-          lift={0}
-        />
-      ) : null}
+      {page ? <UndoToast theme={theme} entry={inspector.undo.entry} onUndo={undo} bottom={safe + 16} lift={0} /> : null}
     </View>
   );
-}
-
-/** The words and tone a Decisions card wears for where it stands (BRO-3140). */
-function laneLook(lane: DeckLane | undefined): { words: string; tone: "needs" | "muted" | "info" } | undefined {
-  if (!lane) return undefined;
-  return { words: LANE_WORDS[lane], tone: lane === "waits" ? "needs" : lane === "idea" ? "info" : "muted" };
 }
