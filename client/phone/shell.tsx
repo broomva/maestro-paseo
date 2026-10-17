@@ -393,7 +393,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       else if (anyInLedger) setOpenAsk({ key: anyInLedger, whole: true });
       else if (asksRead.isError)
         toast.show("Couldn't read the open asks, so that ask did not open. It reads again in a moment.");
-      else if (one.size > 1) toast.show(`${ledger} is in more than one workspace: open it from Decisions.`);
+      else if (one.size > 1)
+        toast.show(`${ledger} is in more than one place (two workspaces, or two homes): open it from Decisions.`);
       return;
     }
     if (focus.work) {

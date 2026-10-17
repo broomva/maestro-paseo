@@ -190,6 +190,7 @@ let workListPrompt: string | null = null;
 let needsHeld: Promise<void> | null = null;
 /** An ask.answer that has not come back yet: it resolves when the test lets it. */
 let holdAnswer: Promise<void> | null = null;
+let answersFail: string | null = null;
 let pending: Pending[] = [];
 let unblockFail: string | null = null;
 let noticesFail: string | null = null;
@@ -250,6 +251,7 @@ function reset() {
   workListPrompt = null;
   needsHeld = null;
   holdAnswer = null;
+  answersFail = null;
   pending = [];
   unblockFail = null;
   noticesFail = null;
@@ -323,6 +325,7 @@ const invoke = async (method: string, input: unknown) => {
       if (asksFail) throw new Error(asksFail);
       return { controlRepo: "/Users/me/broomva", main: null, decisions: asks, fleet: [], warnings: askWarnings };
     case "answers.status":
+      if (answersFail) throw new Error(answersFail);
       return answersStatus(asks, null);
     case "verbs.list":
       return { pending, recent: [] };
@@ -882,7 +885,7 @@ describe("M5, Decisions", () => {
     });
     for (let at = 0; at < 3; at += 1) await settle();
     expect(card(view) == null).toBe(true);
-    expect(toasts.join(" ")).toContain("claude-code-mods.yaml is in more than one workspace");
+    expect(toasts.join(" ")).toContain("claude-code-mods.yaml is in more than one place");
   });
 
   test("the ask on the card answered elsewhere: the card moves to the next, not closed (P20 round 1)", async () => {
@@ -1015,6 +1018,17 @@ describe("M5, Decisions", () => {
     expect(rows(view).some((row) => row.textContent?.includes("waits to land"))).toBe(false);
     await view.press(view.id("answers-summary"));
     expect(view.text()).not.toContain("Where your last answers went");
+  });
+
+  test("your answers stay folded when none waits to land, and when their status is unread (P20 round 4)", async () => {
+    asks = [ask("A1")];
+    const quiet = await mount({ tab: "decisions" });
+    expect(quiet.text()).toContain("0 waiting to land");
+    expect(quiet.text()).not.toContain("Where your last answers went");
+    answersFail = "answers are down";
+    const unread = await mount({ tab: "decisions" });
+    expect(unread.text()).toContain("answers: not read");
+    expect(unread.text()).not.toContain("Where your last answers went");
   });
 
   describe("every open ask on the dashboard", () => {
