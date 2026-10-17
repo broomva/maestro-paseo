@@ -1019,8 +1019,10 @@ export function useTypingInView(itemKey: string, inset: number) {
       now.scrolled,
     );
     if (to === null) return;
+    // A jump, not an animation: the offset is then where the next measurement finds it. An animated scroll left a
+    // reveal that measured mid-flight adding the target to a field not there yet, and overshooting (P20 A2 round 1).
     now.scrolled = to;
-    scroll.current?.scrollTo({ y: to, animated: true });
+    scroll.current?.scrollTo({ y: to, animated: false });
   };
   const revealRef = useRef(reveal);
   revealRef.current = reveal;

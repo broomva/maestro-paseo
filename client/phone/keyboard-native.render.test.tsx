@@ -157,7 +157,9 @@ function wire(typing: Typing, field: ReturnType<typeof placed>, shown: ReturnTyp
   // Scrolling moves the field up the window by as much as it scrolled, as a real scroll does.
   const last = { y: calls.at(-1) ?? 0 };
   (typing.scroll as { current: unknown }).current = {
-    scrollTo: ({ y }: { y: number }) => {
+    scrollTo: ({ y, animated }: { y: number; animated?: boolean }) => {
+      // The reveal jumps; an animated scroll would leave the field mid-flight for the next measurement.
+      if (animated !== false) throw new Error("the reveal must not animate");
       field.box.top -= y - last.y;
       last.y = y;
       calls.push(y);
