@@ -3,9 +3,9 @@
 // is the keyboard's height less the safe area the sheet already stands above, never negative; a sheet that
 // stands at the bottom rises by it and returns on `keyboardWillHide`. The web has no such event: the lift stays 0.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Keyboard, Platform } from "react-native";
-import { keyboardLift } from "./keyboard-lift";
+import { type KeyboardSource, keyboardLift, type Page, watchKeyboardInset } from "./keyboard-lift";
 
 /** The events carrying it: iOS announces the animation before it runs; elsewhere it is announced after. */
 export const KEYBOARD_EVENTS =
@@ -36,4 +36,30 @@ export function useKeyboardLift(safeBottom: number): Animated.Value {
     };
   }, [lift]);
   return lift;
+}
+
+/**
+ * How much of a bottom view the software keyboard covers, in px, as state (BRO-3180: the ask card). The rule and its
+ * sources are watchKeyboardInset's (client/phone/keyboard-lift.ts); this hands it RN's platform, Keyboard and window.
+ * `present`: whether the view is on screen; a view that mounts hidden is measured again once it shows.
+ */
+export function useKeyboardInset(view: { current: unknown }, present = true): number {
+  const [inset, setInset] = useState(0);
+  // Watched again when the view appears: a keyboard already up is then measured against it (P20 round 2).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: present is the trigger
+  useEffect(
+    () =>
+      watchKeyboardInset(
+        {
+          view,
+          platform: Platform.OS,
+          keyboard: Keyboard as unknown as KeyboardSource,
+          events: KEYBOARD_EVENTS,
+          page: (globalThis as { window?: Page }).window,
+        },
+        setInset,
+      ),
+    [view, present],
+  );
+  return inset;
 }
