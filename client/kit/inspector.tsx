@@ -976,28 +976,48 @@ function useSlide(shown: boolean, value: Animated.Value, hidden: number, reduced
   return present;
 }
 
-/** The card's scroll content starts this far down: a field's place in the body plus this is its place in the scroll. */
-const CARD_PAD_TOP = 18;
-
 type Focusable = { focus?: () => void };
+type Measurable = { measureInWindow?: (done: (x: number, y: number, width: number, height: number) => void) => void };
+type Box = { top: number; height: number };
+
+/** A view's place in the window, or null when it has none to give (unmounted, or not laid out). */
+function boxOf(view: unknown): Promise<Box | null> {
+  const target = view as Measurable | null;
+  if (!target?.measureInWindow) return Promise.resolve(null);
+  return new Promise((resolve) =>
+    target.measureInWindow?.((_x, y, _width, height) => resolve(height > 0 ? { top: y, height } : null)),
+  );
+}
+
+/** After the keyboard moves, the scroll is laid out again: revealed at once and twice more as the layout settles. */
+const SETTLE_REVEALS_MS = [0, 120, 360] as const;
 
 /**
- * The phone card's words field kept in view while you type (BRO-3180): where the field sits in the scroll, how much
- * the scroll shows, and where it is scrolled; focusing the field, its growing a line, and the keyboard rising each
- * scroll it into full view when it is not. `focusSoon` focuses it after the render that chose Other.
+ * The phone card's words field kept in view while you type (BRO-3180). Focusing the field, its growing a line, the
+ * scroll's height changing and the keyboard rising each scroll it into full view when it is not. Where the field and
+ * the visible scroll are is measured in the window at that moment, never cached: on the web a view that moves without
+ * resizing reports no layout, so a cached place went stale when an ask's pictures loaded above the field (live, 46 px
+ * short). `focusSoon` focuses it after the render that chose Other.
  */
 export function useTypingInView(itemKey: string, inset: number) {
   const scroll = useRef<ScrollView | null>(null);
+  const viewport = useRef<View | null>(null);
   const ref = useRef<ElementRef<typeof DraftInput> | null>(null);
-  const at = useRef({ item: itemKey, top: -1, height: 0, viewport: 0, scrolled: 0, focused: false });
-  // Another ask starts at the top of its own scroll (the ScrollView is keyed by it), with its field not yet laid out.
-  // Reset in render, before any of the new scroll's layout events can arrive (P20 round 1: an effect raced them).
-  if (at.current.item !== itemKey) at.current = { ...at.current, item: itemKey, top: -1, scrolled: 0, focused: false };
+  const at = useRef({ item: itemKey, scrolled: 0, focused: false });
+  // Another ask starts at the top of its own scroll (the ScrollView is keyed by it), not focused.
+  if (at.current.item !== itemKey) at.current = { item: itemKey, scrolled: 0, focused: false };
   const pending = useRef(false);
-  const reveal = () => {
+  const reveal = async () => {
+    if (!at.current.focused) return;
+    const item = at.current.item;
+    const [field, shown] = await Promise.all([boxOf(ref.current), boxOf(viewport.current)]);
     const now = at.current;
-    if (!now.focused || now.top < 0) return;
-    const to = revealScroll({ top: now.top, height: now.height }, now.viewport, now.scrolled);
+    if (!field || !shown || !now.focused || now.item !== item) return;
+    const to = revealScroll(
+      { top: field.top - shown.top + now.scrolled, height: field.height },
+      shown.height,
+      now.scrolled,
+    );
     if (to === null) return;
     now.scrolled = to;
     scroll.current?.scrollTo({ y: to, animated: true });
@@ -1007,8 +1027,10 @@ export function useTypingInView(itemKey: string, inset: number) {
   // The keyboard rose or fell: the scroll shows a different height, so the field may now be under it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: inset is the trigger; the scroll's own layout follows it
   useEffect(() => {
-    const timer = setTimeout(() => revealRef.current(), 0);
-    return () => clearTimeout(timer);
+    const timers = SETTLE_REVEALS_MS.map((ms) => setTimeout(() => void revealRef.current(), ms));
+    return () => {
+      for (const timer of timers) clearTimeout(timer);
+    };
   }, [inset]);
   useEffect(() => {
     if (!pending.current) return;
@@ -1019,27 +1041,22 @@ export function useTypingInView(itemKey: string, inset: number) {
     ref,
     onFocus: () => {
       at.current.focused = true;
-      reveal();
+      void reveal();
     },
     onBlur: () => {
       at.current.focused = false;
     },
-    onLayout: (event) => {
-      at.current.top = event.nativeEvent.layout.y + CARD_PAD_TOP;
-      at.current.height = event.nativeEvent.layout.height;
-      reveal();
-    },
+    // It grew a line: its bottom, where you type, may now be under the fold.
+    onLayout: () => void reveal(),
   };
   return {
     scroll,
+    viewport,
     field,
     focusSoon: () => {
       pending.current = true;
     },
-    onViewport: (event: LayoutChangeEvent) => {
-      at.current.viewport = event.nativeEvent.layout.height;
-      reveal();
-    },
+    onViewport: () => void reveal(),
     onScroll: (event: { nativeEvent: { contentOffset: { y: number } } }) => {
       at.current.scrolled = event.nativeEvent.contentOffset.y;
     },
@@ -1389,34 +1406,36 @@ export function InspectorCard({
           dragHandlers={responder.panHandlers}
         />
         {/* Keyed by the item: the next ask in a series (BRO-3172) starts at its top, not where the last was scrolled. */}
-        <ScrollView
-          key={item.key}
-          ref={typing.scroll}
-          testID="inspector-card-scroll"
-          onLayout={typing.onViewport}
-          onScroll={typing.onScroll}
-          scrollEventThrottle={16}
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{ paddingVertical: CARD_PAD_TOP, paddingHorizontal: 20, paddingBottom: 32 }}
-        >
-          <InspectorBody
-            theme={theme}
-            item={item}
-            compact
-            onOpenSession={onOpenSession}
-            // With the screen keeping the pick (onChoose), the card shows the screen's: a pick made on the deck after the
-            // card closed is the one it reopens on, never a stale one of its own (Codex P20 round 3).
-            choice={onChoose && (item.kind === "ask" || item.kind === "review") ? item.chosen : picked.choice}
-            onChoose={(id) => {
-              (onChoose ?? picked.choose)(id);
-              // Other takes your words: its field takes the focus and comes into view (BRO-3180).
-              if (id === OTHER_CHOICE) typing.focusSoon();
-            }}
-            words={words}
-            onWords={item.kind === "ask" ? onWords : undefined}
-            field={typing.field}
-          />
-        </ScrollView>
+        {/* What the scroll shows, measured when the field is revealed (BRO-3180). */}
+        <View ref={typing.viewport} style={{ flex: 1 }} onLayout={typing.onViewport}>
+          <ScrollView
+            key={item.key}
+            ref={typing.scroll}
+            testID="inspector-card-scroll"
+            onScroll={typing.onScroll}
+            scrollEventThrottle={16}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{ paddingVertical: 18, paddingHorizontal: 20, paddingBottom: 32 }}
+          >
+            <InspectorBody
+              theme={theme}
+              item={item}
+              compact
+              onOpenSession={onOpenSession}
+              // With the screen keeping the pick (onChoose), the card shows the screen's: a pick made on the deck after the
+              // card closed is the one it reopens on, never a stale one of its own (Codex P20 round 3).
+              choice={onChoose && (item.kind === "ask" || item.kind === "review") ? item.chosen : picked.choice}
+              onChoose={(id) => {
+                (onChoose ?? picked.choose)(id);
+                // Other takes your words: its field takes the focus and comes into view (BRO-3180).
+                if (id === OTHER_CHOICE) typing.focusSoon();
+              }}
+              words={words}
+              onWords={item.kind === "ask" ? onWords : undefined}
+              field={typing.field}
+            />
+          </ScrollView>
+        </View>
         <View
           testID="inspector-card-bar"
           style={{
