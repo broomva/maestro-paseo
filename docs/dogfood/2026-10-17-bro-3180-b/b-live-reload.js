@@ -2,8 +2,8 @@
 (async () => {
   const { BrowserWindow, app } = process.mainModule.require("electron");
   const fs = process.mainModule.require("fs"), path = process.mainModule.require("path");
-  BrowserWindow.getAllWindows().filter((w) => !w.isVisible()).forEach((w) => w.destroy());
-  const dir = "/Users/broomva/broomva/apps/maestro-paseo-wt-bro-3180-rb/docs/dogfood/2026-10-17-bro-3180-b/";
+  for (const w of BrowserWindow.getAllWindows().filter((one) => !one.isVisible())) w.destroy();
+  const dir = "/Users/broomva/broomva/apps/maestro-paseo/docs/dogfood/2026-10-17-bro-3180-b/";
   const win = new BrowserWindow({ width: 402, height: 874, show: false, webPreferences: { preload: path.join(app.getAppPath(), "dist/preload.js"), contextIsolation: true, sandbox: true } });
   win.setContentSize(402, 874);
   await win.loadURL("paseo://app/h/srv_T-uYNNfjKK-J/plugin/maestro/sidebar/maestro");
