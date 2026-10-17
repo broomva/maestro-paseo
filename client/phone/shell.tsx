@@ -303,6 +303,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     const key = at ?? firstOfVisit(one.keys, (candidate) => navigable(candidate, one.keys, waitingKeys, started));
     if (!key) return;
     lastAnswered.current = null;
+    // A fresh visit's first press is never held by the last visit's settle.
+    movedAt.current = 0;
     setVisit(started);
     inspector.selectHold(key);
   };
@@ -339,6 +341,12 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   // but has nothing to show, and the visit moves on. A card you closed ends its visit (Claude P20 round 1).
   useEffect(() => {
     if (!visit) return;
+    // The card went to a hold outside the series (a page, a key step): the visit ends, it never snaps back.
+    if (onCard !== null && !visit.snapshot.includes(onCard) && !visitLive.includes(onCard)) {
+      setVisit(null);
+      lastAnswered.current = null;
+      return;
+    }
     const left = onCard !== null && !visitLive.includes(onCard) && !visit.answered.includes(onCard);
     if (inspector.open && left && onCard) return visitOn(onCard, visit);
     if (!inspector.showing) {
@@ -376,7 +384,10 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       onFocusHandled();
       const { ledger, id } = focus.decision;
       const key = keyOfDecision(everyCard, ledger, id);
-      const anyInLedger = everyCard.find(({ entry }) => entry.ask && inLedger(entry.ask, ledger))?.entry.row.key;
+      // The ledger's series, only when the name points at one (a bare file name can be in two scopes).
+      const named = everyCard.filter(({ entry }) => entry.ask && inLedger(entry.ask, ledger));
+      const one = new Set(named.map((found) => seriesWith(everySeries, found.entry.row.key)?.id));
+      const anyInLedger = one.size === 1 ? named[0]?.entry.row.key : undefined;
       if (key) setOpenAsk({ key, whole: false });
       else if (anyInLedger) setOpenAsk({ key: anyInLedger, whole: true });
       else if (asksRead.isError)
@@ -498,8 +509,9 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       advance(key);
       return visitMove(key, "answered");
     }
-    // A card closed while its answer was in flight stays closed: only the deck moves.
-    if (card && !now.showing) return advance(key);
+    // The card this answer came from is closed, or another card is up now (another series opened while it was in
+    // flight): whatever shows is left alone, and only the deck moves (Codex P20 round 2).
+    if (card && (!now.showing || now.onCard !== key)) return advance(key);
     inspector.setOpen(false);
     advance(key);
   };

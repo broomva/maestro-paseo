@@ -188,6 +188,8 @@ let unreadNow: string[] | undefined;
 let workListPrompt: string | null = null;
 /** While set, needs.list answers only once it resolves: a read still on its way. */
 let needsHeld: Promise<void> | null = null;
+/** An ask.answer that has not come back yet: it resolves when the test lets it. */
+let holdAnswer: Promise<void> | null = null;
 let pending: Pending[] = [];
 let unblockFail: string | null = null;
 let noticesFail: string | null = null;
@@ -247,6 +249,7 @@ function reset() {
   unreadNow = undefined;
   workListPrompt = null;
   needsHeld = null;
+  holdAnswer = null;
   pending = [];
   unblockFail = null;
   noticesFail = null;
@@ -331,6 +334,7 @@ const invoke = async (method: string, input: unknown) => {
       return { receipt: entry.receipt, appliesAt: entry.appliesAt };
     }
     case "ask.answer": {
+      if (holdAnswer) await holdAnswer;
       const entry = ledgerEntry(method, "ask", "Answered");
       pending = [entry, ...pending];
       return { ask: asks[0], warning: null, receipt: entry.receipt, appliesAt: entry.appliesAt };
@@ -819,6 +823,27 @@ describe("M5, Decisions", () => {
     await settled();
     await view.press(bar(view, "Answer"));
     expect(sent("ask.answer")).toHaveLength(2);
+  });
+
+  test("an answer still in flight when another series opened leaves that card alone (P20 round 2)", async () => {
+    asks = [ask("A1"), ask("Q1", { ledger: "leadership-20261013.yaml", headline: "Quiet question Q1?" })];
+    let release: () => void = () => undefined;
+    holdAnswer = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    await view.press(bar(view, "Answer"));
+    // The card is closed and the other series opened before the answer comes back.
+    await view.press(card(view)?.querySelector('[aria-label="Close"]') as El);
+    await settle(400);
+    await view.press(rows(view).find((row) => row.textContent?.includes("leadership")));
+    expect(card(view)?.textContent).toContain("Quiet question Q1?");
+    await act(async () => release());
+    for (let at = 0; at < 3; at += 1) await settle();
+    expect(sent("ask.answer")).toHaveLength(1);
+    expect(card(view)?.textContent).toContain("Quiet question Q1?");
+    expect(header(view)).toContain("Ask · 1 of 1");
   });
 
   test("the ask on the card answered elsewhere: the card moves to the next, not closed (P20 round 1)", async () => {
