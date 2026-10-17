@@ -986,10 +986,13 @@ type Focusable = { focus?: () => void };
  * the scroll shows, and where it is scrolled; focusing the field, its growing a line, and the keyboard rising each
  * scroll it into full view when it is not. `focusSoon` focuses it after the render that chose Other.
  */
-function useTypingInView(itemKey: string, inset: number) {
+export function useTypingInView(itemKey: string, inset: number) {
   const scroll = useRef<ScrollView | null>(null);
   const ref = useRef<ElementRef<typeof DraftInput> | null>(null);
-  const at = useRef({ top: -1, height: 0, viewport: 0, scrolled: 0, focused: false });
+  const at = useRef({ item: itemKey, top: -1, height: 0, viewport: 0, scrolled: 0, focused: false });
+  // Another ask starts at the top of its own scroll (the ScrollView is keyed by it), with its field not yet laid out.
+  // Reset in render, before any of the new scroll's layout events can arrive (P20 round 1: an effect raced them).
+  if (at.current.item !== itemKey) at.current = { ...at.current, item: itemKey, top: -1, scrolled: 0, focused: false };
   const pending = useRef(false);
   const reveal = () => {
     const now = at.current;
@@ -1001,11 +1004,6 @@ function useTypingInView(itemKey: string, inset: number) {
   };
   const revealRef = useRef(reveal);
   revealRef.current = reveal;
-  // Another ask starts at the top of its own scroll (the ScrollView is keyed by it), with its field not yet laid out.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: itemKey is the reset trigger
-  useEffect(() => {
-    at.current = { ...at.current, top: -1, scrolled: 0 };
-  }, [itemKey]);
   // The keyboard rose or fell: the scroll shows a different height, so the field may now be under it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: inset is the trigger; the scroll's own layout follows it
   useEffect(() => {
@@ -1308,7 +1306,7 @@ export function InspectorCard({
   const picked = useChoice(item);
   const origin = useRef(0);
   const root = useRef<View>(null);
-  const inset = useKeyboardInset(root, safeBottom);
+  const inset = useKeyboardInset(root);
   const typing = useTypingInView(item.key, inset);
   const responder = useMemo(() => {
     const home = (velocity: number) =>

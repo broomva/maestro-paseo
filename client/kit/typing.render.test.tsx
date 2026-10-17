@@ -62,11 +62,12 @@ mock.module("@getpaseo/plugin/client/react-native", () => ({
   useRevealedText: (text: string) => text,
 }));
 
-const { act, useState, useEffect } = await import("react");
+const { act, useState, useEffect, useRef } = await import("react");
 const { createRoot } = require("react-dom/client") as {
   createRoot(container: unknown): { render(node: ReactNode): void; unmount(): void };
 };
-const { DraftInput } = await import("./draft-input");
+const { DraftInput, TWIN_SETTLE_MS } = await import("./draft-input");
+const { useKeyboardInset } = await import("../phone/keyboard");
 const { InspectorCard } = await import("./inspector");
 const { OTHER_ROW } = await import("./inspector-model");
 const { GALLERY_LIGHT, ASK } = await import("./gallery-data");
@@ -203,9 +204,17 @@ describe("typing mid-text (BRO-3180, the caret jump)", () => {
       const area = () => view.querySelector('[data-testid="draft"]');
       await typeAt(area() as Area, " more");
       await settle();
+      // In the field, the owner's words go in at once, and the focus stays.
+      await act(async () => (area() as unknown as { focus(): void }).focus());
       await act(async () => outside.set?.(""));
       await settle();
       expect(area()?.value).toBe("");
+      expect(win.document.activeElement as unknown).toBe(area());
+      // Out of it, they go in once the owner is quiet.
+      await act(async () => (area() as unknown as { blur(): void }).blur());
+      await act(async () => outside.set?.("another ask's words"));
+      await settle(TWIN_SETTLE_MS + 60);
+      expect(area()?.value).toBe("another ask's words");
     },
     SLOW,
   );
@@ -259,6 +268,81 @@ function Card({ onChooseSeen }: { onChooseSeen?: (id: string) => void }) {
     />
   );
 }
+
+describe("a twin field bound to the same words (P20 round 1)", () => {
+  test(
+    "rebuilds at once and once more when the other field goes quiet, never on every keystroke",
+    async () => {
+      const outside: { set?: (v: string) => void } = {};
+      const view = await mount(<SlowOwner initial="" lag={0} outside={outside} />);
+      const seen = new Set<unknown>();
+      const look = () => seen.add(view.querySelector('[data-testid="draft"]'));
+      look();
+      // Typed in the other field: five words in quick succession, this one never focused.
+      for (const words of ["a", "ab", "abc", "abcd", "abcde"]) {
+        await act(async () => outside.set?.(words));
+        await settle(20);
+        look();
+      }
+      // The first word goes in at once; the four after it wait for quiet.
+      expect(seen.size).toBe(2);
+      await settle(TWIN_SETTLE_MS + 60);
+      look();
+      expect(seen.size).toBe(3);
+      expect(view.querySelector('[data-testid="draft"]')?.value).toBe("abcde");
+    },
+    SLOW,
+  );
+  test(
+    "a field you focus before it settles takes the words before you type",
+    async () => {
+      const outside: { set?: (v: string) => void } = {};
+      const view = await mount(<SlowOwner initial="" lag={0} outside={outside} />);
+      // The first change goes in at once; the second, in the same burst, waits for quiet.
+      await act(async () => outside.set?.("from the"));
+      await act(async () => outside.set?.("from the deck"));
+      expect(view.querySelector('[data-testid="draft"]')?.value).toBe("from the");
+      const stale = view.querySelector('[data-testid="draft"]') as unknown as { focus(): void };
+      await act(async () => stale.focus());
+      await settle();
+      const field = view.querySelector('[data-testid="draft"]');
+      expect(field?.value).toBe("from the deck");
+      expect(win.document.activeElement as unknown).toBe(field);
+    },
+    SLOW,
+  );
+});
+
+describe("the web's keyboard inset is a keyboard's, not a scrollbar's or a zoom's (P20 round 1)", () => {
+  const Inset = ({ seen }: { seen: number[] }) => {
+    const ref = useRef(null);
+    seen.push(useKeyboardInset(ref));
+    return null;
+  };
+  test(
+    "a horizontal scrollbar is not a keyboard",
+    async () => {
+      // The window is 874 tall, a 15 px scrollbar takes the bottom: the visual viewport and the document both say 859.
+      Object.defineProperty(win.document.documentElement, "clientHeight", { value: 859, configurable: true });
+      Object.assign(win, { innerHeight: 874, visualViewport: fakeViewport(859) });
+      const seen: number[] = [];
+      await mount(<Inset seen={seen} />);
+      expect(seen.at(-1)).toBe(0);
+      Object.defineProperty(win.document.documentElement, "clientHeight", { value: 0, configurable: true });
+    },
+    SLOW,
+  );
+  test(
+    "a pinch-zoomed page is not a keyboard",
+    async () => {
+      Object.assign(win, { innerHeight: 874, visualViewport: { ...fakeViewport(437), scale: 2 } });
+      const seen: number[] = [];
+      await mount(<Inset seen={seen} />);
+      expect(seen.at(-1)).toBe(0);
+    },
+    SLOW,
+  );
+});
 
 describe("the ask card over the keyboard (BRO-3180)", () => {
   test(
