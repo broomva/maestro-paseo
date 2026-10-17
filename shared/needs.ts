@@ -12,6 +12,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { type DecisionAsk, homeKey } from "./fleet";
+import { AskMediaSchema, RichAskSchema } from "./rich-ask";
 
 export const NEED_KINDS = ["ask", "approval", "owner_step"] as const;
 export type NeedKind = (typeof NEED_KINDS)[number];
@@ -42,6 +43,8 @@ export const OptionSchema = z.object({
   id: z.string(),
   label: z.string(),
   consequence: z.string().nullable(),
+  /** What the option looks like (decision layer v2, BRO-3167); absent when none. */
+  media: z.array(AskMediaSchema).optional(),
 });
 export type Option = z.infer<typeof OptionSchema>;
 
@@ -66,6 +69,21 @@ export const AskBodySchema = z.object({
   default: z.object({ option: z.string(), appliesAt: z.string() }).optional(),
   /** Where your answer is written and acted on, in words. */
   goesTo: z.string(),
+  /** Decision layer v2 (BRO-3167): summary, tradeoffs, sources, media, details. Absent when none, and from an older daemon. */
+  rich: RichAskSchema.nullable().optional(),
+  /** The ask's handle, for `ask.attachment` (a file it names, read when you look); with `rich` or option media only. */
+  attach: z
+    .object({
+      where: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("fleet"), scope: z.string() }),
+        z.object({ kind: z.literal("workspace"), home: z.string() }),
+      ]),
+      ledger: z.string(),
+      uid: z.string().nullable(),
+      id: z.string(),
+      hash: z.string(),
+    })
+    .optional(),
 });
 export type AskBody = z.infer<typeof AskBodySchema>;
 
@@ -166,9 +184,26 @@ export function askRowOf(ask: DecisionAsk, workspace: string, since: string): Ex
         id: option.id,
         label: option.label,
         consequence: option.consequence,
+        ...(option.media && option.media.length > 0 ? { media: option.media } : {}),
       })),
       ...(recommended ? { recommended } : {}),
       goesTo: goesTo(ask),
+      ...richBody(ask),
+    },
+  };
+}
+
+/** An ask's v2 fields and its handle, on its row body, only when it has some: a plain ask's row is as it was. */
+function richBody(ask: DecisionAsk): Pick<AskBody, "rich" | "attach"> {
+  if (!ask.rich && !ask.options.some((option) => option.media && option.media.length > 0)) return {};
+  return {
+    rich: ask.rich ?? null,
+    attach: {
+      where: ask.scope ? { kind: "fleet", scope: ask.scope } : { kind: "workspace", home: homeKey(ask.home) },
+      ledger: ask.ledger,
+      uid: ask.uid,
+      id: ask.id,
+      hash: ask.hash,
     },
   };
 }

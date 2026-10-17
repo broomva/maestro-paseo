@@ -38,6 +38,7 @@ import {
 import { appendAskReceipt } from "./ask-receipts";
 import { UserError } from "./engine";
 import { acquireLock, exclusive, LockBusyError, releaseLock, stillOurs } from "./locks";
+import { MEDIA_OPTION_MAX, mediaOf, richOf } from "./rich-ask";
 
 /** A ledger is read up to this size; past it it is refused, not cut. */
 const LEDGER_LIMIT = 1024 * 1024;
@@ -76,9 +77,15 @@ export function optionsOf(raw: unknown): DecisionOption[] {
         reversible: typeof option.reversible === "boolean" ? option.reversible : null,
         recommended: option.recommended === true,
         ...(option.status_quo === true ? { statusQuo: true } : {}),
+        ...withMedia(mediaOf(option.media, MEDIA_OPTION_MAX)),
       },
     ];
   });
+}
+
+/** An option's media key, only when it has some: an option without stays as it was on the wire. */
+function withMedia(media: ReturnType<typeof mediaOf>): { media?: ReturnType<typeof mediaOf> } {
+  return media.length > 0 ? { media } : {};
 }
 
 /** The answers an idea takes (workspace#894 IDEA_OPTIONS). */
@@ -260,6 +267,7 @@ export function decisionOf(
     initiative: text(row.initiative) ?? text(data.initiative),
     promptSession: promptSessionOf(row),
     fate: null,
+    rich: richOf(row, new Set(options.map((option) => option.id))),
   };
 }
 

@@ -15,6 +15,7 @@ import { headlineOf, ledgerName, ledgerOf, ledgerRail, reversibility, silenceOf,
 import { ago, plural } from "./format";
 import type { InspectorItem } from "./kit/inspector";
 import { withOther } from "./kit/inspector-model";
+import { richViewOf } from "./rich-ask-model";
 
 /** How many ledgers the Open tile names before it stops. */
 const TILE_LEDGERS = 3;
@@ -223,6 +224,7 @@ export function stageItem(ask: DecisionAsk, chosen: string | null, now: number):
   const lead = headlineOf(ask);
   const undo = reversibility(ask.options);
   const silence = silenceOf(ask);
+  const rich = richViewOf(ask);
   return {
     kind: "ask",
     key: `${ledgerOf(ask)}#${ask.uid ?? ask.id}`,
@@ -250,6 +252,7 @@ export function stageItem(ask: DecisionAsk, chosen: string | null, now: number):
     goes: routeLine(ask),
     fieldLabel: `Your words for ${ask.id}`,
     optionsLabel: `Options for ${ask.id}`,
+    ...(rich ? { rich } : {}),
   };
 }
 

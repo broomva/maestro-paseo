@@ -13,6 +13,7 @@
 import type { Scoreboard, WorkItem } from "../shared/contracts";
 import type { DecisionAsk } from "../shared/fleet";
 import {
+  type AskBody,
   type Handled,
   holdOf,
   KIND_WORDS,
@@ -45,6 +46,7 @@ import { waitWords } from "./loop-model";
 import type { PlaneView } from "./plane-model";
 import { stuckText, workerText } from "./plane-model";
 import { placeText, titleText } from "./records-text";
+import { type RichView, richViewFor } from "./rich-ask-model";
 
 // ── The header's tabs ────────────────────────────────────────────────────────
 
@@ -563,9 +565,16 @@ export function holdInspector(entry: NeedEntry, now: number): InspectorItem {
         options,
         chosen,
         ...(ask?.refusal ? { refusal: ask.refusal } : {}),
+        ...richOf(ask, row.body),
       };
     }
   }
+}
+
+/** An ask hold's v2 view (BRO-3167), from the ask this client holds, else from the row: absent when it has none. */
+function richOf(ask: DecisionAsk | null | undefined, body: AskBody): { rich?: RichView } {
+  const rich = richViewFor(ask, body);
+  return rich ? { rich } : {};
 }
 
 export const LIFECYCLE: readonly { label: string; reached: (item: WorkItem) => boolean }[] = [

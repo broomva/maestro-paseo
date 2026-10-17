@@ -16,6 +16,8 @@ import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, PanResponder, Platform, Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
 import { tint } from "../fleet-color";
+import { OptionThumbs, RichDetails, RichGlance } from "../rich-ask";
+import { mediaOfOption, type RichView } from "../rich-ask-model";
 import { typingIn, useReducedMotion, webAria } from "../ui";
 import { type Directions, DRAG_NATIVE_DRIVER, type FrostLook, frostLook, keysHint, nativeDriver } from "./assumptions";
 import { DECK, deckCaptures, deckRelease } from "./deck-model";
@@ -116,6 +118,8 @@ export type InspectorItem =
       fallback?: { line: string; elapsed?: number };
       /** Why it cannot be answered here (an id collision, split copies): no Answer is offered, and this says why. */
       refusal?: string;
+      /** Decision layer v2 (BRO-3167): summary, tradeoffs, sources, media, details; absent for an ask with none. */
+      rich?: RichView;
     })
   | (Common & {
       kind: "owner_step";
@@ -207,6 +211,7 @@ function Choices({
   label,
   locked = false,
   keys = false,
+  rich = null,
 }: {
   theme: PluginTheme;
   options: readonly Choice[];
@@ -219,13 +224,15 @@ function Choices({
   locked?: boolean;
   /** Draw the 1–4 key caps: only where those keys choose (J5's tab), never where they would do nothing. */
   keys?: boolean;
+  /** The ask's v2 view: each option's pictures under its row (BRO-3167). */
+  rich?: RichView | null;
 }) {
   const kit = kitOf(theme);
   return (
     <View accessibilityRole="radiogroup" accessibilityLabel={label} style={{ gap: 8 }}>
       {options.map((option, at) => {
         const on = option.id === chosen;
-        return (
+        const row = (
           <Pressable
             key={option.id}
             accessibilityRole="radio"
@@ -272,6 +279,16 @@ function Choices({
               </View>
             )}
           </Pressable>
+        );
+        // An option's pictures go under its row (BRO-3167); one without keeps the row alone, as before.
+        if (mediaOfOption(rich, option.id).length === 0) return row;
+        return (
+          <View key={option.id} style={{ gap: 4 }}>
+            {row}
+            <View style={{ paddingLeft: 46 }}>
+              <OptionThumbs theme={theme} view={rich} option={option.id} label={option.label} compact={compact} />
+            </View>
+          </View>
         );
       })}
     </View>
@@ -527,10 +544,15 @@ export function InspectorBody({
             {item.why}
           </Text>,
         );
+      if (item.rich)
+        sections.push(
+          <RichGlance key="rich" theme={theme} view={item.rich} options={item.options} compact={compact} />,
+        );
       sections.push(
         <Choices
           key="choices"
           theme={theme}
+          rich={item.rich}
           options={item.options}
           chosen={chosen}
           onChoose={choose}
@@ -576,6 +598,8 @@ export function InspectorBody({
             label={item.fieldLabel ?? `Your words for ${item.title}`}
           />,
         );
+      if (item.rich?.rich?.details)
+        sections.push(<RichDetails key="details" theme={theme} view={item.rich} compact={compact} />);
       if (!compact && item.goes)
         sections.push(
           <IconLine key="goes" theme={theme} icon="Send">
