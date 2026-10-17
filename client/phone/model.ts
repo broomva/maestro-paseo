@@ -133,6 +133,11 @@ export function irreversibleChoice(item: InspectorItem, choice: string | undefin
 export const CONFIRM_MS = 400;
 /** The first press stays armed this long; after it the answer asks again. */
 export const CONFIRM_WINDOW_MS = 6000;
+/**
+ * After the card moves to the next ask in a series (BRO-3172), Answer and Skip wait this long: the pinned verbs stay
+ * where they were, so a second tap meant for the ask just answered would otherwise answer one never read.
+ */
+export const MOVE_SETTLE_MS = 600;
 
 export interface Armed {
   key: string;

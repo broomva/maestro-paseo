@@ -45,6 +45,8 @@ import { planVerb } from "./verbs";
 export interface HomeFocus {
   hold?: string;
   work?: string;
+  /** An ask named by its ledger and id, when its key is not known (Initiatives): the phone opens it in its series. */
+  decision?: { ledger: string; id: string };
   /** When it was asked: a later one is a new request even for the same hold. */
   at: number;
   /** Where it came from: a push opens the phone's deck on the hold with a note that it did (M10). */

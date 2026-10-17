@@ -87,7 +87,7 @@ const { answersStatus } = await import("../../server/answers-status");
 const { fakeWork } = await import("../fake-work");
 const { GALLERY_LIGHT } = await import("../kit/gallery-data");
 const { PhoneSurface } = await import("./shell");
-const { CONFIRM_MS } = await import("./model");
+const { CONFIRM_MS, MOVE_SETTLE_MS } = await import("./model");
 const { NEEDS_KEY } = await import("../hooks");
 type PhoneTab = import("./model").PhoneTab;
 type PhonePage = import("./model").PhonePage;
@@ -188,6 +188,9 @@ let unreadNow: string[] | undefined;
 let workListPrompt: string | null = null;
 /** While set, needs.list answers only once it resolves: a read still on its way. */
 let needsHeld: Promise<void> | null = null;
+/** An ask.answer that has not come back yet: it resolves when the test lets it. */
+let holdAnswer: Promise<void> | null = null;
+let answersFail: string | null = null;
 let pending: Pending[] = [];
 let unblockFail: string | null = null;
 let noticesFail: string | null = null;
@@ -247,6 +250,8 @@ function reset() {
   unreadNow = undefined;
   workListPrompt = null;
   needsHeld = null;
+  holdAnswer = null;
+  answersFail = null;
   pending = [];
   unblockFail = null;
   noticesFail = null;
@@ -320,6 +325,7 @@ const invoke = async (method: string, input: unknown) => {
       if (asksFail) throw new Error(asksFail);
       return { controlRepo: "/Users/me/broomva", main: null, decisions: asks, fleet: [], warnings: askWarnings };
     case "answers.status":
+      if (answersFail) throw new Error(answersFail);
       return answersStatus(asks, null);
     case "verbs.list":
       return { pending, recent: [] };
@@ -331,6 +337,7 @@ const invoke = async (method: string, input: unknown) => {
       return { receipt: entry.receipt, appliesAt: entry.appliesAt };
     }
     case "ask.answer": {
+      if (holdAnswer) await holdAnswer;
       const entry = ledgerEntry(method, "ask", "Answered");
       pending = [entry, ...pending];
       return { ask: asks[0], warning: null, receipt: entry.receipt, appliesAt: entry.appliesAt };
@@ -475,6 +482,13 @@ async function mount(
   return {
     handled,
     pages,
+    /** Read every query again, as a poll would: what the fakes now hold is what the screen gets. */
+    reread: async () => {
+      await act(async () => {
+        await client.invalidateQueries();
+      });
+      for (let at = 0; at < 3; at += 1) await settle();
+    },
     text: () => box.textContent ?? "",
     all,
     id: (testID: string) => box.querySelector(`[data-testid="${testID}"]`),
@@ -715,178 +729,258 @@ describe("acting on a hold", () => {
 // ── M5: Decisions ────────────────────────────────────────────────────────────
 
 describe("M5, Decisions", () => {
-  test("the deck holds the open asks that wait on you; its length is the tab's badge", async () => {
-    const view = await mount({ tab: "decisions" });
-    const decisions = needsNow().rows.filter((row) => row.key.startsWith("ask:"));
-    expect(decisions).toHaveLength(2);
-    expect(view.text()).toContain(`1 of ${decisions.length}`);
-    expect(view.label(`Decisions, ${decisions.length}`) !== null).toBe(true);
-    expect(view.text()).not.toContain("Merge workspace 933");
-  });
-
-  test("an answer carries the ids of the ask the deck drew, with the option chosen", async () => {
-    const view = await mount({ tab: "decisions" });
-    const first = needsNow().rows.find((row) => row.key.startsWith("ask:"));
-    const drawn = asks.find((one) => one.headline === first?.title);
-    expect(drawn).toBeDefined();
-    await view.press(view.labelled(drawn?.options[0]?.label ?? "")[0]);
-    await view.press(view.labelled("Answer")[0]);
-    const answers = sent("ask.answer") as {
-      ledger: string;
-      uid: string | null;
-      id: string;
-      hash: string;
-      option: string | null;
-    }[];
-    expect(answers).toHaveLength(1);
-    // The deck's first card is the ask needs.list put first: its own ledger, uid, id and hash, never another's.
-    expect(answers[0]).toMatchObject({ ledger: drawn?.ledger, uid: drawn?.uid, id: drawn?.id, hash: drawn?.hash });
-    expect(view.id("undo-toast") !== null).toBe(true);
-    expect(view.text()).toContain("2 of 2");
-  });
-
-  test("an option that cannot be undone asks twice: the first press arms, a deliberate second sends", async () => {
-    asks = [ask("A1")];
-    const view = await mount({ tab: "decisions" });
-    await view.press(view.labelled("Install fleet-wide")[0]);
-    await view.press(view.labelled("Answer")[0]);
-    expect(sent("ask.answer")).toHaveLength(0);
-    expect(view.text()).toContain("This cannot be undone. Press again to confirm.");
-    // A second press in the same breath is not deliberate.
-    await view.press(view.label("Confirm with Install fleet-wide"));
-    expect(sent("ask.answer")).toHaveLength(0);
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, CONFIRM_MS + 50)));
-    await view.press(view.label("Confirm with Install fleet-wide"));
-    expect(sent("ask.answer")).toHaveLength(1);
-    expect(sent("ask.answer")[0]).toMatchObject({ option: "all" });
-  });
-
-  test("choosing another option disarms the confirm", async () => {
-    asks = [ask("A1")];
-    const view = await mount({ tab: "decisions" });
-    await view.press(view.labelled("Install fleet-wide")[0]);
-    await view.press(view.labelled("Answer")[0]);
-    await view.press(view.labelled("Keep them off")[0]);
-    expect(view.text()).not.toContain("Press again to confirm");
-    await view.press(view.labelled("Answer")[0]);
-    expect(sent("ask.answer")[0]).toMatchObject({ option: "off" });
-  });
-
-  // BRO-3146: the owner could not add words beside an option on the phone. Now a note rides with the option,
-  // and an Other row answers in your words when none fit.
-  const type = async (view: Awaited<ReturnType<typeof mount>>, label: string, words: string) => {
+  // BRO-3172: Decisions is a dashboard of ask series; a row opens the focused card on its series, and answering there
+  // moves to the next ask in it. No answer form is drawn on the tab itself.
+  const rows = (view: Awaited<ReturnType<typeof mount>>) => view.all('[data-testid="series-row"]');
+  const card = (view: Awaited<ReturnType<typeof mount>>) => view.id("inspector-card");
+  const bar = (view: Awaited<ReturnType<typeof mount>>, verb: string) =>
+    view.id("inspector-card-bar")?.querySelector(`[aria-label^="${verb}"]`) as El | null;
+  const inCard = (view: Awaited<ReturnType<typeof mount>>, label: string) =>
+    card(view)?.querySelector(`[aria-label^="${label}"]`) as El | null;
+  const header = (view: Awaited<ReturnType<typeof mount>>) => view.id("detail-header")?.textContent ?? "";
+  // The card just moved on: its verbs wait out MOVE_SETTLE_MS before a deliberate next press.
+  const settled = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, MOVE_SETTLE_MS + 50)));
+  const write = async (field: El | null | undefined, words: string) => {
     await act(async () => {
-      const field = view.label(label) as unknown as { value: string; dispatchEvent(event: unknown): boolean };
+      const box = field as unknown as { value: string; dispatchEvent(event: unknown): boolean };
       const setter = Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")?.set;
-      setter?.call(field, words);
-      field.dispatchEvent(new win.Event("input", { bubbles: true }));
+      setter?.call(box, words);
+      box.dispatchEvent(new win.Event("input", { bubbles: true }));
     });
     await settle(60);
   };
 
+  test("the tab is a dashboard: one row per series, its badge the holds, and no answer form, sheet or deck", async () => {
+    const view = await mount({ tab: "decisions" });
+    const decisions = needsNow().rows.filter((row) => row.key.startsWith("ask:"));
+    expect(decisions).toHaveLength(2);
+    expect(view.label(`Decisions, ${decisions.length}`) !== null).toBe(true);
+    expect(view.id("decisions-dashboard") !== null).toBe(true);
+    expect(rows(view)).toHaveLength(2);
+    expect(view.text()).toContain("1 open · 1 waits on you · 2h");
+    // Nothing to answer with until a series is opened: no options, no Answer, no deck, no pull sheet.
+    expect(view.labelled("Answer")).toHaveLength(0);
+    expect(view.labelled("Keep them off")).toHaveLength(0);
+    expect(view.id("deck") === null).toBe(true);
+    expect(view.id("pull-sheet") === null).toBe(true);
+    expect(view.id("tab-band") !== null).toBe(true);
+    expect(view.text()).not.toContain("Merge workspace 933");
+  });
+
+  test("a row opens the card at Ask · 1 of N, and answering advances to 2 of N with the card still open", async () => {
+    asks = [ask("A1"), ask("A2")];
+    const view = await mount({ tab: "decisions" });
+    expect(rows(view)).toHaveLength(1);
+    expect(view.text()).toContain("2 open · 2 wait on you");
+    await view.press(rows(view)[0]);
+    expect(card(view) !== null).toBe(true);
+    expect(header(view)).toContain("Ask · 1 of 2");
+    expect(card(view)?.textContent).toContain("Install the three headless mods A1?");
+    await view.press(bar(view, "Answer"));
+    const answers = sent("ask.answer") as { ledger: string; uid: string | null; id: string; option: string | null }[];
+    expect(answers).toEqual([expect.objectContaining({ ledger: "claude-code-mods.yaml", id: "A1", option: "off" })]);
+    expect(header(view)).toContain("Ask · 2 of 2");
+    expect(card(view)?.textContent).toContain("Install the three headless mods A2?");
+    expect(view.id("undo-toast") !== null).toBe(true);
+    // The last one ends the series: the card closes onto the dashboard and says so.
+    await settled();
+    await view.press(bar(view, "Answer"));
+    expect(sent("ask.answer")).toHaveLength(2);
+    await settle(400);
+    expect(toasts.join(" ")).toContain("claude-code-mods: nothing left to answer");
+    expect(view.id("decisions-dashboard") !== null).toBe(true);
+  });
+
+  test("Skip moves on without sending, and the end says what was skipped", async () => {
+    asks = [ask("A1"), ask("A2")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    await view.press(bar(view, "Skip"));
+    expect(header(view)).toContain("Ask · 2 of 2");
+    await settled();
+    await view.press(bar(view, "Skip"));
+    expect(sent("ask.answer")).toHaveLength(0);
+    expect(toasts.join(" ")).toContain("nothing left to answer · 2 skipped");
+  });
+
+  test("Undo takes the card back to the ask it answered", async () => {
+    asks = [ask("A1"), ask("A2")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    await view.press(bar(view, "Answer"));
+    expect(header(view)).toContain("Ask · 2 of 2");
+    await view.press(view.labelled("Undo: ")[0]);
+    expect(sent("verb.undo")).toHaveLength(1);
+    expect(card(view)?.textContent).toContain("Install the three headless mods A1?");
+    expect(header(view)).toContain("Ask · 1 of 2");
+  });
+
+  test("a double tap on Answer answers one ask: the next one waits to be read (P20 round 1)", async () => {
+    asks = [ask("A1"), ask("A2"), ask("A3")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    await view.press(bar(view, "Answer"));
+    await view.press(bar(view, "Answer"));
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ id: "A1" })]);
+    expect(header(view)).toContain("Ask · 2 of 3");
+    await settled();
+    await view.press(bar(view, "Answer"));
+    expect(sent("ask.answer")).toHaveLength(2);
+  });
+
+  test("an answer still in flight when another series opened leaves that card alone (P20 round 2)", async () => {
+    asks = [ask("A1"), ask("Q1", { ledger: "leadership-20261013.yaml", headline: "Quiet question Q1?" })];
+    let release: () => void = () => undefined;
+    holdAnswer = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    await view.press(bar(view, "Answer"));
+    // The card is closed and the other series opened before the answer comes back.
+    await view.press(card(view)?.querySelector('[aria-label="Close"]') as El);
+    await settle(400);
+    await view.press(rows(view).find((row) => row.textContent?.includes("leadership")));
+    expect(card(view)?.textContent).toContain("Quiet question Q1?");
+    await act(async () => release());
+    for (let at = 0; at < 3; at += 1) await settle();
+    expect(sent("ask.answer")).toHaveLength(1);
+    expect(card(view)?.textContent).toContain("Quiet question Q1?");
+    expect(header(view)).toContain("Ask · 1 of 1");
+  });
+
+  test("an ask that joined mid-visit, answered elsewhere while on the card, moves the card on (P20 round 3)", async () => {
+    asks = [ask("A1"), ask("A2")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    asks = [ask("A1"), ask("A2"), ask("A3"), ask("A4")];
+    await view.reread();
+    expect(header(view)).toContain("Ask · 1 of 4");
+    await view.press(bar(view, "Skip"));
+    await settled();
+    await view.press(bar(view, "Skip"));
+    expect(card(view)?.textContent).toContain("Install the three headless mods A3?");
+    asks = [ask("A1"), ask("A2"), ask("A4")];
+    await view.reread();
+    expect(card(view)?.textContent).toContain("Install the three headless mods A4?");
+  });
+
+  test("a fresh series' first press is not held by the last series' settle (P20 round 3)", async () => {
+    asks = [ask("A1"), ask("A2"), ask("Q1", { ledger: "leadership-20261013.yaml", headline: "Quiet question Q1?" })];
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    await view.press(bar(view, "Skip"));
+    expect(header(view)).toContain("Ask · 2 of 2");
+    await view.press(card(view)?.querySelector('[aria-label="Close"]') as El);
+    await view.press(rows(view).find((row) => row.textContent?.includes("leadership")));
+    await view.press(bar(view, "Answer"));
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ id: "Q1" })]);
+  });
+
+  test("Initiatives naming a bare ledger in two workspaces opens neither, and says why (P20 round 3)", async () => {
+    asks = [ask("A1"), ask("B1", { scope: "sri" })];
+    const view = await mount({
+      tab: "decisions",
+      focus: { decision: { ledger: "claude-code-mods.yaml", id: "gone" }, at: 1 },
+    });
+    for (let at = 0; at < 3; at += 1) await settle();
+    expect(card(view) == null).toBe(true);
+    expect(toasts.join(" ")).toContain("claude-code-mods.yaml is in more than one place");
+  });
+
+  test("the ask on the card answered elsewhere: the card moves to the next, not closed (P20 round 1)", async () => {
+    asks = [ask("A1"), ask("A2"), ask("A3")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    await view.press(bar(view, "Skip"));
+    expect(header(view)).toContain("Ask · 2 of 3");
+    // A2 is answered on another device: the next read no longer lists it.
+    asks = [ask("A1"), ask("A3")];
+    await view.reread();
+    expect(card(view)?.textContent).toContain("Install the three headless mods A3?");
+    expect(sent("ask.answer")).toHaveLength(0);
+  });
+
+  test("a push for an ask opens the card on it, in its series", async () => {
+    asks = [ask("A1"), ask("A2")];
+    const key = needsNow().rows.filter((row) => row.key.startsWith("ask:"))[1]?.key as string;
+    const view = await mount({ tab: "decisions", focus: { hold: key, at: 1, from: "push" } });
+    for (let at = 0; at < 3; at += 1) await settle();
+    expect(header(view)).toContain("Ask · 2 of 2");
+  });
+
+  test("an ask named by its ledger and id (Initiatives) opens on the card", async () => {
+    asks = [ask("A1"), ask("A2")];
+    const view = await mount({
+      tab: "decisions",
+      focus: { decision: { ledger: "claude-code-mods.yaml", id: "A2" }, at: 1 },
+    });
+    for (let at = 0; at < 3; at += 1) await settle();
+    expect(card(view)?.textContent).toContain("Install the three headless mods A2?");
+  });
+
+  test("the Feed's Details on an ask opens it in its series", async () => {
+    asks = [ask("A1"), ask("A2")];
+    const view = await mount({ tab: "feed" });
+    // The Feed's deck lists every hold; this is the Details link on the card of ask A2 (its first is an approval).
+    const details = view
+      .all("[role='link']")
+      .find(
+        (el) =>
+          el.textContent?.includes("Details, session and history") &&
+          (el as unknown as { parentElement: El | null }).parentElement?.textContent?.includes("mods A2?"),
+      );
+    await view.press(details);
+    expect(header(view)).toContain("Ask · 2 of 2");
+    expect(card(view)?.textContent).toContain("Install the three headless mods A2?");
+  });
+
+  test("an option that cannot be undone asks twice on the card: the first press arms, a deliberate second sends", async () => {
+    asks = [ask("A1")];
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    await view.press(inCard(view, "Install fleet-wide"));
+    await view.press(bar(view, "Answer"));
+    expect(sent("ask.answer")).toHaveLength(0);
+    expect(toasts.join(" ")).toContain("This cannot be undone. Press Answer again to confirm.");
+    await act(() => new Promise<void>((resolve) => setTimeout(resolve, CONFIRM_MS + 50)));
+    await view.press(bar(view, "Answer"));
+    expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: "all" })]);
+  });
+
   test("a note beside the option you chose goes with it (BRO-3146)", async () => {
     asks = [ask("A1")];
     const view = await mount({ tab: "decisions" });
-    await view.press(view.labelled("Keep them off")[0]);
-    const title = asks[0]?.headline ?? "";
-    expect(view.label(`A note on your answer for ${title} (optional)`) !== null).toBe(true);
-    await type(view, `A note on your answer for ${title} (optional)`, "Until the launch.");
-    await view.press(view.labelled("Answer")[0]);
+    await view.press(rows(view)[0]);
+    await write(card(view)?.querySelector("textarea"), "Until the launch.");
+    await view.press(bar(view, "Answer"));
     expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: "off", note: "Until the launch." })]);
   });
 
-  test("Other answers in your words: no option is sent, and Answer waits for the words (BRO-3146)", async () => {
+  test("Other answers in your words on the card: no option is sent (BRO-3146)", async () => {
     asks = [ask("A1")];
     const view = await mount({ tab: "decisions" });
-    await view.press(view.labelled("Other…")[0]);
-    const title = asks[0]?.headline ?? "";
-    expect(view.label("Answer with Other…")?.getAttribute("aria-disabled")).toBe("true");
-    await type(view, `Your words for ${title}`, "Only on my machine first.");
-    await view.press(view.label("Answer with Other…"));
-    expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: null, note: "Only on my machine first." })]);
-  });
-
-  test("the rising card offers Other with a field to write it in, the deck card's words shown there (BRO-3146)", async () => {
-    asks = [ask("A1")];
-    const view = await mount({ tab: "decisions" });
-    await view.press(view.all('[role="link"]')[0]);
-    const card = view.id("inspector-card");
-    expect(card !== null).toBe(true);
-    await view.press(card?.querySelector('[aria-label="Other…"]') as El);
-    const field = card?.querySelector("textarea") as unknown as {
-      value: string;
-      dispatchEvent(event: unknown): boolean;
-    };
-    expect(field).toBeTruthy();
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")?.set;
-      setter?.call(field, "Ask Legal first.");
-      field.dispatchEvent(new win.Event("input", { bubbles: true }));
-    });
-    await settle(60);
-    await view.press(view.id("inspector-card-bar")?.querySelector('[aria-label^="Answer"]') as El);
+    await view.press(rows(view)[0]);
+    await view.press(inCard(view, "Other…"));
+    await write(card(view)?.querySelector("textarea"), "Ask Legal first.");
+    await view.press(bar(view, "Answer"));
     expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: null, note: "Ask Legal first." })]);
-  });
-
-  test("the rising card starts on the option chosen on the deck, so the deck's note rides with it (BRO-3146)", async () => {
-    asks = [ask("A1")];
-    const view = await mount({ tab: "decisions" });
-    await view.press(view.labelled("Install fleet-wide")[0]);
-    await view.press(view.all('[role="link"]')[0]);
-    const card = view.id("inspector-card");
-    const row = card?.querySelector('[aria-label^="Install fleet-wide"]');
-    expect(row?.getAttribute("aria-checked")).toBe("true");
-    expect(card?.querySelector('[aria-label^="Keep them off"]')?.getAttribute("aria-checked")).toBe("false");
-  });
-
-  test("a pick on the rising card is the deck's pick when the card closes (BRO-3146)", async () => {
-    asks = [ask("A1")];
-    const view = await mount({ tab: "decisions" });
-    await view.press(view.all('[role="link"]')[0]);
-    await view.press(view.id("inspector-card")?.querySelector('[aria-label="Other…"]') as El);
-    await view.press(view.id("inspector-card")?.querySelector('[aria-label="Close"]') as El);
-    await settle(400);
-    // The deck's Answer names the option it sends: the one picked on the card.
-    expect(view.label("Answer with Other…") !== null).toBe(true);
-  });
-
-  test("a deck pick made after the card closed is the one the card reopens on (BRO-3146, Codex round 3)", async () => {
-    asks = [ask("A1")];
-    const view = await mount({ tab: "decisions" });
-    await view.press(view.all('[role="link"]')[0]);
-    await view.press(view.id("inspector-card")?.querySelector('[aria-label="Other…"]') as El);
-    await view.press(view.id("inspector-card")?.querySelector('[aria-label="Close"]') as El);
-    await settle(400);
-    await view.press(view.labelled("Install fleet-wide")[0]);
-    await view.press(view.all('[role="link"]')[0]);
-    const card = view.id("inspector-card");
-    expect(card?.querySelector('[aria-label^="Install fleet-wide"]')?.getAttribute("aria-checked")).toBe("true");
-    expect(card?.querySelector('[aria-label="Other…"]')?.getAttribute("aria-checked")).toBe("false");
   });
 
   test("an ask that says allow_other: false offers no Other row (BRO-3146)", async () => {
     asks = [ask("A1", { allowOther: false })];
     const view = await mount({ tab: "decisions" });
-    expect(view.labelled("Keep them off").length).toBeGreaterThan(0);
-    expect(view.labelled("Other…")).toHaveLength(0);
+    await view.press(rows(view)[0]);
+    expect(inCard(view, "Keep them off") !== null).toBe(true);
+    expect(inCard(view, "Other…") === null).toBe(true);
   });
 
-  test("an ask written with no options is answered in your own words, and Answer waits for them", async () => {
+  test("an ask written with no options is answered in your own words", async () => {
     asks = [ask("W1", { headline: "Rename this session?", options: [], fallback: "continue as is" })];
     const view = await mount({ tab: "decisions" });
-    expect(view.text()).toContain("No options were written for this ask: answer it in your own words.");
-    expect(view.label("Answer")?.getAttribute("aria-disabled")).toBe("true");
-    await act(async () => {
-      const field = view.label("Your words for Rename this session?") as unknown as {
-        value: string;
-        dispatchEvent(event: unknown): boolean;
-      };
-      const setter = Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")?.set;
-      setter?.call(field, "Keep the name.");
-      field.dispatchEvent(new win.Event("input", { bubbles: true }));
-    });
-    await settle(60);
-    await view.press(view.label("Answer"));
+    await view.press(rows(view)[0]);
+    await write(card(view)?.querySelector("textarea"), "Keep the name.");
+    await view.press(bar(view, "Answer"));
     expect(sent("ask.answer")).toEqual([
       expect.objectContaining({
         ledger: "claude-code-mods.yaml",
@@ -898,12 +992,13 @@ describe("M5, Decisions", () => {
     ]);
   });
 
-  test("the deck's verbs are 52 pt taps", async () => {
+  test("the card's verbs are 52 pt taps, pinned under its scroll", async () => {
     const view = await mount({ tab: "decisions" });
-    expect(view.labelled("Answer")[0]?.getAttribute("style")).toContain("height: 52px");
+    await view.press(rows(view)[0]);
+    expect(bar(view, "Answer")?.getAttribute("style")).toContain("height: 52px");
   });
 
-  test("the sheet is where your answers went: the stranded loudest, then the rows", async () => {
+  test("your answers are one summary row, open by itself while one waits to land, never a series row", async () => {
     asks = [
       ask("A1"),
       ask("D1", {
@@ -917,14 +1012,26 @@ describe("M5, Decisions", () => {
     const view = await mount({ tab: "decisions" });
     expect(view.text()).toContain("Your answers");
     expect(view.text()).toContain("1 waiting to land");
-    await view.press(view.label("Raise the sheet"));
+    // An answer waits to land: the row is open by itself, its tiles shown; the batch is no series row of its own.
     for (const word of ["Waiting to land", "Routed", "Acted on", "Held", "Where your last answers went"])
       expect(view.text()).toContain(word);
+    expect(rows(view).some((row) => row.textContent?.includes("waits to land"))).toBe(false);
+    await view.press(view.id("answers-summary"));
+    expect(view.text()).not.toContain("Where your last answers went");
   });
 
-  // BRO-3140 (deciding BRO-3113): every open ask is on the deck, the holds first, each card labelled. On the owner's
-  // phone every open ask was an idea or blocked nothing, and the deck said "No decision waits on you" over 23 of them.
-  describe("every open ask on the deck", () => {
+  test("your answers stay folded when none waits to land, and when their status is unread (P20 round 4)", async () => {
+    asks = [ask("A1")];
+    const quiet = await mount({ tab: "decisions" });
+    expect(quiet.text()).toContain("0 waiting to land");
+    expect(quiet.text()).not.toContain("Where your last answers went");
+    answersFail = "answers are down";
+    const unread = await mount({ tab: "decisions" });
+    expect(unread.text()).toContain("answers: not read");
+    expect(unread.text()).not.toContain("Where your last answers went");
+  });
+
+  describe("every open ask on the dashboard", () => {
     const quiet = (id: string, extra: Partial<DecisionAsk> = {}) =>
       ask(id, {
         blocking: false,
@@ -947,7 +1054,7 @@ describe("M5, Decisions", () => {
       });
     const hoursAgo = (n: number) => new Date(Date.now() - n * 3_600_000).toISOString();
 
-    test("the deck lists the holds, then every other open ask oldest first, each labelled, none twice", async () => {
+    test("the holds' series first, then every other open ask's, none twice", async () => {
       asks = [
         ask("A1"),
         quiet("Q2", { askedAt: hoursAgo(3) }),
@@ -956,31 +1063,37 @@ describe("M5, Decisions", () => {
         ask("D1", { state: "answered", answerOption: "off", answer: "Keep them off", headline: "Merge #933?" }),
       ];
       const view = await mount({ tab: "decisions" });
-      // The tab's badge is still the holds needs.list lists (the desktop header's number); the deck carries all four.
-      expect(needsNow().rows.filter((row) => row.key.startsWith("ask:"))).toHaveLength(1);
       expect(view.label("Decisions, 1") !== null).toBe(true);
-      expect(view.text()).toContain("1 of 4");
       expect(view.text()).toContain("4 open · 1 waits on you · 1 idea");
-      expect(view.text()).toContain("Waits on you");
+      const titles = rows(view).map((row) => row.getAttribute("aria-label")?.split(". ")[0]);
+      expect(titles).toEqual([
+        "broomva · claude-code-mods",
+        "broomva · leadership-20261013",
+        "broomva · ideas-factory-learnings",
+      ]);
+      expect(view.text()).toContain("2 open · 9h");
       expect(view.labelled("Merge #933?")).toHaveLength(0);
+      // Its series opens oldest first, at 1 of 2.
+      await view.press(rows(view)[1]);
+      expect(header(view)).toContain("Ask · 1 of 2");
+      expect(card(view)?.textContent).toContain("Quiet question Q1?");
     });
 
-    test("only ideas open (the owner's live case): the deck lists them, never 'No decision waits on you'", async () => {
+    test("only ideas open (the owner's live case): listed, never 'No decision waits on you'", async () => {
       asks = [idea("I1", { askedAt: hoursAgo(30) }), idea("I2", { askedAt: hoursAgo(10) })];
       const view = await mount({ tab: "decisions" });
       expect(view.text()).not.toContain("No decision waits on you");
       expect(view.text()).not.toContain("nothing waits on you.");
       expect(view.text()).toContain("2 open · none waits on you · 2 ideas");
-      expect(view.text()).toContain("1 of 2");
-      expect(view.text()).toContain("Idea I1: develop, park or kill?");
-      expect(view.text()).toContain("Idea");
+      expect(view.text()).toContain("2 open · 2 ideas");
     });
 
-    test("an idea is answered park from its card on the deck: that ask's ids, the option, and the undo", async () => {
+    test("an idea is answered park from the card: that ask's ids, the option, and the undo", async () => {
       asks = [idea("I1")];
       const view = await mount({ tab: "decisions" });
-      await view.press(view.labelled("Park until 2026-11-02")[0]);
-      await view.press(view.labelled("Answer")[0]);
+      await view.press(rows(view)[0]);
+      await view.press(inCard(view, "Park until 2026-11-02"));
+      await view.press(bar(view, "Answer"));
       expect(sent("ask.answer")).toEqual([
         expect.objectContaining({
           ledger: "ideas-factory-learnings.yaml",
@@ -988,7 +1101,6 @@ describe("M5, Decisions", () => {
           id: "I1",
           hash: asks[0]?.hash,
           option: "park",
-          // The wake Initiatives' park sends: the idea's own date, while it is still ahead.
           wake: "2026-11-02",
         }),
       ]);
@@ -1002,45 +1114,37 @@ describe("M5, Decisions", () => {
         }),
       ];
       const view = await mount({ tab: "decisions" });
-      await view.press(view.labelled("Park until 2026-11-02")[0]);
-      await view.press(view.labelled("Answer")[0]);
+      await view.press(rows(view)[0]);
+      await view.press(inCard(view, "Park until 2026-11-02"));
+      await view.press(bar(view, "Answer"));
       const [sentAnswer] = sent("ask.answer") as { wake?: string }[];
-      // 30 calendar days on, as defaultWake counts them (never 30 × 24 h, which a DST change would skew).
       const today = new Date();
       const at = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30);
       const two = (n: number) => String(n).padStart(2, "0");
       expect(sentAnswer?.wake).toBe(`${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())}`);
     });
 
-    test("a quiet ask's details open its card, and Answer there sends that ask's ids", async () => {
+    test("a quiet ask's row opens its card, and Answer there sends that ask's ids", async () => {
       asks = [quiet("Q1")];
       const view = await mount({ tab: "decisions" });
-      await view.press(
-        view.all("[role='link']").find((el) => el.textContent?.includes("Details, session and history")),
-      );
-      expect(view.id("inspector-card") !== null).toBe(true);
-      await view.press(view.id("inspector-card-bar")?.querySelector('[aria-label^="Answer"]') as El);
+      await view.press(rows(view)[0]);
+      await view.press(bar(view, "Answer"));
       expect(sent("ask.answer")).toEqual([
         expect.objectContaining({ ledger: "leadership-20261013.yaml", id: "Q1", hash: asks[0]?.hash, option: "off" }),
       ]);
     });
 
-    test("an ask that cannot be answered here says why and offers no Answer, on the deck and its card (BRO-3111)", async () => {
+    test("an ask that cannot be answered here says why on its card and offers no Answer (BRO-3111)", async () => {
       asks = [quiet("R1", { refusal: "Two asks in leadership-20261013.yaml are named R1 and neither has a uid." })];
       const view = await mount({ tab: "decisions" });
-      expect(view.text()).toContain("This ask cannot be answered here. Two asks in leadership-20261013.yaml");
-      expect(view.labelled("Answer")).toHaveLength(0);
-      // Only Answer goes: the card's other verb is still there to press.
-      expect(view.labelled("Skip").length > 0).toBe(true);
-      expect(view.labelled("Skip")[0]?.getAttribute("aria-disabled") === "true").toBe(false);
-      await view.press(
-        view.all("[role='link']").find((el) => el.textContent?.includes("Details, session and history")),
-      );
-      expect(view.id("inspector-card-bar")?.querySelector('[aria-label^="Answer"]') == null).toBe(true);
+      await view.press(rows(view)[0]);
+      expect(card(view)?.textContent).toContain("Two asks in leadership-20261013.yaml");
+      expect(bar(view, "Answer") === null).toBe(true);
+      expect(bar(view, "Skip") !== null).toBe(true);
       expect(sent("ask.answer")).toHaveLength(0);
     });
 
-    test("a ledger that could not be read is said over the deck, with its words", async () => {
+    test("a ledger that could not be read is said over the dashboard, with its words", async () => {
       asks = [quiet("Q1")];
       askWarnings = [
         "The ask ledger sri-coordinator-20261013.yaml could not be read: Map keys must be unique",
@@ -1057,11 +1161,11 @@ describe("M5, Decisions", () => {
       expect(view.text()).not.toContain("could not be read");
     });
 
-    test("needs.list failing with open ideas on the deck is said, and no count claims none waits", async () => {
+    test("needs.list failing with open ideas is said, and no count claims none waits", async () => {
       asks = [idea("I1")];
       needsFail = "needs are down";
       const view = await mount({ tab: "decisions" });
-      expect(view.text()).toContain("Idea I1: develop, park or kill?");
+      expect(view.text()).toContain("ideas-factory-learnings");
       expect(view.text()).toContain("Couldn't read what needs you (needs are down)");
       expect(view.text()).not.toContain("none waits on you");
     });
@@ -1349,18 +1453,15 @@ describe("M8, Initiatives from Health's sheet", () => {
     expect(view.text()).toContain("It stays active; its next review date moves on.");
   });
 
-  test("answering a review from the page leaves the Feed's deck where it was", async () => {
-    // The Decisions deck is on its second ask; the review answered on the page is not that deck's hold to move past.
-    const second = needsNow().rows.filter((row) => row.key.startsWith("ask:"))[1]?.key as string;
-    const view = await mount({ tab: "decisions", focus: { hold: second, at: 1 }, page: { kind: "initiatives" } });
-    for (let at = 0; at < 3; at += 1) await settle();
-    const before = /(\d) of 2/.exec(view.text())?.[0];
-    expect(before).toBe("2 of 2");
+  test("answering a review from the page opens no card and moves no series", async () => {
+    // A review is in no ask series (BRO-3172): its answer on the page leaves the Decisions dashboard as it was.
+    const view = await mount({ tab: "decisions", page: { kind: "initiatives" } });
     await view.press(view.id("initiative-skene"));
     await view.press(view.label("Keep"));
     await view.press(view.label("Answer"));
     expect(sent("initiatives.review")).toHaveLength(1);
-    expect(/(\d) of 2/.exec(view.text())?.[0]).toBe(before);
+    expect(view.id("decisions-dashboard") !== null).toBe(true);
+    expect(toasts.join(" ")).not.toContain("nothing left to answer");
   });
 
   test("a read that failed says so and offers Try again, never an empty list", async () => {
