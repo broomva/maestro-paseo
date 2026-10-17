@@ -457,7 +457,9 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     if (restored.current) return;
     const card = left.card;
     // A push or another focus says where to go; a route that opened another tab than the card's leaves it closed.
-    if (focus || !card || tab !== left.tab) {
+    // A card you (or a push) opened since this screen mounted is where you are now: the restore stands down
+    // (P20 B round 2).
+    if (focus || !card || tab !== left.tab || inspector.showing) {
       restored.current = true;
       return;
     }
@@ -553,7 +555,9 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       const was = drafts[id];
       // Unchanged since it was stored (a seed, a re-render): left as it is, so opening Maestro never refreshes a
       // draft's age; only your edits do.
-      if (next && was && was.words === next.words && was.chosen === next.chosen && was.hash === next.hash) continue;
+      // The hash is not an edit: a draft seeded onto an ask that changed keeps the hash it was written against, so the
+      // "changed since" warning survives a visit that never opened its card (P20 B round 2).
+      if (next && was && was.words === next.words && was.chosen === next.chosen) continue;
       if (!next && !was) continue;
       drafts = withDraft(drafts, id, next);
     }

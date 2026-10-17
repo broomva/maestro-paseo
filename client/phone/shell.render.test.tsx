@@ -1073,6 +1073,41 @@ describe("M5, Decisions", () => {
     expect(loadDrafts()[draftKey(ref)]?.at).toBe(at);
   });
 
+  test("a card you opened before the asks read landed is not taken over by the restore (BRO-3180 B, P20 round 2)", async () => {
+    asks = [ask("A1"), ask("A2")];
+    const device = pickBackend("test", undefined, undefined);
+    setStoreForTests(durableStore(device));
+    saveResume({ tab: "decisions" });
+    const first = await mount({ tab: "decisions" });
+    await first.press(rows(first)[0]);
+    expect(loadResume().card?.ask.id).toBe("A1");
+    first.unmount();
+    setStoreForTests(durableStore(device));
+    asksFail = "asks are down";
+    const again = await mount({ tab: "decisions" });
+    await again.press(rows(again)[0]);
+    await settled();
+    await again.press(bar(again, "Skip"));
+    const where = header(again);
+    asksFail = null;
+    await again.reread();
+    for (let at = 0; at < 3; at += 1) await settle(60);
+    expect(header(again)).toBe(where);
+  });
+
+  test("a draft on an ask that changed keeps its hash and age through a visit that never opens it (P20 round 2)", async () => {
+    asks = [ask("A1", { hash: "changed-hash" })];
+    setStoreForTests(durableStore(pickBackend("test", undefined, undefined)));
+    const ref = askRefOf(asks[0] as DecisionAsk);
+    const at = Date.now() - 3_600_000;
+    saveDrafts({ [draftKey(ref)]: { ask: ref, hash: "0123456789abcdef", chosen: null, words: "old", at } });
+    flushDrafts();
+    await mount({ tab: "feed" });
+    await settle(400);
+    flushDrafts();
+    expect(loadDrafts()[draftKey(ref)]).toEqual(expect.objectContaining({ hash: "0123456789abcdef", at }));
+  });
+
   test("an expired draft is neither shown nor written back (BRO-3180 B, P20 round 1)", async () => {
     asks = [ask("A1")];
     setStoreForTests(durableStore(pickBackend("test", undefined, undefined)));
