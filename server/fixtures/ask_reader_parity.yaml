@@ -1,18 +1,23 @@
-# Cross-reader parity corpus (BRO-3167, P20 r6). ONE corpus, two readers:
-#   - the validator, broomva/workspace scripts/ask_ledger.py (scripts/test_ask_reader_parity.py), and
-#   - Maestro, broomva/maestro-paseo server/control-asks.ts (server/ask-reader-parity.test.ts).
-# Each side parses this file with its own YAML parser (PyYAML, YAML 1.1; `yaml` 2.x, YAML 1.2), because the
-# parsers are part of the seam (`answer: no` is false to one and "no" to the other).
+# Cross-reader parity corpus (BRO-3167). ONE copy, here; two readers:
+#   - Maestro, this repo's server/control-asks.ts (server/ask-reader-parity.test.ts reads this file), and
+#   - the validator, broomva/workspace scripts/ask_ledger.py (scripts/test_ask_reader_parity.py FETCHES this
+#     file from GitHub: the head of the open maestro-paseo PR whose branch has the same name as the workspace
+#     branch under test, else main). A failed fetch fails that suite; it never skips.
+# Each side parses it with its own YAML parser (`yaml` 2.x here, PyYAML there), because the parsers are part of
+# the seam (`answer: no` is false to one and "no" to the other).
 #
-# The source of truth is the workspace copy. Maestro vendors it byte for byte at server/fixtures/, and both
-# tests pin its sha256: change it here, copy it there, and update both pins in the same pair of PRs.
+# A change to these cases or to either reader lands as a PAIR before either merges: a maestro-paseo PR and a
+# workspace PR on the same branch name. The workspace suite then runs the validator against this PR's copy,
+# and this suite runs Maestro against it. Merge the maestro-paseo PR first, then the workspace one.
 #
-# Per case:
+# Per ask case:
 #   expect.state    what Maestro's stateOf says: open | answered | archived. The validator's is_closed must be
 #                   true exactly when it is not `open`.
 #   expect.trigger  whether the validator requires a summary (rich_required is non-empty).
 #   expect.shown    whether MARKER appears anywhere in what Maestro builds from the ask (decisionOf).
-# Invariant, checked by both tests: shown implies trigger. Whatever Maestro shows, the validator has read.
+# Invariant, checked by the validator's suite: shown implies trigger. Whatever Maestro shows, the validator read.
+# Per ledger case (`ledgers`): a whole file. expect.refused says Maestro refuses to read it; the validator must
+# refuse it too, and may refuse more (expect.validator_refuses), which only fails safe.
 marker: docs/specs/parity.html
 ledger:
   arc: parity
@@ -130,3 +135,134 @@ cases:
   - {name: "status: archived", three: true, ask: {status: archived}, expect: {state: archived, trigger: false}}
   - {name: "archived_at", three: true, ask: {archived_at: "2026-10-18T00:00Z"}, expect: {state: archived, trigger: false}}
   - {name: "archived_at: blank", three: true, ask: {archived_at: "  "}, expect: {state: open, trigger: true}}
+
+ledgers:
+  - name: asks is null, open_asks holds the ask
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      asks:
+      open_asks:
+        - id: O1
+          asked_at: "2026-10-17T00:00Z"
+          ask: "Approve docs/specs/parity.html?"
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: false, asks: [{id: O1, state: open, trigger: true, shown: true}]}
+  - name: asks is an empty list, open_asks ignored
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      asks: []
+      open_asks:
+        - id: O1
+          asked_at: "2026-10-17T00:00Z"
+          ask: "Approve docs/specs/parity.html?"
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: false, asks: []}
+  - name: asks wins over open_asks
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+      open_asks:
+        - id: O1
+          asked_at: "2026-10-17T00:00Z"
+          ask: "Approve docs/specs/parity.html?"
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: false, asks: [{id: A1, state: open, trigger: false, shown: false}]}
+  - name: the ledger's arc names the spec
+    doc: |
+      arc: "docs/specs/parity.html"
+      opened: "2026-10-17T00:00Z"
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: false, asks: [{id: A1, state: open, trigger: true, shown: true}]}
+  - name: the ledger's initiative names the spec
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      initiative: "docs/specs/parity.html"
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: false, asks: [{id: A1, state: open, trigger: true, shown: true}]}
+  - name: the ask's own initiative hides the ledger's
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      initiative: "docs/specs/parity.html"
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+          initiative: plain
+    expect: {refused: false, asks: [{id: A1, state: open, trigger: true, shown: false}]}
+  - name: 99 aliases of one anchor
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      p: &p plain
+      pad: [*p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p]
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: false, asks: [{id: A1, state: open, trigger: false, shown: false}]}
+  - name: 100 aliases of one anchor
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      p: &p plain
+      pad: [*p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p, *p]
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: true}
+  - name: an alias nested in an anchor
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      x: &x [1]
+      y: &y [*x]
+      z: *y
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+    expect: {refused: false, validator_refuses: true, asks: [{id: A1, state: open, trigger: false, shown: false}]}
+  - name: an explicit null tag on a word
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+          answer: !!null merge
+    expect: {refused: false, validator_refuses: true, asks: [{id: A1, state: answered, trigger: false, shown: false}]}
+  - name: a date that does not exist
+    doc: |
+      arc: parity
+      opened: "2026-10-17T00:00Z"
+      asks:
+        - id: A1
+          asked_at: "2026-10-17T00:00Z"
+          ask: Merge it?
+          options: [{id: a, label: A}, {id: b, label: B}]
+          answered_at: 2026-02-30
+    expect: {refused: false, validator_refuses: true, asks: [{id: A1, state: answered, trigger: false, shown: false}]}

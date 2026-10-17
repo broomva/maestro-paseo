@@ -1,30 +1,29 @@
 /**
- * Maestro's half of the cross-reader parity corpus (BRO-3167, P20 r6). The validator's half is broomva/workspace
- * scripts/test_ask_reader_parity.py; this file is a byte-for-byte copy of that repo's
- * scripts/fixtures/ask_reader_parity.yaml, and both tests pin its sha256 so neither side changes the cases alone.
+ * Maestro's half of the cross-reader parity corpus (BRO-3167). The corpus has one copy, server/fixtures/
+ * ask_reader_parity.yaml; broomva/workspace scripts/test_ask_reader_parity.py fetches it and holds the validator
+ * to the same cases, so there is no second copy to drift (the file's header says how a change lands).
  */
 import { describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DecisionAsk } from "../shared/fleet";
-import { decisionOf, isRow, parsed, type Row, stateOf } from "./control-asks";
+import { decisionOf, decisionsOf, isRow, parsed, type Row, stateOf } from "./control-asks";
 
-const CORPUS = readFileSync(join(import.meta.dir, "fixtures", "ask_reader_parity.yaml"));
-// The same pin as workspace scripts/test_ask_reader_parity.py. Change the corpus there, copy it here, update both.
-const CORPUS_SHA256 = "736746fc062f01bf58725758adca2ab66595b8787eeec2007522efa610587f54";
-
-type Case = {
+type Expect = { state: DecisionAsk["state"]; trigger: boolean; shown?: boolean };
+type Case = { name: string; three?: boolean; ask: Row; expect: Expect };
+type LedgerCase = {
   name: string;
-  three?: boolean;
-  ask: Row;
-  expect: { state: DecisionAsk["state"]; trigger: boolean; shown?: boolean };
+  doc: string;
+  expect: { refused: boolean; asks?: (Expect & { id: string })[] };
 };
-const data = parsed(CORPUS.toString("utf8"));
+
+const data = parsed(readFileSync(join(import.meta.dir, "fixtures", "ask_reader_parity.yaml"), "utf8"));
 const cases = data.cases as Case[];
+const ledgers = data.ledgers as LedgerCase[];
 const base = data.base as Row;
 const marker = data.marker as string;
 const THIRD = { id: "revise", label: "Revise", consequence: "Nothing is built." };
+const HOME = { kind: "root", path: "", branch: null } as const;
 
 function askOf(one: Case): Row {
   const row: Row = { id: "P1", ...base, ...one.ask };
@@ -32,29 +31,35 @@ function askOf(one: Case): Row {
   return row;
 }
 
-test("the corpus is the pinned one", () => {
-  expect(createHash("sha256").update(CORPUS).digest("hex")).toBe(CORPUS_SHA256);
-});
-
-describe("Maestro reads each case as the validator does", () => {
+describe("Maestro reads each ask as the validator does", () => {
   for (const one of cases) {
     test(one.name, () => {
       const row = askOf(one);
       expect(stateOf(row)).toBe(one.expect.state);
-      const ask = decisionOf(
-        row,
-        isRow(data.ledger) ? data.ledger : {},
-        "parity.yaml",
-        { ids: new Set(), uids: new Set() },
-        {
-          kind: "root",
-          path: "",
-          branch: null,
-        },
-      );
+      const ledger = isRow(data.ledger) ? data.ledger : {};
+      const ask = decisionOf(row, ledger, "parity.yaml", { ids: new Set(), uids: new Set() }, HOME);
       if (one.expect.shown !== undefined) expect(JSON.stringify(ask).includes(marker)).toBe(one.expect.shown);
-      // Whatever Maestro shows, the validator has read.
-      if (one.expect.shown) expect(one.expect.trigger).toBe(true);
+    });
+  }
+});
+
+describe("Maestro reads each ledger as the validator does", () => {
+  for (const one of ledgers) {
+    test(one.name, () => {
+      let asks: DecisionAsk[] | null = null;
+      try {
+        asks = decisionsOf(one.doc, "parity.yaml");
+      } catch {
+        asks = null;
+      }
+      expect(asks === null).toBe(one.expect.refused);
+      if (asks === null) return;
+      expect(asks.map((ask) => ask.id)).toEqual((one.expect.asks ?? []).map((ask) => ask.id));
+      asks.forEach((ask, i) => {
+        const want = one.expect.asks?.[i];
+        expect(ask.state).toBe(want?.state as DecisionAsk["state"]);
+        expect(JSON.stringify(ask).includes(marker)).toBe(want?.shown ?? false);
+      });
     });
   }
 });
