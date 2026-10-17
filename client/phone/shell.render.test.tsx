@@ -209,6 +209,7 @@ let initiativesFail: string | null = null;
 const calls: { method: string; input: unknown }[] = [];
 // BRO-3180 C: an answer call that fails (no reply, or the server's refusal), and verbs.list's settled receipts.
 let answerFail: Error | null = null;
+let verbsFail: string | null = null;
 let recent: unknown[] = [];
 
 function reset() {
@@ -273,6 +274,7 @@ function reset() {
   workListFail = null;
   initiativesFail = null;
   answerFail = null;
+  verbsFail = null;
   recent = [];
   calls.length = 0;
   toasts.length = 0;
@@ -341,6 +343,7 @@ const invoke = async (method: string, input: unknown) => {
       if (answersFail) throw new Error(answersFail);
       return answersStatus(asks, null);
     case "verbs.list":
+      if (verbsFail) throw new Error(verbsFail);
       return { pending, recent };
     case "approval.decide": {
       if (decideFail) throw new Error(decideFail);
@@ -1189,6 +1192,28 @@ describe("M5, Decisions", () => {
       await settle(CONFIRM_MS);
       await view.press(bar(view, "Send again"));
       expect(sent("ask.answer")).toEqual([expect.objectContaining({ id: "A1", hash: "fedcba9876543210" })]);
+    });
+
+    test("a changed ask takes the two taps even when verbs.list fails or the asks read is degraded (P20 C round 1)", async () => {
+      for (const degrade of [
+        () => {
+          verbsFail = "daemon down";
+        },
+        () => {
+          askWarnings = ["one fleet scope was not read"];
+        },
+      ]) {
+        const view = await failThenReturn(() => {
+          asks = [ask("A1", { hash: "fedcba9876543210" })];
+          degrade();
+        });
+        expect(line(view)).toContain("changed after you answered");
+        await view.press(bar(view, "Send again"));
+        expect(sent("ask.answer")).toEqual([]);
+        view.unmount();
+        verbsFail = null;
+        askWarnings = [];
+      }
     });
 
     test("an undone answer on a changed ask still takes the two taps (spec review MAJOR 1)", async () => {

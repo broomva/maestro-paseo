@@ -538,8 +538,12 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   const fateFor = (ask: DecisionAsk | null | undefined): UnsentFate | null => {
     const unsent = ask ? loadDrafts()[draftKey(askRefOf(ask))]?.unsent : undefined;
     if (!ask || !unsent) return null;
-    if (!readAfter(unsent.at)) return { kind: "unknown" };
-    return fateOf(unsent, asksTrusted ? ask : undefined, verbsFresh);
+    const fate: UnsentFate = readAfter(unsent.at)
+      ? fateOf(unsent, asksTrusted ? ask : undefined, verbsFresh)
+      : { kind: "unknown" };
+    // The ask on screen is not the revision it was sent against: that needs no read to know (P20 C round 1).
+    if (fate.kind === "unknown" && ask.state === "open" && ask.hash !== unsent.hash) return { kind: "changed" };
+    return fate;
   };
   /**
    * After an answer from the phone: one that got no reply is kept on its draft as unsent, durably at once (the host
@@ -627,7 +631,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       const said = settledText(fate, ask?.headline ?? ask?.question ?? draft.ask.id);
       if (said) toast.show(said);
       const { unsent: _spent, ...rest } = draft;
-      next = withDraft(next, id, rest);
+      // A closed ask's draft goes with its record: the sweep may already have run on this read (P20 C round 1).
+      next = withDraft(next, id, fate.kind === "closed" ? null : rest);
     }
     if (next === drafts) return;
     saveDrafts(next);
@@ -672,7 +677,9 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     }
     // An unsent answer to an ask that changed since (BRO-3180 C): this tap sends nothing. It says so and moves the
     // record onto the revision now on screen, so only a second, deliberate tap answers it.
-    if (entry.ask && fateFor(entry.ask)?.kind === "changed") {
+    // Known from the record and the ask on screen alone: never gated on reads, which may be failed or degraded.
+    const held = entry.ask ? loadDrafts()[draftKey(askRefOf(entry.ask))]?.unsent : undefined;
+    if (entry.ask && held && held.hash !== entry.ask.hash) {
       const id = draftKey(askRefOf(entry.ask));
       const was = loadDrafts()[id];
       if (was?.unsent) {

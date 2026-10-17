@@ -132,8 +132,12 @@ type Unsent = { at: number; hash: string; key: string; error: string };
 ```
 
 The choice and words are the draft's own, so editing them after a failed send edits what Send again sends.
-Answering again replaces the record: a send that gets a reply, success or refusal, clears it. A draft that holds an
-unsent record is never empty, so B's write path keeps it as you type.
+Answering again replaces the record: a send that gets a reply, success or refusal, clears it. Editing the choice or
+the words keeps the record. Clearing both drops it, since nothing is left to send.
+
+**The changed-ask check needs no read.** The record's hash and the hash of the ask on screen are both local. When
+they differ, the first tap sends nothing, even while `verbs.list` has failed or the asks read carries warnings
+(P20 C round 1, reproduced).
 
 Until fresh reads decide, the card shows "Not confirmed: the link dropped before your Mac answered, so this may not
 have been sent." The primary verb reads **Send again**.
@@ -165,6 +169,8 @@ owns it, so a closed ask cannot take the record before `verbs.list` has been rea
 4. **The ask is open, and its hash changed:** "Not sent, and this ask changed after you answered. Read it again."
    **The first tap on Send again sends nothing.** It says the ask changed and moves the record onto the current
    revision. Only a second, deliberate tap answers that revision.
+   This holds whatever the reads say. The hashes are local, so the card says "changed" and the first tap sends
+   nothing even when `verbs.list` failed.
 5. **The ask is not in the read, or the reads are older than the send:** no conclusion (B's absence rule). It stays
    "Not confirmed".
 
