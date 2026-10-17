@@ -34,7 +34,12 @@ export const DraftInput = forwardRef<Input, DraftInputProps>(function DraftInput
   const pending = useRef(false);
   const [generation, setGeneration] = useState(0);
   const remountedAt = useRef(Number.NEGATIVE_INFINITY);
+  // The trailing remount of a burst: any remount cancels it, so it can never fire after you are typing in the field
+  // (P20 round 2: focusing remounted at once, and the burst's timer then remounted it again under your typing).
+  const settle = useRef<ReturnType<typeof setTimeout> | null>(null);
   const remount = useCallback((keepFocus: boolean) => {
+    if (settle.current) clearTimeout(settle.current);
+    settle.current = null;
     pending.current = false;
     refocus.current = keepFocus;
     remountedAt.current = Date.now();
@@ -50,9 +55,15 @@ export const DraftInput = forwardRef<Input, DraftInputProps>(function DraftInput
     // The first change of a burst goes in at once (the next ask's words, never the last one's); the rest of the
     // burst once the owner is quiet.
     if (Date.now() - remountedAt.current >= TWIN_SETTLE_MS) return remount(false);
-    const timer = setTimeout(() => remount(false), TWIN_SETTLE_MS);
-    return () => clearTimeout(timer);
+    if (settle.current) clearTimeout(settle.current);
+    settle.current = setTimeout(() => remount(false), TWIN_SETTLE_MS);
   }, [value, remount]);
+  useEffect(
+    () => () => {
+      if (settle.current) clearTimeout(settle.current);
+    },
+    [],
+  );
   // A field remounted under your finger keeps the focus it had.
   // biome-ignore lint/correctness/useExhaustiveDependencies: generation is the trigger
   useEffect(() => {

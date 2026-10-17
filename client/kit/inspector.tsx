@@ -1306,7 +1306,7 @@ export function InspectorCard({
   const picked = useChoice(item);
   const origin = useRef(0);
   const root = useRef<View>(null);
-  const inset = useKeyboardInset(root);
+  const inset = useKeyboardInset(root, present);
   const typing = useTypingInView(item.key, inset);
   const responder = useMemo(() => {
     const home = (velocity: number) =>

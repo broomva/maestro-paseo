@@ -165,6 +165,7 @@ describe("typing mid-text (BRO-3180, the caret jump)", () => {
   test(
     "the caret stays where you put it while the screen renders a keystroke late",
     async () => {
+      renders.length = 0;
       const outside: { set?: (v: string) => void } = {};
       const view = await mount(<SlowOwner initial="hello world" lag={20} outside={outside} />);
       // Read fresh each time: a field remounted on a stale value is a new element, and the old one keeps your text.
@@ -308,6 +309,15 @@ describe("a twin field bound to the same words (P20 round 1)", () => {
       const field = view.querySelector('[data-testid="draft"]');
       expect(field?.value).toBe("from the deck");
       expect(win.document.activeElement as unknown).toBe(field);
+      // You type in it; the burst's trailing remount must not fire under your typing (P20 round 2).
+      if (!field) throw new Error("no field");
+      field.setSelectionRange(4, 4);
+      await typeAt(field, "X");
+      await settle(TWIN_SETTLE_MS + 60);
+      const after = view.querySelector('[data-testid="draft"]');
+      expect(after).toBe(field);
+      expect(after?.value).toBe("fromX the deck");
+      expect(win.document.activeElement as unknown).toBe(after);
     },
     SLOW,
   );

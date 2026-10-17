@@ -41,9 +41,12 @@ export function useKeyboardLift(safeBottom: number): Animated.Value {
 /**
  * How much of a bottom view the software keyboard covers, in px, as state (BRO-3180: the ask card). The rule and its
  * sources are watchKeyboardInset's (client/phone/keyboard-lift.ts); this hands it RN's platform, Keyboard and window.
+ * `present`: whether the view is on screen; a view that mounts hidden is measured again once it shows.
  */
-export function useKeyboardInset(view: { current: unknown }): number {
+export function useKeyboardInset(view: { current: unknown }, present = true): number {
   const [inset, setInset] = useState(0);
+  // Watched again when the view appears: a keyboard already up is then measured against it (P20 round 2).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: present is the trigger
   useEffect(
     () =>
       watchKeyboardInset(
@@ -56,7 +59,7 @@ export function useKeyboardInset(view: { current: unknown }): number {
         },
         setInset,
       ),
-    [view],
+    [view, present],
   );
   return inset;
 }
