@@ -88,7 +88,10 @@ const { fakeWork } = await import("../fake-work");
 const { GALLERY_LIGHT } = await import("../kit/gallery-data");
 const { PhoneSurface } = await import("./shell");
 const { durableStore, pickBackend } = await import("../kit/durable-store");
-const { setStoreForTests } = await import("./resume-store");
+const { setStoreForTests, loadResume, saveResume, saveDrafts, flushDrafts, loadDrafts } = await import(
+  "./resume-store"
+);
+const { askRefOf, draftKey, DRAFT_TTL_MS } = await import("./resume");
 const { CONFIRM_MS, MOVE_SETTLE_MS } = await import("./model");
 const { NEEDS_KEY } = await import("../hooks");
 type PhoneTab = import("./model").PhoneTab;
@@ -984,6 +987,8 @@ describe("M5, Decisions", () => {
     // device's storage carries over (a fresh store over the same backend, as a reload makes).
     const device = pickBackend("test", undefined, undefined);
     setStoreForTests(durableStore(device));
+    // The surface (plane.tsx) keeps the tab you are on; this screen is mounted without it.
+    saveResume({ tab: "decisions" });
     const first = await mount({ tab: "decisions" });
     await first.press(rows(first)[0]);
     await settled();
@@ -1005,6 +1010,83 @@ describe("M5, Decisions", () => {
     // It names A2, the ask it was on, not A1.
     expect(card(again)?.textContent ?? "").toContain(asks[1]?.headline ?? asks[1]?.question ?? "A2");
     expect(sent("ask.answer")).toEqual([]);
+  });
+
+  test("an asks read that failed on the way back keeps your place: no false 'answered', and the card returns (BRO-3180 B)", async () => {
+    asks = [ask("A1"), ask("A2")];
+    const device = pickBackend("test", undefined, undefined);
+    setStoreForTests(durableStore(device));
+    // The surface (plane.tsx) keeps the tab you are on; this screen is mounted without it.
+    saveResume({ tab: "decisions" });
+    const first = await mount({ tab: "decisions" });
+    await first.press(rows(first)[0]);
+    await write(card(first)?.querySelector("textarea"), "Not yet.");
+    const saved = loadResume().card;
+    expect(saved?.ask.id).toBe("A1");
+    first.unmount();
+    setStoreForTests(durableStore(device));
+    // Back with asks.workspace down: the ask cannot be found, which is not evidence it was answered.
+    asksFail = "asks are down";
+    const again = await mount({ tab: "decisions" });
+    for (let at = 0; at < 3; at += 1) await settle(60);
+    expect(again.text()).not.toContain("answered while you were away");
+    expect(loadResume().card).toEqual(saved);
+    // The asks read recovers: the card reopens on the same ask, with the words.
+    asksFail = null;
+    await again.reread();
+    for (let at = 0; at < 3; at += 1) await settle(60);
+    expect(card(again)).toBeTruthy();
+    expect((card(again)?.querySelector("textarea") as unknown as { value: string } | null)?.value).toBe("Not yet.");
+  });
+
+  test("a degraded asks read that lacks the card's ask concludes nothing: the place stays saved (BRO-3180 B)", async () => {
+    asks = [ask("A1"), ask("A2")];
+    setStoreForTests(durableStore(pickBackend("test", undefined, undefined)));
+    saveResume({ tab: "decisions" });
+    const first = await mount({ tab: "decisions" });
+    await first.press(rows(first)[0]);
+    const saved = loadResume().card;
+    expect(saved?.ask.id).toBe("A1");
+    first.unmount();
+    // Back with a read that warns (a ledger it could not read) and does not list A1: absence is not evidence.
+    asks = [ask("A2")];
+    askWarnings = ["claude-code-mods.yaml: could not read"];
+    const again = await mount({ tab: "decisions" });
+    for (let at = 0; at < 3; at += 1) await settle(60);
+    expect(again.text()).not.toContain("answered while you were away");
+    expect(loadResume().card).toEqual(saved);
+  });
+
+  test("opening Maestro does not refresh a draft's age: only your edits do (BRO-3180 B)", async () => {
+    asks = [ask("A1")];
+    setStoreForTests(durableStore(pickBackend("test", undefined, undefined)));
+    saveResume({ tab: "decisions" });
+    const ref = askRefOf(asks[0] as DecisionAsk);
+    const at = Date.now() - 24 * 3_600_000;
+    saveDrafts({ [draftKey(ref)]: { ask: ref, hash: "0123456789abcdef", chosen: null, words: "kept words", at } });
+    flushDrafts();
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    expect((card(view)?.querySelector("textarea") as unknown as { value: string } | null)?.value).toBe("kept words");
+    await settle(400);
+    flushDrafts();
+    expect(loadDrafts()[draftKey(ref)]?.at).toBe(at);
+  });
+
+  test("an expired draft is neither shown nor written back (BRO-3180 B, P20 round 1)", async () => {
+    asks = [ask("A1")];
+    setStoreForTests(durableStore(pickBackend("test", undefined, undefined)));
+    saveResume({ tab: "decisions" });
+    const ref = askRefOf(asks[0] as DecisionAsk);
+    const at = Date.now() - DRAFT_TTL_MS - 60_000;
+    saveDrafts({ [draftKey(ref)]: { ask: ref, hash: "0123456789abcdef", chosen: null, words: "old words", at } });
+    flushDrafts();
+    const view = await mount({ tab: "decisions" });
+    await view.press(rows(view)[0]);
+    expect((card(view)?.querySelector("textarea") as unknown as { value: string } | null)?.value).toBe("");
+    await settle(400);
+    flushDrafts();
+    expect(loadDrafts()[draftKey(ref)]).toBeUndefined();
   });
 
   test("an ask that says allow_other: false offers no Other row (BRO-3146)", async () => {

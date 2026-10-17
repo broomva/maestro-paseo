@@ -2549,6 +2549,49 @@ describe("M1 on the phone, through the surface (BRO-3037)", () => {
     expect(view.text()).toContain("2 of 2");
   });
 
+  // Leaving Maestro: every screen this test mounted unmounts, as the host does; only the device's storage remains.
+  const leave = () => {
+    for (const close of mounted.splice(0)) close();
+  };
+  // The phone's tab, read from what it shows: the Feed's deck, Work's board, the Decisions dashboard.
+  const showsFeed = (view: Awaited<ReturnType<typeof mount>>) => view.text().includes("Approval · held");
+  const showsWork = (view: Awaited<ReturnType<typeof mount>>) => view.text().includes("LIFECYCLE");
+  const showsDecisions = (view: Awaited<ReturnType<typeof mount>>) =>
+    view.text().includes("Decisions") && !showsFeed(view) && !showsWork(view);
+
+  test("the phone opens where you left it: the tab you were on, not the Feed (BRO-3180 B)", async () => {
+    const first = await mount(surface(true));
+    await until(() => showsFeed(first));
+    await step(generation, () => requestIntent({ kind: "decisions" }));
+    await until(() => showsDecisions(first));
+    expect(showsDecisions(first)).toBe(true);
+    leave();
+    // Coming back: a fresh mount of the screen on the same device.
+    const again = await mount(surface(true));
+    await until(() => showsDecisions(again));
+    expect(showsDecisions(again)).toBe(true);
+  });
+
+  test("a route's tab acts once; a plain open forgets it, so the next push acts again (BRO-3180 B)", async () => {
+    const pushed = await mount(surface(true, { tab: "work" }));
+    await until(() => showsWork(pushed));
+    await step(generation, () => requestIntent({ kind: "decisions" }));
+    await until(() => showsDecisions(pushed));
+    leave();
+    // The same route mounted again (its params stay): where you left it, not the push again.
+    const remount = await mount(surface(true, { tab: "work" }));
+    await until(() => showsDecisions(remount));
+    expect(showsDecisions(remount)).toBe(true);
+    leave();
+    // Opened with no route tab, then a new push to Work: it acts.
+    const plain = await mount(surface(true));
+    await until(() => showsDecisions(plain));
+    leave();
+    const next = await mount(surface(true, { tab: "work" }));
+    await until(() => showsWork(next));
+    expect(showsWork(next)).toBe(true);
+  });
+
   test("params.tab opens the Decisions deck and the Work deck", async () => {
     const decisions = await mount(surface(true, { tab: "decisions" }));
     await until(() => decisions.text().includes("Decisions"));

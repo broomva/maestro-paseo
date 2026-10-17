@@ -93,7 +93,8 @@ export function sameAsk(a: AskRef, b: AskRef): boolean {
  */
 export function openingTab(param: PhoneTab | null, resume: Resume): { tab: PhoneTab; consumed: string | null } {
   if (param && param !== resume.consumed.tab) return { tab: param, consumed: param };
-  return { tab: resume.tab, consumed: resume.consumed.tab };
+  // Opened with no route tab: the last one is forgotten, so a later push to the same tab acts (P20 B round 1).
+  return { tab: resume.tab, consumed: param ? resume.consumed.tab : null };
 }
 
 /** Whether a route's hold should open now: once per distinct value. */

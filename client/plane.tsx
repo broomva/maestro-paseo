@@ -86,7 +86,7 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
   );
   const [phoneTab, setPhoneTab] = useState<PhoneTab>(() => opening?.tab ?? phoneTabParam(params?.tab));
   const [phonePage, setPhonePage] = useState<PhonePage | null>(() =>
-    opening && opening.tab === loadResume().tab ? loadResume().page : null,
+    opening && !params?.tab && opening.tab === loadResume().tab ? loadResume().page : null,
   );
   const [filter, setFilter] = useState<Filter>("all");
   const [chosenScope, setScope] = useState<string | null>(null);
@@ -129,7 +129,12 @@ export function MaestroSurface({ theme, layout, navigation, params }: PluginScre
   // Opening on `params.hold` (a push, the header count): that hold's inspector on the Feed (BRO-3033 fact 2).
   const holdParam = params?.hold;
   useEffect(() => {
-    if (!holdParam) return;
+    if (!holdParam) {
+      // Opened with no hold: a later push to the same hold is a new one (P20 B round 1).
+      if (layout.compact && loadResume().consumed.hold !== null)
+        saveResume({ consumed: { ...loadResume().consumed, hold: null } });
+      return;
+    }
     // A route keeps its params: on the phone a push opens once, and a remount after it returns where you left it.
     if (layout.compact) {
       const resume = loadResume();

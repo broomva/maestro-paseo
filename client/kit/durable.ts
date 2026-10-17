@@ -11,8 +11,16 @@ let shared: DurableStore | null = null;
 /** The store this app run uses, made on first use. */
 export function deviceStore(): DurableStore {
   if (shared) return shared;
-  const storage = (globalThis as { localStorage?: StorageApi }).localStorage;
-  const settings = (ReactNative as unknown as { Settings?: SettingsApi }).Settings;
+  // Reaching either can throw (a sandboxed page's localStorage getter, a missing native module): then memory.
+  const read = <T>(get: () => T): T | undefined => {
+    try {
+      return get();
+    } catch {
+      return undefined;
+    }
+  };
+  const storage = read(() => (globalThis as { localStorage?: StorageApi }).localStorage);
+  const settings = read(() => (ReactNative as unknown as { Settings?: SettingsApi }).Settings);
   shared = durableStore(pickBackend(ReactNative.Platform.OS, settings, storage));
   return shared;
 }

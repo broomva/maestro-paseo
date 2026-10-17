@@ -86,7 +86,7 @@ import { NewWorkSheet } from "./new-work-sheet";
 import { LedgerWarnings } from "./open-asks";
 import { PageBody } from "./page-body";
 import { PagePanel } from "./page-panel";
-import { askRefOf, cardTarget, draftKey, draftOf, sweepDrafts, withDraft } from "./resume";
+import { askRefOf, cardTarget, DRAFT_TTL_MS, draftKey, draftOf, sweepDrafts, withDraft } from "./resume";
 import { flushDrafts, loadDrafts, loadResume, saveDrafts, saveResume } from "./resume-store";
 import { AnswersSummary, SeriesList } from "./series-dashboard";
 import {
@@ -448,30 +448,62 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   // another focus already says where to go. Its ask is found by identity; gone, the card opens on its series; with no
   // series left, you land on the dashboard and are told.
   const restored = useRef(false);
+  // Where you left it, read at this screen's first render: before the surface saves the tab it opened on now.
+  const left = useRef(loadResume()).current;
+  // The hold the restore asked to open: until a card shows, the saved card is left as it is.
+  const reopening = useRef<string | null>(null);
+  const keepSaved = useRef(false);
   useEffect(() => {
     if (restored.current) return;
-    const card = loadResume().card;
-    if (focus || !card) {
+    const card = left.card;
+    // A push or another focus says where to go; a route that opened another tab than the card's leaves it closed.
+    if (focus || !card || tab !== left.tab) {
       restored.current = true;
       return;
     }
-    if (fresh === null) return;
-    restored.current = true;
+    // The card's ask is found in any fresh read of the asks (positive evidence) and opened; it is concluded gone only
+    // from a fresh, warning-free read, so an ask not read yet, or missing from a degraded read, is never taken for
+    // answered; with no trusted read the card stays saved (P20 B round 1).
+    if (fresh === null || !asksRead.isFetchedAfterMount || asksRead.isError) return;
     const key = cardTarget(
       card,
       inspectable.map((entry) => ({ key: entry.row.key, ask: entry.ask })),
     );
-    if (key) return setOpenAsk({ key, whole: false });
+    if (key) {
+      restored.current = true;
+      reopening.current = key;
+      return setOpenAsk({ key, whole: false });
+    }
+    restored.current = true;
+    // Not found, and the read is degraded: no conclusion. The saved card stays until you open another one.
+    if ((asksRead.data?.warnings.length ?? 1) > 0) {
+      keepSaved.current = true;
+      return;
+    }
     const one = card.series ? everySeries.find((series) => series.id === card.series) : undefined;
-    if (one?.keys[0]) return setOpenAsk({ key: one.keys[0], whole: true });
+    if (one?.keys[0]) {
+      reopening.current = one.keys[0];
+      return setOpenAsk({ key: one.keys[0], whole: true });
+    }
     saveResume({ card: null });
     toast.show("That ask was answered while you were away.");
   });
   // The card as it stands, kept once the restore above has run: the ask it shows, by identity, and its series.
   useEffect(() => {
     if (!restored.current) return;
+    if (reopening.current !== null) {
+      if (!inspector.showing) return;
+      reopening.current = null;
+    }
     const entry = inspector.showing && onCard ? inspectable.find((one) => one.row.key === onCard) : undefined;
+    // An ask on the card whose ask read has not landed (asks.workspace down): nothing to name it by yet, so the saved
+    // card is left as it is rather than cleared (P20 B round 1).
+    if (entry && entry.row.kind === "ask" && !entry.ask) return;
     const card = entry?.ask ? { series: visit?.series ?? null, ask: askRefOf(entry.ask) } : null;
+    if (keepSaved.current) {
+      if (!card) return;
+      keepSaved.current = false;
+    }
     if (JSON.stringify(loadResume().card) !== JSON.stringify(card)) saveResume({ card });
   });
   // A draft restored onto an ask that changed since is kept, and said so when its card shows.
@@ -501,7 +533,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       if (!entry.ask || seeded.current.has(key)) continue;
       seeded.current.add(key);
       const draft = drafts[draftKey(askRefOf(entry.ask))];
-      if (!draft) continue;
+      // An expired draft, or one for an ask no longer open, is not brought back.
+      if (!draft || entry.ask.state !== "open" || Date.now() - draft.at > DRAFT_TTL_MS) continue;
       if (draft.words) seedWords[key] = draft.words;
       if (draft.chosen) seedChoices[key] = draft.chosen;
       if (draft.hash !== entry.ask.hash) changedSince.current.add(key);
@@ -518,6 +551,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       const id = draftKey(askRefOf(ask));
       const next = draftOf(ask, choices[key], said[key], Date.now());
       const was = drafts[id];
+      // Unchanged since it was stored (a seed, a re-render): left as it is, so opening Maestro never refreshes a
+      // draft's age; only your edits do.
       if (next && was && was.words === next.words && was.chosen === next.chosen && was.hash === next.hash) continue;
       if (!next && !was) continue;
       drafts = withDraft(drafts, id, next);
