@@ -87,6 +87,8 @@ const { answersStatus } = await import("../../server/answers-status");
 const { fakeWork } = await import("../fake-work");
 const { GALLERY_LIGHT } = await import("../kit/gallery-data");
 const { PhoneSurface } = await import("./shell");
+const { durableStore, pickBackend } = await import("../kit/durable-store");
+const { setStoreForTests } = await import("./resume-store");
 const { CONFIRM_MS, MOVE_SETTLE_MS } = await import("./model");
 const { NEEDS_KEY } = await import("../hooks");
 type PhoneTab = import("./model").PhoneTab;
@@ -203,6 +205,8 @@ let initiativesFail: string | null = null;
 const calls: { method: string; input: unknown }[] = [];
 
 function reset() {
+  // Each test starts on a device that remembers nothing (BRO-3180 B), never the last test's place or drafts.
+  setStoreForTests(durableStore(pickBackend("test", undefined, undefined)));
   items = [
     fakeWork(
       "w-gate-9a1",
@@ -472,16 +476,23 @@ async function mount(
   );
   await act(async () => root.render(node()));
   for (let at = 0; at < 4; at += 1) await settle();
-  mounted.push(() => {
+  const close = () => {
     act(() => root.unmount());
     client.clear();
     container.remove();
-  });
+  };
+  mounted.push(close);
   const box = container as unknown as El;
   const all = (selector: string) => [...(box.querySelectorAll(selector) as unknown as El[])];
   return {
     handled,
     pages,
+    /** Leave the screen, as switching away from Maestro does. */
+    unmount: () => {
+      const at = mounted.indexOf(close);
+      if (at >= 0) mounted.splice(at, 1);
+      close();
+    },
     /** Read every query again, as a poll would: what the fakes now hold is what the screen gets. */
     reread: async () => {
       await act(async () => {
@@ -965,6 +976,35 @@ describe("M5, Decisions", () => {
     await write(card(view)?.querySelector("textarea"), "Ask Legal first.");
     await view.press(bar(view, "Answer"));
     expect(sent("ask.answer")).toEqual([expect.objectContaining({ option: null, note: "Ask Legal first." })]);
+  });
+
+  test("leaving Maestro and coming back lands on the same ask, Other picked, your words intact (BRO-3180 B)", async () => {
+    asks = [ask("A1"), ask("A2")];
+    // One device under two runs of the plugin: the host re-evaluates the bundle on reconnect, so nothing but the
+    // device's storage carries over (a fresh store over the same backend, as a reload makes).
+    const device = pickBackend("test", undefined, undefined);
+    setStoreForTests(durableStore(device));
+    const first = await mount({ tab: "decisions" });
+    await first.press(rows(first)[0]);
+    await settled();
+    await first.press(bar(first, "Skip"));
+    expect(header(first)).toContain("2 of 2");
+    await first.press(inCard(first, "Other…"));
+    await write(card(first)?.querySelector("textarea"), "Ask Legal first.");
+    // Away to a session and back: the screen unmounts and mounts again.
+    first.unmount();
+    setStoreForTests(durableStore(device));
+    const again = await mount({ tab: "decisions" });
+    for (let at = 0; at < 3; at += 1) await settle(60);
+    expect(card(again)).toBeTruthy();
+    expect(header(again)).toContain("of 2");
+    expect((card(again)?.querySelector("textarea") as unknown as { value: string } | null)?.value).toBe(
+      "Ask Legal first.",
+    );
+    expect(inCard(again, "Other…")?.getAttribute("aria-checked")).toBe("true");
+    // It names A2, the ask it was on, not A1.
+    expect(card(again)?.textContent ?? "").toContain(asks[1]?.headline ?? asks[1]?.question ?? "A2");
+    expect(sent("ask.answer")).toEqual([]);
   });
 
   test("an ask that says allow_other: false offers no Other row (BRO-3146)", async () => {

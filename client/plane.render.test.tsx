@@ -26,7 +26,7 @@
 // clears the intent listeners, and restores the spies, the kit mock and the
 // globals. A surface left mounted would take the next file's intents.
 
-import { afterAll, afterEach, describe, expect, mock, setDefaultTimeout, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, setDefaultTimeout, spyOn, test } from "bun:test";
 import type { PluginClientStateSource } from "@getpaseo/plugin/client/host";
 import { Window } from "happy-dom";
 import type { ComponentProps, ReactNode } from "react";
@@ -183,6 +183,11 @@ notifyManager.setNotifyFunction((notify) => {
 });
 const { PaseoApiProvider, PluginClientStateProvider, PluginRpcProvider } = await import("@getpaseo/plugin/client/host");
 const { MaestroSurface } = await import("./plane");
+const { durableStore, pickBackend } = await import("./kit/durable-store");
+const { setStoreForTests } = await import("./phone/resume-store");
+// Each test starts on a device that remembers nothing (BRO-3180 B): the phone opens where the last test left it
+// otherwise.
+beforeEach(() => setStoreForTests(durableStore(pickBackend("test", undefined, undefined))));
 const { createSessionCard } = await import("./session-card");
 const { WorkDetail } = await import("./detail");
 const { createWorkPanel } = await import("./agent-panel");

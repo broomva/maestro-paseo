@@ -86,6 +86,8 @@ import { NewWorkSheet } from "./new-work-sheet";
 import { LedgerWarnings } from "./open-asks";
 import { PageBody } from "./page-body";
 import { PagePanel } from "./page-panel";
+import { askRefOf, cardTarget, draftKey, draftOf, sweepDrafts, withDraft } from "./resume";
+import { flushDrafts, loadDrafts, loadResume, saveDrafts, saveResume } from "./resume-store";
 import { AnswersSummary, SeriesList } from "./series-dashboard";
 import {
   type AskSeries,
@@ -442,11 +444,101 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     else openHold(openAsk.key);
   }, [openAsk]);
 
+  // The card you were on reopens on the same ask (BRO-3180 B): once per mount, after the reads land, unless a push or
+  // another focus already says where to go. Its ask is found by identity; gone, the card opens on its series; with no
+  // series left, you land on the dashboard and are told.
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current) return;
+    const card = loadResume().card;
+    if (focus || !card) {
+      restored.current = true;
+      return;
+    }
+    if (fresh === null) return;
+    restored.current = true;
+    const key = cardTarget(
+      card,
+      inspectable.map((entry) => ({ key: entry.row.key, ask: entry.ask })),
+    );
+    if (key) return setOpenAsk({ key, whole: false });
+    const one = card.series ? everySeries.find((series) => series.id === card.series) : undefined;
+    if (one?.keys[0]) return setOpenAsk({ key: one.keys[0], whole: true });
+    saveResume({ card: null });
+    toast.show("That ask was answered while you were away.");
+  });
+  // The card as it stands, kept once the restore above has run: the ask it shows, by identity, and its series.
+  useEffect(() => {
+    if (!restored.current) return;
+    const entry = inspector.showing && onCard ? inspectable.find((one) => one.row.key === onCard) : undefined;
+    const card = entry?.ask ? { series: visit?.series ?? null, ask: askRefOf(entry.ask) } : null;
+    if (JSON.stringify(loadResume().card) !== JSON.stringify(card)) saveResume({ card });
+  });
+  // A draft restored onto an ask that changed since is kept, and said so when its card shows.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the card showing an ask is the trigger, not the toast
+  useEffect(() => {
+    if (!inspector.showing || !onCard || !changedSince.current.has(onCard)) return;
+    changedSince.current.delete(onCard);
+    toast.show("This ask changed since you wrote your draft: read it again before you answer.");
+  }, [inspector.showing, onCard]);
+
   // Your choice on each ask or review, by hold: the recommendation until you pick.
   const [choices, setChoices] = useState<Record<string, string>>({});
   // Your words on an ask written with no options, by hold.
   const [said, setSaid] = useState<Record<string, string>>({});
   const [armed, setArmed] = useState<{ key: string; choice: string; at: number } | null>(null);
+
+  // What you picked and typed survives leaving Maestro (BRO-3180 B): seeded from the device by the ask's identity once
+  // the asks are read, written back as you type, and dropped only when a fresh read shows the ask answered.
+  const seeded = useRef(new Set<string>());
+  const changedSince = useRef(new Set<string>());
+  useEffect(() => {
+    const drafts = loadDrafts();
+    const seedWords: Record<string, string> = {};
+    const seedChoices: Record<string, string> = {};
+    for (const entry of inspectable) {
+      const key = entry.row.key;
+      if (!entry.ask || seeded.current.has(key)) continue;
+      seeded.current.add(key);
+      const draft = drafts[draftKey(askRefOf(entry.ask))];
+      if (!draft) continue;
+      if (draft.words) seedWords[key] = draft.words;
+      if (draft.chosen) seedChoices[key] = draft.chosen;
+      if (draft.hash !== entry.ask.hash) changedSince.current.add(key);
+    }
+    if (Object.keys(seedWords).length) setSaid((now) => ({ ...seedWords, ...now }));
+    if (Object.keys(seedChoices).length) setChoices((now) => ({ ...seedChoices, ...now }));
+  }, [inspectable]);
+  useEffect(() => {
+    let drafts = loadDrafts();
+    const before = drafts;
+    for (const key of new Set([...Object.keys(said), ...Object.keys(choices)])) {
+      const ask = inspectable.find((entry) => entry.row.key === key)?.ask;
+      if (!ask || !seeded.current.has(key)) continue;
+      const id = draftKey(askRefOf(ask));
+      const next = draftOf(ask, choices[key], said[key], Date.now());
+      const was = drafts[id];
+      if (next && was && was.words === next.words && was.chosen === next.chosen && was.hash === next.hash) continue;
+      if (!next && !was) continue;
+      drafts = withDraft(drafts, id, next);
+    }
+    if (drafts !== before) saveDrafts(drafts);
+  }, [said, choices, inspectable]);
+  useEffect(() => {
+    if (!asksRead.data) return;
+    const drafts = loadDrafts();
+    const swept = sweepDrafts(
+      drafts,
+      {
+        asks: decisionAsks(asksRead.data),
+        fresh: asksRead.isFetchedAfterMount && !asksRead.isError,
+        warnings: asksRead.data.warnings.length,
+      },
+      Date.now(),
+    );
+    if (Object.keys(swept).length !== Object.keys(drafts).length) saveDrafts(swept);
+  }, [asksRead.data, asksRead.isFetchedAfterMount, asksRead.isError]);
+  useEffect(() => () => flushDrafts(), []);
   useEffect(() => {
     if (!armed) return;
     const timer = setTimeout(() => setArmed(null), CONFIRM_WINDOW_MS);
