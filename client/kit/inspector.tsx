@@ -980,13 +980,11 @@ type Focusable = { focus?: () => void };
 type Measurable = { measureInWindow?: (done: (x: number, y: number, width: number, height: number) => void) => void };
 type Box = { top: number; height: number };
 
-/** A view's place in the window, or null when it has none to give (unmounted, or not laid out). */
+/** A view's place in the window, or null when it has none to give (unmounted). */
 function boxOf(view: unknown): Promise<Box | null> {
   const target = view as Measurable | null;
   if (!target?.measureInWindow) return Promise.resolve(null);
-  return new Promise((resolve) =>
-    target.measureInWindow?.((_x, y, _width, height) => resolve(height > 0 ? { top: y, height } : null)),
-  );
+  return new Promise((resolve) => target.measureInWindow?.((_x, y, _width, height) => resolve({ top: y, height })));
 }
 
 /** After the keyboard moves, the scroll is laid out again: revealed at once and twice more as the layout settles. */
@@ -994,14 +992,20 @@ const SETTLE_REVEALS_MS = [0, 120, 360] as const;
 
 /**
  * The phone card's words field kept in view while you type (BRO-3180). Focusing the field, its growing a line, the
- * scroll's height changing and the keyboard rising each scroll it into full view when it is not. Where the field and
- * the visible scroll are is measured in the window at that moment, never cached: on the web a view that moves without
- * resizing reports no layout, so a cached place went stale when an ask's pictures loaded above the field (live, 46 px
- * short). `focusSoon` focuses it after the render that chose Other.
+ * scroll's height changing and the keyboard rising each scroll it into full view when it is not.
+ *
+ * The field's place in the scroll's content is measured at that moment, never cached: on the web a view that moves
+ * without resizing reports no layout, so a cached place went stale when an ask's pictures loaded above the field
+ * (live, 46 px short). It is measured against a marker at the top of the content, not against the window: both move
+ * with the scroll, so their difference holds whether or not a scroll has reached the layout yet (Fabric applies a
+ * jump a frame later; pairing a window place with the new offset scrolled twice as far, P20 A2 round 2). Only the
+ * scroll's own offset is tracked: set on our jumps, read from onScroll for yours. `focusSoon` focuses the field after
+ * the render that chose Other.
  */
 export function useTypingInView(itemKey: string, inset: number) {
   const scroll = useRef<ScrollView | null>(null);
   const viewport = useRef<View | null>(null);
+  const origin = useRef<View | null>(null);
   const ref = useRef<ElementRef<typeof DraftInput> | null>(null);
   const at = useRef({ item: itemKey, scrolled: 0, focused: false });
   // Another ask starts at the top of its own scroll (the ScrollView is keyed by it), not focused.
@@ -1009,18 +1013,11 @@ export function useTypingInView(itemKey: string, inset: number) {
   const pending = useRef(false);
   const reveal = async () => {
     if (!at.current.focused) return;
-    const { item, scrolled: from } = at.current;
-    const [field, shown] = await Promise.all([boxOf(ref.current), boxOf(viewport.current)]);
+    const item = at.current.item;
+    const [field, top, shown] = await Promise.all([boxOf(ref.current), boxOf(origin.current), boxOf(viewport.current)]);
     const now = at.current;
-    if (!field || !shown || !now.focused || now.item !== item) return;
-    // The scroll moved while this one measured (another reveal, or you): its measurement is from before, so it is
-    // dropped; pairing it with the new offset scrolled twice as far (P20 A2 round 2).
-    if (now.scrolled !== from) return;
-    const to = revealScroll(
-      { top: field.top - shown.top + now.scrolled, height: field.height },
-      shown.height,
-      now.scrolled,
-    );
+    if (!field || !top || !shown || field.height <= 0 || !now.focused || now.item !== item) return;
+    const to = revealScroll({ top: field.top - top.top, height: field.height }, shown.height, now.scrolled);
     if (to === null) return;
     // A jump, not an animation: the offset is then where the next measurement finds it. An animated scroll left a
     // reveal that measured mid-flight adding the target to a field not there yet, and overshooting (P20 A2 round 1).
@@ -1057,6 +1054,7 @@ export function useTypingInView(itemKey: string, inset: number) {
   return {
     scroll,
     viewport,
+    origin,
     field,
     focusSoon: () => {
       pending.current = true;
@@ -1422,6 +1420,8 @@ export function InspectorCard({
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={{ paddingVertical: 18, paddingHorizontal: 20, paddingBottom: 32 }}
           >
+            {/* The top of the content: the field's place in the scroll is measured from here (BRO-3180). */}
+            <View ref={typing.origin} style={{ position: "absolute", top: 0, left: 0, width: 1, height: 0 }} />
             <InspectorBody
               theme={theme}
               item={item}
