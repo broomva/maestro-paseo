@@ -1009,10 +1009,13 @@ export function useTypingInView(itemKey: string, inset: number) {
   const pending = useRef(false);
   const reveal = async () => {
     if (!at.current.focused) return;
-    const item = at.current.item;
+    const { item, scrolled: from } = at.current;
     const [field, shown] = await Promise.all([boxOf(ref.current), boxOf(viewport.current)]);
     const now = at.current;
     if (!field || !shown || !now.focused || now.item !== item) return;
+    // The scroll moved while this one measured (another reveal, or you): its measurement is from before, so it is
+    // dropped; pairing it with the new offset scrolled twice as far (P20 A2 round 2).
+    if (now.scrolled !== from) return;
     const to = revealScroll(
       { top: field.top - shown.top + now.scrolled, height: field.height },
       shown.height,

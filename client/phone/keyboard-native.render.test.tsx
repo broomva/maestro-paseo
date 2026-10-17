@@ -193,6 +193,22 @@ describe("the field you type in stays in view", () => {
     SLOW,
   );
   test(
+    "two reveals started in the same tick scroll once, not twice as far",
+    async () => {
+      const out: { now?: Typing } = {};
+      const calls: number[] = [];
+      await mount(<Reveal itemKey="a" inset={0} out={out} />);
+      const typing = out.now as Typing;
+      wire(typing, placed({ top: 607, height: 60 }), placed({ top: 136, height: 325 }), calls);
+      // Focus and the scroll's layout land together: both measure before either has scrolled.
+      typing.field.onFocus();
+      typing.onViewport();
+      await flush();
+      expect(calls).toEqual([222]);
+    },
+    SLOW,
+  );
+  test(
     "a scroll you moved yourself counts: the field is found from where the scroll is",
     async () => {
       const out: { now?: Typing } = {};
