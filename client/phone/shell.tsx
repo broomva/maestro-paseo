@@ -17,7 +17,8 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useToast } from "@getpaseo/plugin/client/react-native";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, type LayoutChangeEvent, Pressable, ScrollView, Text, View } from "react-native";
-import { ANSWERS_KEY } from "../../shared/needs";
+import type { DecisionAsk } from "../../shared/fleet";
+import { ANSWERS_KEY, askHoldKey } from "../../shared/needs";
 import { useWorkspaceAsks } from "../decisions";
 import { decisionAsks, isTriaged, triageQueue } from "../decisions-model";
 import { stageTiles, wentRows } from "../decisions-stage-model";
@@ -86,7 +87,7 @@ import { NewWorkSheet } from "./new-work-sheet";
 import { LedgerWarnings } from "./open-asks";
 import { PageBody } from "./page-body";
 import { PagePanel } from "./page-panel";
-import { askRefOf, cardTarget, DRAFT_TTL_MS, draftKey, draftOf, sweepDrafts, withDraft } from "./resume";
+import { askRefOf, cardTarget, DRAFT_TTL_MS, draftKey, draftOf, sameAsk, sweepDrafts, withDraft } from "./resume";
 import { flushDrafts, loadDrafts, loadResume, saveDrafts, saveResume } from "./resume-store";
 import { AnswersSummary, SeriesList } from "./series-dashboard";
 import {
@@ -116,6 +117,7 @@ import {
   workCounts,
   workDeck,
 } from "./tabs-model";
+import { fateOf, gotNoReply, isSettled, settledText, type UnsentFate, unsentLine } from "./unsent";
 import { LaneSwitcher, WorkDeckCard } from "./work-tab";
 
 /** The sheet's top when it is up: the tab bar stops this far under Paseo's header. */
@@ -521,6 +523,54 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
   // Your words on an ask written with no options, by hold.
   const [said, setSaid] = useState<Record<string, string>>({});
   const [armed, setArmed] = useState<{ key: string; choice: string; at: number } | null>(null);
+  // Bumped when an unsent record is written, so the card's line follows the device store (BRO-3180 C).
+  const [, setUnsentRev] = useState(0);
+  const verbsFresh = ledger.isFetchedAfterMount && !ledger.isError ? (ledger.data ?? null) : null;
+  const asksTrusted =
+    asksRead.isFetchedAfterMount &&
+    !asksRead.isError &&
+    asksRead.data !== undefined &&
+    asksRead.data.warnings.length === 0;
+  // Reads taken before a send say nothing of it: both must have landed after it (a reply that timed out leaves the
+  // screen mounted, with reads from before).
+  const readAfter = (at: number) => ledger.dataUpdatedAt > at && asksRead.dataUpdatedAt > at;
+  /** What became of this ask's unsent answer, as far as fresh reads say; null when it has none. */
+  const fateFor = (ask: DecisionAsk | null | undefined): UnsentFate | null => {
+    const unsent = ask ? loadDrafts()[draftKey(askRefOf(ask))]?.unsent : undefined;
+    if (!ask || !unsent) return null;
+    const fate: UnsentFate = readAfter(unsent.at)
+      ? fateOf(unsent, asksTrusted ? ask : undefined, verbsFresh)
+      : { kind: "unknown" };
+    // The ask on screen is not the revision it was sent against: that needs no read to know (P20 C round 1).
+    if (fate.kind === "unknown" && ask.state === "open" && ask.hash !== unsent.hash) return { kind: "changed" };
+    return fate;
+  };
+  /**
+   * After an answer from the phone: one that got no reply is kept on its draft as unsent, durably at once (the host
+   * may unmount Maestro next); one that got a reply, sent or refused, clears it.
+   */
+  const recordSend = (entry: NeedEntry, picked: string | undefined, error: unknown | null) => {
+    const ask = entry.ask;
+    if (!ask) return;
+    const id = draftKey(askRefOf(ask));
+    const drafts = loadDrafts();
+    const was = drafts[id];
+    let next = drafts;
+    if (error === null || !gotNoReply(error)) {
+      if (!was?.unsent) return;
+      const { unsent: _spent, ...rest } = was;
+      next = withDraft(drafts, id, rest);
+    } else {
+      const now = Date.now();
+      const base = draftOf(ask, picked ?? choices[entry.row.key], said[entry.row.key], now) ?? was;
+      if (!base) return;
+      const unsent = { at: now, hash: ask.hash, key: askHoldKey(ask), error: errorText(error) };
+      next = withDraft(drafts, id, { ...base, unsent });
+    }
+    saveDrafts(next);
+    flushDrafts();
+    setUnsentRev((n) => n + 1);
+  };
 
   // What you picked and typed survives leaving Maestro (BRO-3180 B): seeded from the device by the ask's identity once
   // the asks are read, written back as you type, and dropped only when a fresh read shows the ask answered.
@@ -559,10 +609,36 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       // "changed since" warning survives a visit that never opened its card (P20 B round 2).
       if (next && was && was.words === next.words && was.chosen === next.chosen) continue;
       if (!next && !was) continue;
-      drafts = withDraft(drafts, id, next);
+      // An answer that got no reply rides on its draft as you edit it: Send again sends what the card shows.
+      drafts = withDraft(drafts, id, next && was?.unsent ? { ...next, unsent: was.unsent } : next);
     }
     if (drafts !== before) saveDrafts(drafts);
   }, [said, choices, inspectable]);
+  // An answer that got no reply (BRO-3180 C): once verbs.list and the asks are read fresh, what became of it. Spent
+  // (it reached the Mac, went through, or the ask was answered meanwhile) is said once and the record dropped; the
+  // rest stays "Not sent" on its card until you tap Send again. Nothing here sends.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: fresh reads are the trigger; the toast and the record's helpers are not
+  useEffect(() => {
+    if (!verbsFresh || !asksRead.data) return;
+    const all = decisionAsks(asksRead.data);
+    const drafts = loadDrafts();
+    let next = drafts;
+    for (const [id, draft] of Object.entries(drafts)) {
+      if (!draft.unsent || !readAfter(draft.unsent.at)) continue;
+      const ask = asksTrusted ? all.find((one) => sameAsk(askRefOf(one), draft.ask)) : undefined;
+      const fate = fateOf(draft.unsent, ask, verbsFresh);
+      if (!isSettled(fate)) continue;
+      const said = settledText(fate, ask?.headline ?? ask?.question ?? draft.ask.id);
+      if (said) toast.show(said);
+      const { unsent: _spent, ...rest } = draft;
+      // A closed ask's draft goes with its record: the sweep may already have run on this read (P20 C round 1).
+      next = withDraft(next, id, fate.kind === "closed" ? null : rest);
+    }
+    if (next === drafts) return;
+    saveDrafts(next);
+    flushDrafts();
+    setUnsentRev((n) => n + 1);
+  }, [verbsFresh, asksRead.data, asksTrusted, ledger.dataUpdatedAt, asksRead.dataUpdatedAt]);
   useEffect(() => {
     if (!asksRead.data) return;
     const drafts = loadDrafts();
@@ -599,6 +675,22 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       toast.show(`This ask cannot be answered here. ${item.refusal}`);
       return;
     }
+    // An unsent answer to an ask that changed since (BRO-3180 C): this tap sends nothing. It says so and moves the
+    // record onto the revision now on screen, so only a second, deliberate tap answers it.
+    // Known from the record and the ask on screen alone: never gated on reads, which may be failed or degraded.
+    const held = entry.ask ? loadDrafts()[draftKey(askRefOf(entry.ask))]?.unsent : undefined;
+    if (entry.ask && held && held.hash !== entry.ask.hash) {
+      const id = draftKey(askRefOf(entry.ask));
+      const was = loadDrafts()[id];
+      if (was?.unsent) {
+        saveDrafts(withDraft(loadDrafts(), id, { ...was, unsent: { ...was.unsent, hash: entry.ask.hash } }));
+        flushDrafts();
+        setUnsentRev((n) => n + 1);
+      }
+      toast.show("This ask changed after you answered. Read it again: Send again now answers this version.");
+      return;
+    }
+    const failed = (error: unknown) => recordSend(entry, picked, error);
     if (picked === undefined) {
       // An ask with no options is answered in words alone; anything else with nothing chosen opens its card.
       const words = (said[key] ?? "").trim();
@@ -607,7 +699,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
         return;
       }
       if (item.kind === "ask" && item.options.length === 0 && words) {
-        const sent = await inspector.act("answer", inspector.targetOf(entry), undefined, words);
+        const sent = await inspector.act("answer", inspector.targetOf(entry), undefined, words, false, failed);
+        if (sent) recordSend(entry, picked, null);
         if (sent) afterAnswer(key, card);
       } else inspector.selectHold(key);
       return;
@@ -627,7 +720,8 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
       return;
     }
     setArmed(null);
-    const sent = await inspector.act("answer", inspector.targetOf(entry), picked, words, irreversible);
+    const sent = await inspector.act("answer", inspector.targetOf(entry), picked, words, irreversible, failed);
+    if (sent) recordSend(entry, picked, null);
     // The words stay with the hold: an answer undone in its window comes back with them.
     if (sent) afterAnswer(key, card);
   };
@@ -648,6 +742,13 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
     if (card && (!now.showing || now.onCard !== key)) return advance(key);
     inspector.setOpen(false);
     advance(key);
+  };
+
+  /** The card's line for an answer that got no reply, and its verb's words (BRO-3180 C); nothing when it has none. */
+  const unsentOf = (entry: NeedEntry): { unsent?: string; primaryLabel?: string } => {
+    const fate = fateFor(entry.ask);
+    const line = fate ? unsentLine(fate) : null;
+    return line ? { unsent: line, primaryLabel: "Send again" } : {};
   };
 
   const onDeckVerb = async (entry: NeedEntry, item: InspectorItem, id: string) => {
@@ -1160,7 +1261,7 @@ export function PhoneSurface(props: PhoneSurfaceProps) {
           // It starts on the option chosen on the deck (Codex P20 round 2): the deck's note rides with that option.
           item={
             openEntry && (cardItem.kind === "ask" || cardItem.kind === "review")
-              ? { ...cardItem, chosen: choices[openEntry.row.key] ?? openingChoice(cardItem) }
+              ? { ...cardItem, chosen: choices[openEntry.row.key] ?? openingChoice(cardItem), ...unsentOf(openEntry) }
               : cardItem
           }
           index={cardIndex}

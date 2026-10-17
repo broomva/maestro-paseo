@@ -92,6 +92,7 @@ const { setStoreForTests, loadResume, saveResume, saveDrafts, flushDrafts, loadD
   "./resume-store"
 );
 const { askRefOf, draftKey, DRAFT_TTL_MS } = await import("./resume");
+const { SKEW_MS } = await import("./unsent");
 const { CONFIRM_MS, MOVE_SETTLE_MS } = await import("./model");
 const { NEEDS_KEY } = await import("../hooks");
 type PhoneTab = import("./model").PhoneTab;
@@ -206,6 +207,10 @@ let noticesUnread: string[] = [];
 let workListFail: string | null = null;
 let initiativesFail: string | null = null;
 const calls: { method: string; input: unknown }[] = [];
+// BRO-3180 C: an answer call that fails (no reply, or the server's refusal), and verbs.list's settled receipts.
+let answerFail: Error | null = null;
+let verbsFail: string | null = null;
+let recent: unknown[] = [];
 
 function reset() {
   // Each test starts on a device that remembers nothing (BRO-3180 B), never the last test's place or drafts.
@@ -268,6 +273,9 @@ function reset() {
   noticesUnread = [];
   workListFail = null;
   initiativesFail = null;
+  answerFail = null;
+  verbsFail = null;
+  recent = [];
   calls.length = 0;
   toasts.length = 0;
 }
@@ -335,7 +343,8 @@ const invoke = async (method: string, input: unknown) => {
       if (answersFail) throw new Error(answersFail);
       return answersStatus(asks, null);
     case "verbs.list":
-      return { pending, recent: [] };
+      if (verbsFail) throw new Error(verbsFail);
+      return { pending, recent };
     case "approval.decide": {
       if (decideFail) throw new Error(decideFail);
       const { key, action } = input as { key: string; action: string };
@@ -345,6 +354,7 @@ const invoke = async (method: string, input: unknown) => {
     }
     case "ask.answer": {
       if (holdAnswer) await holdAnswer;
+      if (answerFail) throw answerFail;
       const entry = ledgerEntry(method, "ask", "Answered");
       pending = [entry, ...pending];
       return { ask: asks[0], warning: null, receipt: entry.receipt, appliesAt: entry.appliesAt };
@@ -1122,6 +1132,177 @@ describe("M5, Decisions", () => {
     await settle(400);
     flushDrafts();
     expect(loadDrafts()[draftKey(ref)]).toBeUndefined();
+  });
+
+  describe("an answer the link swallowed (BRO-3180 C)", () => {
+    const device = () => {
+      const backend = pickBackend("test", undefined, undefined);
+      setStoreForTests(durableStore(backend));
+      saveResume({ tab: "decisions" });
+      return backend;
+    };
+    const line = (view: Awaited<ReturnType<typeof mount>>) => view.id("unsent-line")?.textContent ?? "";
+    const unsentOf = () => {
+      flushDrafts();
+      return loadDrafts()[draftKey(askRefOf(asks[0] as DecisionAsk))]?.unsent;
+    };
+    /** Answer A1 from its card while the link is down, then come back on a fresh run of the plugin. */
+    const failThenReturn = async (between: () => void = () => undefined) => {
+      asks = [ask("A1")];
+      const backend = device();
+      const first = await mount({ tab: "decisions" });
+      await first.press(rows(first)[0]);
+      answerFail = new Error("Transport not connected (status: disconnected)");
+      await first.press(bar(first, "Answer"));
+      // Unconfirmed until verbs.list and the asks are read after the send; here they read at once, and show no answer.
+      expect(line(first)).toMatch(/may not have been sent|Not sent: your Mac has no answer/);
+      expect(bar(first, "Send again")).toBeTruthy();
+      expect(unsentOf()).toMatchObject({ hash: "0123456789abcdef", key: askHoldKey(asks[0] as DecisionAsk) });
+      first.unmount();
+      answerFail = null;
+      between();
+      setStoreForTests(durableStore(backend));
+      calls.length = 0;
+      const again = await mount({ tab: "decisions" });
+      for (let at = 0; at < 3; at += 1) await settle(60);
+      return again;
+    };
+
+    test("kept as Not sent across a remount; Send again is one tap, against the ask as read now", async () => {
+      const view = await failThenReturn();
+      expect(card(view)).toBeTruthy();
+      expect(line(view)).toContain("Not sent: your Mac has no answer");
+      // Nothing was sent by coming back.
+      expect(sent("ask.answer")).toEqual([]);
+      await view.press(bar(view, "Send again"));
+      expect(sent("ask.answer")).toEqual([
+        expect.objectContaining({ id: "A1", hash: "0123456789abcdef", option: "off" }),
+      ]);
+      expect(unsentOf()).toBeUndefined();
+    });
+
+    test("an ask that changed meanwhile: the first tap sends nothing, the second answers the new revision", async () => {
+      const view = await failThenReturn(() => {
+        asks = [ask("A1", { hash: "fedcba9876543210" })];
+      });
+      expect(line(view)).toContain("changed after you answered");
+      await view.press(bar(view, "Send again"));
+      expect(sent("ask.answer")).toEqual([]);
+      expect(toasts.join(" ")).toContain("This ask changed after you answered");
+      await settle(CONFIRM_MS);
+      await view.press(bar(view, "Send again"));
+      expect(sent("ask.answer")).toEqual([expect.objectContaining({ id: "A1", hash: "fedcba9876543210" })]);
+    });
+
+    test("a changed ask takes the two taps even when verbs.list fails or the asks read is degraded (P20 C round 1)", async () => {
+      for (const degrade of [
+        () => {
+          verbsFail = "daemon down";
+        },
+        () => {
+          askWarnings = ["one fleet scope was not read"];
+        },
+      ]) {
+        const view = await failThenReturn(() => {
+          asks = [ask("A1", { hash: "fedcba9876543210" })];
+          degrade();
+        });
+        expect(line(view)).toContain("changed after you answered");
+        await view.press(bar(view, "Send again"));
+        expect(sent("ask.answer")).toEqual([]);
+        view.unmount();
+        verbsFail = null;
+        askWarnings = [];
+      }
+    });
+
+    test("an undone answer on a changed ask still takes the two taps (spec review MAJOR 1)", async () => {
+      const view = await failThenReturn(() => {
+        asks = [ask("A1", { hash: "fedcba9876543210" })];
+        const key = askHoldKey(asks[0] as DecisionAsk);
+        recent = [
+          {
+            ...ledgerEntry("ask.answer", key, "Answered"),
+            settledAt: new Date().toISOString(),
+            outcome: "dropped",
+            detail: "moved",
+          },
+        ];
+      });
+      expect(line(view)).toContain("changed after you answered");
+      await view.press(bar(view, "Send again"));
+      expect(sent("ask.answer")).toEqual([]);
+    });
+
+    test("an answer that reached the Mac after all is said once, and nothing is offered again", async () => {
+      const view = await failThenReturn(() => {
+        pending = [ledgerEntry("ask.answer", askHoldKey(asks[0] as DecisionAsk), "Answered")];
+      });
+      expect(toasts.join(" ")).toContain("reached your Mac");
+      expect(line(view)).toBe("");
+      expect(unsentOf()).toBeUndefined();
+      expect(sent("ask.answer")).toEqual([]);
+    });
+
+    test("a verb from before the send is not this answer's", async () => {
+      const view = await failThenReturn(() => {
+        const old = ledgerEntry("ask.answer", askHoldKey(asks[0] as DecisionAsk), "Answered");
+        recent = [
+          {
+            ...old,
+            at: new Date(Date.now() - SKEW_MS - 120_000).toISOString(),
+            settledAt: old.at,
+            outcome: "applied",
+            detail: "",
+          },
+        ];
+      });
+      expect(line(view)).toContain("Not sent");
+      expect(toasts.join(" ")).not.toContain("went through");
+    });
+
+    test("an ask answered meanwhile is said once, and its draft goes only after verbs.list was read", async () => {
+      await failThenReturn(() => {
+        asks = [ask("A1", { state: "answered", answeredAt: new Date().toISOString(), answer: "Keep them off" })];
+      });
+      expect(toasts.join(" ")).toContain("is no longer open: nothing more was sent from this phone");
+      flushDrafts();
+      expect(loadDrafts()[draftKey(askRefOf(asks[0] as DecisionAsk))]).toBeUndefined();
+      expect(sent("ask.answer")).toEqual([]);
+    });
+
+    test("editing your words after a failed send keeps it unsent: Send again sends what the card shows", async () => {
+      asks = [ask("A1")];
+      device();
+      const view = await mount({ tab: "decisions" });
+      await view.press(rows(view)[0]);
+      answerFail = new Error("Transport not connected");
+      await view.press(bar(view, "Answer"));
+      answerFail = null;
+      await write(card(view)?.querySelector("textarea"), "Only after the demo.");
+      await settle(400);
+      expect(unsentOf()).toMatchObject({ hash: "0123456789abcdef" });
+      expect(bar(view, "Send again")).toBeTruthy();
+      await view.press(bar(view, "Send again"));
+      expect(sent("ask.answer").at(-1)).toMatchObject({ id: "A1", note: "Only after the demo." });
+    });
+
+    test("a refusal is the server's answer: said, and nothing kept to send again", async () => {
+      asks = [ask("A1")];
+      device();
+      const view = await mount({ tab: "decisions" });
+      await view.press(rows(view)[0]);
+      answerFail = Object.assign(
+        new Error("This ask changed since you read it. requestType=plugin.rpc.invoke.request"),
+        {
+          requestType: "plugin.rpc.invoke.request",
+        },
+      );
+      await view.press(bar(view, "Answer"));
+      expect(line(view)).toBe("");
+      expect(bar(view, "Send again")).toBeNull();
+      expect(unsentOf()).toBeUndefined();
+    });
   });
 
   test("an ask that says allow_other: false offers no Other row (BRO-3146)", async () => {

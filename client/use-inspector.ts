@@ -54,7 +54,14 @@ export interface Inspector {
   selectHold: (key: string) => void;
   selectWork: (id: string) => void;
   /** Send a verb on a target through the one adapter; true when it was sent (or opened), false when it failed or one was already in flight. */
-  act: (verb: VerbId, target: VerbTarget, choice?: string, words?: string, confirmed?: boolean) => Promise<boolean>;
+  act: (
+    verb: VerbId,
+    target: VerbTarget,
+    choice?: string,
+    words?: string,
+    confirmed?: boolean,
+    onFail?: (error: unknown) => void,
+  ) => Promise<boolean>;
   targetOf: (hold: NeedEntry | null) => VerbTarget;
   /** A card's own verb: Deny and Answer open the inspector, the rest are sent. */
   onCardVerb: (hold: NeedEntry, id: string) => void;
@@ -125,6 +132,8 @@ export function useInspector({
     choice?: string,
     words?: string,
     confirmed = false,
+    // Told why a send failed, beside the toast: the phone keeps an answer that got no reply (BRO-3180 C).
+    onFail?: (error: unknown) => void,
   ): Promise<boolean> => {
     const id =
       target.row?.key ?? (target.item ? `work:${target.item.id}` : (target.proposal ?? target.notice?.key ?? verb));
@@ -152,6 +161,7 @@ export function useInspector({
     } catch (error) {
       sent = false;
       toast.error(errorText(error));
+      onFail?.(error);
     } finally {
       void landed.catch(() => undefined).then(() => inFlight.current.delete(id));
     }

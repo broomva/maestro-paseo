@@ -132,6 +132,8 @@ export type InspectorItem =
       fallback?: { line: string; elapsed?: number };
       /** Why it cannot be answered here (an id collision, split copies): no Answer is offered, and this says why. */
       refusal?: string;
+      /** An answer from this card that got no reply (BRO-3180 C): what became of it, said above the verbs. */
+      unsent?: string;
       /** Decision layer v2 (BRO-3167): summary, tradeoffs, sources, media, details; absent for an ask with none. */
       rich?: RichView;
     })
@@ -594,6 +596,17 @@ export function InspectorBody({
           keys={keys}
         />,
       );
+      if (item.unsent)
+        sections.push(
+          <Text
+            key="unsent"
+            testID="unsent-line"
+            accessibilityRole="alert"
+            style={{ color: kit.warn, fontSize: 13.5, lineHeight: 19 }}
+          >
+            {item.unsent}
+          </Text>,
+        );
       if (item.refusal)
         sections.push(
           <Text key="refusal" accessibilityRole="alert" style={{ color: kit.warn, fontSize: 13.5, lineHeight: 19 }}>

@@ -1,14 +1,18 @@
 # Maestro on the phone: where you left it, and answers that survive the link (BRO-3180 B + C)
 
 Date: 2026-10-17. Ticket: BRO-3180, parts 3 and 4. Part A (keyboard and caret) is PR #84.
-Status: revision 2, after one devil's-advocate review (3/10, which found a host fact that reshapes part C; every
-finding is answered below).
+Status: revision 3. Revision 2 followed one devil's-advocate review (3/10, which found a host fact that reshapes
+part C). Part B shipped as #87. Revision 3 makes part C buildable on that code: what counts as "not sent", where the
+record lives, the clock, and the changed-ask tap. One Opus devil's-advocate review of revision 3's first draft
+(6/10, three MAJORs) is folded in: an undone verb no longer bypasses the two taps, B's sweep waits for the
+resolution, and a matched verb is "an answer", never "your answer".
 
 ## Objective
 
 - **Part B.** Leaving Maestro and coming back lands on the same tab, the same ask and the same typed words. That
   holds across a screen change, a plugin reload, the link dropping and coming back, and an app restart.
-- **Part C.** An answer is never lost to the link. It is kept with the exact revision it was given against.
+- **Part C.** On iOS and the web, an answer is never lost to the link. Android stores in memory only, and a link
+  drop re-evaluates the module, so there it is not kept. It is kept with the exact revision it was given against.
   Once the link is back, its fate is read from the server and shown: sent, applied, undone, or not sent. When
   it was not sent, one tap sends it again through today's path, against the current revision.
 
@@ -104,45 +108,82 @@ Drafts are written through with a 300 ms debounce. The tab, the card and an unse
 
 ### Keeping an unsent answer
 
-`act("answer")` (`client/use-inspector.ts:122`) runs as today. When the call throws anything other than a server
-refusal (`UserError` text), the draft gets:
+The phone answers through `answer()` in `client/phone/shell.tsx`, which calls `inspector.act("answer")`
+(`client/use-inspector.ts`). `act` gains an optional `onFail(error)` callback, so the shell learns why a send
+failed. Everything else about `act` stays the same, including the toast.
+
+**What counts as not sent: the call got no reply.** Any error the server's handler throws comes back over the wire
+as `rpc_error`. The Paseo client raises that as a `DaemonRpcError`, which carries a `requestType` property and
+appends `requestType=… [code=…]` to its message (`packages/client/src/daemon-client.ts`). The plugin's `invoke` passes
+it through unwrapped (`surface-runtime.ts`). The check reads the property first, and the message second. A `ZodError`
+(an input or output this client could not parse) is no dropped link either. A stale hash, a closed ask and `ALREADY_PENDING` are all replies. An
+error **without** `requestType=` never reached a reply: `Transport not connected…`, `Timed out waiting for
+connection…`, `Connection lost`, `Connection lost before message could be sent`. Only those keep an unsent record.
+`Connection lost` can come after the request went out, so the first line says "may not have been sent", never "not
+sent", until fresh reads decide. A refusal is said
+as today and keeps nothing, because the server has already decided it.
+
+The record lives on the B draft of that ask (`maestro-paseo.v1.phone.drafts`, keyed by the ask's identity):
 
 ```ts
-type Unsent = { input: AnswerInput; at: number; error: string }; // exactly what was sent, original hash included
+type Unsent = { at: number; hash: string; key: string; error: string };
+// at: the phone's clock when sent. hash: the revision it was sent against. key: the hold key the server files the
+// verb under (askHoldKey), as it was at send time.
 ```
 
-Examples: `Transport not connected`, `Timed out waiting for connection…`, `Connection lost`, and the client's own
-`No reply in …` (`client/answer-timeout.ts`).
+The choice and words are the draft's own, so editing them after a failed send edits what Send again sends.
+Answering again replaces the record: a send that gets a reply, success or refusal, clears it. Editing the choice or
+the words keeps the record. Clearing both drops it, since nothing is left to send.
 
-No classification is needed, because nothing auto-sends. The card shows "Not sent yet: the link to your Mac
-dropped". The answer stays in the draft, so it survives the unmount and the reconnect.
+**The changed-ask check needs no read.** The record's hash and the hash of the ask on screen are both local. When
+they differ, the first tap sends nothing, even while `verbs.list` has failed or the asks read carries warnings
+(P20 C round 1, reproduced).
+
+Until fresh reads decide, the card shows "Not confirmed: the link dropped before your Mac answered, so this may not
+have been sent." The primary verb reads **Send again**.
 
 ### Resolving it after reconnect
 
-On mount, once a fresh read of both `verbs.list` and `asks.workspace` exists, each unsent answer is resolved in this
-order:
+Once reads of both `verbs.list` and `asks.workspace` have landed **after the record's send** (`dataUpdatedAt > at`,
+no error), each unsent record is resolved. "After mount" is not enough: a reply that timed out leaves the screen
+mounted, holding reads from before the send. B's sweep never deletes a draft that carries a record. The resolution
+owns it, so a closed ask cannot take the record before `verbs.list` has been read. The order:
 
-1. **`verbs.list` has an `ask.answer` verb for this ask, at or after `unsent.at`** (pending, or recent applied,
-   undone or dropped). The ledger keeps these by key for 24 h.
-   - Pending: "Sent, applies in N s". The undo toast is offered.
-   - Applied: "Answered". The draft is cleared.
-   - Undone or dropped: "Not sent (undone)". Never re-sent on its own; offered as Send again.
-2. **No verb, the ask is in the read, open, same hash**: "Not sent", with **Send again**.
-3. **No verb, the ask is in the read, open, hash changed**: "This ask changed since you answered". The card opens
-   with your choice and words as the draft, and you answer the current revision deliberately.
-4. **No verb, the ask is answered, `answeredAt` after `unsent.at`**: "Answered meanwhile". The answer is shown and
-   the draft is kept for you to discard.
-5. **The ask is not in the read**: no conclusion (see the absence rule). It stays "Not sent".
+1. **`verbs.list` has an `ask.answer` verb under the record's key, with `at` no earlier than `unsent.at − 60 s`.**
+   - The 60 s absorbs clock skew between the phone and the Mac.
+   - Only the key from send time counts. Adding the key as read now would widen collisions.
+   - `verbs.list` carries no sender, so a match is "an answer", which may have come from the desktop. The phone
+     never says "your answer".
+   - The newest match decides:
+     - Pending: a one-time toast, "An answer to <ask> reached your Mac: it applies in N s." The record is cleared.
+       The 8 s undo window has almost always passed by then, and the server would refuse a second answer
+       (`ALREADY_PENDING`).
+     - Applied: a one-time toast, "An answer to <ask> went through." The record is cleared.
+     - Undone or dropped: "Not sent from here: an answer to this ask was undone", with **Send again**. If the ask's
+       hash changed, step 4's two taps apply.
+2. **The ask is in a trusted read and no longer open:** a one-time toast, "<ask> is no longer open: nothing more was
+   sent from this phone." The record is cleared, and B's sweep deletes the draft. The toast does not claim whether
+   the answer was ours: past `verbs.list`'s 24 h it cannot know.
+3. **The ask is open, at the record's hash, and no verb matched:** "Not sent: your Mac has no answer to this ask",
+   with **Send again**.
+4. **The ask is open, and its hash changed:** "Not sent, and this ask changed after you answered. Read it again."
+   **The first tap on Send again sends nothing.** It says the ask changed and moves the record onto the current
+   revision. Only a second, deliberate tap answers that revision.
+   This holds whatever the reads say. The hashes are local, so the card says "changed" and the first tap sends
+   nothing even when `verbs.list` failed.
+5. **The ask is not in the read, or the reads are older than the send:** no conclusion (B's absence rule). It stays
+   "Not confirmed".
 
-**Send again** is `act("answer")` against the ask *as read now*: its current hash, today's irreversible-option
-confirm, toast and undo window. The stored `input` is only what pre-fills the card.
+**Send again** is the ordinary `answer()`, sent against the ask *as read now*: its current hash, the irreversible
+option's confirm, the toast and the undo window.
 
 ### Invariants
 
 - No answer is sent without a tap made after reconnect, with the current ask on screen.
-- An unsent answer is resolved only from positive evidence in fresh reads, never from absence.
-- One unsent answer per ask: answering the ask again replaces it.
-- Server semantics are unchanged; the server still refuses a stale hash, a closed ask and a pending duplicate.
+- A changed ask takes two taps: the first only says it changed.
+- An unsent record is resolved only from positive evidence in fresh reads, never from absence.
+- One unsent record per ask.
+- Server semantics are unchanged: the server still refuses a stale hash, a closed ask and a pending duplicate.
 
 ## Alternatives considered
 
@@ -157,14 +198,20 @@ confirm, toast and undo window. The stored `input` is only what pre-fills the ca
 - **Rely on the Paseo client's send queue.** Rejected because it holds a request only while `connecting`, times
   out, and lives in memory that the unmount discards.
 - **Re-stamp a stale answer with the new hash.** Rejected because it applies an answer the owner never saw against
-  the new revision.
+  the new revision. Revision 3's changed-ask tap does move the record onto the new hash, but only after a tap that
+  sends nothing and says the ask changed. The answer then goes out on a second tap, with the new revision on screen.
+- **Classify by error text** ("Transport not connected", "timed out"). Rejected because the host's wording is not
+  API. "Did a reply arrive" is structural: every handler error carries `requestType=`.
+- **Re-offer the undo toast for a pending verb found after reconnect.** Not built: the 8 s window has almost always
+  passed by the time a reconnect remounts the plugin. The line says when it applies.
 - **Key drafts by the hold key, or by `(key, hash)`.** Rejected because the first changes when an ask moves home,
   and the second drops the text on any edit to the ask.
 
 ## Non-goals
 
 - **Answering while disconnected.** The host unmounts plugins (above). Keeping Maestro mounted offline needs a
-  Paseo change, which goes upstream as an issue on getpaseo/paseo once the coordinator approves filing it.
+  Paseo change: filed upstream as getpaseo/paseo#7247 (keep plugins mounted, which getpaseo/paseo#6731 would do,
+  and expose the connection state to plugins).
 - Offline verbs other than answering an ask.
 - Android durability beyond memory.
 - Syncing drafts between devices: drafts are per device by design.
@@ -177,6 +224,10 @@ confirm, toast and undo window. The stored `input` is only what pre-fills the ca
   the reported failure.
 - The resolution reads `verbs.list` for 24 h only. An unsent answer older than that falls to steps 2–5, which are
   still safe because nothing auto-sends.
+- **Two runs of the plugin can overlap.** An old run's failed-send write can land after the new run has cached the
+  drafts. The new run's next debounced save could then drop that record. The record is written straight to storage
+  (`flushDrafts`) to keep the window small. Closing it fully needs a merge on write, judged not worth it for a
+  reply that arrives after a remount.
 - `Settings` inside the Paseo iOS app is unproven: it is a default pod, but only the owner's phone can show it. If
   it fails, iOS degrades to memory, and the receipt says so.
 
@@ -203,7 +254,7 @@ confirm, toast and undo window. The stored `input` is only what pre-fills the ca
 - Mutation-proven: drop the restore, key by the hold key, sweep on absence.
 
 **PR C**
-- `bun test client/phone/unsent.test.ts` passes, covering:
+- `bun test client/phone/unsent.test.ts client/phone/shell.render.test.tsx` passes, covering:
   - each resolution branch, including undone and dropped from `verbs.list`;
   - no conclusion on absence;
   - one unsent answer per ask;
