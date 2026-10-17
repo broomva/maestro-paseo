@@ -4,11 +4,12 @@
 // The model decides what is offered (client/phone/model.ts); this draws it and hands every press up.
 
 import type { PluginTheme } from "@getpaseo/plugin";
-import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
+import { Icon } from "@getpaseo/plugin/client/react-native";
 import { Pressable, Text, View } from "react-native";
 import { ANSWER_NOTE_CHARS } from "../../shared/fleet";
 import { tint } from "../fleet-color";
 import { DeckHold } from "../kit/deck";
+import { DraftInput } from "../kit/draft-input";
 import type { Choice, InspectorItem } from "../kit/inspector";
 import { KIND_LOOK, OTHER_CHOICE, withoutRefused, wordsPlaceholder } from "../kit/inspector-model";
 import { Dot, MONO, TABULAR } from "../kit/parts";
@@ -298,7 +299,7 @@ export function HoldCard({
       ) : null}
       {item.kind === "ask" && refusal === null ? (
         <View style={{ gap: 6 }}>
-          <TextInput
+          <DraftInput
             testID="deck-words"
             accessibilityLabel={
               needsWords ? `Your words for ${item.title}` : `A note on your answer for ${item.title} (optional)`

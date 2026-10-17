@@ -12,21 +12,35 @@
 // 52 pt and pinned at the bottom, its bar solid (no blur on iOS).
 
 import type { PluginTheme } from "@getpaseo/plugin";
-import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, PanResponder, Platform, Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
+import { Icon } from "@getpaseo/plugin/client/react-native";
+import { type ElementRef, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Animated,
+  type LayoutChangeEvent,
+  PanResponder,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+  type ViewStyle,
+} from "react-native";
 import { tint } from "../fleet-color";
+import { useKeyboardInset } from "../phone/keyboard";
+import { revealScroll } from "../phone/keyboard-lift";
 import { OptionThumbs, RichDetails, RichGlance } from "../rich-ask";
 import { mediaOfOption, type RichView } from "../rich-ask-model";
 import { typingIn, useReducedMotion, webAria } from "../ui";
 import { type Directions, DRAG_NATIVE_DRIVER, type FrostLook, frostLook, keysHint, nativeDriver } from "./assumptions";
 import { DECK, deckCaptures, deckRelease } from "./deck-model";
 import { DetailHeader } from "./detail-header";
+import { DraftInput } from "./draft-input";
 import {
   answerLabel,
   type InspectorKind,
   inspectorHidden,
   KIND_LOOK,
+  OTHER_CHOICE,
   panelVerbsFor,
   type VerbSpec,
   verbsFor,
@@ -306,6 +320,14 @@ function Tile({ theme, title, children }: { theme: PluginTheme; title: string; c
   );
 }
 
+/** What the phone card holds of its words field (BRO-3180): a ref to focus it, and where it sits while you type. */
+export type WordsFieldHooks = {
+  ref: RefObject<ElementRef<typeof DraftInput> | null>;
+  onFocus: () => void;
+  onBlur: () => void;
+  onLayout: (event: LayoutChangeEvent) => void;
+};
+
 /** Your words, optional: the field J3 puts under the options, and J4 under a notice for its prompt. */
 function WordsField({
   theme,
@@ -313,16 +335,23 @@ function WordsField({
   onChange,
   placeholder,
   label,
+  field,
 }: {
   theme: PluginTheme;
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
   label: string;
+  /** The phone card's hold on the field: focus it, and keep it in view above the keyboard (BRO-3180). */
+  field?: WordsFieldHooks;
 }) {
   const kit = kitOf(theme);
   return (
-    <TextInput
+    <DraftInput
+      ref={field?.ref}
+      onFocus={field?.onFocus}
+      onBlur={field?.onBlur}
+      onLayout={field?.onLayout}
       value={value}
       onChangeText={onChange}
       multiline
@@ -437,9 +466,12 @@ export function InspectorBody({
   onWords,
   locked = false,
   keys = false,
+  field,
 }: {
   theme: PluginTheme;
   item: InspectorItem;
+  /** The phone card's hold on the words field (BRO-3180). */
+  field?: WordsFieldHooks;
   compact?: boolean;
   onOpenSession?: () => void;
   onChoose?: (id: string) => void;
@@ -597,6 +629,7 @@ export function InspectorBody({
             onChange={onWords}
             placeholder={item.kind === "ask" ? wordsPlaceholder(item.options, chosen) : "Add words (optional)"}
             label={item.fieldLabel ?? `Your words for ${item.title}`}
+            field={field}
           />,
         );
       if (item.rich?.rich?.details)
@@ -943,6 +976,78 @@ function useSlide(shown: boolean, value: Animated.Value, hidden: number, reduced
   return present;
 }
 
+/** The card's scroll content starts this far down: a field's place in the body plus this is its place in the scroll. */
+const CARD_PAD_TOP = 18;
+
+type Focusable = { focus?: () => void };
+
+/**
+ * The phone card's words field kept in view while you type (BRO-3180): where the field sits in the scroll, how much
+ * the scroll shows, and where it is scrolled; focusing the field, its growing a line, and the keyboard rising each
+ * scroll it into full view when it is not. `focusSoon` focuses it after the render that chose Other.
+ */
+function useTypingInView(itemKey: string, inset: number) {
+  const scroll = useRef<ScrollView | null>(null);
+  const ref = useRef<ElementRef<typeof DraftInput> | null>(null);
+  const at = useRef({ top: -1, height: 0, viewport: 0, scrolled: 0, focused: false });
+  const pending = useRef(false);
+  const reveal = () => {
+    const now = at.current;
+    if (!now.focused || now.top < 0) return;
+    const to = revealScroll({ top: now.top, height: now.height }, now.viewport, now.scrolled);
+    if (to === null) return;
+    now.scrolled = to;
+    scroll.current?.scrollTo({ y: to, animated: true });
+  };
+  const revealRef = useRef(reveal);
+  revealRef.current = reveal;
+  // Another ask starts at the top of its own scroll (the ScrollView is keyed by it), with its field not yet laid out.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: itemKey is the reset trigger
+  useEffect(() => {
+    at.current = { ...at.current, top: -1, scrolled: 0 };
+  }, [itemKey]);
+  // The keyboard rose or fell: the scroll shows a different height, so the field may now be under it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: inset is the trigger; the scroll's own layout follows it
+  useEffect(() => {
+    const timer = setTimeout(() => revealRef.current(), 0);
+    return () => clearTimeout(timer);
+  }, [inset]);
+  useEffect(() => {
+    if (!pending.current) return;
+    pending.current = false;
+    (ref.current as Focusable | null)?.focus?.();
+  });
+  const field: WordsFieldHooks = {
+    ref,
+    onFocus: () => {
+      at.current.focused = true;
+      reveal();
+    },
+    onBlur: () => {
+      at.current.focused = false;
+    },
+    onLayout: (event) => {
+      at.current.top = event.nativeEvent.layout.y + CARD_PAD_TOP;
+      at.current.height = event.nativeEvent.layout.height;
+      reveal();
+    },
+  };
+  return {
+    scroll,
+    field,
+    focusSoon: () => {
+      pending.current = true;
+    },
+    onViewport: (event: LayoutChangeEvent) => {
+      at.current.viewport = event.nativeEvent.layout.height;
+      reveal();
+    },
+    onScroll: (event: { nativeEvent: { contentOffset: { y: number } } }) => {
+      at.current.scrolled = event.nativeEvent.contentOffset.y;
+    },
+  };
+}
+
 /** The width a sideways swipe on the phone card is measured against: the 393 pt column less its margins. */
 const CARD_SWIPE_WIDTH = 360;
 
@@ -1202,6 +1307,9 @@ export function InspectorCard({
   const present = useSlide(open, y, height, reduced, DRAG_NATIVE_DRIVER);
   const picked = useChoice(item);
   const origin = useRef(0);
+  const root = useRef<View>(null);
+  const inset = useKeyboardInset(root, safeBottom);
+  const typing = useTypingInView(item.key, inset);
   const responder = useMemo(() => {
     const home = (velocity: number) =>
       Animated.spring(y, { toValue: 0, velocity, useNativeDriver: DRAG_NATIVE_DRIVER }).start();
@@ -1238,6 +1346,7 @@ export function InspectorCard({
   if (!present) return null;
   return (
     <View
+      ref={root}
       testID="inspector-card-root"
       style={[
         open ? PASS_THROUGH : { pointerEvents: "none" },
@@ -1263,7 +1372,8 @@ export function InspectorCard({
           top: 12,
           left: 0,
           right: 0,
-          bottom: 0,
+          // The keyboard covers the bottom of the screen and the host insets nothing (BRO-3180): the card ends on it.
+          bottom: inset,
           backgroundColor: kit.bg,
           borderTopLeftRadius: 22,
           borderTopRightRadius: 22,
@@ -1283,7 +1393,13 @@ export function InspectorCard({
         {/* Keyed by the item: the next ask in a series (BRO-3172) starts at its top, not where the last was scrolled. */}
         <ScrollView
           key={item.key}
-          contentContainerStyle={{ paddingVertical: 18, paddingHorizontal: 20, paddingBottom: 32 }}
+          ref={typing.scroll}
+          testID="inspector-card-scroll"
+          onLayout={typing.onViewport}
+          onScroll={typing.onScroll}
+          scrollEventThrottle={16}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ paddingVertical: CARD_PAD_TOP, paddingHorizontal: 20, paddingBottom: 32 }}
         >
           <InspectorBody
             theme={theme}
@@ -1293,9 +1409,14 @@ export function InspectorCard({
             // With the screen keeping the pick (onChoose), the card shows the screen's: a pick made on the deck after the
             // card closed is the one it reopens on, never a stale one of its own (Codex P20 round 3).
             choice={onChoose && (item.kind === "ask" || item.kind === "review") ? item.chosen : picked.choice}
-            onChoose={onChoose ?? picked.choose}
+            onChoose={(id) => {
+              (onChoose ?? picked.choose)(id);
+              // Other takes your words: its field takes the focus and comes into view (BRO-3180).
+              if (id === OTHER_CHOICE) typing.focusSoon();
+            }}
             words={words}
             onWords={item.kind === "ask" ? onWords : undefined}
+            field={typing.field}
           />
         </ScrollView>
         <View
@@ -1304,7 +1425,8 @@ export function InspectorCard({
             flexDirection: "row",
             gap: 10,
             paddingTop: 12,
-            paddingBottom: 16 + safeBottom,
+            // Over the keyboard the home indicator is covered: the bar sits on the keyboard, not a safe area above it.
+            paddingBottom: inset > 0 ? 12 : 16 + safeBottom,
             paddingHorizontal: 16,
             borderTopWidth: 1,
             borderTopColor: kit.hairline,
