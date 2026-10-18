@@ -116,7 +116,15 @@ function Metric({
 
 function Maestro() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [view, setView] = useState<View>("feed");
+  const [view, setView] = useState<View>(() => {
+    if (typeof window !== "undefined") {
+      const q = new URLSearchParams(window.location.search).get("view");
+      if (q && (VIEWS as readonly string[]).includes(q)) return q as View;
+      const h = window.location.hash.replace("#", "");
+      if (h && (VIEWS as readonly string[]).includes(h)) return h as View;
+    }
+    return "feed";
+  });
   const [search, setSearch] = useState("");
   const [healthTab, setHealthTab] = useState("overview");
   const [workTab, setWorkTab] = useState("list");
