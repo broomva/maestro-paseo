@@ -22,6 +22,7 @@ import { Launchd, launchdPresence } from "./server/launchd";
 import { Loop } from "./server/loop";
 import { homeWriter, Loops } from "./server/loops";
 import { gitLedger, loopPaths, loopReposPath, multiLedger } from "./server/loops-ledger";
+import { startMcpReadBridge } from "./server/mcp-read-bridge";
 import { firstSeenMemory, handledOf, readNeeds } from "./server/needs";
 import { NoticeSnoozes } from "./server/notice-snoozes";
 import { noticesOf } from "./server/notices";
@@ -936,6 +937,31 @@ export default function contribute(host: PluginServerContext) {
   // The loop's next wake, from Settings and its log: a restart keeps its cadence.
   void loop.reschedule();
 
+  const stopMcpBridge = startMcpReadBridge(
+    {
+      needs: () => needsNow(),
+      work: () => engine.list(),
+      asks: async () => {
+        const [asks, complete] = await allAsks();
+        return { asks, complete };
+      },
+      answers: async () => {
+        const landing = await (lander?.state() ?? Promise.resolve(null));
+        const all = workspace ? (await workspace.read()).all : [];
+        return answersStatus(router ? await router.fates(all, landing) : all, landing);
+      },
+      notices: () => noticesNow(),
+      fleet: () => fleet.get(undefined, 5),
+      loops: () => loops.get(),
+      initiatives: async () => {
+        if (!initiatives) return { controlRepo: "", today: "", initiatives: [], ideas: [], warnings: [] };
+        if (!latest) throw new UserError("Open Maestro in Paseo once to connect the initiative reader.");
+        return initiatives.view(latest);
+      },
+    },
+    log,
+  );
+
   return async () => {
     sweep.stop();
     cards.stop();
@@ -946,6 +972,6 @@ export default function contribute(host: PluginServerContext) {
     fleet.stop();
     awakeClock?.stop();
     engine.stop();
-    await stopSocket();
+    await Promise.all([stopSocket(), stopMcpBridge()]);
   };
 }
