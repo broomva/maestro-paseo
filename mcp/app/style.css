@@ -64,12 +64,17 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-button,
+button {
+  font: inherit;
+  color: inherit;
+}
+
 input,
 textarea,
 select {
   font: inherit;
   color: inherit;
+  font-size: 16px;
 }
 
 button {
@@ -1444,11 +1449,13 @@ h1 {
 @media (max-width: 680px) {
   /* True edge-to-edge native iOS layout */
   .maestro {
-    padding: 0 0 calc(76px + env(safe-area-inset-bottom, 16px)) 0;
+    padding: 0 0 20px 0;
     max-width: 100%;
     width: 100%;
     border-radius: 0;
     background: transparent;
+    position: relative;
+    overflow-x: hidden;
   }
 
   /* Seamless edge-to-edge top navigation header */
@@ -1496,70 +1503,70 @@ h1 {
   }
 
   .navigation {
-    display: block;
-    gap: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 2px;
   }
 
-  /* Native iOS Bottom Tab Bar */
+  /* Seamless Top Segmented Navigation Pills */
   .tabs {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    z-index: 95;
-    height: calc(52px + env(safe-area-inset-bottom, 12px));
-    padding: 4px 8px max(8px, env(safe-area-inset-bottom, 8px));
-    background: rgba(22, 22, 26, 0.88);
-    -webkit-backdrop-filter: blur(32px) saturate(200%);
-    backdrop-filter: blur(32px) saturate(200%);
-    border-top: 0.5px solid rgba(255, 255, 255, 0.16);
-    border-radius: 0;
-    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.4);
+    position: static;
     display: flex;
-    justify-content: space-around;
-    align-items: center;
-    gap: 0;
+    gap: 4px;
+    padding: 3px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    width: 100%;
+    background: rgba(120, 120, 128, 0.14);
+    border-radius: var(--r-pill);
+    box-shadow: none;
+    border-top: none;
     margin: 0;
   }
 
   :root[data-theme="light"] .tabs {
-    background: rgba(250, 250, 252, 0.92);
-    border-top: 0.5px solid rgba(0, 0, 0, 0.12);
-    box-shadow: 0 -2px 16px rgba(0, 0, 0, 0.06);
+    background: rgba(118, 118, 128, 0.12);
   }
 
   .tabs button {
     flex: 1;
-    flex-direction: column;
-    gap: 3px;
-    padding: 3px 2px;
-    min-height: 44px;
+    flex-direction: row;
+    gap: 6px;
+    padding: 6px 10px;
+    min-height: 32px;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--r-pill);
     background: transparent;
-    color: #8e8e93;
-    font-size: 0.625rem;
+    color: var(--muted);
+    font-size: 0.8125rem;
     font-weight: 500;
     letter-spacing: -0.01em;
     box-shadow: none;
+    white-space: nowrap;
   }
 
   .tabs button:not([aria-current="page"]):hover {
-    background: transparent;
+    background: var(--control-fill);
     color: var(--fg);
   }
 
   .tabs button svg {
-    width: 20px;
-    height: 20px;
+    width: 14px;
+    height: 14px;
   }
 
   .tabs button[aria-current="page"] {
-    background: transparent;
-    color: var(--accent);
+    background: var(--control-selected);
+    color: var(--fg);
     font-weight: 600;
-    box-shadow: none;
-    border: none;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  }
+
+  :root[data-theme="light"] .tabs button[aria-current="page"] {
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   }
 
   .tabs button[aria-current="page"] svg {
@@ -1568,18 +1575,16 @@ h1 {
   }
 
   .tab-count {
-    position: absolute;
-    top: 2px;
-    right: calc(50% - 16px);
-    font-size: 9px;
-    font-weight: 700;
-    padding: 1px 4px;
-    min-width: 14px;
-    height: 14px;
-    line-height: 12px;
+    position: static;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    padding: 1px 5px;
+    min-width: 16px;
+    height: 16px;
+    line-height: 14px;
     border-radius: 999px;
-    background: var(--accent);
-    color: #ffffff;
+    background: rgba(120, 120, 128, 0.2);
+    color: var(--muted);
   }
 
   .tabs button[aria-current="page"] .tab-count {
@@ -2163,29 +2168,27 @@ h1 {
 }
 
 /* Mobile Responsive Drawer Bottom Sheet */
-@media (max-width: 640px) {
+@media (max-width: 680px) {
   .sheet-backdrop {
     display: block;
-    position: fixed;
-    top: 54px;
-    left: 0;
-    right: 0;
-    bottom: calc(52px + env(safe-area-inset-bottom, 12px));
+    position: absolute;
+    inset: 0;
     background: rgba(0, 0, 0, 0.45);
-    z-index: 70;
+    z-index: 40;
     -webkit-backdrop-filter: blur(4px);
     backdrop-filter: blur(4px);
     animation: fadeIn 0.2s ease;
   }
 
   .inspector-sheet {
-    position: fixed;
-    bottom: calc(52px + env(safe-area-inset-bottom, 12px));
+    position: absolute;
+    top: 6px;
     left: 0;
     right: 0;
-    z-index: 80;
-    height: 72vh;
-    max-height: 78vh;
+    bottom: 0;
+    z-index: 50;
+    height: auto;
+    max-height: none;
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
     border-top-left-radius: 24px;
@@ -2208,7 +2211,16 @@ h1 {
   }
 
   .sheet-bar {
-    padding-bottom: max(16px, env(safe-area-inset-bottom, 16px));
+    position: sticky;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 25;
+    padding: 12px 16px max(14px, env(safe-area-inset-bottom, 14px));
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
   }
 }
 
