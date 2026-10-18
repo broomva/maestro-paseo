@@ -31,9 +31,15 @@ for (const width of [1100, 728, 390]) {
     await page.locator(".work-row").click();
     await expect(page.getByRole("heading", { name: "Acceptance checks" })).toBeVisible();
     await page.getByRole("button", { name: "Close work details" }).click();
+    await page.locator("main").evaluate(async (el) => {
+      await Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished.catch(() => {})));
+    });
     await page.screenshot({ path: `/tmp/maestro-t3-${width}-light.png`, fullPage: true });
     await page.getByRole("button", { name: "Switch to dark theme" }).click();
     await nav.getByRole("button", { name: /^Decisions/ }).click();
+    await page.locator("main").evaluate(async (el) => {
+      await Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished.catch(() => {})));
+    });
     await page.screenshot({ path: `/tmp/maestro-t3-${width}-dark.png`, fullPage: true });
     expect(errors).toEqual([]);
   });
@@ -95,4 +101,45 @@ test("same-title holds navigate by identity and work details follow refresh", as
   await page.getByRole("button", { name: "Refresh Maestro" }).click();
   await expect(page.getByText(/This work item is no longer available/)).toBeVisible();
   await expect(page.locator(".inspector")).toHaveCount(0);
+});
+
+test("glass respects reduced transparency, high contrast and reduced motion", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByText("Sample data", { exact: true })).toBeVisible();
+  await expect(page.locator(".chrome")).toHaveCSS("backdrop-filter", /blur/);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-transparency", value: "reduce" }],
+  });
+  await expect(page.locator(".chrome")).toHaveCSS("backdrop-filter", "none");
+  await expect(page.locator(".chrome")).toHaveCSS("background-color", "rgb(17, 17, 17)");
+  await cdp.send("Emulation.setEmulatedMedia", {
+    features: [
+      { name: "prefers-contrast", value: "more" },
+      { name: "prefers-reduced-motion", value: "reduce" },
+    ],
+  });
+  await expect(page.locator(".chrome")).toHaveCSS("backdrop-filter", "none");
+  await page.getByRole("button", { name: "Switch to light theme" }).click();
+  const foreground = await page.locator("h1").evaluate((el) => getComputedStyle(el).color);
+  await expect(page.locator(".subtitle")).toHaveCSS("color", foreground);
+  const tab = page.getByRole("navigation").getByRole("button", { name: /^Feed/ });
+  await expect(tab).toHaveCSS("transition-duration", "0s");
+  await tab.hover();
+  await page.mouse.down();
+  await expect(tab).toHaveCSS("transform", "none");
+  await page.mouse.up();
+  await page.screenshot({ path: "/tmp/maestro-glass-accessible.png", fullPage: true });
+});
+
+test("preview refuses rebinding hosts before serving snapshots", async ({ request }) => {
+  for (const host of ["attacker.example:4319", "127.0.0.1:9999", "localhost.attacker.example:4319"]) {
+    const response = await request.get("/api/snapshot", { headers: { host } });
+    expect(response.status()).toBe(403);
+    expect(await response.text()).toBe("Forbidden");
+  }
+  for (const host of ["127.0.0.1:4319", "localhost:4319"]) {
+    const response = await request.get("/api/snapshot", { headers: { host } });
+    expect(response.status()).toBe(200);
+  }
 });

@@ -2,6 +2,8 @@
 
 A T3-themed, responsive **read-only** companion to the existing Paseo Maestro plugin. Feed, Decisions, Work, Health and Initiatives share one snapshot. It uses the MCP Apps SDK and standard host style variables; no T3 fork or iOS build is part of this change.
 
+The interface follows the apple-design material and typography guidance: a single blurred navigation layer, capsule controls, and crisp content surfaces use the host palette. Reduced transparency and higher contrast use opaque chrome; reduced motion removes animated transitions and press scaling.
+
 ## Try the design
 
 ```sh

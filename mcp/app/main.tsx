@@ -298,90 +298,92 @@ function Maestro() {
 
   return (
     <main className="maestro">
-      <header className="toolbar">
-        <div className="identity">
-          <div className="mark">
-            <Command size={17} />
+      <div className="chrome">
+        <header className="toolbar">
+          <div className="identity">
+            <div className="mark">
+              <Command size={17} />
+            </div>
+            <div>
+              <h1>Maestro</h1>
+              <span className="subtitle">Your work, under control</span>
+            </div>
           </div>
-          <div>
-            <h1>Maestro</h1>
-            <span className="subtitle">Your work, under control</span>
-          </div>
-        </div>
-        <div className="toolbar-actions">
-          <Badge tone={snapshot?.source === "sample" ? "warning" : "neutral"}>
-            {snapshot?.source === "sample" ? "Sample data" : "Read only"}
-          </Badge>
-          {preview && (
+          <div className="toolbar-actions">
+            <Badge tone={snapshot?.source === "sample" ? "warning" : "neutral"}>
+              {snapshot?.source === "sample" ? "Sample data" : "Read only"}
+            </Badge>
+            {preview && (
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+                onClick={() => {
+                  const next = theme === "dark" ? "light" : "dark";
+                  setTheme(next);
+                  document.documentElement.dataset.theme = next;
+                }}
+              >
+                {theme === "dark" ? <Sun /> : <Moon />}
+              </button>
+            )}
+            {connected && (
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Open Maestro full screen"
+                onClick={() => {
+                  void app.current
+                    ?.requestDisplayMode({ mode: "fullscreen" })
+                    .catch(() => setToast("Full screen isn't available in this client."));
+                }}
+              >
+                <Maximize2 />
+              </button>
+            )}
             <button
               type="button"
               className="icon-button"
-              aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-              onClick={() => {
-                const next = theme === "dark" ? "light" : "dark";
-                setTheme(next);
-                document.documentElement.dataset.theme = next;
-              }}
+              aria-label="Refresh Maestro"
+              disabled={busy}
+              onClick={() => void refresh()}
             >
-              {theme === "dark" ? <Sun /> : <Moon />}
+              <RefreshCw className={busy ? "refreshing" : ""} />
             </button>
-          )}
-          {connected && (
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Open Maestro full screen"
-              onClick={() => {
-                void app.current
-                  ?.requestDisplayMode({ mode: "fullscreen" })
-                  .catch(() => setToast("Full screen isn't available in this client."));
-              }}
-            >
-              <Maximize2 />
-            </button>
-          )}
-          <button
-            type="button"
-            className="icon-button"
-            aria-label="Refresh Maestro"
-            disabled={busy}
-            onClick={() => void refresh()}
-          >
-            <RefreshCw className={busy ? "refreshing" : ""} />
-          </button>
+          </div>
+        </header>
+        <div className="navigation">
+          <nav className="tabs" aria-label="Maestro views">
+            {tabs.map((t) => (
+              <button
+                type="button"
+                key={t.id}
+                aria-current={view === t.id ? "page" : undefined}
+                onClick={() => chooseView(t.id)}
+              >
+                <t.icon size={14} />
+                <span>{t.title}</span>
+                {badgeCounts[t.id] !== undefined && badgeCounts[t.id] !== 0 && (
+                  <span className="tab-count">{badgeCounts[t.id]}</span>
+                )}
+              </button>
+            ))}
+          </nav>
+          <label className="search">
+            <Search size={14} />
+            <input
+              aria-label="Search this view"
+              placeholder="Search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {search && (
+              <button type="button" aria-label="Clear search" onClick={() => setSearch("")}>
+                <X size={12} />
+              </button>
+            )}
+          </label>
         </div>
-      </header>
-      <div className="navigation">
-        <nav className="tabs" aria-label="Maestro views">
-          {tabs.map((t) => (
-            <button
-              type="button"
-              key={t.id}
-              aria-current={view === t.id ? "page" : undefined}
-              onClick={() => chooseView(t.id)}
-            >
-              <t.icon size={14} />
-              <span>{t.title}</span>
-              {badgeCounts[t.id] !== undefined && badgeCounts[t.id] !== 0 && (
-                <span className="tab-count">{badgeCounts[t.id]}</span>
-              )}
-            </button>
-          ))}
-        </nav>
-        <label className="search">
-          <Search size={14} />
-          <input
-            aria-label="Search this view"
-            placeholder="Search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          {search && (
-            <button type="button" aria-label="Clear search" onClick={() => setSearch("")}>
-              <X size={12} />
-            </button>
-          )}
-        </label>
       </div>
       <div className="status-line">
         <span>

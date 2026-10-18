@@ -7,6 +7,9 @@ const server = Bun.serve({
   hostname: "127.0.0.1",
   port: Number(process.env.MAESTRO_MCP_PREVIEW_PORT ?? 4318),
   async fetch(request) {
+    const authority = request.headers.get("host");
+    if (authority !== `127.0.0.1:${server.port}` && authority !== `localhost:${server.port}`)
+      return new Response("Forbidden", { status: 403 });
     const url = new URL(request.url);
     if (request.method !== "GET") return new Response("Read only", { status: 405 });
     if (url.pathname === "/api/snapshot")
