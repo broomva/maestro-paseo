@@ -17,7 +17,7 @@ export async function buildApp(): Promise<string> {
   });
   const js = built.outputFiles.find((f) => f.path.endsWith(".js"))?.text ?? "";
   const css = built.outputFiles.find((f) => f.path.endsWith(".css"))?.text ?? "";
-  const html = `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Maestro</title><style>${css}</style></head><body><div id="root"></div><script type="module">${js.replace(/<\/script/gi, "<\\/script")}</script></body></html>`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>Maestro</title><style>${css}</style></head><body><div id="root"></div><script type="module">${js.replace(/<\/script/gi, "<\\/script")}</script></body></html>`;
   await mkdir(outputDir, { recursive: true });
   await writeFile(join(outputDir, "maestro.html"), html);
   return html;

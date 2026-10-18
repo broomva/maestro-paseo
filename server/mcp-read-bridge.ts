@@ -26,6 +26,36 @@ export function mcpSocketPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.MAESTRO_MCP_SOCKET ?? join(dirname(configPath(env)), "maestro-mcp.sock");
 }
 
+/** One projection for bridge reads and the companion's authoritative workspace reread. */
+export function projectAsk(a: DecisionAsk): NonNullable<Snapshot["asks"]>[number] {
+  return {
+    key: askKey(a),
+    hash: a.hash,
+    id: a.id,
+    ledger: a.ledger,
+    title: a.headline ?? a.question ?? a.id,
+    question: a.question,
+    stakes: a.stakes,
+    whyYou: a.whyYou,
+    fallback: a.fallback,
+    blocking: a.blocking,
+    waiting: a.waiting,
+    askedAt: a.askedAt,
+    state: a.state,
+    refusal: a.refusal,
+    options: a.options.map((o) => ({
+      id: o.id,
+      label: o.label,
+      consequence: o.consequence,
+      recommended: o.recommended,
+      reversible: o.reversible,
+    })),
+    summary: a.rich?.summary ?? null,
+    details: a.rich?.details ?? null,
+    sources: a.rich?.sources.map((s) => ({ label: s.label ?? s.kind, ref: s.ref })) ?? [],
+  };
+}
+
 /** Every source fails independently; missing data is never presented as an empty healthy source. */
 export async function readMcpSnapshot(reads: McpReads): Promise<Snapshot> {
   const errors: Record<string, string> = {};
@@ -92,33 +122,7 @@ export async function readMcpSnapshot(reads: McpReads): Promise<Snapshot> {
         updatedAt: w.updatedAt,
         checks: w.checks,
       })) ?? null,
-    asks:
-      asks?.asks.map((a) => ({
-        key: askKey(a),
-        hash: a.hash,
-        id: a.id,
-        ledger: a.ledger,
-        title: a.headline ?? a.question ?? a.id,
-        question: a.question,
-        stakes: a.stakes,
-        whyYou: a.whyYou,
-        fallback: a.fallback,
-        blocking: a.blocking,
-        waiting: a.waiting,
-        askedAt: a.askedAt,
-        state: a.state,
-        refusal: a.refusal,
-        options: a.options.map((o) => ({
-          id: o.id,
-          label: o.label,
-          consequence: o.consequence,
-          recommended: o.recommended,
-          reversible: o.reversible,
-        })),
-        summary: a.rich?.summary ?? null,
-        details: a.rich?.details ?? null,
-        sources: a.rich?.sources.map((s) => ({ label: s.label ?? s.kind, ref: s.ref })) ?? [],
-      })) ?? null,
+    asks: asks?.asks.map(projectAsk) ?? null,
     answers: answers
       ? { waitingToLand: answers.waitingToLand, routed: answers.routed, acted: answers.acted, held: answers.held }
       : null,
