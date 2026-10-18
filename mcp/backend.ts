@@ -1,221 +1,208 @@
+import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { call, NoAnswer, Refused, Unreachable } from "../bin/maestro";
-import { answersStatus } from "../server/answers-status";
-import { answerDecision, readDecisions } from "../server/control-asks";
-import { readMcpSnapshot } from "../server/mcp-read-bridge";
-import { firstSeenMemory, readNeeds } from "../server/needs";
-import { controlAskPaths } from "../server/paths";
-import type { WorkItem } from "../shared/contracts";
-import type { DecisionAsk } from "../shared/fleet";
-import { type Snapshot, SnapshotSchema, unavailable } from "../shared/mcp";
+import { z } from "zod";
+import { call } from "../bin/maestro";
+import { WorkspaceAsks } from "../server/control-home";
+import { mcpSocketPath, projectAsk, readMcpSnapshot } from "../server/mcp-read-bridge";
+import { controlAskPaths, controlRepoPaths, expandHome, socketPath } from "../server/paths";
+import { WorkItemSchema } from "../shared/contracts";
+import { homeKey } from "../shared/fleet";
+import { askKey, type Snapshot, SnapshotSchema, unavailable } from "../shared/mcp";
 import { sampleSnapshot } from "./sample";
 
+export const AnswerRequestSchema = z.object({
+  key: z.string().min(1),
+  hash: z.string().min(1),
+  ledger: z.string().min(1),
+  id: z.string().min(1),
+  option: z.string().nullable().optional(),
+  note: z.string().default(""),
+});
+export type AnswerRequest = z.infer<typeof AnswerRequestSchema>;
+export type AnswerResult = { ok: boolean; ask?: unknown; warning?: string | null; error?: string };
+export type AnswerHandler = (params: AnswerRequest) => Promise<AnswerResult>;
+export type Backend = (() => Promise<Snapshot>) & { answer: AnswerHandler };
 export interface BackendOptions {
   demo?: boolean;
   socket?: string;
   controlRepo?: string;
+  workSocket?: string;
+  answersPath?: string;
+  lockRoot?: string;
+  receipts?: string;
+  /** Isolated fixtures without a remote can disable fetch; live answers keep the existing home rule. */
+  fetch?: boolean;
 }
 
 export function defaultControlRepo(env: NodeJS.ProcessEnv = process.env): string {
-  return env.MAESTRO_PASEO_CONTROL_REPO ?? join(homedir(), "broomva");
+  return expandHome(env.MAESTRO_PASEO_CONTROL_REPO ?? join(homedir(), "broomva"));
 }
-
 export function defaultMaestroSocket(env: NodeJS.ProcessEnv = process.env): string {
-  return env.MAESTRO_SOCKET ?? join(homedir(), ".config", "maestro-paseo", "maestro.sock");
+  return env.MAESTRO_SOCKET ?? socketPath(env);
 }
-
-/** Direct live snapshot reader from workspace ledgers and local Maestro socket */
-export async function readDirectLiveSnapshot(options: BackendOptions = {}): Promise<Snapshot> {
-  const controlRepo = options.controlRepo ?? defaultControlRepo();
-  const socket = options.socket ?? defaultMaestroSocket();
-
-  let liveAsks: DecisionAsk[] = [];
-  try {
-    const res = await readDecisions(join(controlRepo, ".control/asks"));
-    liveAsks = res.asks;
-  } catch {
-    liveAsks = [];
-  }
-
-  return readMcpSnapshot({
-    async needs() {
-      try {
-        const workRes = (await call("work.list", {}, { path: socket, timeoutMs: 3000 }).catch(() => ({
-          items: [],
-        }))) as { items?: WorkItem[] };
-        return await readNeeds(
-          {
-            work: async () => workRes.items ?? [],
-            asks: async () => [liveAsks, true],
-            reviews: async () => [],
-            landing: async () => null,
-            sessionAgents: async () => new Map<string, string>(),
-            approvals: async () => [],
-            decisions: async () => ({ asks: liveAsks, pending: [] }),
-          },
-          { workspace: controlRepo, now: Date.now(), firstSeen: firstSeenMemory() },
-        );
-      } catch {
-        return {
-          rows: [],
-          summary: { total: 0, byKind: { ask: 0, approval: 0, owner_step: 0 } },
-          unread: [],
-        } as never;
-      }
-    },
-    async work() {
-      try {
-        const res = (await call("work.list", {}, { path: socket, timeoutMs: 3000 })) as {
-          items?: WorkItem[];
-        };
-        return { items: res.items ?? [] };
-      } catch {
-        return { items: [], warnings: ["Work daemon not reachable"] };
-      }
-    },
-    async asks() {
-      return { asks: liveAsks, complete: true };
-    },
-    async answers() {
-      try {
-        return answersStatus(liveAsks, null) as never;
-      } catch {
-        return { waitingToLand: 0, routed: 0, acted: 0, held: 0, recent: [] } as never;
-      }
-    },
-    async notices() {
-      return {
-        rows: [],
-        summary: {
-          total: 0,
-          byKind: { stuck: 0, quiet: 0, schedule: 0, loop: 0, initiative: 0 },
-          snoozed: 0,
-          unread: [],
-        },
-      } as never;
-    },
-    async fleet() {
-      return { scopes: [], error: null, detail: null } as never;
-    },
-    async loops() {
-      return {
-        now: new Date().toISOString(),
-        ledger: null,
-        rows: [],
-        warnings: [],
-        ledgerErrors: [],
-      } as never;
-    },
-    async initiatives() {
-      return {
-        controlRepo,
-        today: new Date().toISOString().slice(0, 10),
-        initiatives: [],
-        ideas: [],
-        warnings: [],
-      } as never;
-    },
+function workspaceFor(options: BackendOptions): WorkspaceAsks {
+  const paths = controlAskPaths();
+  return new WorkspaceAsks({
+    controlRepo: options.controlRepo ?? defaultControlRepo(),
+    answersPath: options.answersPath ?? controlRepoPaths().answers,
+    lockRoot: options.lockRoot ?? paths.locks,
+    receipts: options.receipts ?? paths.receipts,
+    fetch: options.fetch,
   });
 }
+async function workspaceRead(workspace: WorkspaceAsks, options: BackendOptions) {
+  const repo = options.controlRepo ?? defaultControlRepo();
+  if (!(await stat(repo).catch(() => null))?.isDirectory()) throw new Error(`The control repo ${repo} is unavailable.`);
+  const read = await workspace.read(true);
+  if (!read.main) throw new Error(read.warnings.join(" ") || "The workspace's origin/main could not be read.");
+  return read;
+}
 
-/** Answer a decision ask directly on the real workspace filesystem under file lock */
-export async function answerDecisionAsk(params: {
-  ledger: string;
-  id: string;
-  option?: string | null;
-  note?: string;
-  controlRepo?: string;
-}): Promise<{ ok: boolean; ask?: DecisionAsk; warning?: string | null; error?: string }> {
+/** Use the canonical workspace home rule; unsupported runtime sources remain explicitly unknown. */
+export async function readDirectLiveSnapshot(
+  options: BackendOptions = {},
+  workspace = workspaceFor(options),
+): Promise<Snapshot> {
+  const read = await workspaceRead(workspace, options);
+  const missing = async (): Promise<never> => {
+    throw new Error("Requires the live Maestro plugin read bridge.");
+  };
+  const snapshot = await readMcpSnapshot({
+    needs: missing,
+    async work() {
+      const res = (await call(
+        "work.list",
+        {},
+        { path: options.workSocket ?? defaultMaestroSocket(), timeoutMs: 3000 },
+      )) as { items?: unknown[] };
+      if (!Array.isArray(res.items)) throw new Error("The work daemon returned no work list.");
+      return { items: z.array(WorkItemSchema).parse(res.items) };
+    },
+    asks: async () => ({ asks: read.all, complete: read.warnings.length === 0 }),
+    answers: missing,
+    notices: missing,
+    fleet: missing,
+    loops: missing,
+    initiatives: missing,
+  });
+  if (read.warnings.length) snapshot.errors.asks = read.warnings.join(" ");
+  snapshot.capabilities.answerAsks = true;
+  snapshot.readOnly = false;
+  return snapshot;
+}
+
+/** Preserve the client-seen revision all the way into the canonical locked writer. */
+export async function answerDecisionAsk(
+  input: AnswerRequest,
+  options: BackendOptions = {},
+  workspace = workspaceFor(options),
+): Promise<AnswerResult> {
   try {
-    const controlRepo = params.controlRepo ?? defaultControlRepo();
-    const asksFolder = join(controlRepo, ".control/asks");
-    const res = await readDecisions(asksFolder);
-    const ledgerNormal =
-      params.ledger.endsWith(".yaml") || params.ledger.endsWith(".yml") ? params.ledger : `${params.ledger}.yaml`;
-    const target = res.asks.find(
-      (a) => a.id === params.id && (a.ledger === params.ledger || a.ledger === ledgerNormal),
+    const params = AnswerRequestSchema.parse(input);
+    const read = await workspaceRead(workspace, options);
+    const matches = read.all.filter(
+      (a) => askKey(a) === params.key && a.ledger === params.ledger && a.id === params.id,
     );
-    if (!target) {
-      if (params.ledger === "onboarding" || params.id === "rollout") {
-        return {
-          ok: true,
-          ask: {
-            key: `sample/${params.id}`,
-            id: params.id,
-            ledger: params.ledger,
-            state: "answered",
-            title: "Sample Ask",
-            options: [],
-            sources: [],
-          } as unknown as DecisionAsk,
-        };
-      }
-      return { ok: false, error: `Decision ask "${params.id}" not found in ledger ${params.ledger}` };
-    }
-    if (target.state !== "open") return { ok: false, error: `Decision ask "${params.id}" is already ${target.state}` };
-
-    const ledgerPath = join(asksFolder, target.ledger);
-    const { locks, receipts } = controlAskPaths();
-
-    const answered = await answerDecision(
-      ledgerPath,
-      {
-        uid: target.uid ?? null,
-        id: target.id,
-        hash: target.hash,
-        option: params.option ?? null,
-        note: params.note ?? "",
-      },
-      {
-        lockRoot: locks,
-        receipts,
-      },
-    );
+    if (matches.length !== 1)
+      throw new Error("This decision is no longer at the home you saw. Refresh before answering.");
+    const target = matches[0];
+    if (target.refusal) throw new Error(target.refusal);
+    if (target.state !== "open")
+      throw new Error("This decision was already answered or retired. Refresh before answering.");
+    if (target.hash !== params.hash)
+      throw new Error("This decision changed since you read it. Refresh before answering.");
+    const answered = await workspace.answer({
+      ledger: target.ledger,
+      home: homeKey(target.home),
+      uid: target.uid,
+      id: target.id,
+      hash: params.hash,
+      option: params.option ?? null,
+      note: params.note,
+    });
     return { ok: true, ask: answered.ask, warning: answered.warning };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
-export function createBackend(options: BackendOptions = {}): () => Promise<Snapshot> {
-  return async () => {
-    if (options.demo) return sampleSnapshot();
-
-    // If an explicit socket override is provided (e.g. test expecting unavailable bridge), try it
-    if (options.socket) {
+/** Demo state belongs to this backend instance; it never calls any filesystem writer. */
+export function createBackend(options: BackendOptions = {}): Backend {
+  if (options.demo) {
+    let snapshot = sampleSnapshot();
+    snapshot.capabilities.answerAsks = true;
+    snapshot.readOnly = false;
+    return Object.assign(async () => structuredClone(snapshot), {
+      answer: async (input: AnswerRequest): Promise<AnswerResult> => {
+        const parsed = AnswerRequestSchema.safeParse(input);
+        if (!parsed.success)
+          return { ok: false, error: "Refresh Maestro: this answer needs the decision key and revision." };
+        const params = parsed.data;
+        const ask = snapshot.asks?.find(
+          (a) => a.key === params.key && a.id === params.id && a.ledger === params.ledger,
+        );
+        if (ask?.state !== "open" || ask.refusal || ask.hash !== params.hash)
+          return { ok: false, error: "This sample decision changed or was answered. Refresh before answering." };
+        if (params.option && !ask.options.some((o) => o.id === params.option))
+          return { ok: false, error: "Choose one of this decision's options." };
+        if (!params.option && !params.note.trim()) return { ok: false, error: "Choose an option or write an answer." };
+        ask.state = "answered";
+        ask.waiting = false;
+        snapshot = { ...snapshot, capturedAt: new Date().toISOString() };
+        snapshot.needs = snapshot.needs
+          ? { ...snapshot.needs, rows: snapshot.needs.rows.filter((r) => r.target?.id !== ask.key) }
+          : null;
+        if (snapshot.needs) snapshot.needs.total = snapshot.needs.rows.length;
+        return { ok: true, ask: structuredClone(ask), warning: "Sample answer only. No live decision was changed." };
+      },
+    });
+  }
+  const workspace = workspaceFor(options);
+  const read = async () => {
+    try {
+      const snapshot = SnapshotSchema.parse(
+        await call(
+          "snapshot",
+          {},
+          {
+            path: options.socket ?? mcpSocketPath(),
+            caller: null,
+            cwd: null,
+            timeoutMs: 3000,
+          },
+        ),
+      );
+      // A bridge can include fleet roots. Only exact workspace identities have a writer in this companion.
       try {
-        return SnapshotSchema.parse(
-          await call(
-            "snapshot",
-            {},
-            {
-              path: options.socket,
-              caller: null,
-              cwd: null,
-              timeoutMs: 5000,
-            },
-          ),
-        );
+        const local = await workspaceRead(workspace, options);
+        const authoritative = new Map(local.all.map((ask) => [askKey(ask), projectAsk(ask)]));
+        // The plugin may cache reads across an answer. Never return its old revision/state for a workspace key.
+        const other = (snapshot.asks ?? [])
+          .filter((ask) => !authoritative.has(ask.key))
+          .map((ask) => ({
+            ...ask,
+            refusal:
+              ask.refusal ?? "This decision's source does not provide an answer connection here. Open it in Paseo.",
+          }));
+        snapshot.asks = [...authoritative.values(), ...other];
+        if (local.warnings.length) snapshot.errors.asks = local.warnings.join(" ");
+        snapshot.capabilities.answerAsks = true;
+        snapshot.readOnly = false;
       } catch (error) {
-        if (error instanceof Refused) return unavailable(`Maestro could not read its snapshot: ${error.message}`);
-        if (error instanceof NoAnswer)
-          return unavailable("Maestro did not answer the read request in time. Refresh to try again.");
-        if (!(error instanceof Unreachable))
-          return unavailable(
-            "Maestro returned an incompatible snapshot. Update the plugin and MCP companion together.",
-          );
-        return unavailable(
-          "The read-only Maestro connection is unavailable. Enable its read bridge in Paseo, then refresh.",
-        );
+        snapshot.errors.answerConnection =
+          error instanceof Error ? error.message : "The workspace answer connection is unavailable.";
+        snapshot.capabilities.answerAsks = false;
+        snapshot.readOnly = true;
+      }
+      return snapshot;
+    } catch {
+      try {
+        return await readDirectLiveSnapshot(options, workspace);
+      } catch (error) {
+        return unavailable(`Maestro connection unavailable: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-
-    // Default live mode: read directly from the workspace
-    try {
-      return await readDirectLiveSnapshot(options);
-    } catch (error) {
-      return unavailable(`Maestro live snapshot error: ${error instanceof Error ? error.message : String(error)}`);
-    }
   };
+  return Object.assign(read, { answer: (params: AnswerRequest) => answerDecisionAsk(params, options, workspace) });
 }

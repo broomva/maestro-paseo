@@ -7,7 +7,8 @@ export const SnapshotSchema = z.object({
   version: z.literal(1),
   capturedAt: z.string().datetime(),
   source: z.enum(["live", "sample", "unavailable"]),
-  readOnly: z.literal(true),
+  readOnly: z.boolean(),
+  capabilities: z.object({ answerAsks: z.boolean() }).default({ answerAsks: false }),
   errors: z.record(z.string(), Text),
   needs: z
     .object({
@@ -125,6 +126,7 @@ export function unavailable(reason: string): Snapshot {
     capturedAt: new Date().toISOString(),
     source: "unavailable",
     readOnly: true,
+    capabilities: { answerAsks: false },
     errors: { connection: reason },
     needs: null,
     work: null,

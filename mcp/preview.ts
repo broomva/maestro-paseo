@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { answerDecisionAsk, createBackend } from "./backend";
+import { AnswerRequestSchema, createBackend } from "./backend";
 import { buildApp } from "./build";
 
 let cachedHtml = await buildApp();
@@ -17,18 +17,22 @@ const server = Bun.serve({
     const url = new URL(request.url);
 
     if (request.method === "POST" && url.pathname === "/api/answer") {
+      const origin = request.headers.get("origin");
+      if (origin && origin !== `http://${authority}`) return new Response("Forbidden", { status: 403 });
+      if (!request.headers.get("content-type")?.startsWith("application/json"))
+        return new Response("Expected application/json", { status: 415 });
       try {
-        const body = (await request.json()) as { ledger: string; id: string; option?: string | null; note?: string };
-        const res = await answerDecisionAsk(body);
+        const body = AnswerRequestSchema.parse(await request.json());
+        const res = await read.answer(body);
         if (!res.ok) {
           return Response.json({ ok: false, error: res.error }, { status: 400 });
         }
         const snapshot = await read();
-        return Response.json({ ok: true, ask: res.ask, snapshot });
+        return Response.json({ ok: true, ask: res.ask, warning: res.warning, snapshot });
       } catch (error) {
         return Response.json(
           { ok: false, error: error instanceof Error ? error.message : String(error) },
-          { status: 500 },
+          { status: 400 },
         );
       }
     }

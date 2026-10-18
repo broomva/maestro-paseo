@@ -1,44 +1,39 @@
 # Maestro MCP App
 
-A T3-themed, responsive **read-only** companion to the existing Paseo Maestro plugin. Feed, Decisions, Work, Health and Initiatives share one snapshot. It uses the MCP Apps SDK and standard host style variables; no T3 fork or iOS build is part of this change.
+A T3-themed MCP App for reviewing Maestro and answering workspace decisions through the existing canonical writer. The host supplies colors, typography and frame dimensions. A restrained glass navigation layer sits above solid, readable content. The decision reader gives content most of the desktop width; narrower frames show one pane at a time. Its action bar remains outside the scrolling content. Reduced transparency, increased contrast and reduced motion are respected; browser zoom remains enabled.
 
-The interface follows the apple-design material and typography guidance: a single blurred navigation layer, capsule controls, and crisp content surfaces use the host palette. Reduced transparency and higher contrast use opaque chrome; reduced motion removes animated transitions and press scaling.
-
-## Try the design
+## Run
 
 ```sh
 npm ci
-npm run mcp:preview
-```
-
-Open http://127.0.0.1:4318. This command uses fictional, visibly labeled sample data. It supports light/dark mode, filters, decision drafts, work inspection and mobile layouts. Drafts last only while that view is mounted; they never answer an ask.
-
-## Register the MCP server
-
-```sh
 npm run mcp:build
-codex mcp add maestro -- bun /absolute/path/to/maestro-paseo/mcp/server.ts --demo
+codex mcp add maestro -- bun /absolute/path/to/maestro-paseo/mcp/server.ts
 ```
 
-Restart the provider session if needed, then ask it to call `maestro_open` with `view: "decisions"` (or `feed`, `work`, `health`, `initiatives`). `maestro_snapshot` refreshes the view. A compatible MCP Apps host displays it inline and can expand it fullscreen. This does **not** add a permanent sidebar or a top-level T3 page. Provider/host MCP Apps support is required. Phone layout alone is not proof of native iOS host compatibility.
+Reconnect the provider after changing server code or tool schemas, then invoke `maestro_open` with `view: "decisions"`. `maestro_snapshot` refreshes data. Rebuilding HTML updates the resource served on the next open; it does not replace an already mounted resource or restart an existing MCP process. An older connection without the answer capability stays visibly read-only.
 
-## Connect the existing runtime
+This uses the host's MCP Apps frame, inline or fullscreen. It does not add a permanent T3 sidebar or top-level page. Responsive phone testing does not establish native iOS host support.
 
-The plugin listener is **off by default**. Opt in by setting `MAESTRO_MCP_READ_BRIDGE=1` in the environment of the Paseo daemon that loads this plugin version, then reload the plugin. Merely running the MCP process with that variable does not enable the plugin listener. Follow your normal daemon deployment procedure; installing this checkout alone does not alter the running plugin.
+For fictional data, add `--demo` to the server command, or run `npm run mcp:preview` and open http://127.0.0.1:4318. Sample answers change only that backend instance's memory. Live preview is `bun mcp/preview.ts` without `--demo`; it can answer real workspace asks, so use the labeled sample or isolated test harness for experimentation.
 
-Remove `--demo` from the MCP command. Both processes default to `maestro-mcp.sock` beside the existing Maestro config. Set `MAESTRO_MCP_SOCKET` to the same absolute path on both sides to override it. No tokens or new owner permissions are created. The Unix socket is restricted to its owning OS user, using the existing socket lifecycle code. This is not a security boundary against other processes running as that user.
+## Data and actions
 
-The bridge calls the plugin's existing readers, not a second coordinator. It exposes only `snapshot`; owner and agent mutation methods are not registered. There are no new ticks, worker sessions or routing loops. Every source error remains visible, with unavailable sections represented as `null`. The UI refreshes every 30 seconds while visible and supports manual refresh; it does not subscribe to events or promise background delivery.
+The optional Paseo read bridge exposes all eight existing readers. Enable `MAESTRO_MCP_READ_BRIDGE=1` in the environment of the daemon loading this plugin version and follow the normal plugin reload procedure. Merely setting the variable on the MCP process does not enable the listener. Both sides use `maestro-mcp.sock` beside the existing Maestro config, overridable with `MAESTRO_MCP_SOCKET`. The socket is restricted to its OS owner; other processes under that account share the same trust boundary.
 
-Ask options and notes are local exploration only. Answering asks, dispatching work, waking loops, changing governor policy and fleet review remain in Paseo. In a connected live MCP App, **Discuss in chat** sends a question about the ask to its host; it never submits an answer. Future owner tools need a separate authorization contract, stale-revision checks and an auditable execution path.
+Without that bridge, the companion reads workspace asks through `WorkspaceAsks` and work through the existing work daemon (`MAESTRO_SOCKET` or its canonical default). `MAESTRO_PASEO_CONTROL_REPO` selects the workspace repository. Unsupported sections remain `null`, with visible source errors; they are never healthy zero counts. Reads do not fetch or change the repository. Data refreshes every 30 seconds while visible, or manually.
 
-## Check
+Answer sends the exact displayed key, revision hash, ledger, ask ID, selected option and note. The backend resolves that identity through `WorkspaceAsks` and passes the original hash to its locked writer. Existing checkout versus `origin/main`/answers-branch rules and receipts are preserved. Stale, ambiguous, retired and unsupported fleet identities are refused. A note-only answer is supported. Irreversible options require a second confirmation bound to the choice and note. Success requires an explicit confirmation and fresh validated snapshot; recording an answer does not mean its work executed.
+
+Skip only advances or closes the local reader; it never answers, rejects or dispatches. Drafts live in memory until the App is closed. Discuss in chat asks the host for an explanation and never answers on the owner's behalf. Fleet dispatch, tick/loop changes and governor controls remain in Paseo.
+
+## Verify
 
 ```sh
 npm run check
 npm run mcp:check
+npm run mcp:test:ui
 ```
 
-The tests exercise MCP initialization, tool metadata, resource retrieval, malformed inputs, unavailable live data, independent source failures, canonical hold counts and denial of owner calls.
+The browser suite uses one headless-shell worker and closes its browser. Install with `npx playwright install chromium-headless-shell`, or set `MAESTRO_HEADLESS_SHELL` to an existing executable. Tests cover wide, chat-column and phone layouts, visible action hit targets, drafts, stale revisions, theme/accessibility settings, and loopback preview restrictions.
 
-For the browser interaction suite, install Playwright's headless shell (`npx playwright install chromium-headless-shell`) and run `npm run mcp:test:ui`. It uses one worker and closes its browser. To reuse an installed shell, set `MAESTRO_HEADLESS_SHELL` to its executable path. The suite checks desktop, chat-column and phone widths; this is not a native iOS test.
+`bun mcp/test-host.ts` starts a test-only MCP Apps host on http://127.0.0.1:4322. It uses the actual SDK handshake, actual MCP tools and built resource. `?source=fixture` writes only to a disposable temporary Git repository and exposes its receipt for verification. `?source=live` reads real data but refuses all writes in the harness. This harness is a protocol integration test, separate from native T3/iOS compatibility testing.

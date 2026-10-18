@@ -4,21 +4,12 @@ import { RESOURCE_MIME_TYPE, registerAppResource, registerAppTool } from "@model
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { type Snapshot, VIEWS } from "../shared/mcp";
-import { answerDecisionAsk, createBackend } from "./backend";
+import { type Snapshot, SnapshotSchema, VIEWS } from "../shared/mcp";
+import { type AnswerHandler, AnswerRequestSchema, type Backend, createBackend } from "./backend";
 
 export const APP_URI = "ui://maestro/control.html";
 
-export function createServer(
-  read: () => Promise<Snapshot>,
-  html: () => Promise<string>,
-  onAnswer?: (params: { ledger: string; id: string; option?: string | null; note?: string }) => Promise<{
-    ok: boolean;
-    ask?: unknown;
-    warning?: string | null;
-    error?: string;
-  }>,
-) {
+export function createServer(read: () => Promise<Snapshot>, html: () => Promise<string>, onAnswer?: AnswerHandler) {
   const server = new McpServer({ name: "maestro", version: "0.2.0" });
   const result = async (view = "feed") => {
     const snapshot = await read();
@@ -26,7 +17,7 @@ export function createServer(
       content: [
         {
           type: "text" as const,
-          text: `${snapshot.source === "sample" ? "Sample" : "Live"} Maestro ${view}.`,
+          text: `${snapshot.source === "sample" ? "Sample" : snapshot.source === "live" ? "Live" : "Unavailable"} Maestro ${view}.`,
         },
       ],
       structuredContent: { snapshot, view },
@@ -66,24 +57,26 @@ export function createServer(
       title: "Answer Maestro Decision",
       description:
         "Submit an answer to an open decision ask in Maestro, committing the choice and optional note into the ledger.",
-      inputSchema: {
-        ledger: z.string().describe("Ledger name in .control/asks (e.g. bro-2827-answers-landing.yaml)"),
-        id: z.string().describe("Ask identifier"),
-        option: z.string().nullable().optional().describe("Option id chosen, if any"),
-        note: z.string().optional().default("").describe("Answer note or custom text"),
-      },
+      inputSchema: AnswerRequestSchema.shape,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
       _meta: { ui: { resourceUri: APP_URI, visibility: ["app", "model"] } },
     },
-    async ({ ledger, id, option, note }) => {
-      const handler = onAnswer ?? answerDecisionAsk;
-      const res = await handler({ ledger, id, option, note });
+    async (params) => {
+      const { ledger, id, option } = params;
+      const handler = onAnswer ?? (read as Partial<Backend>).answer;
+      if (!handler)
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: "This Maestro connection is read-only. No answer was written." }],
+        };
+      const res = await handler(params);
       if (!res.ok) {
         return {
           isError: true,
           content: [{ type: "text" as const, text: `Failed to answer decision ${id}: ${res.error}` }],
         };
       }
-      const snapshot = await read();
+      const snapshot = SnapshotSchema.parse(await read());
       return {
         content: [
           {
