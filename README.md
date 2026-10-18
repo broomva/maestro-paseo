@@ -7,6 +7,10 @@ until you approve it.
 
 ![Needs you, with the look at the gate](docs/needs-you-default-theme.png)
 
+## T3 / MCP companion
+
+An optional [MCP App](mcp/README.md) presents Maestro in the host’s theme with Feed, Decisions, Work, Health and Initiatives. Preview with `npm run mcp:preview`. The first version is read-only; its runtime bridge is off by default.
+
 ## Why a plugin
 
 Maestro's design has three tiers: a 24/7 runtime that owns files, git and agent children; a relay;

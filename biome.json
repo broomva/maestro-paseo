@@ -1,7 +1,19 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
-  "files": { "includes": ["**", "!node_modules", "!package-lock.json", "!server/testdata"] },
-  "formatter": { "indentStyle": "space", "indentWidth": 2, "lineWidth": 120 },
-  "javascript": { "formatter": { "quoteStyle": "double" } },
-  "linter": { "enabled": true }
+  "files": {
+    "includes": ["**", "!node_modules", "!package-lock.json", "!server/testdata", "!mcp/dist"]
+  },
+  "formatter": {
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 120
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double"
+    }
+  },
+  "linter": {
+    "enabled": true
+  }
 }
