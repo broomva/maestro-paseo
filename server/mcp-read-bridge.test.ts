@@ -68,7 +68,7 @@ test("ask identity is stable across revisions and distinguishes scopes", () => {
 });
 
 test("enabled bridge round-trips live reads, rejects writes, restricts mode and cleans up", async () => {
-  const root = await mkdtemp(join(tmpdir(), "maestro-mcp-"));
+  const root = await mkdtemp(join("/tmp", "mcp-"));
   const path = join(root, "read.sock");
   let ready!: () => void;
   const listening = new Promise<void>((resolve) => {

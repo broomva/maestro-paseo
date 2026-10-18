@@ -2,10 +2,12 @@ import { App, applyDocumentTheme, applyHostStyleVariables } from "@modelcontextp
 import {
   Activity,
   ArrowDownLeft,
+  ArrowRight,
   ArrowUpRight,
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Circle,
   CircleAlert,
   Clock3,
@@ -131,6 +133,13 @@ function Maestro() {
   const [filter, setFilter] = useState("all");
   const [ledger, setLedger] = useState("all");
   const [selectedAsk, setSelectedAsk] = useState<Ask | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(true);
+  const [answersOpen, setAnswersOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [armedAskKey, setArmedAskKey] = useState<string | null>(null);
+  const [dragY, setDragY] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartY = useRef(0);
   const [workSelection, setSelectedWork] = useState<Work | null>(null);
   const [drafts, setDrafts] = useState<Record<string, { option: string; note: string }>>({});
   const [busy, setBusy] = useState(false);
@@ -278,6 +287,9 @@ function Maestro() {
     setSearch("");
     setFilter("all");
     setSelectedWork(null);
+    if (next === "decisions") {
+      setSheetOpen(true);
+    }
   }
   function openNeed(need: NonNullable<Snapshot["needs"]>["rows"][number]) {
     const target = need.target;
@@ -286,6 +298,7 @@ function Maestro() {
       const a = asks.find((a) => a.key === target.id);
       if (a) {
         setSelectedAsk(a);
+        setSheetOpen(true);
         chooseView("decisions");
       } else setToast("This decision is not in the current snapshot. Refresh or open it in Paseo.");
     } else if (target?.kind === "work") {
@@ -294,6 +307,160 @@ function Maestro() {
       if (item) setSelectedWork(item);
       else setToast("This work item is not in the current snapshot. Refresh or open it in Paseo.");
     } else setToast("Open this hold in Paseo to see its context.");
+  }
+  interface AskSeries {
+    id: string;
+    title: string;
+    ledger: string;
+    asks: Ask[];
+    open: number;
+    waits: number;
+    blocking: boolean;
+    oldest: string;
+  }
+
+  const seriesMap = new Map<string, AskSeries>();
+  for (const ask of askQueue) {
+    const ledgerKey = ask.ledger;
+    const scope = "maestro";
+    const id = `${scope}/${ledgerKey}`;
+    const cleanLedger = ledgerKey.replace(/\.ya?ml$/, "");
+    const title = `${scope} · ${words(cleanLedger)}`;
+    let s = seriesMap.get(id);
+    if (!s) {
+      s = { id, title, ledger: ledgerKey, asks: [], open: 0, waits: 0, blocking: false, oldest: "" };
+      seriesMap.set(id, s);
+    }
+    s.asks.push(ask);
+    s.open += 1;
+    if (ask.waiting) {
+      s.waits += 1;
+      s.blocking = true;
+    }
+    if (ask.askedAt && (s.oldest === "" || ask.askedAt < s.oldest)) {
+      s.oldest = ask.askedAt;
+    }
+  }
+  const seriesList = Array.from(seriesMap.values());
+  const activeSeries = seriesList.find((s) => s.asks.some((a) => a.key === decision?.key)) ?? seriesList[0] ?? null;
+  const activeSeriesAsks = activeSeries ? activeSeries.asks : [];
+  const currentAskIndex = decision ? activeSeriesAsks.findIndex((a) => a.key === decision.key) : 0;
+
+  const onDragStart = (clientY: number) => {
+    dragStartY.current = clientY;
+    setIsDragging(true);
+  };
+  const onDragMove = (clientY: number) => {
+    if (!isDragging) return;
+    const diff = clientY - dragStartY.current;
+    setDragY(diff > 0 ? diff : 0);
+  };
+  const onDragEnd = () => {
+    if (!isDragging) return;
+    setIsDragging(false);
+    if (dragY > 110) {
+      setSheetOpen(false);
+      setSelectedAsk(null);
+    }
+    setDragY(0);
+  };
+
+  async function handleAnswer() {
+    if (!decision) return;
+    const chosenOptionId = draft.option || null;
+    if (!chosenOptionId) {
+      setToast("Choose an option first before answering.");
+      return;
+    }
+    const pickedOption = decision.options.find((o) => o.id === chosenOptionId);
+
+    if (pickedOption?.reversible === false && armedAskKey !== decision.key) {
+      setArmedAskKey(decision.key);
+      setToast("Irreversible option selected. Tap again to confirm.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      let newSnapshot: Snapshot | undefined;
+      if (app.current) {
+        const toolRes = await app.current.callServerTool({
+          name: "maestro_answer_ask",
+          arguments: {
+            ledger: decision.ledger,
+            id: decision.id,
+            option: chosenOptionId,
+            note: draft.note || "",
+          },
+        });
+        if (toolRes.isError) {
+          const msg = (toolRes.content as Array<{ text?: string }>)?.[0]?.text || "Answer could not be recorded.";
+          throw new Error(msg);
+        }
+        const data = toolRes.structuredContent as { ok?: boolean; ask?: unknown; snapshot?: Snapshot };
+        if (data?.snapshot) newSnapshot = data.snapshot;
+      } else {
+        const res = await fetch("/api/answer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ledger: decision.ledger,
+            id: decision.id,
+            option: chosenOptionId,
+            note: draft.note || "",
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || "Answer could not be recorded.");
+        }
+        if (data.snapshot) newSnapshot = data.snapshot;
+      }
+
+      setArmedAskKey(null);
+      setToast(`Answer recorded for "${decision.title}"`);
+
+      if (newSnapshot) {
+        adopt(newSnapshot);
+      } else {
+        setSnapshot((old) => {
+          if (!old || !old.asks) return old;
+          return {
+            ...old,
+            asks: old.asks.map((a) => (a.key === decision.key ? { ...a, state: "answered" as const } : a)),
+            answers: old.answers ? { ...old.answers, acted: (old.answers.acted ?? 0) + 1 } : old.answers,
+          };
+        });
+      }
+
+      const remainingInSeries = activeSeriesAsks.filter((a) => a.key !== decision.key && a.state === "open");
+      if (remainingInSeries.length > 0) {
+        setSelectedAsk(remainingInSeries[0]);
+      } else {
+        setSelectedAsk(null);
+        setSheetOpen(false);
+        setToast(`${activeSeries?.title ?? "Series"}: nothing left to answer`);
+      }
+
+      void refresh();
+    } catch (err) {
+      setToast(err instanceof Error ? err.message : "Failed to record answer.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function handleSkip() {
+    if (!decision || !activeSeries) return;
+    const nextIdx = currentAskIndex + 1;
+    if (nextIdx < activeSeriesAsks.length) {
+      setSelectedAsk(activeSeriesAsks[nextIdx]);
+      setArmedAskKey(null);
+    } else {
+      setToast(`${activeSeries.title}: reached end of series`);
+      setSheetOpen(false);
+      setSelectedAsk(null);
+    }
   }
   const badgeCounts = {
     feed: needs?.total,
@@ -589,152 +756,297 @@ function Maestro() {
                   <ChevronDown size={12} />
                 </label>
               </div>
-              <div className="answer-stages">
-                {[
-                  { n: asks.length, label: "Open" },
-                  { n: snapshot.answers?.waitingToLand, label: "Waiting to land" },
-                  { n: snapshot.answers?.routed, label: "Routed" },
-                  { n: snapshot.answers?.acted, label: "Acted on" },
-                ].map((s) => (
-                  <div key={s.label}>
-                    <strong>{s.n ?? "—"}</strong>
-                    <span>{s.label}</span>
+
+              {/* Answers Summary (Accordion) */}
+              <div className="answers-summary-card">
+                <button
+                  type="button"
+                  className="answers-summary-header"
+                  aria-expanded={answersOpen}
+                  onClick={() => setAnswersOpen(!answersOpen)}
+                >
+                  <div className="answers-summary-info">
+                    <strong>Your answers</strong>
+                    <span className="answers-summary-line">
+                      {[
+                        `${snapshot.answers?.waitingToLand ?? 0} waiting to land`,
+                        `${snapshot.answers?.routed ?? 0} routed`,
+                        `${snapshot.answers?.acted ?? 0} acted on`,
+                        `${snapshot.answers?.held ?? 0} held`,
+                      ].join(" · ")}
+                    </span>
                   </div>
-                ))}
+                  {answersOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                </button>
+                {answersOpen && (
+                  <div className="answers-summary-body">
+                    <div className="answer-stages">
+                      <div>
+                        <strong>{asks.length}</strong>
+                        <span>Open</span>
+                      </div>
+                      <div>
+                        <strong>{snapshot.answers?.waitingToLand ?? "—"}</strong>
+                        <span>Waiting to land</span>
+                      </div>
+                      <div>
+                        <strong>{snapshot.answers?.routed ?? "—"}</strong>
+                        <span>Routed</span>
+                      </div>
+                      <div>
+                        <strong>{snapshot.answers?.acted ?? "—"}</strong>
+                        <span>Acted on</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
+
+              {/* Decisions layout: Series List on left/main, and Draggable Bottom Sheet/Card on right/overlay */}
               <div className="decision-layout">
-                <div>
-                  {decision ? (
-                    <article className="decision-card">
-                      <div className="decision-top">
-                        <span className="row-meta">
-                          <MessageSquare size={13} />
-                          {decision.ledger}
-                        </span>
-                        <Badge tone={decision.waiting ? "info" : "neutral"}>
-                          {decision.waiting ? "Waits on you" : "Not blocking"}
-                        </Badge>
-                      </div>
-                      <h2>{decision.title}</h2>
-                      {decision.summary && <p className="decision-summary">{decision.summary}</p>}
-                      {decision.question && decision.question !== decision.title && (
-                        <p className="muted">{decision.question}</p>
-                      )}
-                      {(changedAsk || decision.refusal) && (
-                        <div className="notice">
-                          <CircleAlert size={14} />
-                          <p>
-                            {decision.refusal ??
-                              "This decision changed or is no longer open. The original card is kept here so it cannot be replaced under your selection."}
-                          </p>
-                        </div>
-                      )}
-                      <div className="decision-reasons">
-                        {decision.stakes && (
-                          <div>
-                            <span>What waiting costs</span>
-                            <p>{decision.stakes}</p>
-                          </div>
-                        )}
-                        {decision.whyYou && (
-                          <div>
-                            <span>Why you</span>
-                            <p>{decision.whyYou}</p>
-                          </div>
-                        )}
-                      </div>
-                      <fieldset className="options">
-                        <legend className="sr-only">Decision options</legend>
-                        {decision.options.map((o) => (
-                          <label className={`option ${draft.option === o.id ? "selected" : ""}`} key={o.id}>
-                            <input
-                              type="radio"
-                              name="decision-option"
-                              checked={draft.option === o.id}
-                              onChange={() => updateDraft({ option: o.id })}
-                            />
-                            <span>
-                              <strong>
-                                {o.label}
-                                {o.recommended && <span className="recommended">Recommended</span>}
-                              </strong>
-                              {o.consequence && <span className="option-detail">{o.consequence}</span>}
-                              {o.reversible === false && <span className="irreversible">Cannot be undone</span>}
-                            </span>
-                          </label>
-                        ))}
-                      </fieldset>
-                      {decision.fallback && (
-                        <p className="silence">
-                          <Clock3 size={13} />
-                          <span>If you say nothing: {decision.fallback}</span>
-                        </p>
-                      )}
-                      <label className="note-label">
-                        Your note <span>Kept in this view only</span>
-                        <textarea
-                          value={draft.note}
-                          onChange={(e) => updateDraft({ note: e.target.value })}
-                          placeholder="A condition or a question to discuss…"
-                        />
-                      </label>
-                      <div className="decision-footer">
-                        <span>
-                          <LockKeyhole size={13} /> Answer this decision in Paseo
-                        </span>
-                        {connected && snapshot.source === "live" && (
-                          <button type="button" className="button" onClick={() => void discuss(decision)}>
-                            <MessageSquare size={13} />
-                            Discuss in chat
-                            <ArrowUpRight size={12} />
-                          </button>
-                        )}
-                      </div>
-                      {(decision.details || decision.sources.length > 0) && (
-                        <details className="details">
-                          <summary>
-                            Evidence and details
-                            <FileText size={13} />
-                          </summary>
-                          {decision.details && <p className="prewrap">{decision.details}</p>}
-                          {decision.sources.map((s) => (
-                            <div className="source-row" key={`${s.label}:${s.ref}`}>
-                              <FileText size={13} />
-                              <span>
-                                {s.label}
-                                <small>{s.ref}</small>
+                <div className="decision-dashboard-series">
+                  <Section title="Open series" count={seriesList.length}>
+                    <div className="series-list">
+                      {seriesList.map((s) => {
+                        const isSelected = activeSeries?.id === s.id;
+                        return (
+                          <button
+                            type="button"
+                            key={s.id}
+                            className={`series-row quiet-card ${isSelected ? "selected" : ""}`}
+                            onClick={() => {
+                              setSelectedAsk(s.asks[0] ?? null);
+                              setSheetOpen(true);
+                            }}
+                          >
+                            <span className={`status-dot ${s.waits > 0 ? "needs" : "muted"}`} />
+                            <div className="row-content">
+                              <strong>{s.title}</strong>
+                              <span className="row-meta">
+                                {s.open} open {s.waits > 0 ? `· ${s.waits} wait on you` : ""}{" "}
+                                {s.oldest ? `· ${time(s.oldest)}` : ""}
                               </span>
                             </div>
-                          ))}
-                        </details>
+                            {s.blocking && <Badge tone="attention">Blocking</Badge>}
+                            <ChevronRight size={16} className="muted" />
+                          </button>
+                        );
+                      })}
+                      {!seriesList.length && (
+                        <Empty title={snapshot.asks === null ? "Decisions couldn't be read" : "No open decisions"}>
+                          All caught up. New decisions requiring your input will appear here.
+                        </Empty>
                       )}
-                    </article>
-                  ) : (
-                    <Empty title={snapshot.asks === null ? "Decisions couldn't be read" : "No matching decisions"}>
-                      Change the filter or refresh to read the latest asks.
-                    </Empty>
-                  )}
-                </div>
-                <aside>
-                  <Section title="Open decisions" count={askQueue.length}>
-                    {askQueue.map((a) => (
-                      <button
-                        type="button"
-                        className={`quiet-card ${decision?.key === a.key ? "active" : ""}`}
-                        key={a.key}
-                        onClick={() => setSelectedAsk(a)}
-                      >
-                        <span className="row-meta">{a.ledger}</span>
-                        <strong>{a.title}</strong>
-                        {a.waiting && <span className="small info-text">Waits on you</span>}
-                      </button>
-                    ))}
+                    </div>
                   </Section>
-                  <div className="callout">
-                    <ArrowDownLeft size={15} />
-                    <p>An answer is not an execution. Maestro keeps landing, routing, and acted-on status separate.</p>
-                  </div>
-                </aside>
+                </div>
+
+                {decision && (
+                  <>
+                    {/* Mobile Sheet Backdrop Scrim */}
+                    {sheetOpen && (
+                      <div
+                        className="sheet-backdrop"
+                        aria-hidden="true"
+                        onClick={() => {
+                          setSheetOpen(false);
+                          setSelectedAsk(null);
+                        }}
+                      />
+                    )}
+
+                    {/* Draggable Bottom Sheet Modal (Mobile) / Side Card (Desktop) */}
+                    <div
+                      className={`inspector-sheet ${sheetOpen ? "open" : "closed"}`}
+                      style={
+                        dragY > 0
+                          ? { transform: `translateY(${dragY}px)`, transition: isDragging ? "none" : undefined }
+                          : undefined
+                      }
+                    >
+                      {/* Draggable Header (DetailHeader) */}
+                      <div
+                        className="sheet-header"
+                        onTouchStart={(e) => onDragStart(e.touches[0].clientY)}
+                        onTouchMove={(e) => onDragMove(e.touches[0].clientY)}
+                        onTouchEnd={onDragEnd}
+                      >
+                        <div className="drag-handle" />
+                        <div className="sheet-header-nav">
+                          <button
+                            type="button"
+                            className="round-icon-button"
+                            aria-label="Close decision details"
+                            onClick={() => {
+                              setSheetOpen(false);
+                              setSelectedAsk(null);
+                            }}
+                          >
+                            <ChevronDown size={18} />
+                          </button>
+                          <div className="sheet-header-title">
+                            <strong>
+                              Ask · {currentAskIndex + 1} of {activeSeriesAsks.length}
+                            </strong>
+                            <div className="segments-bar">
+                              {activeSeriesAsks.length <= 12 ? (
+                                activeSeriesAsks.map((a, idx) => {
+                                  const segState =
+                                    idx < currentAskIndex ? "done" : idx === currentAskIndex ? "current" : "todo";
+                                  return <span key={a.key} className={`segment ${segState}`} />;
+                                })
+                              ) : (
+                                <div className="progress-bar-track">
+                                  <div
+                                    className="progress-bar-fill"
+                                    style={{
+                                      width: `${(Math.min(currentAskIndex + 1, activeSeriesAsks.length) / activeSeriesAsks.length) * 100}%`,
+                                    }}
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          {connected && snapshot.source === "live" ? (
+                            <button
+                              type="button"
+                              className="round-icon-button"
+                              aria-label="Discuss in chat"
+                              onClick={() => void discuss(decision)}
+                            >
+                              <MessageSquare size={16} />
+                            </button>
+                          ) : (
+                            <div style={{ width: 32 }} />
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Scrollable Decision Card Body */}
+                      <div className="sheet-scroll">
+                        <article className="decision-card">
+                          <div className="decision-top">
+                            <span className="row-meta">
+                              <MessageSquare size={13} />
+                              {decision.ledger}
+                            </span>
+                            <Badge tone={decision.waiting ? "info" : "neutral"}>
+                              {decision.waiting ? "Waits on you" : "Not blocking"}
+                            </Badge>
+                          </div>
+                          <h2>{decision.title}</h2>
+                          {decision.summary && <p className="decision-summary">{decision.summary}</p>}
+                          {decision.question && decision.question !== decision.title && (
+                            <p className="muted">{decision.question}</p>
+                          )}
+                          {(changedAsk || decision.refusal) && (
+                            <div className="notice">
+                              <CircleAlert size={14} />
+                              <p>
+                                {decision.refusal ??
+                                  "This decision changed or is no longer open. The original card is kept here so it cannot be replaced under your selection."}
+                              </p>
+                            </div>
+                          )}
+                          <div className="decision-reasons">
+                            {decision.stakes && (
+                              <div>
+                                <span>What waiting costs</span>
+                                <p>{decision.stakes}</p>
+                              </div>
+                            )}
+                            {decision.whyYou && (
+                              <div>
+                                <span>Why you</span>
+                                <p>{decision.whyYou}</p>
+                              </div>
+                            )}
+                          </div>
+                          <fieldset className="options">
+                            <legend className="sr-only">Decision options</legend>
+                            {decision.options.map((o) => (
+                              <label className={`option ${draft.option === o.id ? "selected" : ""}`} key={o.id}>
+                                <input
+                                  type="radio"
+                                  name="decision-option"
+                                  checked={draft.option === o.id}
+                                  onChange={() => {
+                                    updateDraft({ option: o.id });
+                                    setArmedAskKey(null);
+                                  }}
+                                />
+                                <span>
+                                  <strong>
+                                    {o.label}
+                                    {o.recommended && <span className="recommended">Recommended</span>}
+                                  </strong>
+                                  {o.consequence && <span className="option-detail">{o.consequence}</span>}
+                                  {o.reversible === false && <span className="irreversible">Cannot be undone</span>}
+                                </span>
+                              </label>
+                            ))}
+                          </fieldset>
+                          {decision.fallback && (
+                            <p className="silence">
+                              <Clock3 size={13} />
+                              <span>If you say nothing: {decision.fallback}</span>
+                            </p>
+                          )}
+                          <label className="note-label">
+                            Your note <span>Kept with this answer</span>
+                            <textarea
+                              value={draft.note}
+                              onChange={(e) => updateDraft({ note: e.target.value })}
+                              placeholder="A condition or a question to discuss…"
+                            />
+                          </label>
+                          {(decision.details || decision.sources.length > 0) && (
+                            <details className="details">
+                              <summary>
+                                Evidence and details
+                                <FileText size={13} />
+                              </summary>
+                              {decision.details && <p className="prewrap">{decision.details}</p>}
+                              {decision.sources.map((s) => (
+                                <div className="source-row" key={`${s.label}:${s.ref}`}>
+                                  <FileText size={13} />
+                                  <span>
+                                    {s.label}
+                                    <small>{s.ref}</small>
+                                  </span>
+                                </div>
+                              ))}
+                            </details>
+                          )}
+                        </article>
+                      </div>
+
+                      {/* Viewport-Pinned Action Bar: ALWAYS ON VIEWPORT */}
+                      <div className="sheet-bar">
+                        <button type="button" className="skip-button" onClick={handleSkip} disabled={submitting}>
+                          Skip
+                        </button>
+                        <button
+                          type="button"
+                          className={`answer-button ${armedAskKey === decision.key ? "armed" : ""}`}
+                          onClick={() => void handleAnswer()}
+                          disabled={submitting}
+                        >
+                          {submitting ? (
+                            "Recording…"
+                          ) : armedAskKey === decision.key ? (
+                            "Confirm: Cannot be undone"
+                          ) : (
+                            <>
+                              <span>Answer</span>
+                              <ArrowRight size={14} />
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             </>
           )}
