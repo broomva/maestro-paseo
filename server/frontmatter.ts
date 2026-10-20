@@ -8,7 +8,8 @@
 // chose it: `provider` (`claude` or `claude/opus`), `isolation` (`worktree` or
 // `directory`), `mode`, `thinking`, and `features` (a mapping of the
 // provider's feature ids to simple values). An absent key means Settings.
-// `hold`, in words, says the work waits for you to start it: neither the loop
+// `tier` (`mechanical`, `standard`, `frontier` or `apex`, BRO-3118) declares how much
+// model the work is meant to get; any other value reads as none. `hold`, in words, says the work waits for you to start it: neither the loop
 // nor a session starts it (an idea you chose to develop, BRO-2802). `idea`,
 // `<ledger>#<id>`, names the idea a develop answer filed it for: one item per idea.
 // `answer` names the answer routing filed it for (server/answer-routes.ts,
@@ -17,6 +18,7 @@
 import YAML from "yaml";
 import { type CheckSpec, FEATURE_LIMITS, type FeatureValues, ISOLATIONS, type Isolation } from "../shared/contracts";
 import { type GateMode, isGateMode, isKind, isOrchState, type Kind, type OrchState } from "../shared/states";
+import { isTier, type Tier } from "../shared/tiers";
 
 export class WorkFileError extends Error {
   constructor(message: string) {
@@ -38,6 +40,8 @@ export interface Contract {
   isolation: Isolation | null;
   modeId: string | null;
   thinkingOptionId: string | null;
+  /** The delegation tier the work declares, or null (an unknown value reads as none). */
+  tier: Tier | null;
   featureValues: FeatureValues | null;
   checks: CheckRun[];
   /** Why only you start this work, or null. */
@@ -154,6 +158,7 @@ export function readContract(work: WorkDoc): Contract {
     isolation: readIsolation(data.isolation),
     modeId: str(data.mode),
     thinkingOptionId: str(data.thinking),
+    tier: isTier(data.tier) ? data.tier : null,
     featureValues: readFeatures(data.features),
     checks: readChecks(done.check),
     hold: str(data.hold),
@@ -238,6 +243,7 @@ export interface RunKeys {
   isolation?: Isolation;
   modeId?: string;
   thinkingOptionId?: string;
+  tier?: Tier;
   featureValues?: FeatureValues;
 }
 
@@ -257,6 +263,7 @@ export function newWorkSource(input: NewWork): string {
   if (run.isolation) data.isolation = run.isolation;
   if (run.modeId?.trim()) data.mode = run.modeId.trim();
   if (run.thinkingOptionId?.trim()) data.thinking = run.thinkingOptionId.trim();
+  if (run.tier) data.tier = run.tier;
   if (run.featureValues && Object.keys(run.featureValues).length > 0) data.features = { ...run.featureValues };
   if (input.hold?.trim()) data.hold = input.hold.trim();
   if (input.idea?.trim()) data.idea = input.idea.trim();

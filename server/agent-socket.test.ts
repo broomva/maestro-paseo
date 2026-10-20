@@ -1054,6 +1054,78 @@ describe("the socket", () => {
     }
   });
 
+  test("a session's tier is kept, and the run choices that are yours are set aside, said in the answer", async () => {
+    const { repo, ask, config, fake, engine } = await setup();
+    const response = await ask("work.create", {
+      title: "Tiered",
+      repo,
+      tier: "standard",
+      provider: "claude/claude-sonnet-5-5",
+      thinkingOptionId: "low",
+    });
+    if (!response.ok) throw new Error(response.error);
+    const output = response.output as { item: WorkItem; notice: string | null };
+    // Named as the CLI names them, not by the wire's keys.
+    expect(output.notice).toContain("Set aside: --provider, --thinking.");
+    expect(output.notice).not.toContain("thinkingOptionId");
+    expect(output.notice).not.toContain("Set aside: tier");
+    expect(output.notice).toContain("tier ladder in your Settings");
+    expect(output.item.nextRun?.tier).toBe("standard");
+    const file = await readFile(join(config.workRoot, output.item.path, "_work.md"), "utf8");
+    expect(file).toContain("tier: standard\n");
+    for (const key of ["provider:", "thinking:"]) expect(file).not.toContain(key);
+    // Started by you, the run takes what your tier ladder says the tier is, never what the session named.
+    expect(output.item.nextRun).toMatchObject({
+      provider: "claude/claude-sonnet-5-5",
+      thinkingOptionId: "medium",
+      fromSettings: expect.arrayContaining(["tierProvider", "tierThinking"]),
+    });
+    const running = await engine.dispatch(fake.paseo, output.item.id);
+    expect(running.worker).toMatchObject({
+      provider: "claude/claude-sonnet-5-5",
+      thinkingOptionId: "medium",
+      tier: "standard",
+    });
+    // A tier that is no tier is refused; no choices named means no notice.
+    expect((await ask("work.create", { title: "Bad", repo, tier: "premium" })).ok).toBe(false);
+    const quiet = await ask("work.create", { title: "Quiet", repo, tier: "apex" });
+    expect(quiet.ok && (quiet.output as { notice: string | null }).notice).toBeNull();
+  });
+
+  test("maestro new --tier, --provider and --thinking reach work.create; the tier is kept and the rest is said set aside", async () => {
+    const { root, repo, methods, session } = await setup();
+    const cli = await session({ cwd: process.cwd() });
+    const path = join(root, "maestro.sock");
+    const close = await serveAgents({ path, methods });
+    const saved = { socket: process.env.MAESTRO_PASEO_SOCKET, agent: process.env.PASEO_AGENT_ID };
+    process.env.MAESTRO_PASEO_SOCKET = path;
+    process.env.PASEO_AGENT_ID = cli.id;
+    const printed: string[] = [];
+    try {
+      const args = ["new", "Cheap", "work", "--repo", repo, "--tier", "mechanical"];
+      expect(
+        await main([...args, "--provider", "claude/claude-haiku-5", "--thinking", "low"], (text) => printed.push(text)),
+      ).toBe(0);
+      expect(printed[0]).toMatch(/^Created \S+ {2}Cheap work/);
+      expect(printed[0]).toContain("Set aside: --provider, --thinking.");
+      expect(printed[0]).not.toContain("thinkingOptionId");
+      const json: string[] = [];
+      await main(["ls", "--json"], (text) => json.push(text));
+      const [item] = (JSON.parse(json[0] ?? "{}") as { items: WorkItem[] }).items;
+      expect(item?.nextRun?.tier).toBe("mechanical");
+      await expect(main(["new", "x", "--repo", repo, "--tier", "premium"], () => {})).rejects.toBeInstanceOf(Usage);
+      const usage: string[] = [];
+      await main(["help"], (text) => usage.push(text));
+      for (const flag of ["--tier <t>", "--provider <p>", "--thinking <id>"]) expect(usage[0]).toContain(flag);
+    } finally {
+      process.env.MAESTRO_PASEO_SOCKET = saved.socket;
+      process.env.PASEO_AGENT_ID = saved.agent;
+      if (saved.socket === undefined) delete process.env.MAESTRO_PASEO_SOCKET;
+      if (saved.agent === undefined) delete process.env.PASEO_AGENT_ID;
+      await close();
+    }
+  });
+
   test("the CLI finds the socket and the session from the environment", async () => {
     const { root, repo, methods, events, session } = await setup();
     const cli = await session({ cwd: process.cwd() });

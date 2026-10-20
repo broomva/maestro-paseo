@@ -16,6 +16,7 @@ import {
 import { useEffect, useState } from "react";
 import { ActivityIndicator, View } from "react-native";
 import type { MaestroConfig } from "../shared/contracts";
+import { type Rung, TIERS, type Tier } from "../shared/tiers";
 import { errorText } from "./format";
 import { useConfig, useVerbs } from "./hooks";
 import { LOOP_HINT, loopMinutesOf, loopOptions, loopValue } from "./loop-model";
@@ -31,6 +32,13 @@ function parseCap(text: string): { cap: number | null; error: string | null } {
   }
   return { cap: Number(trimmed), error: null };
 }
+
+const TIER_TITLE: Record<Tier, string> = {
+  mechanical: "Mechanical",
+  standard: "Standard",
+  frontier: "Frontier",
+  apex: "Apex",
+};
 
 export function MaestroSettings({ theme }: PluginSurfaceProps) {
   const config = useConfig();
@@ -53,6 +61,11 @@ export function MaestroSettings({ theme }: PluginSurfaceProps) {
   if (!draft) return <ActivityIndicator color={theme.colors.foregroundMuted} />;
 
   const patch = (next: Partial<MaestroConfig>) => setDraft({ ...draft, ...next });
+  const patchRung = (tier: Tier, rung: Partial<Rung>) =>
+    patch({ tierLadder: { ...draft.tierLadder, [tier]: { ...draft.tierLadder[tier], ...rung } } });
+  const ladderError = TIERS.some(
+    (tier) => !draft.tierLadder[tier].provider.trim() || !draft.tierLadder[tier].thinkingOptionId.trim(),
+  );
 
   return (
     <View style={{ gap: space[6] }}>
@@ -102,6 +115,31 @@ export function MaestroSettings({ theme }: PluginSurfaceProps) {
           />
         </SettingsCard>
       </SettingsSection>
+      <SettingsSection title="Tiers">
+        <SettingsCard>
+          {TIERS.flatMap((tier) => [
+            <SettingsInput
+              key={`${tier}-provider`}
+              label={`${TIER_TITLE[tier]}: provider`}
+              hint={
+                tier === "mechanical"
+                  ? "Work that declares a tier starts its runs with that tier's provider and thinking level, unless the work chose its own. A session can only name the tier; this ladder is yours."
+                  : undefined
+              }
+              error={draft.tierLadder[tier].provider.trim() ? null : "A provider, such as claude/claude-sonnet-5-5."}
+              initialValue={draft.tierLadder[tier].provider}
+              onChangeText={(provider) => patchRung(tier, { provider })}
+            />,
+            <SettingsInput
+              key={`${tier}-thinking`}
+              label={`${TIER_TITLE[tier]}: thinking`}
+              error={draft.tierLadder[tier].thinkingOptionId.trim() ? null : "A thinking level, such as high."}
+              initialValue={draft.tierLadder[tier].thinkingOptionId}
+              onChangeText={(thinkingOptionId) => patchRung(tier, { thinkingOptionId })}
+            />,
+          ])}
+        </SettingsCard>
+      </SettingsSection>
       <SettingsSection title="The loop">
         <SettingsCard>
           <SettingsSelect
@@ -135,7 +173,7 @@ export function MaestroSettings({ theme }: PluginSurfaceProps) {
           <SettingsAction
             label="Save settings"
             actionLabel={verbs.saveConfig.isPending ? "Saving" : "Save"}
-            disabled={verbs.saveConfig.isPending || capError !== null}
+            disabled={verbs.saveConfig.isPending || capError !== null || ladderError}
             onPress={() =>
               verbs.saveConfig.mutate(draft, {
                 // Saved 8 s from now unless undone (B4): the strip below counts it down.

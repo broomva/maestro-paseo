@@ -39,6 +39,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { GATE_MODES } from "../shared/states";
 import { SESSIONS_START_NOTHING, TICKET } from "../shared/text";
+import { TIERS } from "../shared/tiers";
 import type { Approvals } from "./approvals";
 import type { CallerClaim, Callers, VerifiedCaller } from "./callers";
 import { type Engine, NO_HANDLE, UserError } from "./engine";
@@ -107,7 +108,30 @@ const AgentCreate = z.object({
   check: z.string().default(""),
   initiative: z.string().default(""),
   dispatch: z.boolean().default(false),
+  /** The delegation tier the work declares (BRO-3118): a label for the economy, it changes nothing about how a run starts. */
+  tier: z.enum(TIERS).optional(),
 });
+
+/** The run choices a session may name and Maestro does not take: how runs start is yours (Engine.create). */
+const OWNERS_CHOICES = {
+  provider: "--provider",
+  thinkingOptionId: "--thinking",
+  modeId: "mode",
+  isolation: "isolation",
+  featureValues: "features",
+} as const;
+
+/** A sentence naming the run choices a request carried that Maestro set aside, or null. */
+function setAside(raw: unknown): string | null {
+  const said = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  // Named as the CLI names them (maestro new --provider, --thinking), not by the wire's keys.
+  const named = (Object.keys(OWNERS_CHOICES) as Array<keyof typeof OWNERS_CHOICES>)
+    .filter((key) => said[key] !== undefined && said[key] !== null && said[key] !== "")
+    .map((key) => OWNERS_CHOICES[key]);
+  return named.length === 0
+    ? null
+    : `Set aside: ${named.join(", ")}. How a run starts is yours, not a session's: only the tier is taken, and it resolves to a provider and thinking level through the tier ladder in your Settings.`;
+}
 
 /**
  * The allowlist. `paseo` returns the daemon client once the plugin has been
@@ -176,12 +200,17 @@ export function agentMethods(
             "A session cannot write a done check: checks run as you, outside any session's permissions, so they come from the person who owns this Maestro.",
           );
         }
-        if (caller) return engine.createWork(paseo(), input, origin(caller));
+        const aside = setAside(raw);
+        const told = (notice: string | null) => [notice, aside].filter(Boolean).join(" ") || null;
+        if (caller) {
+          const made = await engine.createWork(paseo(), input, origin(caller));
+          return { ...made, notice: told(made.notice) };
+        }
         const made = await engine.createWork(paseo(), { ...input, hold: EXTERNAL_HOLD }, EXTERNAL);
         // Held work is yours to start, in Needs you at once: the loop flags it so on a wake, which may be off or hours
         // away, and an alert nobody sees is no alert.
         await engine.flag(made.item, "yours", yoursReason(HELD_FOR_YOU));
-        return { ...made, item: (await engine.get(made.item.id)).item };
+        return { ...made, item: (await engine.get(made.item.id)).item, notice: told(made.notice) };
       },
     ],
     [

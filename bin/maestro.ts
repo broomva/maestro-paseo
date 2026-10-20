@@ -16,6 +16,7 @@ import type { MaestroConfig, WorkEventWire, WorkItem } from "../shared/contracts
 import { needsYouOf, sectionOf } from "../shared/needs-you";
 import { GROUP_COPY, GROUP_ORDER, PLAIN_VOICE } from "../shared/states";
 import { SESSIONS_START_NOTHING } from "../shared/text";
+import { TIERS } from "../shared/tiers";
 
 const USAGE = `maestro: operate Maestro from a Paseo session
 
@@ -25,6 +26,10 @@ const USAGE = `maestro: operate Maestro from a Paseo session
       --brief <text>                  What to do and why
       --repo <path>                   Where runs happen (default: this directory)
       --initiative <name>             Group it under a folder
+      --tier <t>                      mechanical | standard | frontier | apex: what the work is meant to get;
+                                      the owner's tier ladder in Settings turns it into a provider and thinking level
+      --provider <p>                  claude/claude-sonnet-5-5 style (owner's to set: set aside from a session)
+      --thinking <id>                 The thinking level (owner's to set: set aside from a session)
   maestro track [--title <text>] [--ticket <id>]  Track this session as work (or --agent <id>, a session it started)
   maestro mine                        The work this session is running (or --agent <id>, a session it started)
   maestro config                      Where work lives and how runs start
@@ -45,7 +50,11 @@ Paseo's registry, and acts only for that live session (track, mine, approval).
 Starting work is yours, in Maestro, or a lane's or the conductor's: there is no dispatch
 here. Allow, Deny, change of course, unblock and cancel are yours too: work is never
 approved, gates merge it. A session can only ask leave for an action (approval request);
-it cannot decide it, pass its own gate, restart stuck work, or write a done check.`;
+it cannot decide it, pass its own gate, restart stuck work, or write a done check.
+
+The tier is recorded with the work, counted in Maestro's economy, and resolved at dispatch through the tier
+ladder in Maestro's Settings. How a run starts (--provider, --thinking) is the owner's to set in Maestro: a
+session's choice of either is set aside, and the answer says so.`;
 
 /** The command line does not say what to do. */
 export class Usage extends Error {}
@@ -212,6 +221,9 @@ function parse(argv: string[]) {
         brief: { type: "string", default: "" },
         repo: { type: "string" },
         initiative: { type: "string", default: "" },
+        tier: { type: "string" },
+        provider: { type: "string" },
+        thinking: { type: "string" },
         dispatch: { type: "boolean", default: false },
         title: { type: "string", default: "" },
         ref: { type: "string" },
@@ -252,13 +264,21 @@ export async function main(argv: string[], print: (text: string) => void = conso
       if (!title) throw new Usage("Usage: maestro new <title> [--brief <text>] [--repo <path>]");
       // Refused before anything is created or sent: a session starts nothing (A8), and a half-made item helps nobody.
       if (values.dispatch) throw new Refused(SESSIONS_START_NOTHING);
+      if (values.tier !== undefined && !(TIERS as readonly string[]).includes(values.tier)) {
+        throw new Usage(`--tier is one of ${TIERS.join(", ")}, not ${values.tier}`);
+      }
       const input = {
         title,
         brief: values.brief,
         repo: resolvePath(expandHome(values.repo ?? ".")),
         initiative: values.initiative,
+        ...(values.tier ? { tier: values.tier } : {}),
+        ...(values.provider ? { provider: values.provider } : {}),
+        ...(values.thinking ? { thinkingOptionId: values.thinking } : {}),
       };
-      show(await call("work.create", input), (output: { item: WorkItem }) => renderOne("Created", output));
+      show(await call("work.create", input), (output: { item: WorkItem; notice?: string | null }) =>
+        [renderOne("Created", output), ...(output.notice ? [output.notice] : [])].join("\n"),
+      );
       return 0;
     }
     case "dispatch":

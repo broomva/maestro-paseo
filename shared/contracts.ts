@@ -9,6 +9,7 @@ import { InitiativeNoticeSchema } from "./initiatives";
 import { LoopNoticeSchema } from "./loops";
 import { GATE_MODES, GROUP_ORDER, KINDS, ORCH_STATES, VERDICTS } from "./states";
 import { TICKET } from "./text";
+import { DEFAULT_TIER_LADDER, TIERS } from "./tiers";
 import { TimelineNoticeSchema } from "./timeline";
 
 /** Bounds on what a work may pass to a provider as feature values. */
@@ -35,6 +36,8 @@ export const WorkerSchema = z.object({
   /** How the run was started, beyond the provider; absent on runs recorded before these were kept. */
   modeId: z.string().nullable().optional(),
   thinkingOptionId: z.string().nullable().optional(),
+  /** The delegation tier declared at dispatch (BRO-3118); null or absent when none, and on older runs. */
+  tier: z.string().nullable().optional(),
   featureValues: FeatureValuesSchema.nullable().optional(),
   /** The same, in words: `claude/opus (mode bypassPermissions, thinking high)`. */
   startedWith: z.string().optional(),
@@ -90,8 +93,12 @@ export const PHASES = ["working", "checking", "asking"] as const;
 export const DiffStatSchema = z.object({ additions: z.number(), deletions: z.number() });
 export type DiffStat = z.infer<typeof DiffStatSchema>;
 
-/** The run choices Settings can fill when a work leaves them unset. Thinking and features are the work's alone. */
-export const SETTINGS_FIELDS = ["provider", "isolation", "modeId"] as const;
+/**
+ * The run choices Settings can fill when a work leaves them unset. Features are the work's alone. `tierProvider` and
+ * `tierThinking`: the provider, or the thinking level, came from the tier ladder in Settings because the work
+ * declared a tier and chose none itself (BRO-3118).
+ */
+export const SETTINGS_FIELDS = ["provider", "isolation", "modeId", "tierProvider", "tierThinking"] as const;
 
 export const NextRunSchema = z.object({
   /** `provider` or `provider/model`; a bare provider takes its default model at dispatch. */
@@ -99,6 +106,8 @@ export const NextRunSchema = z.object({
   isolation: z.enum(ISOLATIONS),
   modeId: z.string().nullable(),
   thinkingOptionId: z.string().nullable(),
+  /** The delegation tier the work declares (BRO-3118); absent from an older daemon. */
+  tier: z.string().nullable().optional(),
   featureValues: FeatureValuesSchema.nullable(),
   /** The fields above that came from Settings because the work left them unset. */
   fromSettings: z.array(z.enum(SETTINGS_FIELDS)),
@@ -250,6 +259,19 @@ const CAP = "The concurrency cap is a whole number of runs, 1 or more, or empty 
 export const LOOP_MAX_MINUTES = 1440;
 const LOOP_EVERY = `The loop wakes every whole number of minutes from 1 to ${LOOP_MAX_MINUTES} (a day), or empty for off`;
 
+const RungSchema = z.object({
+  provider: z.string().trim().min(1, "A tier needs a provider, such as claude/claude-sonnet-5-5"),
+  thinkingOptionId: z.string().trim().min(1, "A tier needs a thinking level"),
+});
+
+/** What each tier resolves to at dispatch: its provider and model, and its thinking level. */
+export const TierLadderSchema = z.object({
+  mechanical: RungSchema,
+  standard: RungSchema,
+  frontier: RungSchema,
+  apex: RungSchema,
+});
+
 export const ConfigSchema = z.object({
   workRoot: z.string().min(1),
   provider: z.string().min(1),
@@ -268,6 +290,12 @@ export const ConfigSchema = z.object({
    * the next wake is always a time a timer can hold.
    */
   loopMinutes: z.number().int(LOOP_EVERY).positive(LOOP_EVERY).max(LOOP_MAX_MINUTES, LOOP_EVERY).nullable(),
+  /**
+   * What a tier a work declares resolves to at dispatch (BRO-3118): the owner's. A session only picks the label; this
+   * is how a run of that tier starts. A provider or thinking level the work chose itself beats it. A file or a client
+   * written before it existed takes the default.
+   */
+  tierLadder: TierLadderSchema.default(DEFAULT_TIER_LADDER),
 });
 export type MaestroConfig = z.infer<typeof ConfigSchema>;
 
@@ -313,6 +341,8 @@ export const RunChoicesSchema = z.object({
   provider: z.string().trim().min(1).optional(),
   modeId: z.string().trim().min(1).optional(),
   thinkingOptionId: z.string().trim().min(1).optional(),
+  /** The delegation tier the work declares (BRO-3118). */
+  tier: z.enum(TIERS).optional(),
   featureValues: FeatureValuesSchema.optional(),
 });
 export type RunChoices = z.infer<typeof RunChoicesSchema>;

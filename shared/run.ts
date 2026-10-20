@@ -7,11 +7,14 @@ export interface RunShape {
   provider: string;
   modeId?: string | null;
   thinkingOptionId?: string | null;
+  /** The delegation tier declared for the run (BRO-3118). */
+  tier?: string | null;
   featureValues?: FeatureValues | null;
 }
 
 export function runTerms(run: Omit<RunShape, "provider">): string[] {
   const terms: string[] = [];
+  if (run.tier) terms.push(`tier ${run.tier}`);
   if (run.modeId) terms.push(`mode ${run.modeId}`);
   if (run.thinkingOptionId) terms.push(`thinking ${run.thinkingOptionId}`);
   for (const [id, value] of Object.entries(run.featureValues ?? {})) {
@@ -116,15 +119,20 @@ export function nextRunCopy(
   }
   const mark = (field: NextRun["fromSettings"][number], words: string) =>
     next.fromSettings.includes(field) ? `${words} (from Settings)` : words;
+  // The provider or thinking level a declared tier resolved to says so: it is the owner's ladder, not the work's choice.
+  const fromLadder = (field: NextRun["fromSettings"][number], words: string) =>
+    next.fromSettings.includes(field) ? `${words} (from the ${next.tier ?? ""} tier in Settings)` : words;
   const where = mark(
     "isolation",
     next.isolation === "directory" ? "in the repository itself" : "in a fresh worktree on its own run branch",
   );
   const terms = [
     ...(next.modeId ? [mark("modeId", `mode ${next.modeId}`)] : []),
-    ...runTerms({ thinkingOptionId: next.thinkingOptionId, featureValues: next.featureValues }),
+    ...runTerms({ tier: next.tier, thinkingOptionId: next.thinkingOptionId, featureValues: next.featureValues }).map(
+      (term) => (term.startsWith("thinking ") ? fromLadder("tierThinking", term) : term),
+    ),
   ];
-  const how = `${mark("provider", next.provider)}${terms.length > 0 ? `: ${terms.join(", ")}` : ""}`;
+  const how = `${fromLadder("tierProvider", mark("provider", next.provider))}${terms.length > 0 ? `: ${terms.join(", ")}` : ""}`;
   const skips = skipsPrompts(next);
   return card === "queued"
     ? {

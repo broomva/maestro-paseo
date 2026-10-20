@@ -11,8 +11,10 @@ import type { Verdict } from "../shared/states";
 import { SESSIONS_START_NOTHING } from "../shared/text";
 import { NAME_RETRY_MS } from "./adopter-names";
 import { defaultConfig } from "./config";
+import { EconomyFile } from "./economy";
 import {
   APPROVE_RETIRED,
+  BACKFILL_PER_SWEEP,
   CHECKING,
   CLIENT_WAIT_MS,
   Engine,
@@ -25,10 +27,11 @@ import {
   type Timer,
   UNDO_MS,
 } from "./engine";
-import { ARCHIVED_NOTE, type WorkEvent } from "./events";
+import { ARCHIVED_NOTE, flagOf, type WorkEvent } from "./events";
 import { fakePaseo } from "./fake-paseo";
 import type { Paseo } from "./runs";
 import { EVENTS_FILE, WORK_FILE, WorkStore } from "./store";
+import { parseTranscriptUsage, type UsageRead } from "./usage";
 import { gitEnv } from "./worktree";
 
 /** A real agent is idle once its turn ends; the fixture has to say so too. */
@@ -3090,6 +3093,140 @@ describe("the composer's choices", () => {
     expect(file).toContain("mode: full-access");
   });
 
+  test("the tier the work declares is on its next run, on the dispatch receipt, and in the file", async () => {
+    const { engine, fake, repo, config } = await setup();
+    const item = await engine.create(fake.paseo, { ...draft(repo), title: "Tiered", tier: "standard" });
+    expect(item.nextRun?.tier).toBe("standard");
+    expect(nextRunCopy(item.nextRun, "queued").line).toContain("tier standard");
+    const running = await engine.dispatch(fake.paseo, item.id);
+    expect(running.worker?.tier).toBe("standard");
+    expect(running.worker?.startedWith).toContain("tier standard");
+    const events = (await new WorkStore(config.workRoot).findById(item.id)).events;
+    expect(events.find((event) => event.type === "dispatched")).toMatchObject({ tier: "standard" });
+    expect(await readFile(join(config.workRoot, item.path, WORK_FILE), "utf8")).toContain("tier: standard\n");
+    // Undeclared: the receipt says null, and nothing is written.
+    const plain = await engine.create(fake.paseo, { ...draft(repo), title: "Plain" });
+    await engine.dispatch(fake.paseo, plain.id);
+    const receipt = (await new WorkStore(config.workRoot).findById(plain.id)).events.find(
+      (e) => e.type === "dispatched",
+    );
+    expect(receipt).toMatchObject({ tier: null });
+    expect(await readFile(join(config.workRoot, plain.path, WORK_FILE), "utf8")).not.toContain("tier:");
+  });
+
+  test("a declared tier resolves through the tier ladder: its provider and thinking, over Settings", async () => {
+    const { engine, fake, repo } = await setup({ provider: "claude/sonnet" });
+    const item = await engine.create(fake.paseo, { ...draft(repo), title: "Ladder", tier: "frontier" });
+    expect(item.nextRun).toMatchObject({
+      provider: "claude/claude-opus-5-5",
+      thinkingOptionId: "high",
+      tier: "frontier",
+      fromSettings: ["tierProvider", "isolation", "tierThinking"],
+    });
+    const line = nextRunCopy(item.nextRun, "queued").line;
+    expect(line).toContain("claude/claude-opus-5-5 (from the frontier tier in Settings)");
+    expect(line).toContain("thinking high (from the frontier tier in Settings)");
+    expect(line).not.toContain("claude/claude-opus-5-5 (from Settings)");
+    const running = await engine.dispatch(fake.paseo, item.id);
+    expect((fake.created[0] as { config: Record<string, unknown> }).config).toMatchObject({
+      provider: "claude/claude-opus-5-5",
+      thinkingOptionId: "high",
+    });
+    expect(running.worker).toMatchObject({ provider: "claude/claude-opus-5-5", thinkingOptionId: "high" });
+  });
+
+  test("what the work chose beats the ladder; the ladder beats Settings; no tier is Settings as before", async () => {
+    const { engine, fake, repo } = await setup({ provider: "claude/sonnet" });
+    const provider = await engine.create(fake.paseo, {
+      ...draft(repo),
+      title: "Own provider",
+      tier: "mechanical",
+      provider: "claude/opus",
+    });
+    // The provider is the work's; the thinking level still comes from the tier's rung.
+    expect(provider.nextRun).toMatchObject({ provider: "claude/opus", thinkingOptionId: "low" });
+    expect(provider.nextRun?.fromSettings).toContain("tierThinking");
+    expect(provider.nextRun?.fromSettings).not.toContain("tierProvider");
+    expect(provider.nextRun?.fromSettings).not.toContain("provider");
+    const thinking = await engine.create(fake.paseo, {
+      ...draft(repo),
+      title: "Own thinking",
+      tier: "apex",
+      thinkingOptionId: "xhigh",
+    });
+    expect(thinking.nextRun).toMatchObject({ provider: "claude/claude-fable-5-1", thinkingOptionId: "xhigh" });
+    expect(thinking.nextRun?.fromSettings).toContain("tierProvider");
+    expect(thinking.nextRun?.fromSettings).not.toContain("tierThinking");
+    const none = await engine.create(fake.paseo, { ...draft(repo), title: "No tier" });
+    expect(none.nextRun).toMatchObject({ provider: "claude/sonnet", thinkingOptionId: null, tier: null });
+    expect(none.nextRun?.fromSettings).toEqual(["provider", "isolation"]);
+    await engine.dispatch(fake.paseo, none.id);
+    expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({ provider: "claude/sonnet" });
+  });
+
+  test("a rung's thinking level goes only to a run of the rung's provider family", async () => {
+    const { engine, fake, repo } = await setup();
+    const other = await engine.create(fake.paseo, {
+      ...draft(repo),
+      title: "Other family",
+      tier: "standard",
+      provider: "codex/gpt-5.5",
+    });
+    // The work's provider is codex: claude's "medium" is no codex thinking level, so none is taken.
+    expect(other.nextRun).toMatchObject({ provider: "codex/gpt-5.5", thinkingOptionId: null });
+    expect(other.nextRun?.fromSettings).not.toContain("tierThinking");
+    await engine.dispatch(fake.paseo, other.id);
+    expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({ provider: "codex/gpt-5.5" });
+    // The same family keeps the rung's thinking level.
+    const same = await engine.create(fake.paseo, {
+      ...draft(repo),
+      title: "Same family",
+      tier: "standard",
+      provider: "claude/opus",
+    });
+    expect(same.nextRun).toMatchObject({ provider: "claude/opus", thinkingOptionId: "medium" });
+    expect(same.nextRun?.fromSettings).toContain("tierThinking");
+  });
+
+  test("editing the ladder changes the next dispatch, and a tier of a bare provider's family keeps Settings' mode only when it matches", async () => {
+    const { engine, fake, repo, config } = await setup({ modeId: "bypassPermissions" });
+    const item = await engine.create(fake.paseo, { ...draft(repo), title: "Edited", tier: "standard" });
+    config.tierLadder.standard = { provider: "claude/claude-sonnet-5-6", thinkingOptionId: "high" };
+    expect((await engine.get(item.id)).item.nextRun).toMatchObject({
+      provider: "claude/claude-sonnet-5-6",
+      thinkingOptionId: "high",
+    });
+    await engine.dispatch(fake.paseo, item.id);
+    expect((fake.created[0] as { config: Record<string, unknown> }).config).toEqual({
+      provider: "claude/claude-sonnet-5-6",
+      modeId: "bypassPermissions",
+      thinkingOptionId: "high",
+    });
+    // A ladder that points at another provider's family does not carry the Settings mode over.
+    config.tierLadder.mechanical = { provider: "codex/gpt-5.5", thinkingOptionId: "low" };
+    const other = await engine.create(fake.paseo, { ...draft(repo), title: "Other family", tier: "mechanical" });
+    expect(other.nextRun).toMatchObject({ provider: "codex/gpt-5.5", modeId: null });
+  });
+
+  test("a session may declare a tier on the work it files, and nothing else about how its runs start", async () => {
+    const { engine, fake, repo, config } = await setup();
+    const { item } = await engine.createWork(
+      fake.paseo,
+      {
+        ...draft(repo),
+        title: "Filed",
+        tier: "mechanical",
+        provider: "codex/gpt-5.5",
+        thinkingOptionId: "max",
+        dispatch: false,
+      },
+      { actor: "agent", by: "session-1" },
+    );
+    const file = await readFile(join(config.workRoot, item.path, WORK_FILE), "utf8");
+    expect(file).toContain("tier: mechanical\n");
+    for (const key of ["provider:", "thinking:", "mode:", "isolation:"]) expect(file).not.toContain(key);
+  });
+
   test("what the work did not choose comes from Settings at dispatch time", async () => {
     const { engine, fake, repo, config } = await setup();
     const item = await engine.create(fake.paseo, { ...draft(repo), title: "Defaults", thinkingOptionId: "low" });
@@ -3099,6 +3236,7 @@ describe("the composer's choices", () => {
       isolation: "worktree",
       modeId: null,
       thinkingOptionId: "low",
+      tier: null,
       featureValues: null,
       fromSettings: ["provider", "isolation"],
       held: null,
@@ -3123,6 +3261,7 @@ describe("the composer's choices", () => {
         isolation: "worktree",
         modeId: "bypassPermissions",
         thinkingOptionId: null,
+        tier: null,
         featureValues: null,
         fromSettings: ["isolation", "modeId"],
         held: null,
@@ -4403,5 +4542,452 @@ describe("an orchestrator's child whose branch merged after its session ended (B
     const item = await adoptAndArchive(env, ORCHESTRATOR);
     await env.engine.upkeep(env.fake.paseo);
     expect([(await env.engine.get(item.id)).item.state, asked.length]).toEqual(["blocked", 0]);
+  });
+});
+
+describe("run.economy: what each run's session has used (BRO-3118)", () => {
+  /** A transcript of `count` distinct assistant messages on `model`, 100 input and 10 output tokens each. */
+  const transcript = (count: number, model = "claude-sonnet-5-5") =>
+    Array.from({ length: count }, (_, at) =>
+      JSON.stringify({
+        type: "assistant",
+        message: { id: `m${at}`, model, usage: { input_tokens: 100, output_tokens: 10 } },
+      }),
+    ).join("\n");
+  const measured = (count: number, model?: string, subagents: Record<string, string> | null = null): UsageRead => ({
+    measured: true,
+    usage: parseTranscriptUsage(transcript(count, model), subagents),
+  });
+
+  async function boot(overrides: Partial<MaestroConfig> = {}) {
+    let next: UsageRead | Error = measured(1);
+    const asked: Array<[string, string]> = [];
+    const root = await realpath(await mkdtemp(join(tmpdir(), "maestro-economy-")));
+    roots.push(root);
+    const file = join(root, "economy.json");
+    // The economy file's trailing scan, fired by hand after moving the same clock the engine reads.
+    const trailing: Array<{ run: () => void; canceled: boolean }> = [];
+    const economy = new EconomyFile({
+      path: file,
+      now: () => new Date(clock),
+      refreshMs: 60_000,
+      timer: (run) => {
+        const entry = { run, canceled: false };
+        trailing.push(entry);
+        return () => {
+          entry.canceled = true;
+        };
+      },
+    });
+    const env = await setup(overrides, {
+      usage: async (agentId, provider) => {
+        asked.push([agentId, provider]);
+        if (next instanceof Error) throw next;
+        return next;
+      },
+      economy,
+    });
+    const economyOf = async (id: string) =>
+      (await env.store.findById(id)).events.filter(
+        (event): event is Extract<WorkEvent, { type: "run.economy" }> => event.type === "run.economy",
+      );
+    return {
+      ...env,
+      asked,
+      file,
+      economyFile: economy,
+      /** Let the trailing scan the coalescing left run, and wait for it. */
+      fireTrailing: async () => {
+        for (const entry of trailing.splice(0)) if (!entry.canceled) entry.run();
+        await economy.settled();
+      },
+      trailingCount: () => trailing.filter((entry) => !entry.canceled).length,
+      economyOf,
+      reading: (value: UsageRead | Error) => {
+        next = value;
+      },
+    };
+  }
+
+  const filed = (engine: Engine, fake: ReturnType<typeof fakePaseo>, repo: string, tier?: "mechanical" | "standard") =>
+    engine.create(fake.paseo, {
+      title: "Metered",
+      brief: "Do it.",
+      repo,
+      gate: "human",
+      check: "",
+      initiative: "",
+      dispatch: true,
+      ...(tier ? { tier } : {}),
+    });
+
+  test("a turn's end records the run's usage, once, and again only when the numbers moved", async () => {
+    const { engine, fake, repo, economyOf, reading, asked } = await boot();
+    const item = await filed(engine, fake, repo, "standard");
+    reading(measured(2));
+    await endTurn(engine, fake);
+    await engine.economySettled();
+    const [first, ...rest] = await economyOf(item.id);
+    expect(rest).toEqual([]);
+    expect(first).toMatchObject({
+      type: "run.economy",
+      actor: "maestro",
+      agentId: "agent-1",
+      tier: "standard",
+      tierSource: "declared",
+      provider: "claude/claude-sonnet-5-5",
+      model: "claude-sonnet-5-5",
+      thinkingOptionId: "medium",
+      measured: true,
+      tokens: { input: 200, output: 20, cacheRead: 0, cacheCreation: 0 },
+      subagentTokens: null,
+      subagentModels: null,
+      raises: 0,
+      assistantMessages: 2,
+    });
+    expect(first?.backfilled).toBeUndefined();
+    expect(asked.at(-1)).toEqual(["agent-1", "claude/claude-sonnet-5-5"]);
+    // The same numbers on the next turn's end: nothing is added.
+    await engine.unblock(fake.paseo, item.id, "").catch(() => undefined);
+    reading(measured(2));
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "more" }] as never,
+      "t2",
+    );
+    await engine.economySettled();
+    expect(await economyOf(item.id)).toHaveLength(1);
+    // More used: a second reading, cumulative.
+    reading(measured(5));
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "again" }] as never,
+      "t3",
+    );
+    await engine.economySettled();
+    const all = await economyOf(item.id);
+    expect(all).toHaveLength(2);
+    expect(all[1]?.tokens.input).toBe(500);
+  });
+
+  test("a run with no tier declared takes the one its model implies", async () => {
+    const { engine, fake, repo, economyOf, reading } = await boot();
+    const item = await filed(engine, fake, repo);
+    reading(measured(1, "claude-opus-5-5"));
+    await endTurn(engine, fake);
+    await engine.economySettled();
+    // The provider as dispatched is claude/sonnet in this fixture: its model, not the transcript's, names the tier.
+    expect((await economyOf(item.id))[0]).toMatchObject({ tier: "standard", tierSource: "model", raises: 1 });
+  });
+
+  test("a read that fails never breaks the turn's end; unmeasured says why, once", async () => {
+    const { engine, fake, repo, economyOf, reading } = await boot();
+    const item = await filed(engine, fake, repo);
+    reading(new Error("disk on fire"));
+    await endTurn(engine, fake);
+    await engine.economySettled();
+    expect((await engine.get(item.id)).item.state).toBe("review");
+    const [only, ...rest] = await economyOf(item.id);
+    expect(rest).toEqual([]);
+    expect(only).toMatchObject({ measured: false, tokens: { input: 0, output: 0 }, subagentTokens: null });
+    expect(only?.reason).toContain("disk on fire");
+  });
+
+  test("a failed read after a good one adds nothing: the count never falls back to zero", async () => {
+    const { engine, fake, repo, economyOf, reading } = await boot();
+    const item = await filed(engine, fake, repo);
+    reading(measured(3));
+    await endTurn(engine, fake);
+    await engine.economySettled();
+    reading({ measured: false, reason: "transcript not found" });
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "x" }] as never,
+      "t2",
+    );
+    await engine.economySettled();
+    const all = await economyOf(item.id);
+    expect(all).toHaveLength(1);
+    expect(all[0]?.measured).toBe(true);
+  });
+
+  test("an engine given no reader writes no run.economy", async () => {
+    const { engine, fake, repo, store } = await setup();
+    const item = await filed(engine, fake, repo);
+    await endTurn(engine, fake);
+    await engine.economySettled();
+    expect((await store.findById(item.id)).events.some((event) => event.type === "run.economy")).toBe(false);
+  });
+
+  test("a reading never takes the loop's flag down, and never moves the work's last activity", async () => {
+    const { engine, fake, repo, store, reading } = await boot();
+    const item = await filed(engine, fake, repo);
+    tick(31);
+    expect(await engine.flag(item, "quiet", "quiet for 30m")).toBe(true);
+    const before = (await engine.get(item.id)).item;
+    expect(flagOf((await store.findById(item.id)).events)?.kind).toBe("quiet");
+    reading(measured(1));
+    await engine.economySweep();
+    const events = (await store.findById(item.id)).events;
+    expect(events.some((event) => event.type === "run.economy")).toBe(true);
+    expect(flagOf(events)?.kind).toBe("quiet");
+    expect((await engine.get(item.id)).item.updatedAt).toBe(before.updatedAt);
+  });
+
+  test("the summary file is written when a reading is added, with the keys the coordinator reads", async () => {
+    const { engine, fake, repo, file, reading } = await boot();
+    await filed(engine, fake, repo, "standard");
+    reading(measured(2));
+    await endTurn(engine, fake);
+    await engine.economySettled();
+    const written = JSON.parse(await readFile(file, "utf8"));
+    expect(Object.keys(written)).toEqual(["generatedAt", "windowDays", "tiers", "totals"]);
+    expect(Object.keys(written.tiers)).toEqual(["mechanical", "standard", "frontier", "apex", "unknown"]);
+    expect(written.tiers.standard).toMatchObject({ runs: 1, works: 1, tokens: 220 });
+    expect(written.totals.runs).toBe(1);
+  });
+
+  test("economy.json carries the keys the workspace reads", async () => {
+    const { engine, fake, repo, file, reading } = await boot();
+    await filed(engine, fake, repo, "standard");
+    reading(measured(1));
+    await engine.economySweep();
+    const written = JSON.parse(await readFile(file, "utf8"));
+    expect(Object.keys(written).sort()).toEqual(["generatedAt", "tiers", "totals", "windowDays"]);
+    expect(typeof written.generatedAt).toBe("string");
+    expect(written.windowDays).toBe(7);
+    const keys = [
+      "approved",
+      "cacheRead",
+      "cacheReadPerApproved",
+      "escalations",
+      "firstPass",
+      "raisedRuns",
+      "raises",
+      "runs",
+      "sentBack",
+      "tokens",
+      "tokensPerApproved",
+      "unmeasured",
+      "works",
+    ];
+    for (const bucket of ["mechanical", "standard", "frontier", "apex", "unknown"]) {
+      expect(Object.keys(written.tiers[bucket]).sort()).toEqual(keys);
+    }
+    expect(Object.keys(written.totals).sort()).toEqual(keys);
+    // Nothing approved yet: the ratios are null, never missing.
+    expect(written.tiers.standard).toMatchObject({ runs: 1, tokensPerApproved: null, firstPass: null, raises: 0 });
+  });
+
+  test("a backfill of a transcript that cannot be read records one unmeasured reading, with why, and is not asked again", async () => {
+    const { engine, fake, repo, economyOf, reading, asked } = await boot();
+    const item = await filed(engine, fake, repo);
+    reading({ measured: false, reason: "transcript not found" });
+    await engine.economySweep();
+    const [only, ...rest] = await economyOf(item.id);
+    expect(rest).toEqual([]);
+    expect(only).toMatchObject({
+      backfilled: true,
+      measured: false,
+      reason: "transcript not found",
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+    });
+    const askedOnce = asked.length;
+    reading(measured(2));
+    await engine.economySweep();
+    expect(asked.length).toBe(askedOnce);
+    expect(await economyOf(item.id)).toHaveLength(1);
+    // A fresh engine over the same files finds the receipt and does not ask either.
+    const again = await boot();
+    again.reading(measured(2));
+    await again.engine.economySweep();
+    expect(again.asked).toEqual([]);
+  });
+
+  test("a backfill of a readable transcript records it, once, and the file is written at most once a minute", async () => {
+    const { engine, fake, repo, economyOf, reading, file } = await boot();
+    const item = await filed(engine, fake, repo);
+    reading(measured(2));
+    await engine.economySweep();
+    const [backfilled, ...rest] = await economyOf(item.id);
+    expect(backfilled).toMatchObject({ backfilled: true, measured: true, tokens: { input: 200 } });
+    expect(rest).toEqual([]);
+    await engine.economySweep();
+    expect(await economyOf(item.id)).toHaveLength(1);
+    // The file was written for the receipt just added; a later sweep inside the minute leaves it alone.
+    const stamp = JSON.parse(await readFile(file, "utf8")).generatedAt;
+    tickMs(30_000);
+    await engine.economySweep();
+    expect(JSON.parse(await readFile(file, "utf8")).generatedAt).toBe(stamp);
+    tickMs(31_000);
+    await engine.economySweep();
+    expect(JSON.parse(await readFile(file, "utf8")).generatedAt).not.toBe(stamp);
+  });
+
+  test("overlapping sweeps share one backfill: no run is read twice", async () => {
+    const { engine, fake, repo, economyOf, reading, asked } = await boot();
+    const item = await filed(engine, fake, repo);
+    reading(measured(1));
+    asked.length = 0;
+    await Promise.all([engine.economySweep(), engine.economySweep(), engine.economySweep()]);
+    expect(asked).toHaveLength(1);
+    expect(await economyOf(item.id)).toHaveLength(1);
+  });
+
+  test("a reading that read fewer messages than the last is out of order and is not recorded", async () => {
+    const { engine, fake, repo, economyOf, reading } = await boot();
+    const item = await filed(engine, fake, repo);
+    reading(measured(5));
+    await endTurn(engine, fake);
+    await engine.economySettled();
+    reading(measured(3));
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "x" }] as never,
+      "t2",
+    );
+    await engine.economySettled();
+    const all = await economyOf(item.id);
+    expect(all).toHaveLength(1);
+    expect(all[0]?.assistantMessages).toBe(5);
+    reading(measured(6));
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "y" }] as never,
+      "t3",
+    );
+    await engine.economySettled();
+    expect((await economyOf(item.id)).map((e) => e.assistantMessages)).toEqual([5, 6]);
+  });
+
+  test("a run that crosses a read bound is unmeasured from then on; a read that merely failed is not", async () => {
+    const { engine, fake, repo, economyOf, reading } = await boot();
+    const item = await filed(engine, fake, repo);
+    reading(measured(3));
+    await endTurn(engine, fake);
+    await engine.economySettled();
+    reading({ measured: false, reason: "transcript not read: EBUSY" });
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "a" }] as never,
+      "t2",
+    );
+    await engine.economySettled();
+    expect((await economyOf(item.id)).map((e) => e.measured)).toEqual([true]);
+    reading({ measured: false, reason: "not read: the session's transcripts total over 1000 MB", bound: true });
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "b" }] as never,
+      "t3",
+    );
+    await engine.economySettled();
+    const all = await economyOf(item.id);
+    expect(all.map((e) => e.measured)).toEqual([true, false]);
+    expect(all[1]).toMatchObject({
+      reason: "not read: the session's transcripts total over 1000 MB",
+      tokens: { input: 0 },
+    });
+    // So the summary no longer counts the earlier numbers as its cost: unmeasured, no tokens.
+    expect((await engine.economySummary()).tiers.standard).toMatchObject({ unmeasured: 1, tokens: 0 });
+  });
+
+  test("a reading with as many messages and fewer tokens than the last is out of order too", async () => {
+    const { engine, fake, repo, economyOf, reading } = await boot();
+    const item = await filed(engine, fake, repo);
+    const message = (input: number): UsageRead => ({
+      measured: true,
+      usage: parseTranscriptUsage(
+        JSON.stringify({
+          type: "assistant",
+          message: { id: "m0", model: "claude-sonnet-5-5", usage: { input_tokens: input, output_tokens: 10 } },
+        }),
+      ),
+    });
+    reading(message(500));
+    await endTurn(engine, fake);
+    await engine.economySettled();
+    reading(message(300));
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "a" }] as never,
+      "t2",
+    );
+    await engine.economySettled();
+    expect((await economyOf(item.id)).map((e) => e.tokens.input)).toEqual([500]);
+    reading(message(700));
+    await engine.onTurnEnded(
+      { id: "agent-1" },
+      { kind: "completed" },
+      [{ type: "assistant_message", text: "b" }] as never,
+      "t3",
+    );
+    await engine.economySettled();
+    expect((await economyOf(item.id)).map((e) => e.tokens.input)).toEqual([500, 700]);
+  });
+
+  test("economy.json is not rewritten by every reading: a reading inside the interval trails, and the last one lands", async () => {
+    const { engine, fake, repo, reading, file, fireTrailing, trailingCount } = await boot();
+    await filed(engine, fake, repo, "standard");
+    reading(measured(1));
+    await endTurn(engine, fake);
+    await engine.economySettled();
+    // The first reading is written at once.
+    expect(JSON.parse(await readFile(file, "utf8")).tiers.standard.tokens).toBe(110);
+    // Two more inside the interval: the file still says the first, and one scan waits to trail them.
+    for (const [count, turn] of [
+      [2, "t2"],
+      [4, "t3"],
+    ] as const) {
+      tickMs(5_000);
+      reading(measured(count));
+      await engine.onTurnEnded(
+        { id: "agent-1" },
+        { kind: "completed" },
+        [{ type: "assistant_message", text: turn }] as never,
+        turn,
+      );
+      await engine.economySettled();
+    }
+    expect(JSON.parse(await readFile(file, "utf8")).tiers.standard.tokens).toBe(110);
+    expect(trailingCount()).toBe(1);
+    tickMs(30_000);
+    await fireTrailing();
+    expect(JSON.parse(await readFile(file, "utf8")).tiers.standard.tokens).toBe(440);
+    expect(trailingCount()).toBe(0);
+  });
+
+  test("a backfill reads at most BACKFILL_PER_SWEEP runs a sweep", async () => {
+    const { engine, fake, repo, asked, reading, store } = await boot({ concurrencyCap: 100 });
+    const ids: string[] = [];
+    for (let at = 0; at < BACKFILL_PER_SWEEP + 3; at += 1) {
+      ids.push((await filed(engine, fake, repo)).id);
+    }
+    reading(measured(1));
+    asked.length = 0;
+    await engine.economySweep();
+    expect(asked).toHaveLength(BACKFILL_PER_SWEEP);
+    await engine.economySweep();
+    expect(asked).toHaveLength(BACKFILL_PER_SWEEP + 3);
+    const counts = await Promise.all(
+      ids.map(async (id) => (await store.findById(id)).events.filter((e) => e.type === "run.economy").length),
+    );
+    expect(counts.every((count) => count === 1)).toBe(true);
+  });
+
+  test("the economy summary is a pure read: it writes nothing", async () => {
+    const { engine, fake, repo, file, reading } = await boot();
+    await filed(engine, fake, repo, "standard");
+    reading(measured(1));
+    const summary = await engine.economySummary();
+    expect(summary.tiers.standard.runs).toBe(1);
+    expect(existsSync(file)).toBe(false);
   });
 });

@@ -10,6 +10,7 @@ import { attentionOf } from "./server/attention";
 import { Callers } from "./server/callers";
 import { loadConfig, saveConfig } from "./server/config";
 import { WorkspaceAsks } from "./server/control-home";
+import { EconomyFile } from "./server/economy";
 import { Engine, UserError } from "./server/engine";
 import { AwakeClock, Fleet, wallClock } from "./server/fleet";
 import { inspectFolder as inspect } from "./server/folders";
@@ -31,6 +32,7 @@ import {
   approvalsPath,
   controlAskPaths,
   controlRepoPaths,
+  economyPath,
   expandHome,
   launchdPrefix,
   noticeSnoozesPath,
@@ -49,6 +51,7 @@ import type { Paseo } from "./server/runs";
 import { SessionCards } from "./server/session-cards";
 import { fetchEvery, Sweep, sweepEvery } from "./server/sweep";
 import { Timeline } from "./server/timeline";
+import { transcriptUsageReader } from "./server/usage";
 import {
   decideApprovalHandler,
   promptSessionHandler,
@@ -80,6 +83,7 @@ import {
   wakeLoop,
   workForAgent,
 } from "./shared/contracts";
+import { getEconomy } from "./shared/economy";
 import {
   type AnswerInput,
   answerAsk,
@@ -168,6 +172,9 @@ export default function contribute(host: PluginServerContext) {
     // Paseo is the harness registry (BRO-2908): an adopted session is labelled with its work, as a dispatched one is.
     label: paseoLabel,
     landed: (before, after) => Promise.all([cards.landed(before, after), inbox.landed(before, after)]),
+    // What each run's session has used, read from its Claude transcript, and the summary the coordinator reads (BRO-3118).
+    usage: transcriptUsageReader(),
+    economy: new EconomyFile({ path: economyPath(), log }),
   });
   // Every verb of yours that changes state takes effect 8 s after you make it, and leaves a receipt (B4,
   // server/owner-verbs.ts); what agents asked leave for waits in its own file (server/approvals.ts).
@@ -693,6 +700,8 @@ export default function contribute(host: PluginServerContext) {
     return { proposals: (view.detail?.proposals ?? []).filter((proposal) => wanted.has(proposal.key)), ...made };
   });
   server.handle(getFleetTick, ({ scope, tick }) => fleet.tick(scope, tick));
+  // What each tier of model cost and how often its work passed (server/economy-model.ts): yours alone, a pure read.
+  server.handle(getEconomy, ({ days }) => engine.economySummary(days));
   // The workspace's asks, each read at its home (server/control-home.ts).
   // Each fleet scope's own root asks ride along, so Decisions lists every ask Maestro reads.
   server.handle(getWorkspaceAsks, async () => {
@@ -927,6 +936,8 @@ export default function contribute(host: PluginServerContext) {
           ]
         : []),
       { name: "the fleet's leftover locks", background: true, run: () => fleet.sweepLocks() },
+      // Past runs with no usage reading are read once, and the economy summary the coordinator reads is written.
+      { name: "the economy", background: true, run: () => engine.economySweep() },
     ],
     // A wake that found no client runs again once a sweep has one (Loop.connected).
     after: (run) => {

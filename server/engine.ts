@@ -24,6 +24,7 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { type FlagKind, type MaestroConfig, NOT_STOPPED, type RunChoices, type WorkItem } from "../shared/contracts";
+import { ECONOMY_DAYS, type EconomySummary } from "../shared/economy";
 import { permissionAction } from "../shared/needs";
 import { ARCHIVED_RESUME } from "../shared/paused";
 import {
@@ -49,6 +50,17 @@ import {
 } from "./branch-merge";
 import { runChecks } from "./checks";
 import { loadConfig } from "./config";
+import type { EconomyFile } from "./economy";
+import {
+  billedOf,
+  bindingsOf,
+  type EconomyWork,
+  economyEvent,
+  lastEconomy,
+  type RunBinding,
+  sameReading,
+  summarizeEconomy,
+} from "./economy-model";
 import {
   ARCHIVED_NOTE,
   archivedSince,
@@ -84,6 +96,7 @@ import { type LabelAgent, PARENT_AGENT_LABEL, WORK_LABELS, workLabels } from "./
 import { describePermission, type PermissionLike } from "./permissions";
 import { type Paseo, startRun, WORK_LABEL } from "./runs";
 import { type Mutation, placement, type StoredWork, WorkStore } from "./store";
+import type { UsageRead, UsageReader } from "./usage";
 import { pausedBy } from "./usage-limit";
 import { toWire } from "./wire";
 import { type WorktreeStatus, worktreeStatus } from "./worktree";
@@ -330,7 +343,17 @@ export interface EngineOptions {
   merged?: (repo: string, branch: string) => Promise<MergedPr | null>;
   /** Sets labels on a session: the plugin passes server/labels.ts paseoLabel (the paseo CLI); absent, nothing is labelled. */
   label?: LabelAgent;
+  /**
+   * Reads what a session has used (server/usage.ts transcriptUsageReader): the plugin passes the real one; absent,
+   * no `run.economy` receipt is written, so no test reads a real transcript.
+   */
+  usage?: UsageReader;
+  /** Where the economy summary is written (server/economy.ts); absent, none is. */
+  economy?: EconomyFile;
 }
+
+/** The most runs one sweep reads a past transcript for (Engine.economySweep): a cold start must not stall the daemon. */
+export const BACKFILL_PER_SWEEP = 20;
 
 /** What work.create takes: the work, where it runs, how it is judged, and optionally how its runs start. */
 export type CreateInput = RunChoices & {
@@ -353,6 +376,7 @@ export type CreateInput = RunChoices & {
 /** Only the run choices that were made: an absent one means Settings at dispatch. */
 function runKeys(input: RunChoices): RunKeys {
   const keys: RunKeys = {};
+  if (input.tier) keys.tier = input.tier;
   if (input.provider?.trim()) keys.provider = input.provider.trim();
   if (input.isolation) keys.isolation = input.isolation;
   if (input.modeId?.trim()) keys.modeId = input.modeId.trim();
@@ -451,7 +475,13 @@ function startRefusal(item: StoredWork, origin: Origin): string | null {
 }
 
 /** What may follow a turn's end without the run having gone on: its landing, a remark, the loop's flag. */
-const AFTER_A_LIMIT: ReadonlySet<WorkEvent["type"]> = new Set(["state", "note", "loop.flagged", "flag.cleared"]);
+const AFTER_A_LIMIT: ReadonlySet<WorkEvent["type"]> = new Set([
+  "state",
+  "note",
+  "loop.flagged",
+  "flag.cleared",
+  "run.economy",
+]);
 
 /**
  * The Stuck reason work at your gate (or left running) should have when its last turn ended on a usage limit and
@@ -508,6 +538,14 @@ export class Engine {
   private readonly gitOf: (cwd: string | null) => Promise<{ branch: string | null; githubRepo: string | null }>;
   private readonly merged: (repo: string, branch: string) => Promise<MergedPr | null>;
   private readonly label: LabelAgent;
+  private readonly usage: UsageReader | null;
+  private readonly economy: EconomyFile | null;
+  /** The economy readings in flight: a turn's end does not wait for its transcript to be read. */
+  private readonly readings = new Set<Promise<unknown>>();
+  /** Agents a backfill has already tried this process: a transcript that could not be read is not tried every sweep. */
+  private readonly backfilled = new Set<string>();
+  /** The backfill in flight, if any: one at a time. */
+  private backfilling: Promise<void> | null = null;
   /** Each session's labels as Maestro last asked for them: when, and how many asks in a row failed. */
   private readonly labelled = new Map<string, { key: string; at: number; failures: number; flying: boolean }>();
   /** Label calls run one at a time: each is a paseo CLI process (server/labels.ts). */
@@ -545,6 +583,8 @@ export class Engine {
     this.merged = options.merged ?? mergedPrs(undefined, undefined, this.log);
     // No label unless one is passed: index.server.ts passes the paseo CLI, so no test can label a real session.
     this.label = options.label ?? (async () => undefined);
+    this.usage = options.usage ?? null;
+    this.economy = options.economy ?? null;
   }
 
   /**
@@ -591,6 +631,11 @@ export class Engine {
     });
   }
 
+  /** For a test: waits for the economy readings started so far. */
+  async economySettled(): Promise<void> {
+    while (this.readings.size > 0) await Promise.allSettled([...this.readings]);
+  }
+
   /** For a test: waits for the label calls asked for so far. */
   labelsSettled(): Promise<void> {
     return this.labelQueue;
@@ -607,6 +652,7 @@ export class Engine {
     this.abort.abort();
     for (const cancel of this.armed.values()) cancel();
     this.armed.clear();
+    this.economy?.stop();
   }
 
   private stamp(): string {
@@ -939,8 +985,9 @@ export class Engine {
       throw new UserError("Letting checks decide needs a check command.");
     }
     // How runs start is yours alone: work anyone else creates carries no run choices, so its runs start as
-    // your Settings say.
-    const run = origin.actor === "human" ? runKeys(input) : undefined;
+    // your Settings say. The one exception is the tier (BRO-3118): it declares what the work is meant to get and
+    // changes nothing about how a run starts, so the session or lane that files the work may say it.
+    const run = origin.actor === "human" ? runKeys(input) : input.tier ? { tier: input.tier } : undefined;
     const folder = await inspectFolder(input.repo);
     const repo = folder.path;
     if (!isAbsolute(repo)) throw new UserError("Use an absolute path for the repository.");
@@ -2009,6 +2056,7 @@ export class Engine {
             agentId,
             workspaceId: agent.workspaceId ?? null,
             provider: agent.provider,
+            tier: null,
             branch: bound.branch,
             githubRepo: bound.githubRepo,
             cwd: agent.cwd,
@@ -2321,6 +2369,122 @@ export class Engine {
     );
     this.tellLanded(item, updated);
     if (token) void this.runChecksFor(store, updated, token);
+    this.readEconomy(store, updated, agentId);
+  }
+
+  // ── The economy (BRO-3118) ───────────────────────────────────────────────────
+
+  /** Starts reading the run's usage without holding the turn's end up; never fatal. */
+  private readEconomy(store: WorkStore, item: StoredWork, agentId: string): void {
+    if (!this.usage) return;
+    const bind = bindingsOf(item.events).find((candidate) => candidate.agentId === agentId);
+    if (!bind) return;
+    const reading = this.measure(store, item, bind, false)
+      .then((appended) => (appended ? this.writeEconomy(store, true) : undefined))
+      .catch((error) => this.log(`economy for ${agentId}: ${(error as Error).message}`))
+      .finally(() => this.readings.delete(reading));
+    this.readings.add(reading);
+  }
+
+  /**
+   * Read one run's usage and record it when the numbers moved since its last reading. A reading that failed after a
+   * good one records nothing (the cumulative count must never fall back to zero), unless the session crossed a read
+   * bound (then it is unmeasured from here on), and neither does one that saw less than the last (an out-of-order read). A backfill of a transcript that cannot be read records one
+   * unmeasured reading, with the reason, so it is not asked again. Returns whether a receipt was added.
+   */
+  private async measure(store: WorkStore, item: StoredWork, bind: RunBinding, backfilled: boolean): Promise<boolean> {
+    const reader = this.usage;
+    if (!reader) return false;
+    let read: UsageRead;
+    try {
+      read = await reader(bind.agentId, bind.provider);
+    } catch (error) {
+      read = { measured: false, reason: `usage not read: ${(error as Error).message}` };
+    }
+    let appended = false;
+    await store.mutate(
+      item.contract.id,
+      (fresh): Mutation | null => {
+        const event = economyEvent(this.stamp(), bind, read, backfilled);
+        const last = lastEconomy(fresh.events, bind.agentId);
+        // A read that merely failed after a good one records nothing; one that found the session past a read bound
+        // (`bound`) does: the run is unmeasured from then on, and its earlier numbers must not stand as its cost.
+        const failedAfterGood = last?.measured && !event.measured && !(!read.measured && read.bound);
+        if (last && (backfilled || sameReading(last, event) || failedAfterGood)) return null;
+        // Out of order: a read that saw less than the last (fewer messages, or as many and fewer tokens) is older.
+        if (last?.measured && event.measured) {
+          if (event.assistantMessages < last.assistantMessages) return null;
+          if (event.assistantMessages === last.assistantMessages && billedOf(event) < billedOf(last)) return null;
+        }
+        appended = true;
+        return { events: [event] };
+      },
+      item.dir,
+    );
+    return appended;
+  }
+
+  private async economyWorks(store: WorkStore): Promise<EconomyWork[]> {
+    const { items } = await store.scan();
+    return items.map((item) => ({ id: item.contract.id, events: item.events }));
+  }
+
+  private async writeEconomy(store: WorkStore, force: boolean): Promise<void> {
+    await this.economy?.write(() => this.economyWorks(store), force);
+  }
+
+  /**
+   * The economy summary for the Fleet view: a pure read of the receipts (no read writes, BRO-2995). The sweep
+   * (economySweep) is what backfills and writes the file.
+   */
+  async economySummary(days: number = ECONOMY_DAYS.default): Promise<EconomySummary> {
+    const { store } = await this.store();
+    return summarizeEconomy(await this.economyWorks(store), this.now().getTime(), days);
+  }
+
+  /**
+   * The sweep's economy step: a past run with no `run.economy` gets one (`backfilled`: its usage, or unmeasured and
+   * why when its transcript cannot be read), at most once per agent and BACKFILL_PER_SWEEP runs a sweep, then the
+   * summary file is written (when a receipt was added, coalesced; else at most once a minute).
+   */
+  async economySweep(): Promise<void> {
+    if (!this.usage) return;
+    // One at a time: a sweep flight that overlaps a running backfill leaves it to finish, so no run is read twice.
+    if (this.backfilling) return this.backfilling;
+    const run = this.backfillOnce().finally(() => {
+      this.backfilling = null;
+    });
+    this.backfilling = run;
+    return run;
+  }
+
+  private async backfillOnce(): Promise<void> {
+    const { store } = await this.store();
+    const { items } = await store.scan();
+    const cutoff = this.now().getTime() - (this.economy?.windowDays ?? ECONOMY_DAYS.default) * 24 * 60 * 60 * 1000;
+    let budget = BACKFILL_PER_SWEEP;
+    let appended = false;
+    for (const item of items) {
+      for (const bind of bindingsOf(item.events)) {
+        if (budget <= 0) break;
+        if (
+          Date.parse(bind.at) < cutoff ||
+          this.backfilled.has(bind.agentId) ||
+          lastEconomy(item.events, bind.agentId)
+        ) {
+          continue;
+        }
+        this.backfilled.add(bind.agentId);
+        budget -= 1;
+        appended =
+          (await this.measure(store, item, bind, true).catch((error) => {
+            this.log(`economy backfill for ${bind.agentId}: ${(error as Error).message}`);
+            return false;
+          })) || appended;
+      }
+      if (budget <= 0) break;
+    }
+    await this.writeEconomy(store, appended);
   }
 
   private async askPermission(
